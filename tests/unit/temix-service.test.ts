@@ -16,6 +16,12 @@
  *    merge locking a customer and the holders of its code in that order.
  *  - X-TEMIX-2: re-downloading a batch is rate-limited and is recorded before
  *    the file is returned; when that record fails, no file.
+ *  - Gap 31 review: a NOT VALID CHECK is evaluated on every write of a row, and
+ *    one row that breaks it fails the whole statement. A queued customer whose
+ *    stored record breaks a Customer rule (lib/db-rules.ts) is HELD BACK by
+ *    Generate — left queued, named apart from F11's — so the claim cannot fail
+ *    for everyone; Mark loaded names the archived rows of an older batch that
+ *    break one instead of failing in words that name nobody.
  *  - Gap 14 (lossless paths): the FILE — on Generate and on every re-download —
  *    is recorded through lib/export-record.ts with the customers written to it,
  *    its name and its bytes (an ExportJob and its EXPORT row), after it is built
@@ -34,6 +40,14 @@ type Cust = {
   lastTemixUploadAt: Date | null;
   lastTemixUploadBatchId: string | null;
   isTest: boolean;
+  // Gap 31 review: the columns the Customer CHECKs read (lib/db-rules.ts).
+  paymentTerms: string;
+  creditLimit: number | null;
+  paymentTermDays: number | null;
+  channelId: string | null;
+  subChannelId: string | null;
+  primaryPhoneNorm: string | null;
+  crNumberNorm: string | null;
 };
 
 const h = vi.hoisted(() => ({
@@ -45,6 +59,7 @@ const h = vi.hoisted(() => ({
   /** markTemixBatchLoadedAction's claim and its follow-up read, inside the transaction. */
   batchClaim: vi.fn(),
   batchFindTx: vi.fn(),
+  batchFindOrThrowTx: vi.fn(),
 }));
 
 vi.mock('@/lib/auth', () => ({
@@ -136,6 +151,7 @@ vi.mock('@/lib/db', () => {
       update: async () => ({}),
       updateMany: h.batchClaim,
       findUnique: h.batchFindTx,
+      findUniqueOrThrow: h.batchFindOrThrowTx,
     },
   };
   return {
@@ -568,5 +584,141 @@ describe('Temix refusals say what happened', () => {
     fd.set('batchId', 'batch-1');
     const res = await markTemixBatchLoadedAction(fd);
     expect(res).toMatchObject({ ok: false, message: 'This batch is already marked as loaded.' });
+  });
+});
+
+describe('gap 31 review: a customer whose stored record breaks a database rule is held back, not the batch', () => {
+  it('Generate leaves it queued and names it apart; everyone else goes out, and the claim never touches it', async () => {
+    model.state.rows = [
+      cust({ nmwcCode: 'N1', temixCode: 'T1', temixSyncState: TemixSyncState.PENDING_UPLOAD }),
+      // Credit figures on a cash customer: Customer_credit_terms_only_credit.
+      cust({ nmwcCode: 'N2', temixCode: 'T2', temixSyncState: TemixSyncState.PENDING_UPLOAD, creditLimit: 500 }),
+      // An archived one with a CR key written before the CR rule: Customer_crNumberNorm_shape.
+      cust({ nmwcCode: 'N3', temixCode: 'T3', deletedAt: at, temixSyncState: TemixSyncState.DEACTIVATE_PENDING, crNumberNorm: 'cr 12' }),
+      cust({ nmwcCode: 'N4', temixCode: 'T4', deletedAt: at, temixSyncState: TemixSyncState.DEACTIVATE_PENDING }),
+      // A CREDIT customer with its figures is fine.
+      cust({ nmwcCode: 'N5', temixCode: 'T5', temixSyncState: TemixSyncState.PENDING_UPLOAD, paymentTerms: 'CREDIT', creditLimit: 900, paymentTermDays: 30 }),
+    ];
+    const res = await generateTemixBatchAction();
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    expect(res.data.heldForRules).toEqual(['N2', 'N3']);
+    expect(res.data.heldBack).toBeUndefined();
+    expect(res.data.customerCount).toBe(3);
+    expect(await sheetCodes(res.data.base64)).toEqual(['UPSERT:N1', 'DEACTIVATE:N4', 'UPSERT:N5']);
+    // They keep their place in the queue, untouched.
+    expect(row('N2')).toMatchObject({ temixSyncState: 'PENDING_UPLOAD', lastTemixUploadBatchId: null });
+    expect(row('N3')).toMatchObject({ temixSyncState: 'DEACTIVATE_PENDING', lastTemixUploadBatchId: null });
+    // The claim is bounded to the rest: the database never sees a write of N2 or N3.
+    const { TEMIX_QUEUE_WHERE } = await import('@/lib/temix');
+    expect(model.state.flipWhere).toEqual({ AND: [TEMIX_QUEUE_WHERE, { id: { in: ['id-N1', 'id-N4', 'id-N5'] } }] });
+    // The EXPORT row says who and which rule; the file's record says who.
+    expect(h.writeAudit.mock.calls[0][2]).toMatchObject({
+      action: 'EXPORT',
+      after: {
+        customers: 3,
+        heldForRules: [
+          { nmwcCode: 'N2', rules: ['Customer_credit_terms_only_credit'] },
+          { nmwcCode: 'N3', rules: ['Customer_crNumberNorm_shape'] },
+        ],
+      },
+    });
+    expect(h.recordExport.mock.calls[0][1]).toMatchObject({ filters: { action: 'generate', heldForRules: ['N2', 'N3'] } });
+    expect([...h.recordExport.mock.calls[0][1].customerIds].sort()).toEqual(['id-N1', 'id-N4', 'id-N5']);
+  });
+
+  it('both kinds held back at once are named apart', async () => {
+    model.state.rows = [
+      cust({ nmwcCode: 'N1', temixCode: 'T1', temixSyncState: TemixSyncState.PENDING_UPLOAD }),
+      cust({ nmwcCode: 'N2', temixCode: 'T1', deletedAt: at, temixSyncState: TemixSyncState.DEACTIVATE_PENDING }),
+      cust({ nmwcCode: 'N3', temixCode: 'T3', temixSyncState: TemixSyncState.PENDING_UPLOAD, primaryPhoneNorm: '99123456' }),
+    ];
+    const res = await generateTemixBatchAction();
+    expect(res.ok && res.data.heldBack).toEqual(['N2']);
+    expect(res.ok && res.data.heldForRules).toEqual(['N3']);
+    expect(res.ok && (await sheetCodes(res.data.base64))).toEqual(['UPSERT:N1']);
+  });
+
+  it('when every queued customer is held back, it says which, for which reason, and nothing is flipped', async () => {
+    model.state.rows = [
+      cust({ nmwcCode: 'N1', temixCode: 'T1' }), // live, SYNCED, not queued
+      cust({ nmwcCode: 'N2', temixCode: 'T1', deletedAt: at, temixSyncState: TemixSyncState.DEACTIVATE_PENDING }),
+      cust({ nmwcCode: 'N3', temixCode: 'T3', temixSyncState: TemixSyncState.PENDING_UPLOAD, subChannelId: 'sc-1', channelId: null }),
+    ];
+    const res = await generateTemixBatchAction();
+    expect(res.ok).toBe(false);
+    expect(!res.ok && res.message).toBe(
+      'Nothing can go to Temix yet. Held back for review: N2. Held back until their stored records are corrected (each breaks a data rule): N3.'
+    );
+    expect(row('N3').temixSyncState).toBe('PENDING_UPLOAD');
+    expect(h.writeAudit).not.toHaveBeenCalled();
+    expect(h.recordExport).not.toHaveBeenCalled();
+  });
+
+  it('a customer held back for a rule alone has its own words', async () => {
+    model.state.rows = [cust({ nmwcCode: 'N3', temixCode: 'T3', temixSyncState: TemixSyncState.PENDING_UPLOAD, paymentTermDays: 30 })];
+    const res = await generateTemixBatchAction();
+    expect(!res.ok && res.message).toBe(
+      'Nothing can go to Temix yet. Held back until their stored records are corrected (each breaks a data rule): N3.'
+    );
+  });
+
+  it('a record that keeps every rule is never held back', async () => {
+    model.state.rows = [
+      cust({
+        nmwcCode: 'N1',
+        temixCode: 'T1',
+        temixSyncState: TemixSyncState.PENDING_UPLOAD,
+        primaryPhoneNorm: '+96899123456',
+        crNumberNorm: 'CR1234567',
+        channelId: 'ch-1',
+        subChannelId: 'sc-1',
+      }),
+    ];
+    const res = await generateTemixBatchAction();
+    expect(res.ok && res.data.heldForRules).toBeUndefined();
+    expect(res.ok && (await sheetCodes(res.data.base64))).toEqual(['UPSERT:N1']);
+  });
+
+  describe('Mark loaded', () => {
+    const fd = () => {
+      const f = new FormData();
+      f.set('batchId', 'batch-1');
+      return f;
+    };
+    const inBatch = { temixSyncState: TemixSyncState.UPLOADED, lastTemixUploadAt: at, lastTemixUploadBatchId: 'batch-1' };
+    beforeEach(() => {
+      h.batchClaim.mockResolvedValue({ count: 1 });
+    });
+
+    it('settles the batch deactivations as before when none breaks a rule', async () => {
+      model.state.rows = [
+        cust({ nmwcCode: 'N1', temixCode: 'T1', ...inBatch }),
+        cust({ nmwcCode: 'N2', temixCode: 'T2', ...inBatch, deletedAt: at }),
+      ];
+      h.batchFindOrThrowTx.mockResolvedValue({ id: 'batch-1', customerIds: ['id-N1', 'id-N2'] });
+      const res = await markTemixBatchLoadedAction(fd());
+      expect(res, JSON.stringify(res)).toMatchObject({ ok: true });
+      expect(row('N1').temixSyncState).toBe('UPLOADED');
+      expect(row('N2').temixSyncState).toBe('SYNCED');
+      expect(h.writeAudit.mock.calls[0][2]).toMatchObject({ after: { deactivationsSettled: 1 } });
+    });
+
+    it('an archived row of an older batch that breaks a rule is named, and nothing is settled', async () => {
+      model.state.rows = [
+        cust({ nmwcCode: 'N2', temixCode: 'T2', ...inBatch, deletedAt: at }),
+        cust({ nmwcCode: 'N3', temixCode: 'T3', ...inBatch, deletedAt: at, creditLimit: 100 }),
+      ];
+      h.batchFindOrThrowTx.mockResolvedValue({ id: 'batch-1', customerIds: ['id-N2', 'id-N3'] });
+      const res = await markTemixBatchLoadedAction(fd());
+      expect(res).toMatchObject({
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        message:
+          'This batch cannot be marked loaded yet: the stored records of N3 break a data rule (Customer_credit_terms_only_credit), so they cannot be settled. Have them corrected, then mark it loaded.',
+      });
+      expect(model.state.rows.map((c) => c.temixSyncState)).toEqual(['UPLOADED', 'UPLOADED']);
+      expect(h.writeAudit).not.toHaveBeenCalled();
+    });
   });
 });

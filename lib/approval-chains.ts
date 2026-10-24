@@ -6,9 +6,11 @@
  * type-checking + unit tests for free. The resolved chain is SNAPSHOTTED onto
  * each CustomerEdit at submit (`approvalChain` Json) so an in-flight request is
  * deterministic even if this matrix later changes — step advancement always
- * reads the row's snapshot, never this constant. Since gap 37 the snapshot is
- * `{ v, calendar, steps }` (freezeChain), close and reactivation included; the
- * rows frozen before read as version 0 (readFrozenChain).
+ * reads the row's snapshot, never this constant. Since gap 37 close and
+ * reactivation freeze theirs too, and the snapshot can be `{ v, calendar,
+ * steps }` (freezeChain; written only once CHAIN_OBJECT_FORM_ENABLED is on); the
+ * bare array reads as version 0 (readFrozenChain). parseChain fails closed on a
+ * stored value that is not a chain.
  *
  * Owner-confirmed (2026-07-15):
  *   - UPDATE:        Salesman → Supervisor
@@ -39,6 +41,8 @@
  */
 import { Role, PaymentTerms, EditProcess } from '@prisma/client';
 import { slaDeadline, STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN, workingCalendar } from './working-hours';
+import { AppError } from './errors';
+import { logger } from './logger';
 
 /**
  * Bump when the shape/meaning of a chain changes; frozen per-edit at submit.
@@ -207,56 +211,127 @@ export function resolveRejectTarget(
  * Gap 37 (data audit 2026-10-10): what is frozen onto a request when it is sent.
  * The steps alone did not let a past deadline be explained again: the working
  * calendar it was computed on (WORK_* settings, lib/working-hours.ts) moved
- * with the environment. So the chain is stored as `{ v, calendar, steps }`:
+ * with the environment. So the chain can be stored as `{ v, calendar, steps }`:
  * the matrix version, the calendar in force at the freeze, and the steps with
  * their budgets. Deadlines are still computed on the live calendar (no SLA
  * behaviour changes); the frozen one is the record of what it was. A change to
  * a WORK_* or SLA_* setting is a dated entry in the private operations log
  * (docs/OPERATIONS.md section 3).
  *
- * Rows frozen before this read as version 0: the bare array, no calendar.
+ * Rows frozen as the bare array read as version 0: no calendar.
  */
 export type WorkingCalendar = ReturnType<typeof workingCalendar>;
 
 export type FrozenChain = { v: number; calendar: WorkingCalendar | null; steps: ApprovalStep[] };
 
-/** The chain to store on a request as it is sent (or saved as a draft). */
-export function freezeChain(steps: ApprovalStep[]): FrozenChain {
-  return { v: CHAIN_VERSION, calendar: workingCalendar(), steps };
-}
-
-const isStep = (s: unknown): s is ApprovalStep =>
-  !!s && typeof s === 'object' && typeof (s as ApprovalStep).role === 'string' && typeof (s as ApprovalStep).scope === 'string' &&
-  typeof (s as ApprovalStep).slaHours === 'number';
+/** What is written to `approvalChain`: the bare array (version 0), or the object. */
+export type StoredChain = ApprovalStep[] | FrozenChain;
 
 /**
- * Read a stored chain in either form: the bare array of the rows frozen before
- * gap 37 (version 0, no calendar — taken as it is, as parseChain always took
- * it), or `{ v, calendar, steps }`, which is checked: a whole version from 1,
- * a calendar object or null, and steps that are steps. Anything else — null, a
- * malformed object — is null.
+ * The object form is a two-step change (review of gap 37, 2026-10-25). The build
+ * production rolls back to before this one (a454239) reads only the bare array:
+ * there an object reads as ONE Supervisor step, so a cash create would finalize
+ * on the Supervisor's approval (no Accountant), a credit create would skip the
+ * Sales Director, the signed form, the Finance Manager and the GM, and a request
+ * past its first step would have no step at all and could not be decided. So
+ * this build READS both forms and still WRITES the bare array. A one-line
+ * follow-up commit turns this on once a build that reads the object is
+ * production's rollback target (docs/OPERATIONS.md section 4, "The approval
+ * chain's stored form"). Once it is on: never Instant-Rollback past a build that
+ * reads the object, and a revert of the writer keeps the reader.
+ */
+export const CHAIN_OBJECT_FORM_ENABLED = false;
+
+/** What a person is told when the step budgets cannot be frozen (an SLA_* value that is not a number). */
+export const SLA_SETTINGS_INVALID_MESSAGE =
+  'The approval deadline settings of this system are not valid, so nothing was saved. Tell the system operator.';
+
+/** What a person is told when a request's stored approval steps cannot be read. */
+export const CHAIN_UNREADABLE_MESSAGE =
+  "This request's stored approval steps cannot be read, so nothing was done. Tell the system operator: it has to be repaired before anyone can act on it.";
+
+/** A budget a deadline can be computed on: a finite number of hours, not negative. */
+const isBudget = (h: unknown): h is number => typeof h === 'number' && Number.isFinite(h) && h >= 0;
+
+/**
+ * The chain to store on a request as it is sent (or saved as a draft): the bare
+ * array while CHAIN_OBJECT_FORM_ENABLED is off, `{ v, calendar, steps }` after.
+ *
+ * Refuses a chain with no step, and one whose budget is not a number: an SLA_*
+ * value that is not a number (lib/working-hours.ts reads `Number(env)`, so
+ * '16h' is NaN) would be stored as null and every deadline computed on it would
+ * be meaningless. Nothing is saved, and the operator corrects the setting.
+ */
+export function freezeChain(steps: ApprovalStep[], objectForm: boolean = CHAIN_OBJECT_FORM_ENABLED): StoredChain {
+  if (steps.length === 0) throw new Error('freezeChain: an approval chain has at least one step');
+  const bad = steps.filter((s) => !isBudget(s.slaHours));
+  if (bad.length > 0) {
+    logger.error({ roles: bad.map((s) => s.role) }, 'approval_chain.budget_invalid');
+    throw new AppError('SLA_SETTINGS_INVALID', SLA_SETTINGS_INVALID_MESSAGE, 500);
+  }
+  return objectForm ? { v: CHAIN_VERSION, calendar: workingCalendar(), steps } : steps;
+}
+
+const STEP_SCOPES: ReadonlySet<string> = new Set<StepScope>(['SUPERVISOR_OF_SUBMITTER', 'REGION_OVERLAP', 'GLOBAL', 'SUBMITTER']);
+
+/**
+ * The structure who may act depends on: a role and a known scope. The budget is
+ * NOT part of it: a budget that is not a number is "no frozen budget" for the
+ * SLA sweep (frozenStepBudgetMin), never a reason to read the chain differently.
+ */
+const isStep = (s: unknown): s is ApprovalStep =>
+  !!s &&
+  typeof s === 'object' &&
+  typeof (s as ApprovalStep).role === 'string' &&
+  (s as ApprovalStep).role.length > 0 &&
+  STEP_SCOPES.has((s as ApprovalStep).scope);
+
+type ChainRead = { kind: 'none' } | { kind: 'frozen'; chain: FrozenChain } | { kind: 'malformed'; why: string };
+
+/**
+ * Read the stored value: nothing stored (null: a request sent before chains
+ * were frozen, or a close or reactivation sent before gap 37); the bare array
+ * (version 0, taken as it is, as every build has taken it); or the object,
+ * which is checked: a whole version from 1 and at least one step, each with a
+ * role and a known scope. A calendar that is not an object reads as none (it is
+ * a record; nothing is decided on it). Anything else is malformed.
+ */
+function readStoredChain(approvalChain: unknown): ChainRead {
+  if (approvalChain === null || approvalChain === undefined) return { kind: 'none' };
+  if (Array.isArray(approvalChain)) {
+    return { kind: 'frozen', chain: { v: 0, calendar: null, steps: approvalChain as ApprovalStep[] } };
+  }
+  if (typeof approvalChain !== 'object') return { kind: 'malformed', why: `a ${typeof approvalChain}` };
+  const o = approvalChain as Record<string, unknown>;
+  if (typeof o.v !== 'number' || !Number.isInteger(o.v) || o.v < 1) return { kind: 'malformed', why: 'no version' };
+  if (!Array.isArray(o.steps) || o.steps.length === 0) return { kind: 'malformed', why: 'no steps' };
+  const at = o.steps.findIndex((s) => !isStep(s));
+  if (at >= 0) return { kind: 'malformed', why: `step ${at} has no role or no known scope` };
+  const cal = o.calendar;
+  const calendar = cal && typeof cal === 'object' && !Array.isArray(cal) ? (cal as WorkingCalendar) : null;
+  return { kind: 'frozen', chain: { v: o.v, calendar, steps: o.steps as ApprovalStep[] } };
+}
+
+/**
+ * The stored chain in either form, or null when there is none to read (nothing
+ * stored, or a value that is not a chain). For records and budgets only: who
+ * may act is read through parseChain, which refuses a value that is not a chain.
  */
 export function readFrozenChain(approvalChain: unknown): FrozenChain | null {
-  if (Array.isArray(approvalChain)) {
-    return { v: 0, calendar: null, steps: approvalChain as ApprovalStep[] };
-  }
-  if (!approvalChain || typeof approvalChain !== 'object') return null;
-  const o = approvalChain as Partial<FrozenChain>;
-  if (typeof o.v !== 'number' || !Number.isInteger(o.v) || o.v < 1) return null;
-  if (!Array.isArray(o.steps) || !o.steps.every(isStep)) return null;
-  const cal = o.calendar;
-  if (cal !== null && (typeof cal !== 'object' || cal === undefined)) return null;
-  return { v: o.v, calendar: (cal ?? null) as WorkingCalendar | null, steps: o.steps };
+  const r = readStoredChain(approvalChain);
+  return r.kind === 'frozen' ? r.chain : null;
 }
 
 /**
  * The budget, in working minutes, of one step of the chain frozen on a request
- * (either stored form), or null when the row froze none — the SLA sweep then
- * falls back to the live policy for its pendingRole (app/api/cron/sla-escalate).
+ * (either stored form), or null when the row froze none, or none that is a
+ * number: the SLA sweep then falls back to the live policy for its pendingRole
+ * (app/api/cron/sla-escalate).
  */
 export function frozenStepBudgetMin(approvalChain: unknown, stepIndex: number): number | null {
-  const step = readFrozenChain(approvalChain)?.steps[stepIndex];
-  return step && typeof step.slaHours === 'number' ? Math.round(step.slaHours * 60) : null;
+  const step: unknown = readFrozenChain(approvalChain)?.steps[stepIndex];
+  const hours = step && typeof step === 'object' ? (step as { slaHours?: unknown }).slaHours : undefined;
+  return isBudget(hours) ? Math.round(hours * 60) : null;
 }
 
 /**
@@ -270,7 +345,7 @@ export function closeRequestChain(): ApprovalStep[] {
 
 /**
  * The chain a reactivation rides: one Manager step, region-scoped, on the
- * Manager's budget — what it always was (pendingRole MANAGER, decided by a
+ * Manager's budget: what it always was (pendingRole MANAGER, decided by a
  * Manager of the shop's region). Frozen since gap 37; before, its empty chain
  * read as the Supervisor fallback, so a reactivation's page named the wrong step.
  */
@@ -279,13 +354,34 @@ export function reactivationChain(): ApprovalStep[] {
 }
 
 /**
- * Safely read the frozen chain JSON off a CustomerEdit, in either stored form
- * (readFrozenChain). Falls back to the single-Supervisor chain (the pre-Phase-1b
- * default, also the migration backfill value) if the column is null/malformed —
- * so a legacy row without a frozen chain still advances correctly.
+ * Read the frozen chain JSON off a CustomerEdit, in either stored form. Nothing
+ * stored (null), or the bare array empty, reads as the single-Supervisor chain:
+ * the pre-Phase-1b default, also the migration backfill value, so a legacy row
+ * without a frozen chain still advances correctly.
+ *
+ * FAILS CLOSED on anything else (review of gap 37, 2026-10-25): a value that is
+ * present but is not a chain is refused (CHAIN_UNREADABLE) and logged, never
+ * read as one Supervisor step. That fallback would let the Supervisor's
+ * approval finalize a cash create without the Accountant, or a credit create
+ * without the Sales Director, the Finance Manager and the GM.
  */
 export function parseChain(approvalChain: unknown): ApprovalStep[] {
-  const frozen = readFrozenChain(approvalChain);
-  if (frozen && frozen.steps.length > 0) return frozen.steps;
+  const steps = parseChainOrNull(approvalChain);
+  if (!steps) throw new AppError('CHAIN_UNREADABLE', CHAIN_UNREADABLE_MESSAGE, 409);
+  return steps;
+}
+
+/**
+ * parseChain for a reader that must not stop on one bad row (the approvals list,
+ * the e-mail drain): null, logged, where parseChain refuses. The caller treats
+ * that request as one nobody can act on.
+ */
+export function parseChainOrNull(approvalChain: unknown): ApprovalStep[] | null {
+  const r = readStoredChain(approvalChain);
+  if (r.kind === 'malformed') {
+    logger.error({ why: r.why }, 'approval_chain.unreadable');
+    return null;
+  }
+  if (r.kind === 'frozen' && r.chain.steps.length > 0) return r.chain.steps;
   return [SUPERVISOR_STEP];
 }

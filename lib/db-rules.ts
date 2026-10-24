@@ -577,3 +577,24 @@ export function dbRulesCountSql(rules: readonly DbRule[] = DB_RULES, samples = D
 
 /** The names the nightly check and the report look up in pg_constraint. */
 export const DB_RULE_NAMES: readonly string[] = DB_RULES.map((r) => r.name);
+
+/** The CHECK rules of one table, in DB_RULES order. */
+export function checkRulesOf(table: DbRuleTable): DbCheckRule[] {
+  return DB_RULES.filter((r): r is DbCheckRule => r.kind === 'check' && r.table === table);
+}
+
+/** The columns the CHECK rules of `table` read: what to select to test a row with brokenChecks. */
+export function checkColumnsOf(table: DbRuleTable): string[] {
+  return [...new Set(checkRulesOf(table).flatMap((r) => r.columns))];
+}
+
+/**
+ * The CHECK rules of `table` that `row` breaks now: what any UPDATE of it would
+ * be refused for, whatever column the UPDATE changes (a NOT VALID CHECK is
+ * evaluated on every write of a row). One such row fails a whole multi-row
+ * statement, so a batch writer tests its rows first and leaves these out
+ * (services/temix.ts Generate and Mark loaded).
+ */
+export function brokenChecks(table: DbRuleTable, row: Row): DbCheckRule[] {
+  return checkRulesOf(table).filter((r) => !r.holds(row));
+}

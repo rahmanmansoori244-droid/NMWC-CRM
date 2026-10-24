@@ -97,8 +97,8 @@ describe.skipIf(!ENABLED)('gap 18: where a request was raised', () => {
     expect(e).toMatchObject({ state: 'SUBMITTED', routeIdAtSubmit: w.route, regionIdsAtSubmit: [w.regionA] });
     expect(routeThen).toBe(w.route);
     expect(regionThen).toBe(w.regionA);
-    // The chain is frozen with its calendar (gap 37).
-    expect(e.approvalChain).toMatchObject({ v: 2, calendar: expect.any(Object), steps: [{ role: 'SUPERVISOR' }] });
+    // The chain is frozen (gap 37): the bare array while CHAIN_OBJECT_FORM_ENABLED is off.
+    expect(e.approvalChain).toMatchObject([{ role: 'SUPERVISOR', scope: 'SUPERVISOR_OF_SUBMITTER' }]);
     // The sealed CREATE row carries the same.
     const row = await prisma.auditLog.findFirstOrThrow({ where: { entityType: 'CustomerEdit', entityId: editId, action: 'CREATE' } });
     expect(row.after).toMatchObject({ routeIdAtSubmit: w.route, regionIdsAtSubmit: [w.regionA] });
@@ -124,7 +124,7 @@ describe.skipIf(!ENABLED)('gap 18: where a request was raised', () => {
     expect(c.e).toMatchObject({ routeIdAtSubmit: w.route, regionIdsAtSubmit: [w.regionA] });
     expect(c.routeThen).toBe(w.route);
     expect(c.regionThen).toBe(w.regionA);
-    expect(c.e.approvalChain).toMatchObject({ v: 2, steps: [{ role: 'SUPERVISOR' }] });
+    expect(c.e.approvalChain).toMatchObject([{ role: 'SUPERVISOR' }]);
     await prisma.customerEdit.update({ where: { id: closeId }, data: { state: 'REJECTED', pendingRole: null, decisionReason: 'synthetic' } });
 
     await prisma.branch.update({ where: { id: w.branch }, data: { status: 'CLOSED', lastStatusChangeAt: new Date(Date.now() - 86_400_000) } });
@@ -138,7 +138,7 @@ describe.skipIf(!ENABLED)('gap 18: where a request was raised', () => {
     editIds.push(reactId);
     const r = await asOf(reactId);
     expect(r.e).toMatchObject({ isReactivation: true, routeIdAtSubmit: w.route, regionIdsAtSubmit: [w.regionA] });
-    expect(r.e.approvalChain).toMatchObject({ v: 2, steps: [{ role: 'MANAGER', scope: 'REGION_OVERLAP' }] });
+    expect(r.e.approvalChain).toMatchObject([{ role: 'MANAGER', scope: 'REGION_OVERLAP' }]);
 
     // The route handed on afterwards: what was recorded stays.
     await prisma.user.update({ where: { id: w.salesman }, data: { ownedRouteId: null } });

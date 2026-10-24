@@ -43,7 +43,7 @@
  * of the rolling daily cap, so a busy day of FYI cannot spend the approvers' quota.
  */
 import { Role } from '@prisma/client';
-import { parseChain } from '../approval-chains';
+import { parseChainOrNull } from '../approval-chains';
 import { canActOnStep } from '../permissions';
 import { escalationPlan } from '../escalation';
 import {
@@ -140,7 +140,9 @@ export function waitsOn(recipient: Recipient, kind: string, edit: RequestNow): b
   }
   // A reactivation is decided on /reactivations only; nothing else asks for one.
   if (edit.isReactivation) return false;
-  const step = parseChain(edit.approvalChain)[edit.currentStepIndex];
+  // A stored chain that cannot be read (logged) waits on nobody: the request page
+  // refuses it, and the drain must not stop on one bad row.
+  const step = parseChainOrNull(edit.approvalChain)?.[edit.currentStepIndex];
   if (!step) return false;
   // The pointer and the recorded pending role must agree on the step: a request
   // whose pendingRole moved on is not waiting on this step, whatever the index says.

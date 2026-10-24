@@ -330,6 +330,17 @@ describe('waitsOn: has the request moved past him, and can he act on it?', () =>
     expect(waitsOn(who(Role.MANAGER), 'EDIT_SUBMITTED', { ...cash(), currentStepIndex: 1 })).toBe(false);
   });
 
+  it('review of gap 37: a stored chain that is not a chain waits on nobody — never read as the Supervisor step, and the drain does not stop on it', () => {
+    for (const approvalChain of [{ v: 2 }, { v: 2, calendar: null, steps: [{ role: 'GM' }] }, 'chain']) {
+      expect(() => waitsOn(who(Role.MANAGER), 'EDIT_SUBMITTED', cash({ approvalChain }))).not.toThrow();
+      expect(waitsOn(who(Role.MANAGER), 'EDIT_SUBMITTED', cash({ approvalChain }))).toBe(false);
+      expect(waitsOn(who(Role.SUPERVISOR), 'EDIT_SUBMITTED', req({ approvalChain }))).toBe(false);
+    }
+    // Both stored forms of a real chain are read alike.
+    const steps = resolveChain(EditProcess.CREATE, PaymentTerms.CASH);
+    expect(waitsOn(who(Role.MANAGER), 'EDIT_SUBMITTED', cash({ approvalChain: { v: 2, calendar: null, steps } }))).toBe(true);
+  });
+
   it('a Supervisor who is not the submitter’s supervisor does not; a Manager of the request’s region does (close fallback, RBAC-05-003)', () => {
     expect(waitsOn(who(Role.SUPERVISOR, { id: 'other' }), 'EDIT_SUBMITTED', req())).toBe(false);
     expect(waitsOn(who(Role.SUPERVISOR), 'EDIT_SUBMITTED', req())).toBe(true);

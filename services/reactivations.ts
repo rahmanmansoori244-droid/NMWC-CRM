@@ -329,7 +329,7 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
         // Supervisor-step /approvals queues and puts them on the SLA clock.
         pendingRole: Role.MANAGER,
         // Gap 37: the chain it rides — one Manager step on the Manager's budget,
-        // as it always was — frozen with the working calendar.
+        // as it always was — frozen through freezeChain.
         approvalChain: freezeChain(reactivationChain()) as unknown as Prisma.InputJsonValue,
         stageEnteredAt: reactSubmittedAt,
         slaDueAt: stepDeadline(
@@ -488,7 +488,7 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
         }),
         // Phase 1 SLA: close requests ride the normal Supervisor approval.
         pendingRole: Role.SUPERVISOR,
-        // Gap 37: the Supervisor step it always rode, frozen with the working calendar.
+        // Gap 37: the Supervisor step it always rode, frozen through freezeChain.
         approvalChain: freezeChain(closeRequestChain()) as unknown as Prisma.InputJsonValue,
         stageEnteredAt: closeSubmittedAt,
         slaDueAt: stepDeadline(

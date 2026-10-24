@@ -15,7 +15,10 @@
  *     (pg_temp comes first on the search path, so the check's unqualified SQL
  *     reads them and the real tables are never written or locked for writing):
  *     exactly one counted row per rule, every rule present in the catalog and
- *     not validated.
+ *     not validated;
+ *   - review of gap 31: the Temix-path count (scripts/ops/db-rules-report.ts)
+ *     on the same kind of shadows: queued breakers, and the archived breakers of
+ *     a batch not yet marked loaded, nothing else.
  *
  * Synthetic ZZ rows only, all inside ONE transaction that is rolled back at the
  * end; each refusal runs under a SAVEPOINT. Aborts on the production endpoint.
@@ -28,7 +31,8 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { src, withChangeContext } from '@/lib/change-context';
 import { CHECK_BY_ID } from '@/lib/integrity/checks';
-import { DB_RULES, DB_RULE_NAMES, type DbRule } from '@/lib/db-rules';
+import { DB_RULES, DB_RULE_NAMES, checkRulesOf, type DbRule } from '@/lib/db-rules';
+import { temixPathCountSql } from '../../scripts/ops/db-rules-report';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
@@ -293,6 +297,45 @@ describe.skipIf(!ENABLED)('gap 31: the NOT VALID database rules on Postgres', ()
       expect(out.sampleIds[0]).toMatch(/^Customer_credit_terms_only_credit:x-/);
       expect((out.detail as { readyToValidate: string[]; missing: string[] }).readyToValidate).toEqual([]);
       expect((out.detail as { missing: string[] }).missing).toEqual([]);
+    });
+  });
+
+  // Review of gap 31 (2026-10-25): a multi-row statement fails whole on one row
+  // that breaks a CHECK, so the report counts the Customer rules where the Temix
+  // batch paths write many rows at once (scripts/ops/db-rules-report.ts).
+  it('the Temix-path count on TEMP shadows: queued breakers, and archived breakers of a batch not yet marked loaded', async () => {
+    await inRolledBack(db, async (tx) => {
+      for (const t of ['Customer', 'TemixSyncBatch']) {
+        await tx.$executeRawUnsafe(`CREATE TEMP TABLE "${t}" ON COMMIT DROP AS SELECT * FROM public."${t}" WITH NO DATA`);
+      }
+      await tx.$executeRawUnsafe(`INSERT INTO pg_temp."TemixSyncBatch" ("id", "markedLoadedAt") VALUES ('tb-open', NULL), ('tb-done', now())`);
+      const cust = (
+        id: string,
+        state: string,
+        o: { archived?: boolean; isTest?: boolean; batch?: string; creditLimit?: number } = {}
+      ) =>
+        tx.$executeRaw(
+          Prisma.sql`INSERT INTO pg_temp."Customer" ("id", "paymentTerms", "creditLimit", "temixSyncState", "deletedAt", "isTest", "lastTemixUploadBatchId")
+                     VALUES (${id}, 'CASH'::"PaymentTerms", ${o.creditLimit ?? null}::numeric, ${state}::"TemixSyncState",
+                             ${o.archived ? new Date() : null}::timestamp, ${o.isTest ?? false}, ${o.batch ?? null})`
+        );
+      await cust('q-live', 'PENDING_UPLOAD', { creditLimit: 5 }); // queued
+      await cust('q-deact', 'DEACTIVATE_PENDING', { archived: true, creditLimit: 5 }); // queued
+      await cust('n-test', 'PENDING_UPLOAD', { isTest: true, creditLimit: 5 }); // a test customer is never queued
+      await cust('n-archived-pending', 'PENDING_UPLOAD', { archived: true, creditLimit: 5 }); // not the live lane
+      await cust('s-open', 'UPLOADED', { archived: true, batch: 'tb-open', creditLimit: 5 }); // awaiting Mark loaded
+      await cust('n-done', 'UPLOADED', { archived: true, batch: 'tb-done', creditLimit: 5 }); // its batch is marked
+      await cust('n-live-uploaded', 'UPLOADED', { batch: 'tb-open', creditLimit: 5 }); // live rows are not settled
+      await cust('ok', 'PENDING_UPLOAD'); // keeps every rule
+
+      const rows = await tx.$queryRaw<Array<{ rule: string; queued: number; settling: number }>>(
+        Prisma.sql`SELECT x.rule, x.queued, x.settling FROM (${Prisma.raw(temixPathCountSql())}) x`
+      );
+      const by = Object.fromEntries(rows.map((r) => [r.rule, { queued: Number(r.queued), settling: Number(r.settling) }]));
+      expect(by.Customer_credit_terms_only_credit).toEqual({ queued: 2, settling: 1 });
+      for (const r of checkRulesOf('Customer').filter((x) => x.name !== 'Customer_credit_terms_only_credit')) {
+        expect(by[r.name], r.name).toEqual({ queued: 0, settling: 0 });
+      }
     });
   });
 });

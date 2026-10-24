@@ -421,7 +421,8 @@ async function submitCreateOnce(
 
   const submittedAt = new Date();
   const chain = resolveChain(EditProcess.CREATE, c.paymentTerms);
-  // Gap 37: frozen with the working calendar; the request and its revision hold the same.
+  // Gap 37: frozen through freezeChain (its budgets checked; the working calendar
+  // with it once CHAIN_OBJECT_FORM_ENABLED is on); the request and its revision hold the same.
   const frozenChain = freezeChain(chain);
   const firstStep = chain[0]!;
   const isCredit = c.paymentTerms === PaymentTerms.CREDIT;

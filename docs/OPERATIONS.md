@@ -40,10 +40,18 @@ missing ones included `CRON_SECRET`, `HEALTH_BEARER` and `ALERT_WEBHOOK_URL`.
 operations log** (the owner's handover pack, §5j and §5e; never in this repository): the
 variable, its old and new value, who changed it, why, and the date it took effect (gap 37).
 These set the working calendar and the step budgets every SLA deadline is computed on
-(`lib/working-hours.ts`). Each request freezes the calendar and its budgets with its chain
-when it is sent (`{ v, calendar, steps }`, `lib/approval-chains.ts` `freezeChain`), but
-deadlines are computed on the calendar in force, so the log is what explains a deadline
-computed across a change.
+(`lib/working-hours.ts`). Each request freezes its budgets with its chain when it is sent
+(`lib/approval-chains.ts` `freezeChain`), and the calendar too once the object form is on
+(`{ v, calendar, steps }`, §4 "The approval chain's stored form"), but deadlines are
+computed on the calendar in force, so the log is what explains a deadline computed across
+a change.
+
+**An `SLA_*` value that is not a whole number of minutes refuses work.** The variables are
+read with `Number(...)`, so `16h` or `16 hours` is not a number. `freezeChain` then refuses
+every request whose chain has that step ("The approval deadline settings of this system are
+not valid, so nothing was saved"; the log line `approval_chain.budget_invalid` names the
+role), rather than storing a chain whose deadline means nothing. Correct the value, redeploy,
+and log the change.
 
 ## 4. Deploy
 
@@ -80,6 +88,37 @@ rolled-back build runs against the newer schema. If the migration itself is what
 production, or the older build cannot work with the new schema, a rollback will not
 cure it: stop and take it to the owner. Reverting a migration is a separate, deliberate
 change, never part of a rollback (HANDOVER §2).
+
+**The approval chain's stored form (gap 37) — a two-step change, like §5k's alert.** A
+request's approval chain (`CustomerEdit.approvalChain`, and the `EditRevision` of a
+new-customer round) can be stored as `{ v, calendar, steps }` instead of the bare array of
+steps. The production build before `claude/audit-gaps-final` (a454239) reads **only the
+array**: there, an object reads as ONE Supervisor step, so the Supervisor's approval would
+finalize a cash create without the Accountant, a credit create without the Sales Director,
+the signed form, the Finance Manager and the GM, and a request past its first step would
+have no step at all and could not be decided. So:
+
+- The build that ships `claude/audit-gaps-final` **reads both forms and still writes the
+  array** (`CHAIN_OBJECT_FORM_ENABLED = false` in `lib/approval-chains.ts`). An Instant
+  Rollback from it to a454239 is safe as far as the chain goes. The gap-31 rules stay in the
+  database whatever the rollback (§5l), and a454239 does not hold a breaking customer back
+  from Temix Generate: there, one queued customer whose record breaks a rule refuses the
+  whole batch (`DATA_RULE`, nobody named) until it is corrected.
+- **The one-line enable commit** (`CHAIN_OBJECT_FORM_ENABLED = true` and its unit test in
+  `tests/unit/approval-chain-freeze.test.ts`) is deployed only once that build has served
+  production and passed smoke — it is then the rollback target, so no build that cannot
+  read the object is left to roll back to.
+- **Once chains are written as objects, never Instant-Rollback past the first build that
+  reads them** (the merge of `claude/audit-gaps-final`), and a revert of commit `22dd7c6`
+  (or of anything in `lib/approval-chains.ts`) must keep `readFrozenChain` and
+  `parseChain`'s object reader. To go back, revert only the enable commit: the reader stays
+  and new requests are written as arrays again; the objects already written stay readable.
+
+| Step | Who | When | Done (date, in the go-live log) |
+|---|---|---|---|
+| 1. Deploy the build that reads both forms; smoke | operator | with the gap-31 rules (§5l) | |
+| 2. The enable commit, deployed; smoke; the next request sent reads `{ "v": 2, "calendar": …, "steps": [ … ] }` in its `approvalChain` (read-only, through `prod-run.cjs`, §5j) | operator | the first working day after step 1 has served production and passed smoke — **the owner sets the date** (04-PENDING A9) | |
+| 3. From here, the Instant Rollback floor is the step-1 build: write it in the go-live log | operator | with step 2 | |
 
 ## 5. Database migrations
 
@@ -494,6 +533,11 @@ It prints the FIRST mismatch (every one with `--all`) as seq, day, table, kind, 
 
 - A NOT VALID **CHECK** is evaluated on **every INSERT and every UPDATE** of a row, an update to an unrelated column included. An older row that breaks one can **not be saved again by any path** until it is corrected: an edit, an approval, a merge, an archive, the Temix refresh, a customer-status follow, a completeness rescore, or a user delete that sets its creator to null. The person is answered in the rule's own words, never a value (`DATA_RULE`, from `lib/db-errors.ts` `dbRuleViolated` through `runAction`; for example "This customer's stored record breaks a data rule (credit figures on a cash customer). Ask the Data Steward to correct it."); the import names the constraint on the row.
 - A NOT VALID **foreign key** is checked only when its own columns change. An older orphan (UAT held 232 notification orphans) can still be saved as long as its link is left alone.
+- **One such row fails a whole statement, not just itself.** A write that changes many rows in ONE statement (an `updateMany`) is refused whole if any one of its rows breaks a CHECK, and nothing it would have written is written. Where that happens:
+  - **Temix Generate** claims the whole queue in one statement. It now tests the locked queue against the Customer CHECKs first (`lib/db-rules.ts` `brokenChecks`) and **holds a breaker back**: left queued, named to the Steward under the Generate button ("Also not in this file, still queued: …") and on the batch's `EXPORT` row with the rule (`heldForRules`), as F11 holds back a shared code. Everyone else goes out. The held customer goes out with the first Generate after its record is corrected.
+  - **Temix Mark loaded** settles a batch's archived rows in one statement. It refuses a batch whose archived rows break a rule, **naming them and the rule**, and marks nothing; the batch can be marked once they are corrected. Only a batch generated before the rules were live can hold one, so **finishing every Temix batch before the deploy is a precondition** (loaded into Temix, then Mark loaded): the report's `settling` column below must read 0, or those batches be finished, before the merge.
+  - **A merge** moves the losing customer's shops in one statement: one shop that breaks a Branch rule refuses the merge, in the shop rule's words (no shop named). Correct the shop, then merge.
+  - **Operator scripts that write many rows at once** (`requeue-untracked.ts`, `zero-credit-limits.ts`, `visitdays-from-sheets.ts`, `apply-quarantined-visit-days.ts`): run `db-rules-report.ts` first; a tranche that holds a breaker fails whole, and nothing in it is written. Correct the rows, or leave them out of the run. `recompute-cr-norm.ts` writes one customer per statement, but it corrects only the CR key: a customer that also breaks another rule still fails, and stops the run there.
 
 **Before the rules merge, count production** (read-only, through `prod-run.cjs`, §5j):
 
@@ -502,7 +546,7 @@ NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs \
   scripts/ops/db-rules-report.ts --expect-host ep-sweet-haze
 ```
 
-It prints, per rule, how many rows break it and whether it is present and validated — names and counts only, never an id. Every CHECK with rows here means saves of those rows will be refused once the rules are live: decide with the owner whether to correct the rows first or to ship and correct them as they surface (open question, 04-PENDING-WORK). After the deploy, the nightly check `db-rules-older-rows` (§5k) gives the same counts with sample ids (`rule:row id`) on `/status/integrity`.
+It prints, per rule, how many rows break it and whether it is present and validated — names and counts only, never an id. Every CHECK with rows here means saves of those rows will be refused once the rules are live, each alone, and **any statement that writes one of them with other rows is refused whole** (above): decide with the owner whether to correct the rows first or to ship and correct them as they surface (open question, 04-PENDING-WORK A9). A second table counts the Customer rules on the Temix paths: `queued` (rows Generate will hold back, named, until corrected) and `settling` (archived rows of a batch not yet marked loaded — **must read 0, or those batches be finished, before the merge**; the report prints `DEPLOY PRECONDITION` while it does not). After the deploy, the nightly check `db-rules-older-rows` (§5k) gives the same counts with sample ids (`rule:row id`) on `/status/integrity`.
 
 **Correcting the rows.**
 

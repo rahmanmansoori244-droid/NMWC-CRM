@@ -11,7 +11,7 @@ import { formatSlaStatus } from '@/lib/working-hours';
 import { countFieldChanges, hasManualGps } from '@/lib/gps-manual';
 import { decisionBoundWhere, decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
 import { draftScores } from '@/lib/create-score';
-import { isFinalStep, parseChain } from '@/lib/approval-chains';
+import { isFinalStep, parseChainOrNull } from '@/lib/approval-chains';
 import { BulkApprovalQueue, type ApprovalQueueItem } from './BulkApprovalQueue';
 
 export const metadata = { title: 'Approvals · NMWC' };
@@ -217,6 +217,10 @@ export default async function ApprovalsPage() {
     // Working-hours SLA pill, computed server-side (client clocks drift).
     const sla = e.slaDueAt ? formatSlaStatus(e.slaDueAt) : null;
     const paymentTerms = isCreate ? (e.customerDraft?.paymentTerms ?? null) : null;
+    // A stored chain that cannot be read (logged) has no final step here; the
+    // request's own page and its actions refuse it (lib/approval-chains.ts).
+    const chain = isCreate ? parseChainOrNull(e.approvalChain) : null;
+    const needsTemixCode = !!chain && isFinalStep(chain, e.currentStepIndex);
     return {
       sla,
       escalationLevel: e.escalationLevel,
@@ -226,7 +230,7 @@ export default async function ApprovalsPage() {
       changesCount,
       manualGps: hasManualGps(e.fieldChanges),
       isCreate,
-      needsTemixCode: isCreate && isFinalStep(parseChain(e.approvalChain), e.currentStepIndex),
+      needsTemixCode,
       paymentTerms,
       // The same formatter the token uses: the figures bound are the figures shown.
       credit:

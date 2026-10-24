@@ -8,8 +8,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { reportLines } from '../../scripts/ops/db-rules-report';
-import { DB_RULES } from '@/lib/db-rules';
+import {
+  AWAITING_MARK_LOADED_SQL,
+  TEMIX_QUEUE_SQL,
+  reportLines,
+  temixPathCountSql,
+  temixPathLines,
+} from '../../scripts/ops/db-rules-report';
+import { DB_RULES, brokenChecks, checkColumnsOf, checkRulesOf } from '@/lib/db-rules';
 import { stripComments } from '../support/strip-comments';
 
 describe('db-rules-report', () => {
@@ -46,5 +52,75 @@ describe('db-rules-report', () => {
     expect(src).toContain('dbRulesCountSql(DB_RULES, 0)');
     expect(src).toContain('SELECT x.rule, x.n FROM');
     expect(src).not.toMatch(/\b(INSERT INTO|UPDATE "|DELETE FROM|TRUNCATE|ALTER TABLE|VALIDATE CONSTRAINT)\b/);
+  });
+});
+
+/**
+ * Review of gap 31 (2026-10-25): one row that breaks a CHECK fails a whole
+ * multi-row statement, so the Customer rules are also counted where the Temix
+ * batch paths write many customers at once, and a batch writer can test its
+ * rows first (lib/db-rules.ts brokenChecks; services/temix.ts).
+ */
+describe('the Temix batch paths', () => {
+  const customerChecks = DB_RULES.filter((r) => r.kind === 'check' && r.table === 'Customer').map((r) => r.name);
+
+  it('checkRulesOf / checkColumnsOf / brokenChecks: the Customer CHECKs, the columns they read, the ones a row breaks', () => {
+    expect(checkRulesOf('Customer').map((r) => r.name)).toEqual(customerChecks);
+    expect(customerChecks).toEqual([
+      'Customer_credit_terms_only_credit',
+      'Customer_subChannel_needs_channel',
+      'Customer_primaryPhoneNorm_shape',
+      'Customer_crNumberNorm_shape',
+    ]);
+    expect(checkColumnsOf('Customer').sort()).toEqual(
+      ['channelId', 'creditLimit', 'crNumberNorm', 'paymentTermDays', 'paymentTerms', 'primaryPhoneNorm', 'subChannelId'].sort()
+    );
+    const ok = { paymentTerms: 'CASH', creditLimit: null, paymentTermDays: null, subChannelId: null, channelId: null, primaryPhoneNorm: null, crNumberNorm: null };
+    expect(brokenChecks('Customer', ok)).toEqual([]);
+    expect(brokenChecks('Customer', { ...ok, creditLimit: 5, crNumberNorm: 'cr 1' }).map((r) => r.name)).toEqual([
+      'Customer_credit_terms_only_credit',
+      'Customer_crNumberNorm_shape',
+    ]);
+    expect(brokenChecks('Customer', { ...ok, paymentTerms: 'CREDIT', creditLimit: 5, paymentTermDays: 30 })).toEqual([]);
+    // Only CHECKs: a foreign key is checked when its own columns change, which no batch write does.
+    expect(checkRulesOf('Customer').every((r) => r.kind === 'check')).toBe(true);
+  });
+
+  it('counts, per Customer CHECK, the queued rows and the rows awaiting Mark loaded, in one read', () => {
+    const sql = temixPathCountSql();
+    expect(sql.split('UNION ALL')).toHaveLength(customerChecks.length);
+    for (const r of checkRulesOf('Customer')) {
+      expect(sql).toContain(`'${r.name}'::text AS rule`);
+      expect(sql).toContain(`NOT COALESCE((${r.sql}), TRUE)`);
+    }
+    expect(sql).not.toMatch(/\b(INSERT INTO|UPDATE "|DELETE FROM|TRUNCATE|ALTER TABLE|VALIDATE CONSTRAINT)\b/);
+    expect(AWAITING_MARK_LOADED_SQL).toContain(`b."markedLoadedAt" IS NULL`);
+  });
+
+  it('the queue is the one Generate locks (lib/locks.ts lockTemixQueue, pinned to TEMIX_QUEUE_WHERE elsewhere)', () => {
+    const locks = stripComments(readFileSync('lib/locks.ts', 'utf8'), 'locks.ts');
+    const lockTemixQueue = locks.slice(locks.indexOf('export async function lockTemixQueue'));
+    const lockPredicate = /FROM "Customer" WHERE (.+?) ORDER BY "id"/.exec(lockTemixQueue)?.[1];
+    expect(lockPredicate).toBeTruthy();
+    expect(TEMIX_QUEUE_SQL.replace(/\bt\./g, '')).toBe(lockPredicate);
+  });
+
+  it('one line per Customer CHECK, with both counts and their totals', () => {
+    const [a, b] = customerChecks as [string, string];
+    const t = temixPathLines([
+      { rule: a, queued: 2, settling: 0 },
+      { rule: b, queued: 0, settling: 1 },
+    ]);
+    expect(t.lines).toHaveLength(customerChecks.length);
+    expect(t.lines[0]).toMatch(new RegExp(`${a}\\s+2\\s+0$`));
+    expect(t.lines[1]).toMatch(new RegExp(`${b}\\s+0\\s+1$`));
+    expect(t.lines[2]).toMatch(/\s0\s+0$/);
+    expect(t).toMatchObject({ queued: 2, settling: 1 });
+  });
+
+  it('the script reads the Temix-path count in the same READ ONLY transaction, and prints the precondition', () => {
+    const src = stripComments(readFileSync('scripts/ops/db-rules-report.ts', 'utf8'), 'db-rules-report.ts');
+    expect(src).toContain('SELECT x.rule, x.queued, x.settling FROM (${Prisma.raw(temixPathCountSql())}) x');
+    expect(src).toContain('DEPLOY PRECONDITION');
   });
 });

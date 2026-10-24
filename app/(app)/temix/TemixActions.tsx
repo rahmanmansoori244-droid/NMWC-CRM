@@ -40,11 +40,13 @@ export function GenerateBatchButton({ disabled }: { disabled: boolean }) {
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [held, setHeld] = useState<string[]>([]);
+  const [heldForRules, setHeldForRules] = useState<string[]>([]);
 
   function generate() {
     setConfirming(false);
     setError(null);
     setHeld([]);
+    setHeldForRules([]);
     start(async () => {
       const res = await generateTemixBatchAction();
       if (!res.ok) {
@@ -53,6 +55,7 @@ export function GenerateBatchButton({ disabled }: { disabled: boolean }) {
       }
       triggerDownload(res.data);
       setHeld(res.data.heldBack ?? []);
+      setHeldForRules(res.data.heldForRules ?? []);
       router.refresh();
     });
   }
@@ -75,6 +78,13 @@ export function GenerateBatchButton({ disabled }: { disabled: boolean }) {
           {held.length > 10 ? ` and ${held.length - 10} more` : ''}. Deactivating these archived
           customers would take away a Temix code a live customer still holds; the codes need
           correcting first.
+        </p>
+      )}
+      {heldForRules.length > 0 && (
+        <p className="max-w-md text-right text-xs font-medium text-amber-700">
+          Also not in this file, still queued: {heldForRules.slice(0, 10).join(', ')}
+          {heldForRules.length > 10 ? ` and ${heldForRules.length - 10} more` : ''}. Their stored
+          records break a data rule (the Integrity page names the rule); they go out once corrected.
         </p>
       )}
       <ConfirmModal

@@ -550,6 +550,14 @@ UPDATE "Notification" SET kind = 'EDIT_SUBMITTED'      WHERE kind = 'REACTIVATIO
 The rows keep their links and text; the inbox labels them "Progress" and "Review", and the
 change is not undone when F1 is deployed again.
 
+**Once the approval chain's object form is on (gap 37, `CHAIN_OBJECT_FORM_ENABLED`), the
+rollback floor is the build that reads it** — the merge of `claude/audit-gaps-final`. An
+older build reads an object chain as one Supervisor step: the Supervisor's approval would
+finalize a cash create without the Accountant, and a request past its first step could not
+be decided. That build ships the flag off; the enable commit comes after it has served
+production. To undo the object form, revert only the enable commit, never the reader
+([OPERATIONS §4](../OPERATIONS.md#4-deploy), "The approval chain's stored form").
+
 **Redeploying without a laptop:** Vercel → Deployments → the current production deployment
 → **Redeploy** ([CREDENTIAL-ROTATION.md](../CREDENTIAL-ROTATION.md) step 1.4). A changed
 environment variable reaches only new deployments, so every variable change needs this

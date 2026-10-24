@@ -56,6 +56,7 @@ import {
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { recordExport } from '@/lib/export-record';
 import { lockTemixQueue } from '@/lib/locks';
+import { brokenChecks, checkColumnsOf } from '@/lib/db-rules';
 import { omanDateISO } from '@/lib/tz';
 
 const BATCH_ROW_CAP = 5000;
@@ -147,6 +148,13 @@ export type TemixBatchResult = {
    * live customer still holds as its Temix code.
    */
   heldBack?: string[];
+  /**
+   * Gap 31 review: the customer codes of queued customers left out of this file
+   * (left queued, by Generate), because their stored record breaks a rule the
+   * database keeps (lib/db-rules.ts): one such row would fail the claim for
+   * everyone. They go out once the record is corrected.
+   */
+  heldForRules?: string[];
 };
 
 /** F11: of `codes`, the Temix codes a LIVE customer still holds. */
@@ -176,6 +184,39 @@ async function heldDeactivations<C extends { nmwcCode: string; temixCode: string
   );
   return archived.filter((c) => clash.has(deactivationCode(c)));
 }
+
+/**
+ * Gap 31 review (2026-10-25): the Customer rules the database keeps, added NOT
+ * VALID (lib/db-rules.ts), are evaluated on EVERY write of a row, whatever column
+ * the write changes, and one row that breaks one fails the whole statement.
+ * Generate's claim and Mark loaded's settle are each one statement over many
+ * customers, so a single older record that breaks a rule (credit figures on a
+ * cash customer, a CR key written before the CR rule, a phone key in another
+ * shape) would refuse the batch for everyone, in words that name no customer.
+ * Of the customers `where` selects, those whose stored record breaks a rule
+ * now, with the rules' names.
+ */
+const CUSTOMER_CHECK_SELECT = Object.fromEntries(checkColumnsOf('Customer').map((c) => [c, true] as const));
+
+type RuleBreaker = { id: string; nmwcCode: string; rules: string[] };
+
+async function brokenCustomerRules(
+  db: Prisma.TransactionClient,
+  where: Prisma.CustomerWhereInput
+): Promise<RuleBreaker[]> {
+  const rows = (await db.customer.findMany({
+    where,
+    select: { id: true, nmwcCode: true, ...CUSTOMER_CHECK_SELECT } as Prisma.CustomerSelect,
+    orderBy: { nmwcCode: 'asc' },
+  })) as unknown as Array<Record<string, unknown> & { id: string; nmwcCode: string }>;
+  return rows.flatMap((r) => {
+    const rules = brokenChecks('Customer', r).map((x) => x.name);
+    return rules.length ? [{ id: r.id, nmwcCode: r.nmwcCode, rules }] : [];
+  });
+}
+
+/** What Generate says of the customers it held back for a broken rule. */
+const HELD_FOR_RULES = 'Held back until their stored records are corrected (each breaks a data rule)';
 
 /** "N-1, N-2 and 3 more" — never an unbounded list in a message. */
 function heldBackText(codes: string[]): string {
@@ -220,7 +261,7 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
   // batch generates well inside the budget. Pinned by
   // tests/unit/temix-requeue-guard.test.ts, which asserts both bounds.
   const cause = { actorId: me.id, source: src.temix('generate', 'new') };
-  const { batch, customers, heldBack } = await withChangeContext(prisma, cause, async (tx) => {
+  const { batch, customers, heldBack, heldForRules } = await withChangeContext(prisma, cause, async (tx) => {
     // Soft cap pre-check (updateMany cannot `take`; a handful of rows racing
     // in over the cap between count and flip is harmless).
     const pending = await tx.customer.count({ where: TEMIX_QUEUE_WHERE });
@@ -253,7 +294,15 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
     const held = await heldDeactivations(tx, deactivating);
     const heldBack = held.map((c) => c.nmwcCode);
     const heldIds = new Set(held.map((c) => c.id));
-    const claim = locked.filter((id) => !heldIds.has(id));
+    // Gap 31 review: a locked customer whose stored record breaks a rule the
+    // database keeps would fail the claim below for everyone (one row refused
+    // fails the whole UPDATE). Held back like F11's: left queued, named, until
+    // the record is corrected; everyone else goes out. Read under the locks
+    // above, so these rows cannot change before the claim.
+    const ruleBreakers = locked.length ? await brokenCustomerRules(tx, { id: { in: locked } }) : [];
+    const heldForRules = ruleBreakers.map((c) => c.nmwcCode);
+    const ruleIds = new Set(ruleBreakers.map((c) => c.id));
+    const claim = locked.filter((id) => !heldIds.has(id) && !ruleIds.has(id));
     const now = new Date();
     const b = await tx.temixSyncBatch.create({
       data: {
@@ -285,9 +334,13 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
       },
     });
     if (flipped.count === 0) {
-      if (heldBack.length) {
+      if (heldBack.length || heldForRules.length) {
         // The text is the message too: the Generate button shows the message.
-        const why = `Nothing can go to Temix yet. Held back for review: ${heldBackText(heldBack)}.`;
+        const why = [
+          'Nothing can go to Temix yet.',
+          ...(heldBack.length ? [`Held back for review: ${heldBackText(heldBack)}.`] : []),
+          ...(heldForRules.length ? [`${HELD_FOR_RULES}: ${heldBackText(heldForRules)}.`] : []),
+        ].join(' ');
         throw new ValidationError({ _form: why }, why);
       }
       throw new ValidationError({ _form: NOTHING_PENDING }, NOTHING_PENDING);
@@ -326,9 +379,13 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
         customers: ids.length,
         deactivations: queued.filter((c) => c.deletedAt).length,
         ...(heldBack.length ? { heldBack: heldBack.slice(0, 100) } : {}),
+        // Gap 31 review: who was held back for a broken rule, and which rule.
+        ...(ruleBreakers.length
+          ? { heldForRules: ruleBreakers.slice(0, 100).map((c) => ({ nmwcCode: c.nmwcCode, rules: c.rules })) }
+          : {}),
       } as unknown as Prisma.InputJsonValue,
     });
-    return { batch: b, customers: queued, heldBack };
+    return { batch: b, customers: queued, heldBack, heldForRules };
   }, { timeout: 30_000, maxWait: 5_000 });
 
   const enriched = await withGuaranteeCounts(customers);
@@ -339,7 +396,7 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
   // records its own copy) hands it over instead.
   await recordExport(env, {
     kind: 'temix-batch',
-    filters: { batchId: batch.id, action: 'generate', heldBack },
+    filters: { batchId: batch.id, action: 'generate', heldBack, ...(heldForRules.length ? { heldForRules } : {}) },
     customerIds: customers.map((c) => c.id),
     bytes,
     filename: wb.filename,
@@ -356,6 +413,7 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
     ...wb,
     customerCount: customers.length,
     ...(heldBack.length ? { heldBack } : {}),
+    ...(heldForRules.length ? { heldForRules } : {}),
   };
 }
 
@@ -458,16 +516,29 @@ export async function markTemixBatchLoadedAction(formData: FormData): SafeAction
       // (Design-review note: the blueprint pins the UPLOADED→SYNCED flip on
       // the inbound refresh but leaves the deactivate lane's settling
       // unspecified; this is the conservative reading.)
+      const settling: Prisma.CustomerWhereInput = {
+        id: { in: ids },
+        deletedAt: { not: null },
+        temixSyncState: TemixSyncState.UPLOADED,
+        // Only rows whose LAST upload was THIS batch: a customer archived
+        // after this batch rides a LATER batch's deactivation lane, and
+        // confirming the old batch must not settle it early.
+        lastTemixUploadBatchId: batchId,
+      };
+      // Gap 31 review: the settle is one statement, so one of these rows whose
+      // stored record breaks a rule the database keeps would refuse it in words
+      // that name nobody. Only a batch generated before the rules were live can
+      // hold one (Generate now holds such a customer back). Name them instead;
+      // the claim above rolls back with this, so the batch can be marked once
+      // they are corrected (docs/OPERATIONS.md section 5l).
+      const breakers = ids.length ? await brokenCustomerRules(tx, settling) : [];
+      if (breakers.length) {
+        const rules = [...new Set(breakers.flatMap((c) => c.rules))].join(', ');
+        const why = `This batch cannot be marked loaded yet: the stored records of ${heldBackText(breakers.map((c) => c.nmwcCode))} break a data rule (${rules}), so they cannot be settled. Have them corrected, then mark it loaded.`;
+        throw new ValidationError({ _form: why }, why);
+      }
       const settled = await tx.customer.updateMany({
-        where: {
-          id: { in: ids },
-          deletedAt: { not: null },
-          temixSyncState: TemixSyncState.UPLOADED,
-          // Only rows whose LAST upload was THIS batch: a customer archived
-          // after this batch rides a LATER batch's deactivation lane, and
-          // confirming the old batch must not settle it early.
-          lastTemixUploadBatchId: batchId,
-        },
+        where: settling,
         data: { temixSyncState: TemixSyncState.SYNCED },
       });
       await writeAudit(tx, env, {

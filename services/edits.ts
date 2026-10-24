@@ -933,7 +933,8 @@ async function submitEditOnce(
   const firstStep = chain[0]!;
   const chainFields = {
     process,
-    // Gap 37: frozen as { v, calendar, steps } (lib/approval-chains.ts freezeChain).
+    // Gap 37: through lib/approval-chains.ts freezeChain (its budgets checked; the
+    // object form with the calendar once CHAIN_OBJECT_FORM_ENABLED is on).
     approvalChain: freezeChain(chain) as unknown as Prisma.InputJsonValue,
     paymentTermsAtSubmit: customer.paymentTerms,
     currentStepIndex: 0,

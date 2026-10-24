@@ -134,8 +134,7 @@ vi.mock('@/lib/notify-hierarchy', () => ({ notifySalesmanRequest: vi.fn(async ()
 
 import { submitCreateAction } from '@/services/creates';
 import { creditDocumentMissingMessage, INVALID_CUSTOMER_EMAIL_MESSAGE } from '@/lib/validation/create';
-import { CHAIN_VERSION } from '@/lib/approval-chains';
-import { workingCalendar } from '@/lib/working-hours';
+import { CHAIN_OBJECT_FORM_ENABLED, parseChain } from '@/lib/approval-chains';
 
 const att = (attId: string, kind: string, o: Partial<Att> = {}): Att => ({
   id: attId,
@@ -209,11 +208,13 @@ describe('a CREDIT request', () => {
     const res = await submitCreateAction(body());
     expect(res, JSON.stringify(res)).toMatchObject({ ok: true, data: { state: 'SUBMITTED' } });
     expect(written('editCustomerDraft.create')[0]!.data).toMatchObject({ paymentTerms: 'CREDIT', email: 'accounts@alnoor.om' });
-    // The six-step chain is frozen at submit, with the working calendar (gap 37).
-    const chain = (written('customerEdit.create')[0]!.data as { approvalChain: { v: number; calendar: unknown; steps: Array<{ role: string }> } }).approvalChain;
-    expect(chain.v).toBe(CHAIN_VERSION);
-    expect(chain.calendar).toEqual(workingCalendar());
-    expect(chain.steps.map((s) => s.role)).toEqual(['SUPERVISOR', 'SALES_DIRECTOR', 'SALESMAN', 'FINANCE_MANAGER', 'GM', 'ACCOUNTANT']);
+    // The six-step chain is frozen at submit, through freezeChain (gap 37). While
+    // CHAIN_OBJECT_FORM_ENABLED is off it is the bare array the rollback target reads.
+    expect(CHAIN_OBJECT_FORM_ENABLED).toBe(false);
+    const chain = (written('customerEdit.create')[0]!.data as { approvalChain: Array<{ role: string }> }).approvalChain;
+    expect(Array.isArray(chain)).toBe(true);
+    expect(chain.map((s) => s.role)).toEqual(['SUPERVISOR', 'SALES_DIRECTOR', 'SALESMAN', 'FINANCE_MANAGER', 'GM', 'ACCOUNTANT']);
+    expect(parseChain(chain)).toEqual(chain);
   });
 
   it('gap 12: the round as sent is kept in EditRevision — terms, chain and documents, personal values as fingerprints', async () => {
@@ -229,7 +230,7 @@ describe('a CREDIT request', () => {
       payloadSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     // The revision holds the same frozen chain as the request (gap 37).
-    expect((rev!.data.approvalChain as { steps: Array<{ role: string }> }).steps.map((s) => s.role)).toContain('FINANCE_MANAGER');
+    expect((rev!.data.approvalChain as Array<{ role: string }>).map((s) => s.role)).toContain('FINANCE_MANAGER');
     expect(rev!.data.approvalChain).toEqual((written('customerEdit.create')[0]!.data as { approvalChain: unknown }).approvalChain);
     const payload = rev!.data.payload as { customer: { fingerprints: Record<string, string | null> }; documents: Array<{ kind: string }> };
     expect(payload.customer.fingerprints.email).toMatch(/^[0-9a-f]{64}$/);
