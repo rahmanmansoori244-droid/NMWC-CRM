@@ -279,7 +279,7 @@ These have been decided. They change only when the owner says so, so do not buil
 | Who gets the dashboard, at what scope | MANAGER (his regions), VIEWER and STEWARD (whole organisation) — `DASHBOARD_ROLES`. Adding ACCOUNTANT, FM or GM is that list, the menu and maybe `lib/role-home.ts` | P2 |
 | What a "new customer" is | A new-customer request given its final approval in the period, counted as a request; customers loaded by import shown apart, never added | P2 |
 | What "customer updated" means | An approved UPDATE request on the customer; Manager/Steward direct writes as their own series; closures and reactivations on their own card; photos and imports not counted | P2 |
-| How past activity is attributed | The branch's **current** route and region (a new customer: the route it was raised on, that route's region today). A snapshot of the route at decision time would need a schema change | P2 |
+| How past activity is attributed | The branch's **current** route and region (a new customer: the route it was raised on, that route's region today). **Since gap 18 (branch `claude/audit-gaps-final`) "at the time" needs no schema change:** the dated history answers it (`nmwc_branches_at`, `nmwc_users_at`; docs/HISTORY.md §6), a decision records its regions and the submitter's route (`EditApproval.scopeRegionIds`, `submitterRouteId`, part C), and every request sent since records its own (`CustomerEdit.routeIdAtSubmit`, `regionIdsAtSubmit`). Switching the cards to it is still the owner's call: it changes the counts each Manager's region-scoped dashboard shows | P2 |
 | The map | A self-drawn approximate outline with server-binned cells (0.05°, 0.01° with one region in view) and the GPS coverage beside it; no tiles, no exact pins | P2 |
 | Per-salesman figures for Managers | None: route-level only, and no name shown — but each route is shown by its code, which is its salesman's username, so its figures identify his work (RECORDS-OF-PROCESSING A4). The route ranking credits a request to the route of the branch it changed (or the salesman's own route), not to every route of a chain customer | P2 |
 | National totals or benchmarks for a region Manager | None | P2 |
@@ -360,6 +360,24 @@ These have been decided. They change only when the owner says so, so do not buil
 - **The role guides, the SOP builder and the system overview** now carry the Sales Director, the six-step credit chain, the credit documents, the signed-application upload and the printouts (`scripts/build-role-guides.ts`, `scripts/build-sop-doc.cjs`, `docs/handover/01-SYSTEM-OVERVIEW.md`). The guides' HTML and PDF were regenerated. **The SOP .docx was not, so it is out of date.** `docs/NMWC-Customer-Master-SOP-and-Access-Policy.docx` was last generated in `e8b763a`. Its builder changed after that, in `3f30dca` (the credit flow) and `7d9f1be` (only the Steward reads photo views). The committed file still describes eight roles and the four-step credit chain (Supervisor, Finance Manager, GM, Accountant). It has no Sales Director, no signed application and no printouts. Do not send it for sign-off in this state. The builder needs the `docx` package, which is not in `package.json`, so `npm ci` never installs it. To rebuild: in a scratch checkout, add the package without saving it (`npm install --no-save docx`) and run `node scripts/build-sop-doc.cjs`. Open the result in Word, update its table of contents and review it. Then commit the .docx, before the SOP goes to management for sign-off.
 
 ---
+
+### A9. Data audit gaps 31, 37 and 18 (branch `claude/audit-gaps-final`): open questions
+
+Built on the branch: the rules the app keeps added to the database NOT VALID, with a nightly count of older rows and a read-only report (gap 31, OPERATIONS §5l); chains frozen with the working calendar, an archive that closes unsent drafts and serialises with a submit, and hand-over rows that record the leaver's open work (gap 37); every request records where it was raised (gap 18). The questions below are the owner's; the default built is in brackets.
+
+| Question | Default built | P |
+|---|---|---|
+| **The production count before merging.** Every NOT VALID CHECK refuses all later saves of an older row that breaks it (an edit, a merge, an archive, the Temix refresh). Run `scripts/ops/db-rules-report.ts` on production; for each rule with rows: correct them first, or ship and correct them as they surface? | [nothing merged until the count is read; the rules ship as a set] | P1 |
+| **Notification orphans** (232 on UAT): null their customer link before a VALIDATE? The text still names the customer. | [left as they are; the foreign key is NOT VALID, so they do no harm] | P3 |
+| **The VALIDATE step**, rule by rule, once a rule reads 0 on UAT and production. | [none written] | P3 |
+| **A unique live Temix code** (H-01, the Steward's crosswalk; the daily import may "create and flag" a duplicate until merged). A unique index cannot be NOT VALID: it fails the migration on any duplicate at deploy time. | [not added; the nightly `temix-code-shared` alert stays] | P2 |
+| **A unique live CR number** (UAT holds one shared value). | [not added] | P2 |
+| **CREDIT must carry a limit** (UAT has three credit customers with none), **e-mail only on CREDIT**. | [not added: the Temix refresh lane can write one without the other] | P3 |
+| **Requests left open on customers archived before** (prod SQL 10 counts them). | [not touched; a one-off audited script, if the owner wants it] | P3 |
+| **Gap 18, the dashboard:** count past activity where the shop was when it happened (the dated history), or where it is today? (A6) | [today's route and region; the cards keep saying "current"] | P2 |
+| **Gap 18, what a Manager may see:** should his `/audit`, and the region-scoped `/status` and pipeline counts, follow the shop's region when each row was written? He would keep his old shops' history and the record of a move out, and stop seeing the older history of shops that moved in. | [today's region: `lib/audit-scope.ts` `managerAuditScopeSql`, `lib/service-status.ts` `countedInRegions`; not changed] | P2 |
+
+**Not done, and known limits.** The migrations were checked by reading and by Prisma's offline diff only, never applied; a pushed branch migrates UAT, so one throwaway apply comes first. The gated suites (`RUN_DB_RULES`, `RUN_ARCHIVE_REQUESTS`, `RUN_REQUEST_SCOPE`, added to CI's integration step; the account-edit additions under `RUN_ACCOUNT_EDIT`, which CI does not set) were written, not run. Older requests have no `routeIdAtSubmit` (no backfill: HISTORY §6 answers them, inferred). An older row that breaks a CHECK blocks every later save of it until corrected, by design of NOT VALID.
 
 ## B. Engineering follow-ups
 

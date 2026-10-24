@@ -220,6 +220,14 @@ jobs:
           # Part C (gaps 11, 16, 21, 22, 23): approval-authority, job-run-day,
           # conflict-record, auth-events, route-region-fixed.
           RUN_ACCOUNTABILITY: '1'
+          # Gap 31: the NOT VALID database rules and their nightly count (db-rules).
+          RUN_DB_RULES: '1'
+          # Gap 37: an archive closes the customer's drafts and serialises with a
+          # submit (archive-open-requests).
+          RUN_ARCHIVE_REQUESTS: '1'
+          # Gap 18: where a request was raised, against the dated history
+          # (request-scope-at-submit).
+          RUN_REQUEST_SCOPE: '1'
 
   # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
   # person typing `npm run test:e2e`. It shows: login.spec.ts asserted

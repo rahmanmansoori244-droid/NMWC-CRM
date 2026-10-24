@@ -267,7 +267,31 @@ SELECT * FROM nmwc_branches_on(DATE '2026-11-01') b JOIN nmwc_customers_on(DATE 
 
 -- Why a change happened: the audit rows of the same transaction.
 SELECT a.* FROM "BranchHistory" h JOIN "AuditLog" a ON a."txId" = h."txId" WHERE h.id = <history id>;
+
+-- Gap 18: where a request was raised. Sent since 20261025090100: read it.
+SELECT "routeIdAtSubmit", "regionIdsAtSubmit" FROM "CustomerEdit" WHERE id = '<edit id>';
+-- Sent before (both empty): the history as of its submittedAt answers it — the
+-- route the submitter held then, and the region each shop it names was in then.
+-- INFERRED when submittedAt is before the first page (§3, 'inferred' = true).
+SELECT u.owned_route_id, u.inferred
+  FROM "CustomerEdit" e, nmwc_users_at(e."submittedAt") u
+ WHERE e.id = '<edit id>' AND u.user_id = e."submittedById";
+SELECT b.branch_id, b.region_id, b.inferred
+  FROM "CustomerEdit" e, nmwc_branches_at(e."submittedAt") b
+ WHERE e.id = '<edit id>' AND b.customer_id = e."customerId";
+-- A decision counted for the region the shop was in when it was decided
+-- (EditApproval.scopeRegionIds holds it since part C; before, the history):
+SELECT a."editId", a."at", b.region_id
+  FROM "EditApproval" a JOIN "CustomerEdit" e ON e.id = a."editId",
+       nmwc_branches_at(a."at") b
+ WHERE b.branch_id = e."branchId";
 ```
+
+The app itself still attributes past activity to today's route and region (the
+insights cards say "current", and a Manager's /audit and region-scoped figures
+follow the region now): switching either is the owner's open question A6
+(04-PENDING-WORK), and changes what a Manager sees. The history and the columns
+above make the "at the time" answer possible with no further schema change.
 
 ## 7. How the daily Temix file plugs in (item D, later)
 
@@ -319,6 +343,8 @@ request was*. Each is now kept, append-only.
 | 15 — photos | `AttachmentHistory`, written by the database like the tables above, with a BASELINE for every photo row that existed and a DELETE tombstone when photo-gc drops a row. A removed or replaced photo keeps its `hash` (dedupe reads live rows only). A slot write names the photo it replaced (`replacedAttachmentId`) and the replaced one gets a `SOFT_DELETE` row; so does a photo released by a new-customer resubmit or a signed-application page left out of a new upload. Remove's audit row says what was removed and from where. | `services/photos.ts` |
 | 19 — approval evidence | Once a request has left DRAFT or NEEDS_CORRECTION, what it asked for (`fieldChanges`, `attachmentChanges`), who sent it and when, its process, target, gate, chain, credit figures, cycle, shop and submission id **cannot change** (trigger `customeredit_evidence_guard`), and a request cannot be deleted (`customeredit_no_delete`, `_no_truncate`); the owner's maintenance window is the only way past. Its state moves only forward, so the freeze cannot be stepped around: a decided request (APPROVED, REJECTED) is never reopened, a sent one goes back to its sender only as NEEDS_CORRECTION (the send-back) — never as a DRAFT — and an open one is approved only once sent. Every update, close-shop and reactivation submit writes a `CustomerEdit` `CREATE` row with the request as sent. An `APPROVE` row adds what was `applied`, what was `alreadyLive`, what the submitter's role was `lockedOut` of, and the gate's shops; a direct write lists every applied change, customer and shop. | `services/edits.ts`, `services/reactivations.ts`, `lib/request-evidence.ts` |
 | 20 — reopening | A close or reactivation request stores the photo's capture time and the shop's closure time it was checked against (`attachmentChanges`). The `REACTIVATE` row records the request, the evidence, the closure time and where it came from (`closureReference`: the request, the shop's dated history, or none) and the Manager's reason when the form sends one. Acceptance rules are unchanged. | `services/reactivations.ts` |
+| 37 — the rules a request was sent under | The approval chain is frozen as `{ v, calendar, steps }`: the matrix version (`CHAIN_VERSION`), the working calendar in force (`WORK_*`: offset, week, window) and the steps with their budgets, for every sent request — close and reactivation included, which froze none before (a reactivation's page then named the Supervisor fallback). The `EditRevision` of a new-customer round holds the same object. Rows frozen before read as version 0 (the bare array, no calendar). Deadlines are still computed on the live calendar; a `WORK_*` or `SLA_*` change is a dated entry in the private operations log (OPERATIONS §3). | `lib/approval-chains.ts` (`freezeChain`, `readFrozenChain`), `services/edits.ts`, `services/creates.ts`, `services/reactivations.ts` |
+| 37 — archive and hand-over | Archiving a customer closes its unsent drafts (REJECTED, `withdrawn`, one `UPDATE` row each, `closedBy: archive`), leaves its sent-back requests as the record of the send-back, and lists both on the `SOFT_DELETE` row (`openRequests`, ids capped at 200, with counts); a request in review still blocks it, and a request can no longer land on a customer archived a moment earlier (both take the customer's row lock). A route hand-over (`REASSIGN`, on /users and in the account import), a disable and an account edit that changes the route or role record the person's `openWork`: requests in review, drafts, sent-back, those the change withdrew (ids, capped at 200, with counts) and his photos on no slot (a count). Requests left open on customers archived before are not touched (an open owner question). | `services/customers.ts`, `lib/archive-open-requests.ts`, `lib/locks.ts`, `services/users.ts`, `services/imports.ts`, `lib/open-work.ts` |
 | 27 — a new customer's shops | At finalize each draft names the shop it became (`EditBranchDraft.branchId`), shops are numbered in draft id order, and each shop has a `Branch` `CREATE` row (draft, route, region, visit day, GPS present, counts, the request). A submit's audit row carries `duplicateSignals` (live customers on the phone, at most ten; whether the CR is a live customer's); a submit refused as an exact duplicate leaves a `REJECT` row on `CustomerCreateAttempt`. | `lib/create-finalize.ts`, `services/creates.ts` |
 
 Examples:
@@ -360,6 +386,7 @@ Migrations `20261015100000_authority_jobs_auth_events` and
 | Gap | What is kept now | Where |
 |---|---|---|
 | 11 — who decided, as what | Every `EditApproval` row says, beside the step's `role`: the decider's own role (`actorRole`), why he could decide (`authorityBasis`: `SUPERVISOR_OF_SUBMITTER` the salesman's own Supervisor, `REGION_MANAGER` a Manager of every region of the request — the Supervisor step's fallback, and every reactivation decision —, `REGION_OVERLAP` an Accountant over one of its regions, `GLOBAL` the Finance Manager, GM or Sales Director, `SUBMITTER` the salesman's own signed-application upload, never an approval), the regions the request covered (`scopeRegionIds`) and the salesman's route (`submitterRouteId`), as they were at that moment. The database refuses any other basis. A reactivation's approve and "Keep closed" now write their `EditApproval` row too (stepIndex 0, the MANAGER step); `/status` reads reactivations from the request, so its figures leave those rows out and do not change. Rows written before part C keep these columns empty: **not recorded then**, never guessed. | `lib/permissions.ts` `stepAuthority` (`canActOnStep` is its wrapper), `services/edits.ts`, `services/signed-form.ts`, `services/reactivations.ts` |
+| 18 — where a request was raised | `CustomerEdit.routeIdAtSubmit` and `regionIdsAtSubmit` (migration `20261025090100_request_scope_at_submit`): a new customer's draft route and its region; otherwise the submitter's own route when he sent it (null if he held none) and the regions of the request's scope then, by the queue's rule — what `submitterRouteId` and `scopeRegionIds` record for a decision. Written once with the SUBMITTED state (a resubmit writes them again), frozen by the evidence guard, and carried by the sealed `CREATE` row. The route link is a foreign key (RESTRICT, added NOT VALID). Rows sent before stay null and empty: **not recorded then** — §6 gives the as-of query, inferred before the first page. Nothing reads them to decide visibility (owner question A6). | `lib/scope-at-submit.ts`, `services/edits.ts`, `services/creates.ts`, `services/reactivations.ts`, `lib/request-evidence.ts` |
 | 21 — escalations and job runs | The `ESCALATE` row (source `cron:sla-escalate`) says which step of which round was late (`stepIndex`, `cycle`), from when (`stageEnteredAt`), on what budget and working calendar (`budgetMin`, `calendar`), at which `level`, and who was told (`audienceUserIds`) — the notifications that say the same are deleted after 90 days. `JobRunDay`: one row per scheduled job per Oman day — runs, failures, first and last start, the slowest run, the schedulers — written by the retention sweep for every day that is over, before that day's runs may be pruned; a `CronRun` row past 90 days is deleted only once its day has its row. Filled at the migration from the runs that existed. No system user: `AuditLog.source` names the job. | `app/api/cron/sla-escalate`, `lib/job-run-day.ts`, `app/api/cron/retention-sweep` |
 | 22 — the losing side of two saves at once | A save refused because another landed first — `NOT_PENDING`, `VERSION_CONFLICT`, `STALE_FIELDS`, `STALE_BEFORE`, `STALE_VIEW`, `EDIT_LOCKED`, `STATE_CHANGED`, `ROW_CHANGED`, `PHOTO_CHANGED` — leaves one `CONFLICT` audit row under the loser's name, source `conflict:<path>:<id>`, written in its own transaction after his has rolled back: the write that lost, the field names (never values), the version or stage he expected and the one he found, and for a request what the winner left (`live`: state, step, who decided, when). Best-effort: the 409 he sees is unchanged. Imports and merges do not lose races, they win them; what they overwrite is in their own rows (§9). | `lib/errors.ts` (`ConflictMeta`, `runAction`), `lib/conflict-record.ts`; `tests/unit/conflict-meta-guard.test.ts` fails on a throw of those codes without its meta |
 | 23 — sign-ins and session cut-offs | `AuthEvent`, append-only, kept for ever. `SESSION_REVOKE`: written by the **database** (trigger `user_session_revoke_capture`) whenever `User.sessionsRevokedAt` moves — sign-out, disable, password change or reset, role change, an account-import row — with the writer's actor and source (`sql` when none: then it is in the §5 report, with its login in `dbUser`) and what moved with it (`reason`: `deactivated`, `password`, `role`, `route`, `username`). `LOGIN_FAIL_UNKNOWN`: a name no account has (`not_found`, `demo_disabled`, or `retired_username` when an account used to hold it). `LOGIN_RATE_LIMITED`: a throttle refusal, at most one row per bucket (`ip` or `user`) per five minutes. `LOGIN_FAIL_REUSED_NAME`: a failure on an account whose name another account held before — a leaver typing his old route sign-in name — beside its `LOGIN_FAIL` audit row. The typed name is **never stored**: `usernameHmac` is HMAC-SHA256 of the trimmed, lower-cased name under a key derived from `AUTH_SECRET` (HKDF, label `nmwc-auth-event-v1`), `keyId` the first 8 hex digits of the key's SHA-256. The 30-day logs no longer carry the typed name either. | `lib/auth.ts`, `lib/auth-events.ts`, `lib/sign-in-events.ts` |
@@ -504,14 +531,15 @@ ranges, so that each is recomputed at least once in 28 nights while the run's bu
 holds. An edit to an old row (same count) is therefore found within that cycle, or at
 once by `verify-seals --all`.
 
-**The checks (gap 29).** The same job runs twenty named read-only checks
+**The checks (gap 29).** The same job runs twenty-one named read-only checks
 (`lib/integrity/checks.ts`), among them: every live record has an open history
 interval, and its latest history row's values are the record's (the columns each
 capture trigger records) — which catches a write made with a trigger off or in
 replica mode; no change recorded under `sql` since the last run; every protecting
 trigger present, enabled for normal sessions and bound to its table and function; every
-protecting function's body, rights and search path as its last migration made them.
-Results go to `IntegrityCheckResult`, append-only and sealed.
+protecting function's body, rights and search path as its last migration made them;
+and (gap 31, information) how many older rows break each database rule added NOT
+VALID (OPERATIONS §5l). Results go to `IntegrityCheckResult`, append-only and sealed.
 
 **Which checks alert (owner decisions 2026-10-24).** Every check fails, and alerts, on
 any non-zero count, except four that are information and never alert:
