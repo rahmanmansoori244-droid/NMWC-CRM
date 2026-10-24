@@ -483,7 +483,7 @@ It prints the FIRST mismatch (every one with `--all`) as seq, day, table, kind, 
 
 **What NOT VALID means — read before any change that saves old rows.**
 
-- A NOT VALID **CHECK** is evaluated on **every INSERT and every UPDATE** of a row, an update to an unrelated column included. An older row that breaks one can **not be saved again by any path** until it is corrected: an edit, an approval, a merge, an archive, the Temix refresh, a customer-status follow, a completeness rescore, or a user delete that sets its creator to null. The import names the constraint on the row.
+- A NOT VALID **CHECK** is evaluated on **every INSERT and every UPDATE** of a row, an update to an unrelated column included. An older row that breaks one can **not be saved again by any path** until it is corrected: an edit, an approval, a merge, an archive, the Temix refresh, a customer-status follow, a completeness rescore, or a user delete that sets its creator to null. The person is answered in the rule's own words, never a value (`DATA_RULE`, from `lib/db-errors.ts` `dbRuleViolated` through `runAction`; for example "This customer's stored record breaks a data rule (credit figures on a cash customer). Ask the Data Steward to correct it."); the import names the constraint on the row.
 - A NOT VALID **foreign key** is checked only when its own columns change. An older orphan (UAT held 232 notification orphans) can still be saved as long as its link is left alone.
 
 **Before the rules merge, count production** (read-only, through `prod-run.cjs`, §5j):

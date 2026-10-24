@@ -6,9 +6,10 @@
  * infrastructure noise silently dropped good customers while the import batch
  * still finished green. The same distinction matters everywhere — a server
  * action that hits a pool timeout should tell the user to try again, not
- * present a generic failure — so it lives here, importing nothing, and both
- * `lib/errors.ts` and `services/imports.ts` use it.
+ * present a generic failure — so it lives here, importing nothing but the pure
+ * lib/db-rules.ts (gap 31), and both `lib/errors.ts` and `services/imports.ts` use it.
  */
+import { DB_RULE_BY_NAME, type DbRule } from './db-rules';
 
 /**
  * Prisma codes that mean "the database was unavailable or slow", not "this data
@@ -71,4 +72,40 @@ export function mayHaveCommitted(err: unknown, code: string): boolean {
   if (code === 'P1017' || code === 'P1008') return true;
   const msg = err instanceof Error ? err.message : '';
   return /Response from the Engine was empty|Server has closed the connection/i.test(msg);
+}
+
+/**
+ * Gap 31: which database rule (lib/db-rules.ts) refused a save, or null when the
+ * error is not one of them. A rule added NOT VALID refuses every later save of an
+ * older row that breaks it, by any path; without this the person saw a generic
+ * failure (a 500) and nobody could tell which rule, or which record, was at fault.
+ *
+ * Matched by the constraint's NAME, wherever the driver put it: a foreign key as
+ * P2003 (meta.field_name "<name> (index)"), a CHECK as P2004 or, from a raw
+ * query, P2010 (Postgres's own words in the message or meta), and an engine
+ * error Prisma did not map (no code) that quotes `violates check constraint
+ * "<name>"` or `violates foreign key constraint "<name>"`. A name is matched
+ * whole, so one rule's name inside another's never matches.
+ */
+export function dbRuleViolated(err: unknown): DbRule | null {
+  if (!err || typeof err !== 'object') return null;
+  const code = (err as { code?: unknown }).code;
+  const message = err instanceof Error ? err.message : String((err as { message?: unknown }).message ?? '');
+  let meta = '';
+  try {
+    meta = JSON.stringify((err as { meta?: unknown }).meta ?? '');
+  } catch {
+    meta = '';
+  }
+  const text = `${message} ${meta}`;
+  const constraintError =
+    code === 'P2003' ||
+    code === 'P2004' ||
+    (code === 'P2010' && /23514|23503|check constraint|foreign key constraint/i.test(text)) ||
+    ((code === undefined || code === null || code === '') && /violates (check|foreign key) constraint/i.test(text));
+  if (!constraintError) return null;
+  for (const [name, rule] of DB_RULE_BY_NAME) {
+    if (new RegExp(`(^|[^A-Za-z0-9_])${name}([^A-Za-z0-9_]|$)`).test(text)) return rule;
+  }
+  return null;
 }

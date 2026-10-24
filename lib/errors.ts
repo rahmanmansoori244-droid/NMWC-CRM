@@ -1,4 +1,4 @@
-import { isDbConflict, isTransientDbError, mayHaveCommitted } from './db-errors';
+import { dbRuleViolated, isDbConflict, isTransientDbError, mayHaveCommitted } from './db-errors';
 
 /**
  * Gap 22 (data audit 2026-10-10): the losing side of two people saving at once.
@@ -260,6 +260,7 @@ export type ActionResult<T = void> =
        * Stable machine-readable code from the AppError subclass:
        *   - VALIDATION_FAILED, FORBIDDEN, NOT_FOUND, RATE_LIMITED
        *   - or a custom ConflictError code (e.g. STATUS_BYPASS, EDIT_LOCKED)
+       *   - DATA_RULE: a database rule refused the save (gap 31, lib/db-rules.ts)
        */
       code: string;
       /** Human-readable message safe to render verbatim in the UI. */
@@ -332,6 +333,14 @@ export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T
         message:
           'This value conflicts with an existing record. Refresh and try again.',
       };
+    }
+    // Gap 31: a database rule added NOT VALID (lib/db-rules.ts) refused the save
+    // — most often an older record that already broke it, which no path can save
+    // again until it is corrected. Say which rule, in its own words (no value),
+    // so the Data Steward can find and correct the record (docs/OPERATIONS.md 5l).
+    const rule = dbRuleViolated(err);
+    if (rule) {
+      return { ok: false, code: 'DATA_RULE', message: rule.refusal };
     }
     // A deadlock or serialization failure (lib/db-errors.ts isDbConflict):
     // Postgres rolled the transaction back whole, so nothing was saved, and
