@@ -18,8 +18,11 @@
  *   behaviour  — information only until the owner sets thresholds (exports and
  *                sign-in failures since the last run), test actors left out.
  *
- * Policy (the owner's open question, docs/OPERATIONS.md section 5k): every
- * 'alert' check fails on any non-zero count; 'info' checks never fail.
+ * Policy: every 'alert' check fails on any non-zero count; 'info' checks never
+ * fail. Owner decisions 2026-10-24: test-scaffolding-mixed is information, and
+ * scheduled-jobs-on-time counts only the jobs in ALERTING_JOBS
+ * (lib/integrity/policy.ts), listing the others as information. At what count a
+ * check alerts is still the owner's open question (docs/OPERATIONS.md section 5k).
  *
  * Each check returns counts, at most ten sample ids and counts by sub-kind —
  * never a name, a phone, a CR number or a code. The SQL reads only; every check
@@ -47,6 +50,7 @@ import {
   daysBetween,
   functionFindings,
   missedRuns,
+  scheduledJobFindings,
   statusDriftFindings,
   testFlagChanges,
   triggerFindings,
@@ -259,8 +263,10 @@ export const CHECKS: IntegrityCheck[] = [
     group: 'data',
     title: 'Test scaffolding is not mixed with real records',
     why: 'A real customer on the test route, a real route in the test region or a real person on test scaffolding is left out of, or wrongly counted in, every figure.',
-    remedy: 'Move the real record off the test scaffolding, or ask the owner to flag it as a test record (OPERATIONS.md section 7).',
-    policy: 'alert',
+    remedy:
+      'Information only (owner decision 2026-10-24): it never alerts. Move the real record off the test scaffolding, or ask the owner to flag it as a test record (OPERATIONS.md section 7).',
+    // Owner decision 2026-10-24: information, never alerting (a production walk leaves real-flagged customers on the test route).
+    policy: 'info',
     excludesTest: true,
     run: async (db) => {
       const [customers, routes, users] = await Promise.all([
@@ -514,8 +520,9 @@ export const CHECKS: IntegrityCheck[] = [
     version: 1,
     group: 'mechanism',
     title: 'Every scheduled job ran as its schedule says',
-    why: 'A job that stops (the SLA sweep, the backup, the retention sweep, this check) is otherwise noticed only when someone looks.',
+    why: 'A stopped SLA sweep (late requests are never escalated), nightly backup or nightly check is otherwise noticed only when someone looks; only these three alert. The housekeeping jobs (keep-warm, the e-mail drain, the photo clean-up, the retention sweep) are listed as information.',
     remedy: 'Open /api/health with the monitor bearer and the job’s scheduler (vercel.json, the GitHub workflow); a failed run already alerted as cron.failed.',
+    // Counts only the jobs in ALERTING_JOBS (owner decision 2026-10-24); the others are information.
     policy: 'alert',
     excludesTest: false,
     run: async (db, ctx) => {
@@ -542,13 +549,16 @@ export const CHECKS: IntegrityCheck[] = [
         selfHasEarlierRun: prev !== undefined,
         staleAfterIntervals: STALE_AFTER_INTERVALS,
       });
+      // Only the jobs that alert are counted; the others are information.
+      const r = scheduledJobFindings(missed);
       return {
-        count: missed.length,
-        sampleIds: capSamples(missed.map((m) => m.key)),
+        count: r.count,
+        sampleIds: r.sampleIds,
+        status: r.status,
         detail: {
           checkedThroughDay: yesterday,
           days,
-          missed: missed.map((m) => ({ key: m.key, kind: m.kind, day: m.day ?? null, gaps: m.gaps ?? null })),
+          ...r.detail,
           // Already alerted as cron.failed; shown here as information.
           failedRuns: failed.map((f) => ({ key: f.key, day: f.day, failures: f.failures })),
         },

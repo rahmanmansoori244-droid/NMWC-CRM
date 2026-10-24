@@ -11,7 +11,7 @@ import type { HeartbeatExpectation, HeartbeatReport } from '../heartbeat';
 import { statusDrift } from '../customer-status-rule';
 import { normalizeTemixCode, temixCodeProblem } from '../temix-code';
 import { omanDateISO } from '../tz';
-import { DEFAULT_THRESHOLD, KNOWN_LEGACY_SPACED_TEMIX_CODES, SAMPLE_LIMIT, ALERT_BODY_CHECKS } from './policy';
+import { ALERTING_JOBS, DEFAULT_THRESHOLD, KNOWN_LEGACY_SPACED_TEMIX_CODES, SAMPLE_LIMIT, ALERT_BODY_CHECKS } from './policy';
 
 export type CheckStatus = 'pass' | 'fail' | 'info' | 'error';
 export type CheckPolicy = 'alert' | 'info';
@@ -180,6 +180,30 @@ export function missedRuns(input: {
     if (h.state === 'never' || h.state === 'stale') out.push({ key: h.key, kind: h.state });
   }
   return out;
+}
+
+type MissedRunDetail = { key: string; kind: MissedRun['kind']; day: string | null; gaps: number | null };
+
+/**
+ * Owner decision 2026-10-24: only the missed runs of the jobs in ALERTING_JOBS
+ * are counted, and so fail the check and alert. A missed run of any other job —
+ * keep-warm, email-drain, photo-gc, retention-sweep, or a job not listed yet — is
+ * information: shown (`infoMissed`, its key in `info`), never counted. When only
+ * such jobs missed, the result is 'info', not a pass: something did not run.
+ */
+export function scheduledJobFindings(
+  missed: MissedRun[],
+  alerting: readonly string[] = ALERTING_JOBS
+): { count: number; sampleIds: string[]; detail: { missed: MissedRunDetail[]; infoMissed: MissedRunDetail[]; info: string[] }; status?: CheckStatus } {
+  const shape = (m: MissedRun): MissedRunDetail => ({ key: m.key, kind: m.kind, day: m.day ?? null, gaps: m.gaps ?? null });
+  const counted = missed.filter((m) => alerting.includes(m.key));
+  const listed = missed.filter((m) => !alerting.includes(m.key));
+  return {
+    count: counted.length,
+    sampleIds: capSamples(counted.map((m) => m.key)),
+    detail: { missed: counted.map(shape), infoMissed: listed.map(shape), info: capSamples(listed.map((m) => m.key)) },
+    ...(counted.length === 0 && listed.length > 0 ? { status: 'info' as const } : {}),
+  };
 }
 
 /**

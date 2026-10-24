@@ -1,6 +1,6 @@
 # Data retention schedule
 
-**Status: DRAFT — periods proposed by engineering, to be confirmed by the owner and counsel.**
+**Status: Accepted by the owner on 11 October 2026.** The periods are as written below, unchanged (among them: notifications 90 days once read and 180 days unread, import upload details 90 days, removed photos 30 days). The items marked **[OWNER]** or **[COUNSEL]** below are still open.
 
 **Gap 25 (data audit 2026-10-10):** the periods below are unchanged. What changed is that every
 clean-up the application runs now leaves a summary of what it deleted: the **Summary kept** column

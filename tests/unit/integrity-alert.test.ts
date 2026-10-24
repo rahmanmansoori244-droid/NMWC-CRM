@@ -8,6 +8,9 @@
  *    non-test Data Steward per Oman day — and none while the switch is off
  *    (the shipped default, until the reading build is the rollback target).
  *  - Its body is check titles and counts: no id, no name, no value.
+ *  - Owner decisions 2026-10-24: mixed test scaffolding, and a missed run of a
+ *    job not listed as alerting (keep-warm, the e-mail drain, photo-gc, the
+ *    retention sweep), are information: no in-app alert, no webhook.
  *  - The kind is never e-mailed (the outbox marks it SKIPPED_KIND) and links to
  *    /status/integrity.
  *  - The operators' webhook gets counts only, critical when the seal chain or
@@ -78,6 +81,7 @@ vi.mock('@/lib/seal/verify', () => ({
 
 import { runIntegrityWatch, integrityAlertAudience } from '@/lib/integrity/run';
 import { INTEGRITY_INAPP_ALERTS_ENABLED } from '@/lib/integrity/policy';
+import { scheduledJobFindings } from '@/lib/integrity/classify';
 import { hrefFor } from '@/lib/notification-links';
 import { rowVerdict } from '@/lib/email/eligibility';
 
@@ -234,6 +238,48 @@ describe('the Steward’s in-app alert', () => {
     // A second run the same Oman day adds nothing.
     await runIntegrityWatch(fakeDb(), { store, now: new Date(NOW.getTime() + 3600_000), alert: vi.fn(async () => true), inAppAlerts: true });
     expect(h.notes).toHaveLength(2);
+  });
+
+  it('owner decision 2026-10-24: mixed test scaffolding and a housekeeping job’s missed run are information, never alerted', async () => {
+    // The registry's own policies and titles, with tonight's findings faked.
+    const real = await vi.importActual<typeof import('@/lib/integrity/checks')>('@/lib/integrity/checks');
+    const registered = (id: string, run: () => Promise<Record<string, unknown>>) => {
+      const c = real.CHECK_BY_ID.get(id)!;
+      return { id: c.id, version: c.version, policy: c.policy, title: c.title, run };
+    };
+    const day = '2026-10-23';
+    const housekeeping = [
+      { key: 'keep-warm', kind: 'gap' as const, day, gaps: 2 },
+      { key: 'email-drain', kind: 'gap' as const, day, gaps: 1 },
+      { key: 'photo-gc', kind: 'no-run' as const, day },
+      { key: 'retention-sweep', kind: 'stale' as const },
+    ];
+    h.checks = [
+      registered('test-scaffolding-mixed', async () => ({ count: 3, sampleIds: ['c1', 'r1', 'u1'] })),
+      registered('scheduled-jobs-on-time', async () => scheduledJobFindings(housekeeping)),
+    ];
+    const alert = vi.fn(async () => true);
+    const s = await runIntegrityWatch(fakeDb(), { store, now: NOW, alert, inAppAlerts: true });
+    expect(h.results.slice(0, 2).map((r) => [r.checkId, r.status, r.count])).toEqual([
+      ['test-scaffolding-mixed', 'info', 3],
+      ['scheduled-jobs-on-time', 'info', 0],
+    ]);
+    expect((h.results[1]!.detail as { info: string[] }).info).toEqual(['keep-warm', 'email-drain', 'photo-gc', 'retention-sweep']);
+    expect(s.failing).toBe(0);
+    expect(alert).not.toHaveBeenCalled();
+    expect(h.notes).toEqual([]);
+
+    // The SLA sweep missing as well: it alone is counted, and alerted.
+    h.results = [];
+    h.checks = [registered('scheduled-jobs-on-time', async () => scheduledJobFindings([{ key: 'sla-escalate', kind: 'gap', day, gaps: 1 }, ...housekeeping]))];
+    const again = vi.fn(async () => true);
+    await runIntegrityWatch(fakeDb(), { store, now: NOW, alert: again, inAppAlerts: true });
+    expect(h.results[0]).toMatchObject({ checkId: 'scheduled-jobs-on-time', status: 'fail', count: 1, sampleIds: ['sla-escalate'] });
+    expect(again).toHaveBeenCalledWith(expect.objectContaining({ severity: 'warn', counts: { failing: 1, errors: 0 } }));
+    expect(h.notes.map((n) => n.body)).toEqual([
+      'Every scheduled job ran as its schedule says: 1. Open Service status, Integrity, for what each means and what to do.',
+      'Every scheduled job ran as its schedule says: 1. Open Service status, Integrity, for what each means and what to do.',
+    ]);
   });
 
   it('nothing failing, nothing sent', async () => {

@@ -12,13 +12,20 @@
  *    mis-flag must not hide a defect (test-flags-changed reads the flag itself).
  *  - The checks the design names are all there, and the Steward's alert reaches
  *    the critical webhook only for the record-keeping ones.
+ *  - The owner's decisions of 2026-10-24: test-scaffolding-mixed is information,
+ *    and scheduled-jobs-on-time alerts only for the jobs listed as alerting (the
+ *    SLA sweep, the backup and this watch); every other job, a new one included,
+ *    is information.
  *
  * Structural, per CLAUDE.md: comments are stripped before the source is read.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { stripComments } from '../support/strip-comments';
-import { CHECKS, CRITICAL_CHECKS } from '@/lib/integrity/checks';
+import { CHECKS, CHECK_BY_ID, CRITICAL_CHECKS } from '@/lib/integrity/checks';
+import { checkStatus } from '@/lib/integrity/classify';
+import { ALERTING_JOBS } from '@/lib/integrity/policy';
+import { HEARTBEAT_EXPECTATIONS } from '@/lib/heartbeat';
 
 const src = stripComments(readFileSync('lib/integrity/checks.ts', 'utf8'), 'checks.ts');
 /** Each check's own source, from its `id:` to the next check's. */
@@ -67,13 +74,35 @@ describe('the registry', () => {
     else expect(typeof c.run).toBe('function');
   });
 
-  it('the safe default: every check alerts but the three that are information until the owner decides', () => {
+  it('every check alerts but the four that are information (test-scaffolding-mixed by the owner’s decision of 2026-10-24)', () => {
     expect(CHECKS.filter((c) => c.policy === 'info').map((c) => c.id)).toEqual([
+      'test-scaffolding-mixed',
       'app-login-is-runtime-role',
       'exports-since-last-run',
       'sign-in-failures-since-last-run',
     ]);
     expect([...CRITICAL_CHECKS]).toEqual(['seal-chain-intact', 'protection-triggers', 'protection-functions']);
+  });
+
+  it('test-scaffolding-mixed never fails, whatever it finds', () => {
+    const c = CHECK_BY_ID.get('test-scaffolding-mixed')!;
+    expect(checkStatus(c.policy, 0)).toBe('info');
+    expect(checkStatus(c.policy, 12)).toBe('info');
+  });
+
+  it('scheduled-jobs-on-time alerts only for the jobs listed as alerting; every other job is information', () => {
+    expect(CHECK_BY_ID.get('scheduled-jobs-on-time')!.policy).toBe('alert');
+    expect([...ALERTING_JOBS]).toEqual(['sla-escalate', 'db-backup', 'integrity-watch']);
+    // Every listed job is a job the schedule knows.
+    for (const key of ALERTING_JOBS) expect(Object.keys(HEARTBEAT_EXPECTATIONS)).toContain(key);
+    // The housekeeping and courtesy jobs are not listed: their missed runs are information.
+    for (const key of ['keep-warm', 'email-drain', 'photo-gc', 'retention-sweep']) {
+      expect(Object.keys(HEARTBEAT_EXPECTATIONS)).toContain(key);
+      expect(ALERTING_JOBS).not.toContain(key);
+    }
+    // The check reads the list through scheduledJobFindings, not missedRuns' raw count.
+    expect(block('scheduled-jobs-on-time')).toMatch(/scheduledJobFindings\(missed\)/);
+    expect(block('scheduled-jobs-on-time')).not.toMatch(/count: missed\.length/);
   });
 });
 

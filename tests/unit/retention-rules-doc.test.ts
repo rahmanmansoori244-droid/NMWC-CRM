@@ -3,8 +3,9 @@
  * Gap 25 (data audit 2026-10-10): lib/retention-rules.ts is the single source of
  * the clean-up periods, and it says what docs/compliance/DATA-RETENTION-SCHEDULE.md
  * says. The periods were not changed by the purge summaries (the owner accepted
- * them); this holds every rule to the schedule row that names it, and the routes
- * to the list, so neither can drift on its own.
+ * them on 11 October 2026, and the schedule says so); this holds every rule to
+ * the schedule row that names it, and the routes to the list, so neither can
+ * drift on its own.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -28,6 +29,14 @@ const WORDED: Record<RetentionRuleId, string> = {
   'photo-detached-30d': '30 days',
   'password-history-last-5': 'Last 5',
 };
+
+describe('the schedule’s status', () => {
+  it('is the accepted one (owner, 11 October 2026), no longer a draft', () => {
+    const status = doc.split('\n').find((l) => l.startsWith('**Status:'));
+    expect(status).toMatch(/^\*\*Status: Accepted by the owner on 11 October 2026\.\*\*/);
+    expect(status).not.toMatch(/DRAFT/);
+  });
+});
 
 describe('the schedule names every rule, with the rule’s own period', () => {
   it('has a Summary kept column on every row', () => {

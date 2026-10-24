@@ -16,6 +16,7 @@ import {
   daysBetween,
   functionFindings,
   missedRuns,
+  scheduledJobFindings,
   statusDriftFindings,
   storedTemixCodeProblem,
   testFlagChanges,
@@ -165,6 +166,41 @@ describe('scheduled-jobs-on-time (missedRuns)', () => {
     const heartbeat = ok.map((h) => (h.key === 'integrity-watch' ? { ...h, state: 'never' as const } : h));
     expect(missedRuns({ ...base, runs, heartbeat, selfHasEarlierRun: false })).toEqual([]);
     expect(missedRuns({ ...base, runs, heartbeat, selfHasEarlierRun: true }).map((m) => m.kind)).toEqual(['no-run', 'never']);
+  });
+
+  it('owner decision 2026-10-24: only the SLA sweep, the backup and this watch alert; a housekeeping job is information', () => {
+    // keep-warm, the e-mail drain, photo-gc and the retention sweep all missed: listed, never counted.
+    const housekeeping = onSchedule().filter((r) => !['keep-warm', 'email-drain', 'photo-gc', 'retention-sweep'].includes(r.key));
+    const quiet = missedRuns({ ...base, runs: housekeeping });
+    expect(quiet.map((m) => m.key).sort()).toEqual(['email-drain', 'keep-warm', 'photo-gc', 'retention-sweep']);
+    const info = scheduledJobFindings(quiet);
+    expect(info).toMatchObject({ count: 0, sampleIds: [], status: 'info', detail: { missed: [] } });
+    expect(info.detail.info.sort()).toEqual(['email-drain', 'keep-warm', 'photo-gc', 'retention-sweep']);
+    expect(info.detail.infoMissed).toHaveLength(4);
+    expect(checkStatus('alert', info.count, info.status)).toBe('info');
+
+    // The SLA sweep missing too: it alone is counted, and the check fails.
+    const sla = missedRuns({ ...base, runs: housekeeping.filter((r) => r.key !== 'sla-escalate') });
+    const fail = scheduledJobFindings(sla);
+    expect(fail).toMatchObject({ count: 1, sampleIds: ['sla-escalate'], detail: { missed: [{ key: 'sla-escalate', kind: 'gap', day, gaps: 1 }] } });
+    expect(fail.status).toBeUndefined();
+    expect(fail.detail.info.sort()).toEqual(['email-drain', 'keep-warm', 'photo-gc', 'retention-sweep']);
+    expect(checkStatus('alert', fail.count, fail.status)).toBe('fail');
+
+    // The backup (by its heartbeat) and this watch (no run that day) alert as well.
+    const heartbeat = ok.map((h) => (h.key === 'db-backup' ? { ...h, state: 'stale' as const } : h));
+    const own = missedRuns({ ...base, runs: onSchedule().filter((r) => r.key !== 'integrity-watch'), heartbeat });
+    expect(scheduledJobFindings(own)).toMatchObject({ count: 2, sampleIds: ['integrity-watch', 'db-backup'] });
+
+    // Nothing missed: a pass, nothing listed.
+    expect(scheduledJobFindings([])).toEqual({ count: 0, sampleIds: [], detail: { missed: [], infoMissed: [], info: [] } });
+  });
+
+  it('a job that is not listed as alerting — a new one included — is information by default', () => {
+    const r = scheduledJobFindings([{ key: 'new-nightly-job', kind: 'no-run', day }]);
+    expect(r).toMatchObject({ count: 0, status: 'info', detail: { info: ['new-nightly-job'] } });
+    // Listed, it counts.
+    expect(scheduledJobFindings([{ key: 'new-nightly-job', kind: 'no-run', day }], ['new-nightly-job'])).toMatchObject({ count: 1 });
   });
 
   it('the days between the last checked day and yesterday', () => {

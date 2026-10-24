@@ -37,7 +37,8 @@ export type IntegrityReport = {
 /**
  * The ids a result lists as information, not failure (its detail's `info`: the
  * migrated Temix codes with a space inside, the active customers whose open shops
- * are all suspended). At most ten; ids only.
+ * are all suspended, the scheduled jobs that do not alert but missed a run). At
+ * most ten; ids (or job keys) only.
  */
 export function infoIds(r: Pick<ResultRow, 'detail'>): string[] {
   const v = r.detail?.info;

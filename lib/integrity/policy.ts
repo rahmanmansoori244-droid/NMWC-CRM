@@ -1,9 +1,10 @@
 /**
  * Gap 29 (data audit 2026-10-10): the nightly integrity watch's levers.
  *
- * Every number here is a safe default awaiting the owner (docs/OPERATIONS.md
- * section 5k lists the open questions): which checks alert, at what count, how
- * often the Steward is told.
+ * Which checks alert was decided by the owner on 2026-10-24 (the scheduled jobs
+ * below; test-scaffolding-mixed is information, lib/integrity/checks.ts). The
+ * rest is a safe default still awaiting him (docs/OPERATIONS.md section 5k lists
+ * the open questions): at what count, how often the Steward is told.
  *
  * PURE: no imports.
  */
@@ -33,6 +34,18 @@ export const KNOWN_LEGACY_SPACED_TEMIX_CODES = 3;
 
 /** A check fails when its count is above this; every check today: any record at all. */
 export const DEFAULT_THRESHOLD = 0;
+
+/**
+ * Owner decision 2026-10-24: the scheduled jobs whose missed runs make
+ * scheduled-jobs-on-time fail, and so alert — the important ones. The owner
+ * named the SLA escalation sweep (a late request is never escalated) and this
+ * watch itself, and made the warning-tier jobs information. The nightly off-Neon
+ * dump, the other job lib/heartbeat.ts tiers critical, was not among those and
+ * stays alerting. Every other job's missed runs are listed as information and
+ * never alert: keep-warm, email-drain, photo-gc, retention-sweep, and any job
+ * added later until it is named here.
+ */
+export const ALERTING_JOBS: readonly string[] = ['sla-escalate', 'db-backup', 'integrity-watch'];
 
 /** The whole run of checks gets this long; a check not started in time is an error. */
 export const CHECK_BUDGET_MS = 22_000;

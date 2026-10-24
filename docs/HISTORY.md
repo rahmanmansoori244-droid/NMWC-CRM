@@ -513,6 +513,16 @@ trigger present, enabled for normal sessions and bound to its table and function
 protecting function's body, rights and search path as its last migration made them.
 Results go to `IntegrityCheckResult`, append-only and sealed.
 
+**Which checks alert (owner decisions 2026-10-24).** Every check fails, and alerts, on
+any non-zero count, except four that are information and never alert:
+`test-scaffolding-mixed`, `app-login-is-runtime-role`, `exports-since-last-run` and
+`sign-in-failures-since-last-run`. `scheduled-jobs-on-time` counts only the jobs in
+`ALERTING_JOBS` (`lib/integrity/policy.ts`): the SLA escalation sweep, the nightly dump
+and the integrity watch itself. A missed run of any other job — keep-warm, the e-mail
+drain, photo-gc, the retention sweep, and a job added later until it is listed — is
+listed as information, never counted. The seal findings alert once per event, then
+show as information (`docs/OPERATIONS.md` §5k).
+
 **The purge summaries (gap 25).** Every retention rule writes one `PurgeSummary` row
 per batch in the same statement as the deletion (`lib/purge-summary.ts`), so what a
 clean-up removed — how many, which dates, counts by category — is answerable after it.
