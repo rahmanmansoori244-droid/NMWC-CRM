@@ -19,6 +19,8 @@
 import { test, expect, type Page } from '@playwright/test';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import bcrypt from 'bcryptjs';
 import { deflateSync } from 'node:zlib';
@@ -77,7 +79,7 @@ function png(width: number, height: number, rgb: [number, number, number]): Buff
   ]);
 }
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(process.env.DATABASE_URL)) });
 const F = {
   regionId: '',
   routeId: '',

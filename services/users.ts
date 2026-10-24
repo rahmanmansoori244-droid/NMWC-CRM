@@ -16,6 +16,7 @@ import { requireActor } from '@/lib/session';
 import { assertPasswordNotReused, passwordRule, rotatePasswordHistory } from '@/lib/password-policy';
 import { revalidatePath, revalidateTag } from 'next/cache';
 import { logger } from '@/lib/logger';
+import { uniqueTargetFields } from '@/lib/db-errors';
 import {
   canMutateUser,
   MANAGER_ADMINISTRABLE_ROLES,
@@ -179,9 +180,9 @@ async function assertManagerScopeOverTarget(
 }
 
 /**
- * The form field a unique clash on create belongs to, from the P2002's
- * `meta.target` (the column names, or on some engines the constraint's name, such
- * as User_email_key). Three User columns are unique:
+ * The form field a unique clash on create belongs to, from the P2002's target
+ * columns (lib/db-errors.ts uniqueTargetFields: Prisma 6's `meta.target`, or the
+ * constraint Prisma 7 names, such as User_email_key). Three User columns are unique:
  *   - username: another admin's create raced this one past the pre-check;
  *   - email: nothing pre-checks it, and the users listing hides e-mails, so the
  *     Email field is the only place the admin can learn which value to change;
@@ -192,10 +193,7 @@ async function assertManagerScopeOverTarget(
  * Not a server action: this module's exports are, so it is not exported.
  */
 function createClashFields(err: unknown): Record<string, string> {
-  const target = (err as { meta?: { target?: unknown } }).meta?.target;
-  const names = (Array.isArray(target) ? target : [target]).filter(
-    (t): t is string => typeof t === 'string'
-  );
+  const names = uniqueTargetFields(err);
   const hit = (column: string) => names.some((n) => n === column || n.includes(`_${column}_`));
   if (hit('email')) return { email: 'That e-mail is already used by another account.' };
   if (hit('ownedRouteId')) {

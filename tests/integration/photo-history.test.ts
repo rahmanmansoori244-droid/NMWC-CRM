@@ -20,6 +20,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { PrismaClient, type Prisma } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 import { src, withChangeContext } from '@/lib/change-context';
 import { purgeAuditLog, purgeHistory, withAuditMaintenance } from '../support/audit';
 
@@ -70,7 +72,7 @@ describe.skipIf(!ENABLED)('a photo keeps its link and fingerprint (gap 15)', () 
   beforeAll(async () => {
     const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
     if (url.includes(PROD) || (process.env.DATABASE_URL ?? '').includes(PROD)) throw new Error('ABORT: production');
-    db = new PrismaClient({ datasourceUrl: url });
+    db = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
     await write(async (tx) => {
       await tx.region.create({ data: { id: ids.region, code: `G${SFX}`, name: `Photo G ${sfx}` } });
       await tx.route.create({ data: { id: ids.route, code: `R${SFX}`, name: `Photo R ${sfx}`, regionId: ids.region } });

@@ -56,6 +56,8 @@
  * run) or the run itself did.
  */
 import { PrismaClient, type Prisma } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { lockCustomersAndTemixCodeHolders } from '../../lib/locks';
 import {
   planRescore,
@@ -438,7 +440,7 @@ export async function run(
 
 async function main(): Promise<number> {
   const { url, host, opts } = prepare(process.argv.slice(2), process.env);
-  const prisma = new PrismaClient({ datasourceUrl: url });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
   try {
     return await run(opts, prisma, host);
   } finally {

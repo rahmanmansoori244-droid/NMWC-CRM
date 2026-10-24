@@ -3,11 +3,13 @@
  * what's blocking the close attempt.
  */
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../lib/pg-pool-config';
 import { assertNotProduction, withoutExpectHost } from '../scripts/lib/assert-not-production';
 
 // Production only with --expect-host (data audit 2026-10-10, owner decision 2026-10-11).
 const prisma = new PrismaClient({
-  datasourceUrl: assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL),
+  adapter: new PrismaPg(pgPoolConfig(assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL))),
 });
 
 async function main() {

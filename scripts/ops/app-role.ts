@@ -34,6 +34,8 @@
  *   node scripts/qa/run-with-env.mjs tsx scripts/ops/app-role.ts grant
  */
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { assertNotProduction } from '../lib/assert-not-production';
 import { setChangeContext, src } from '../../lib/change-context';
 import {
@@ -68,7 +70,7 @@ async function create() {
     throw new Error('NMWC_APP_PASSWORD must be set (16+ characters)');
   }
   if (password.includes("'")) throw new Error("NMWC_APP_PASSWORD must not contain a single quote");
-  const owner = new PrismaClient({ datasourceUrl: ownerUrl() });
+  const owner = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(ownerUrl())) });
   try {
     const exists = await owner.$queryRawUnsafe<{ n: bigint }[]>(
       `SELECT count(*)::bigint AS n FROM pg_roles WHERE rolname = '${ROLE}'`
@@ -115,7 +117,7 @@ const DELETABLE = [
 ];
 
 async function status() {
-  const owner = new PrismaClient({ datasourceUrl: ownerUrl() });
+  const owner = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(ownerUrl())) });
   try {
     const [{ me, db }] = await owner.$queryRawUnsafe<{ me: string; db: string }[]>(
       `SELECT current_user AS me, current_database() AS db`
@@ -270,7 +272,7 @@ async function historyTablesPresent(client: PrismaClient): Promise<string[]> {
 }
 
 async function grant() {
-  const owner = new PrismaClient({ datasourceUrl: ownerUrl() });
+  const owner = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(ownerUrl())) });
   try {
     const [{ db, me }] = await owner.$queryRawUnsafe<{ db: string; me: string }[]>(
       `SELECT current_database() AS db, current_user AS me`
@@ -404,7 +406,7 @@ async function verify() {
   if (url.includes(PROD_MARKER) && process.env.ALLOW_PRODUCTION !== '1') {
     throw new Error('Refusing to run against production without ALLOW_PRODUCTION=1');
   }
-  const app = new PrismaClient({ datasourceUrl: assertNotProduction(url, process.argv.slice(2)) });
+  const app = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(assertNotProduction(url, process.argv.slice(2)))) });
   let auditRowId = '';
   try {
     const [{ me }] = await app.$queryRawUnsafe<{ me: string }[]>(`SELECT current_user AS me`);

@@ -27,6 +27,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { PrismaClient, type Prisma } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 import { src, withChangeContext, type ChangeContext } from '@/lib/change-context';
 import { purgeHistory, REMOTE_TX, withAuditMaintenance } from '../support/audit';
 
@@ -70,7 +72,7 @@ describe.skipIf(!ENABLED)('the history answers the owner’s as-of questions', (
     const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
     if (url.includes(PROD) || (process.env.DATABASE_URL ?? '').includes(PROD))
       throw new Error('ABORT: production');
-    db = new PrismaClient({ datasourceUrl: url });
+    db = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
     await run({ actorId: null, source: src.test('history-asof') }, async (tx) => {
       await tx.region.create({ data: { id: id.region, code: `G${SFX}`, name: `As-of G ${sfx}` } });
       await tx.route.createMany({

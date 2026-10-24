@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/db';
 import { setChangeContext, src, withChangeContext, type ImportLane } from '@/lib/change-context';
-import { isTransientDbError } from '@/lib/db-errors';
+import { isTransientDbError, uniqueTargetFields } from '@/lib/db-errors';
 import {
   Role,
   ImportRowState,
@@ -3378,7 +3378,11 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         // into pino/Sentry. Log a structured short code + safe identifier
         // only.
         const code = (err as { code?: string })?.code ?? 'UNKNOWN';
-        const meta = (err as { meta?: { target?: string[] } })?.meta?.target;
+        // The unique columns (Prisma 6's meta.target, or the constraint Prisma 7
+        // names). meta.target used to be joined as it came, which threw a TypeError
+        // here when an engine reported it as a string.
+        const uniqueTarget = uniqueTargetFields(err);
+        const meta = uniqueTarget.length > 0 ? uniqueTarget : undefined;
         // Phase 1 Temix crosswalk conflicts carry a deliberate, PII-safe
         // message (codes only, never phone/CR values) for the Steward.
         const crosswalk =

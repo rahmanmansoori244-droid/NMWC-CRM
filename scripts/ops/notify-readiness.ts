@@ -37,6 +37,8 @@
  * a variable that did not take cannot point it at the wrong database.
  */
 import { PrismaClient, Role } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { connectWaking, requireExpectedHost } from './requeue-untracked';
 import { operatorErrorLabel } from './error-label';
 import { isEmailAddress } from '../../lib/notify-address';
@@ -192,7 +194,7 @@ async function main(): Promise<number> {
   const host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
   requireExpectedHost(args, url, host);
 
-  const prisma = new PrismaClient({ datasourceUrl: url });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
   try {
     await connectWaking(prisma);
     const { users, regions } = await prisma.$transaction(async (tx) => {

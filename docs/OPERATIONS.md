@@ -36,6 +36,27 @@ hold the same value. A test fails when the code reads a variable that list does 
 This section used to keep its own list of eight; the code reads more than thirty, and the
 missing ones included `CRON_SECRET`, `HEALTH_BEARER` and `ALERT_WEBHOOK_URL`.
 
+**Who reads `.env`, since Prisma 7 (October 2026).** The Prisma *client* no longer loads a
+`.env` file by itself: Prisma 6's did, the moment a script imported it, and filled in any
+variable left unset — which is how a script run from the owner's checkout could pick up the
+production `DATABASE_URL` without being given it. Now only these read a `.env`:
+
+- the **Prisma CLI** (`migrate deploy`, `migrate status`, `migrate diff`), through
+  `prisma.config.ts`, which loads it with dotenv and never overrides a variable already set
+  — on Vercel and in CI the platform's variables always win. The CLI connects with
+  `DIRECT_URL` (the owner, as `directUrl` did); `schema.prisma` holds no URL any more;
+- `next dev` / `next start`, as before;
+- `scripts/qa/run-with-env.mjs` and `scripts/dev/prod-run.cjs`, which load the file they
+  are pointed at, as before.
+
+The application's client is built on `DATABASE_URL` through the Postgres driver adapter
+(`lib/db.ts`). The Prisma 6 parameters in that URL — `connection_limit`, `pool_timeout`,
+`connect_timeout`, `sslmode`, `channel_binding`, `pgbouncer` — keep their meaning: they are
+turned into the driver's pool options by `lib/pg-pool-config.ts`. One difference is
+deliberate: with `sslmode=require` the server's certificate is now **verified** (Neon's
+are publicly trusted). A certificate that fails shows up as `P1011` or `P1010` in the
+runtime logs.
+
 ## 4. Deploy
 
 Branch model: trunk (`main`). Every push to `main` is a deploy, and `main` moves only
@@ -1160,7 +1181,7 @@ credential-state observations here.
 - Next.js 15 (App Router) on Vercel, Node 24
 - React 19 + TypeScript strict mode
 - Tailwind 3 + shadcn-style primitives + lucide-react icons
-- PostgreSQL on Neon (Launch plan), Prisma 6, JWT sessions via Auth.js v5
+- PostgreSQL on Neon (Launch plan), Prisma 7 (Postgres driver adapter), JWT sessions via Auth.js v5
 - Cloudflare R2 + AWS SDK v3 S3 client, presigned uploads
 - pino structured logging with PII redaction, Sentry error tracking
 - exceljs for import/export

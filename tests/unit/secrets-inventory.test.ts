@@ -22,6 +22,8 @@ const ROOT_FILES = [
   'sentry.server.config.ts',
   'sentry.edge.config.ts',
   'next.config.ts',
+  // Prisma 7: the CLI's connection strings (migrate deploy in every build).
+  'prisma.config.ts',
 ];
 
 function sourceFiles(dir: string): string[] {
@@ -44,7 +46,9 @@ function namesReadByTheApp(): Set<string> {
   for (const f of files) {
     for (const m of strip(readFileSync(f, 'utf8'), f).matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) names.add(m[1]!);
   }
-  // Prisma reads its connection strings from the schema, not from TypeScript.
+  // Prisma 6 read its connection strings from the schema. Prisma 7 reads them in
+  // prisma.config.ts (scanned above), and the app's client in lib/db.ts. The
+  // schema is still scanned, so an env() put back into it is listed too.
   for (const m of readFileSync('prisma/schema.prisma', 'utf8').matchAll(/env\("([A-Z0-9_]+)"\)/g)) names.add(m[1]!);
   return names;
 }

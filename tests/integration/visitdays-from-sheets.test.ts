@@ -27,6 +27,8 @@ import os from 'node:os';
 import path from 'node:path';
 import ExcelJS from 'exceljs';
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 import { parseWorkbook } from '@/lib/excel';
 import { purgeAuditLog } from '../support/audit';
 import { HELP_SHEET, LEDGER_ENTITY, REASONS, run, sha256, type Options } from '../../scripts/ops/visitdays-from-sheets';
@@ -99,7 +101,7 @@ describe.skipIf(!ENABLED)('ops:visitdays-from-sheets against Postgres', () => {
     if (url.includes('ep-sweet-haze')) throw new Error('ABORT: production');
     if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
     host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
-    prisma = new PrismaClient({ datasourceUrl: url });
+    prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
     stewardId = (
       await prisma.user.create({
         data: { username: steward, passwordHash: 'x', fullName: 'ZZ Visit-day Steward', role: 'STEWARD' },

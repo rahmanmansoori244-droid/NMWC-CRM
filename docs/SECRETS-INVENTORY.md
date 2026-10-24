@@ -43,7 +43,8 @@ one complete list: OPERATIONS.md §3 used to be that list and had fallen behind.
 | Variable | S | What it does | If it leaks | Must match |
 |---|---|---|---|---|
 | `DATABASE_URL` | S | Pooled connection the app runs on. It is meant to be the least-privilege role `nmwc_app`; until CREDENTIAL-ROTATION.md step 1 is done it is the **owner** (item 14). | As the owner, full control of the database. As `nmwc_app`, read and write of customer data; rotate the role (OPERATIONS.md §5c). | Once on `nmwc_app`, GitHub `NMWC_APP_PASSWORD` holds the same role's password |
-| `DIRECT_URL` | S | Owner connection; `prisma migrate deploy` runs with it during every build | Full control of the database, the audit log included. See CREDENTIAL-ROTATION.md. | GitHub `DIRECT_URL`, and the local `.env` of anyone who runs operator scripts |
+| `DIRECT_URL` | S | Owner connection; `prisma migrate deploy` runs with it during every build (Prisma 7: `prisma.config.ts` reads it, in the role `directUrl` had in Prisma 6) | Full control of the database, the audit log included. See CREDENTIAL-ROTATION.md. | GitHub `DIRECT_URL`, and the local `.env` of anyone who runs operator scripts |
+| `SHADOW_DATABASE_URL` | | **CI only, never in Vercel.** The empty scratch database that CI's drift check (`prisma migrate diff --from-migrations`) replays the migrations into; read by `prisma.config.ts`. Unset everywhere else | — (a throw-away CI database) | — |
 | `AUTH_SECRET` / `NEXTAUTH_SECRET` | S | Signs every session | Anyone can mint a session as any user. Rotating it signs everyone out. | Each other (same value) |
 | `AUTH_URL` / `NEXTAUTH_URL` | | The production origin, for sign-in redirects | — | Each other |
 | `AUTH_TRUST_HOST` | | `true`; read by Auth.js itself, not by this code | — | — |

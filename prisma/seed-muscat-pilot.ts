@@ -27,6 +27,8 @@
  *   npx tsx prisma/seed-muscat-pilot.ts
  */
 import { PrismaClient, Role } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../lib/pg-pool-config';
 import bcrypt from 'bcryptjs';
 import { assertNotProduction } from '../scripts/lib/assert-not-production';
 import { contextClient, src } from '../lib/change-context';
@@ -63,7 +65,7 @@ if (PROD_ENDPOINTS.some((e) => SEED_URL.includes(e)) && process.env.ALLOW_PROD_S
 // And the shared guard on top of the abort above (data audit 2026-10-10, owner
 // decision 2026-10-11): production would need ALLOW_PROD_SEED=1 AND --expect-host.
 // Gap 24: every write names this seed as its cause (one short transaction per call).
-const prisma = contextClient(new PrismaClient({ datasourceUrl: assertNotProduction(SEED_URL) }), {
+const prisma = contextClient(new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(assertNotProduction(SEED_URL))) }), {
   actorId: null,
   source: src.seed('muscat-pilot'),
 });

@@ -37,11 +37,13 @@
  * agree.
  */
 import { PrismaClient, type Role } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { expectedUsernames } from '../../lib/ops/golive-accounts';
 import { assertNotProduction, withoutExpectHost } from '../lib/assert-not-production';
 
 const prisma = new PrismaClient({
-  datasourceUrl: assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL),
+  adapter: new PrismaPg(pgPoolConfig(assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL))),
 });
 
 // Positional, with `--expect-host <host>` taken out first so it cannot land in a file slot.

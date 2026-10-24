@@ -11,6 +11,8 @@
  * only), and workers inherit them.
  */
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 import { assertNotProduction, withDbParams } from './base';
 
 export {
@@ -64,7 +66,7 @@ export function getDb(): PrismaClient {
   assertNotProduction();
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error('DATABASE_URL is not set. Run through scripts/qa/run-with-env.mjs.');
-  appClient = new PrismaClient({ datasourceUrl: withDbParams(url, TEST_DB_PARAMS) });
+  appClient = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(withDbParams(url, TEST_DB_PARAMS))) });
   return appClient;
 }
 
@@ -78,7 +80,7 @@ export function ownerDb(): PrismaClient {
   assertNotProduction();
   const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
   if (!url) throw new Error('DIRECT_URL is not set. Run through scripts/qa/run-with-env.mjs.');
-  ownerClient = new PrismaClient({ datasourceUrl: withDbParams(url, OWNER_DB_PARAMS) });
+  ownerClient = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(withDbParams(url, OWNER_DB_PARAMS))) });
   return ownerClient;
 }
 

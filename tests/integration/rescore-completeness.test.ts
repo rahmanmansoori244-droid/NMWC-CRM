@@ -20,6 +20,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 import { purgeAuditLog } from '../support/audit';
 import { run } from '../../scripts/ops/rescore-completeness';
 import { scoreBranch, scoreCustomer } from '@/lib/completeness';
@@ -97,7 +99,7 @@ describe.skipIf(!ENABLED)('ops:rescore-completeness against Postgres', () => {
       throw new Error('ABORT: production');
     host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
     // The script's own client, on the owner connection, as main() builds it.
-    prisma = new PrismaClient({ datasourceUrl: url });
+    prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
     stewardId = (
       await prisma.user.create({
         data: {

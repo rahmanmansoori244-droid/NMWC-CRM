@@ -274,7 +274,8 @@ as described in §2.
   GitHub's CI results. If CI or post-deploy smoke is red, follow §2's recovery step and
   inspect the deployed build and migration state before choosing a rollback.
 - **Read-only questions**: a small script that opens a `SET TRANSACTION READ ONLY`
-  transaction, builds its client as `new PrismaClient({ datasourceUrl: process.env.DIRECT_URL })`,
+  transaction, builds its client as `new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(process.env.DIRECT_URL)) })`
+  (Prisma 7: `PrismaPg` from `@prisma/adapter-pg`, `pgPoolConfig` from `lib/pg-pool-config.ts`),
   and prints counts only (never a name, code, phone or id), run with
   `NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze [args]`.
   The runner refuses any run without `--expect-host ep-sweet-haze` among the script's arguments,

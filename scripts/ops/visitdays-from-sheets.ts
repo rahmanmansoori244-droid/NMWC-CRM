@@ -90,6 +90,8 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { Prisma, PrismaClient, type DayOfWeek } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { duplicateHeadingIssue, loadExcelJS, parseWorkbook, type ParsedSheet } from '../../lib/excel';
 import { lockCustomersAndTemixCodeHolders } from '../../lib/locks';
 import { rescoreCustomerTx } from '../../lib/rescore';
@@ -1032,7 +1034,7 @@ export async function main(): Promise<number> {
   const host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
   requireExpectedHost(args, url, host);
   const opts = parseArgs(args);
-  const prisma = new PrismaClient({ datasourceUrl: url });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
   try {
     return await run(opts, prisma, host);
   } finally {

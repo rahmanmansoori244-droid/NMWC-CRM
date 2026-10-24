@@ -706,8 +706,11 @@ For a one-off question, write a small script that opens a read-only transaction 
 // checkout (never inside golive-data/) so that tsx can resolve @prisma/client. The
 // .tmp.ts ending is gitignored. Delete the copy afterwards.
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from './lib/pg-pool-config';
 
-const prisma = new PrismaClient({ datasourceUrl: process.env.DIRECT_URL });
+// Prisma 7: the URL goes to the Postgres driver adapter (no more `datasourceUrl`).
+const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(process.env.DIRECT_URL)) });
 
 async function main() {
   const n = await prisma.$transaction(

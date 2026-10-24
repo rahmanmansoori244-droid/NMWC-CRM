@@ -76,6 +76,10 @@ async function runCli(script: Script, args: string[], guardError?: Error) {
   const finished = new Promise<number>((resolve) => { finish = resolve; });
   const exit = vi.fn((code: number) => finish(code));
   const client = vi.fn(() => { throw new Error('The refusal must precede Prisma construction'); });
+  // Prisma 7: the driver adapter and its pool options are built just before the
+  // client, so a refusal must precede them too.
+  const adapter = vi.fn(() => { throw new Error('The refusal must precede the driver adapter'); });
+  const poolConfig = vi.fn(() => { throw new Error('The refusal must precede the pool options'); });
   const readEnv = vi.fn(() => { throw new Error('This CLI refusal must not read .env'); });
   const modules: Record<string, unknown> = {
     '@prisma/client': {
@@ -84,6 +88,8 @@ async function runCli(script: Script, args: string[], guardError?: Error) {
       TemixSyncState: { SYNCED: 'SYNCED' },
       EditState: { DRAFT: 'DRAFT', SUBMITTED: 'SUBMITTED', NEEDS_CORRECTION: 'NEEDS_CORRECTION' },
     },
+    '@prisma/adapter-pg': { PrismaPg: adapter },
+    '../../lib/pg-pool-config': { pgPoolConfig: poolConfig },
     'node:fs': { readFileSync: readEnv },
     '../../lib/temix': {},
     '../../lib/demo-accounts': {},
@@ -126,6 +132,8 @@ async function runCli(script: Script, args: string[], guardError?: Error) {
   expect(exit).toHaveBeenCalledOnce();
   expect(requireExpectedHost).toHaveBeenCalledOnce();
   expect(client).not.toHaveBeenCalled();
+  expect(adapter).not.toHaveBeenCalled();
+  expect(poolConfig).not.toHaveBeenCalled();
   expect(readEnv).not.toHaveBeenCalled();
   expect(output.error).toHaveBeenCalledOnce();
   // Nothing reaches stdout before a refusal except the production guard's host line

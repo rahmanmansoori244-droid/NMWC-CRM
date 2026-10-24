@@ -1,6 +1,8 @@
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { logger } from './logger';
 import { registerConflictRecorder } from './errors';
+import { pgPoolConfig } from './pg-pool-config';
 
 declare global {
   var __prismaClient: PrismaClient | undefined;
@@ -14,7 +16,20 @@ declare global {
  * which scrubs phones, e-mails and digit runs and files them at their level.
  */
 function createClient(): PrismaClient {
+  // Prisma 7: the client talks to Postgres through node-postgres. DATABASE_URL
+  // (the pooled least-privilege role) keeps its Prisma 6 meaning — its pool and
+  // TLS parameters are turned into pg's options by lib/pg-pool-config.ts — and the
+  // client no longer reads .env itself (Next and Vercel provide the variables).
+  //
+  // A connection the server closes while it sits idle in the pool (a Neon compute
+  // suspending, a pooler restart) is an 'error' event on the pool. The adapter
+  // always listens for it, so it can never crash the process; it is logged here,
+  // scrubbed like Prisma's own errors, and the next query opens a new connection.
+  const adapter = new PrismaPg(pgPoolConfig(process.env.DATABASE_URL), {
+    onPoolError: (err) => logger.error({ err: err.message, code: (err as { code?: unknown }).code }, 'pg.pool.error'),
+  });
   const client = new PrismaClient({
+    adapter,
     log: [
       { emit: 'event', level: 'error' },
       { emit: 'event', level: 'warn' },

@@ -37,6 +37,8 @@
  * handler below prints only the class of an error it did not raise).
  */
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { assertNotProduction } from '../lib/assert-not-production';
 import { readFileSync, readdirSync, writeFileSync } from 'fs';
 import { parsePrismaSchema, implicitJoinTables } from '../../lib/compliance/prisma-schema';
@@ -154,7 +156,7 @@ async function main() {
     );
   }
 
-  const db = new PrismaClient({ datasourceUrl: url });
+  const db = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
   const q = <T>(sql: string) => db.$queryRawUnsafe<T[]>(sql);
 
   try {
@@ -181,7 +183,8 @@ async function main() {
     );
 
     const enums = await q<{ typname: string; labels: string[] }>(
-      `SELECT t.typname, array_agg(e.enumlabel ORDER BY e.enumsortorder) AS labels
+      // ::text: Prisma 7's driver adapter cannot read a name[] (pg_enum.enumlabel is a name).
+      `SELECT t.typname, array_agg(e.enumlabel::text ORDER BY e.enumsortorder) AS labels
        FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid
        WHERE t.typnamespace = 'public'::regnamespace GROUP BY 1 ORDER BY 1`
     );
@@ -253,7 +256,8 @@ async function main() {
     );
 
     const trgs = await q<{ tgname: string; tbl: string; tgenabled: string }>(
-      `SELECT t.tgname, c.relname AS tbl, t.tgenabled FROM pg_trigger t
+      // ::text: Prisma 7's driver adapter cannot read the one-byte "char" type.
+      `SELECT t.tgname, c.relname AS tbl, t.tgenabled::text AS tgenabled FROM pg_trigger t
        JOIN pg_class c ON c.oid = t.tgrelid WHERE NOT t.tgisinternal ORDER BY 1`
     );
     const missingTrg = EXPECTED_TRIGGERS.filter((t) => !trgs.some((r) => r.tgname === t));

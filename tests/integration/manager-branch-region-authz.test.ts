@@ -12,6 +12,8 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { editPayload } from '../support/edit-payload';
 import { randomUUID } from 'node:crypto';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 const ENABLED = process.env.RUN_MGR_AUTHZ === '1' && !!process.env.DATABASE_URL;
@@ -32,7 +34,7 @@ describe.skipIf(!ENABLED)('Manager can only edit branches in a region they manag
     if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     const { PrismaClient } = await import('@prisma/client');
-    importConnection = new PrismaClient();
+    importConnection = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(process.env.DATABASE_URL)) });
     edits = await import('@/services/edits');
     const rA = await prisma.region.create({ data: { name: `ZZMR A ${tag}`, code: `ZZMRA-${tag}` } });
     const rB = await prisma.region.create({ data: { name: `ZZMR B ${tag}`, code: `ZZMRB-${tag}` } });

@@ -21,6 +21,8 @@
  * transaction. Prints table names and counts — no ids, no values.
  */
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { assertNotProduction, pointsAtProduction } from '../lib/assert-not-production';
 
 /** Each history table, its key column and the live table that key names. */
@@ -60,7 +62,7 @@ async function main(): Promise<number> {
   }
   const args = process.argv.slice(2);
   const apply = args.includes('--apply');
-  const prisma = new PrismaClient({ datasourceUrl: assertNotProduction(url, args) });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(assertNotProduction(url, args))) });
   try {
     const counts: Array<[string, number]> = [];
     for (const s of ORPHAN_SCOPES) {

@@ -658,7 +658,7 @@ describe('the script keeps the operator conventions (comment-stripped source)', 
 
   it('owner connection, its own client built only after the host check', () => {
     expect(src).toMatch(/env\.DIRECT_URL \?\? env\.DATABASE_URL/);
-    expect(main).toMatch(/new PrismaClient\(\{ datasourceUrl: url \}\)/);
+    expect(main).toMatch(/new PrismaClient\(\{ adapter: new PrismaPg\(pgPoolConfig\(url\)\) \}\)/);
     expect(main.indexOf('prepare(')).toBeGreaterThan(-1);
     expect(main.indexOf('prepare(')).toBeLessThan(main.indexOf('new PrismaClient('));
     expect(
@@ -689,15 +689,18 @@ describe('the script keeps the operator conventions (comment-stripped source)', 
     expect(t).toMatch(/\{ timeout: 20_000, maxWait: 10_000 \}/);
   });
 
-  it('imports no request-runtime module: only lib/locks, lib/rescore, the pure change context and the shared operator guards', () => {
+  it('imports no request-runtime module: only lib/locks, lib/rescore, the pure change context, the pool options and the shared operator guards', () => {
     const froms = [...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]).sort();
     expect(froms).toEqual([
       // Gap 24: pure (no next/*, no @/lib/db), so a script may use it.
       '../../lib/change-context',
       '../../lib/locks',
+      // Prisma 7: the driver adapter's pool options, pure (no pg import).
+      '../../lib/pg-pool-config',
       '../../lib/rescore',
       './error-label',
       './requeue-untracked',
+      '@prisma/adapter-pg',
       '@prisma/client',
     ]);
   });

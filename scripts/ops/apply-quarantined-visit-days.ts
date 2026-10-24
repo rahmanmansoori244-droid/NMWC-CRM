@@ -34,6 +34,8 @@
  * Reversible: every branch it touches is named in the ledger rows it writes.
  */
 import { PrismaClient, DayOfWeek, type Prisma } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
 import { changeContextStatement, src } from '../../lib/change-context';
 
@@ -63,7 +65,7 @@ async function main(): Promise<number> {
     throw new Error('--actor was passed without a username');
   }
 
-  const prisma = new PrismaClient({ datasourceUrl: url });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
   try {
     console.log(`\nTarget: ${host}`);
     console.log(

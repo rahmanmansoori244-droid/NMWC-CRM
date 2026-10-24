@@ -52,7 +52,13 @@ describe('the command line', () => {
   it('imports only the pure seal modules and the R2 client, never the app’s database client', () => {
     const src = stripComments(readFileSync('scripts/ops/verify-seals.ts', 'utf8'), 'verify-seals.ts');
     const imports = [...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]!);
-    expect(imports.filter((i) => i.includes('lib/'))).toEqual(['../../lib/seal/chain', '../../lib/seal/verify', '../../lib/seal/store']);
+    // Prisma 7: plus the driver adapter's pool options (pure: no pg import, no client).
+    expect(imports.filter((i) => i.includes('lib/'))).toEqual([
+      '../../lib/pg-pool-config',
+      '../../lib/seal/chain',
+      '../../lib/seal/verify',
+      '../../lib/seal/store',
+    ]);
     expect(src).not.toMatch(/lib\/db|@\/lib/);
     expect(src).toMatch(/SET TRANSACTION READ ONLY/);
     expect(src).not.toMatch(/\$executeRaw`|INSERT|UPDATE "|DELETE/);

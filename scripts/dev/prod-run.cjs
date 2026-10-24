@@ -18,8 +18,9 @@
 // - DIRECT_URL is read from that file (default: .env in the current directory) and
 //   passed to the script in its environment only. DATABASE_URL is set to an address
 //   that cannot connect, so a script that ignores DIRECT_URL fails instead of silently
-//   using some other database. Build the client with
-//   `new PrismaClient({ datasourceUrl: process.env.DIRECT_URL })`.
+//   using some other database. Build the client with (Prisma 7)
+//   `new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(process.env.DIRECT_URL)) })`
+//   (PrismaPg from @prisma/adapter-pg, pgPoolConfig from lib/pg-pool-config.ts).
 // - It refuses a DIRECT_URL whose HOST is not production (`ep-sweet-haze…`), so
 //   pointing it at a UAT .env runs nothing.
 // - Everything the script prints is masked: the URL, its password (raw and decoded),

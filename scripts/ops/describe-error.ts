@@ -12,16 +12,27 @@
  *
  * Every piece is shape-checked, so a field that is not what it claims to be is
  * left out rather than printed.
+ *
+ * Prisma 7 keeps the SQLSTATE in meta.driverAdapterError.cause.originalCode
+ * (Prisma 6: meta.code). Only that code is read from it: the adapter's error also
+ * carries Postgres's message and DETAIL, which quote the row.
  */
 export function describeError(err: unknown): string {
-  const e = (err ?? {}) as { name?: unknown; code?: unknown; meta?: { code?: unknown }; message?: unknown };
+  const e = (err ?? {}) as {
+    name?: unknown;
+    code?: unknown;
+    meta?: { code?: unknown; driverAdapterError?: { cause?: { originalCode?: unknown } | null } | null };
+    message?: unknown;
+  };
   const name = typeof e.name === 'string' && /^[A-Za-z]{1,40}$/.test(e.name) ? e.name : 'Error';
-  const codes = [e.code, e.meta?.code].filter(
+  const original = e.meta?.driverAdapterError?.cause?.originalCode;
+  const codes = [e.code, e.meta?.code, original].filter(
     (c): c is string => typeof c === 'string' && /^[0-9A-Z_]{1,32}$/.test(c)
   );
   // Prisma's raw-query error spells the SQLSTATE into its text, as Code: followed
   // by the five characters in backticks, ahead of the message it quotes.
   const quoted = typeof e.message === 'string' ? /Code: `([0-9A-Z]{5})`/.exec(e.message)?.[1] : undefined;
   if (quoted && !codes.includes(quoted)) codes.push(quoted);
-  return codes.length ? `${name} ${codes.join(' ')}` : name;
+  const unique = codes.filter((c, i) => codes.indexOf(c) === i);
+  return unique.length ? `${name} ${unique.join(' ')}` : name;
 }

@@ -137,7 +137,7 @@ flowchart LR
 | Server logic | `'use server'` modules export the server actions. Shared domain and infrastructure code lives in `lib/`. | `services/*.ts`, `lib/*.ts` |
 | HTTP routes | 17 route handlers: auth, field-form submits, photos, exports, health, crons, ops, a perf probe. | `app/api/**/route.ts` |
 | Auth | next-auth 5 (beta.32), Credentials provider, JWT sessions of 8 hours, `__Host-` cookie. | `auth.config.ts`, `lib/auth.ts`, `lib/session.ts`, `middleware.ts` |
-| Database | Prisma 6 on PostgreSQL hosted by Neon. 24 models, 23 migrations. | `prisma/schema.prisma`, `prisma/migrations/`, `lib/db.ts` |
+| Database | Prisma 7 on PostgreSQL hosted by Neon, through the Postgres driver adapter (`@prisma/adapter-pg`). The CLI's connection is in `prisma.config.ts`. 24 models, 23 migrations. | `prisma/schema.prisma`, `prisma/migrations/`, `prisma.config.ts`, `lib/db.ts`, `lib/pg-pool-config.ts` |
 | Files | Cloudflare R2, two buckets: `nmwc-photos` (photos and documents) and `nmwc-backups` (encrypted nightly database dumps). Separate credentials per bucket. | `lib/r2.ts`, `.github/workflows/db-backup.yml` |
 | Hosting | Vercel Pro, functions in region `iad1`, `maxDuration` 60 s. | `vercel.json` |
 | Scheduled jobs | Five Vercel crons (the fifth, `email-drain`, since F1), plus GitHub Actions workflows for backups, the restore drill and R2 checks. | `vercel.json`, `.github/workflows/` |
@@ -145,8 +145,8 @@ flowchart LR
 | Excel | exceljs 4.4: import parsing and a streaming writer for exports. | `lib/excel.ts` |
 
 **Dependency debt to plan for.** `npm audit --omit=dev` is gated at critical in CI.
-Four high and three moderate findings are open; fixing them needs Next 16, Prisma 7
-and an exceljs change
+Four high and three moderate findings are open; fixing them needs Next 16, zod 4, an
+exceljs change and the Prisma 7.10.1 patch (Prisma 7 itself is in, on 7.10.0)
 ([AUDITOR-BRIEF §8](../../AUDITOR-BRIEF.md#8-security-controls), "Secrets hygiene").
 
 Deeper: [AUDITOR-BRIEF §3](../../AUDITOR-BRIEF.md#3-architecture-and-stack) and
