@@ -29,7 +29,7 @@
 
 | Layer | What | Where |
 |---|---|---|
-| Web app | Next.js 15.5.26 App Router (runs Next's bundled React), TypeScript, Tailwind 3.4; server components + server actions; `typedRoutes` | `app/`, `components/`, `next.config.ts` |
+| Web app | Next.js 15.5.28 App Router (runs Next's bundled React), TypeScript, Tailwind 3.4; server components + server actions; `typedRoutes` | `app/`, `components/`, `next.config.ts` |
 | Auth | next-auth 5.0.0-beta.32, Credentials provider, JWT sessions | `lib/auth.ts`, `auth.config.ts`, `middleware.ts` |
 | Data | Prisma 6.19 on PostgreSQL (Neon). `DATABASE_URL` = the pooled app connection (a `-pooler` host; the pooler mode is a Neon setting, **not verifiable from the repo**); `DIRECT_URL` = the owner, for migrations and operator scripts | `prisma/`, `lib/db.ts` |
 | Files | Photos in Cloudflare R2 (`nmwc-photos`), presigned PUT from the phone, served only through an authorising route | `lib/r2.ts`, `app/api/photos/**` |

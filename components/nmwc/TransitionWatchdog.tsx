@@ -11,7 +11,7 @@ import { useEffect, useReducer } from 'react';
  * view on /customers — and router.refresh() all re-render the page inside the
  * Suspense boundaries already on screen, so React keeps the old screen up until
  * every piece of the new one has arrived. Next 15.5 runs on its own copy of
- * React (19.2.0-canary-0bdb9206-20250818, unchanged in 15.5.27). In that copy,
+ * React (19.2.0-canary-0bdb9206-20250818, unchanged through 15.5.28). In that copy,
  * when a piece of the RSC answer arrives while React has paused its render, the
  * "data is here" signal (a ping) can fire synchronously inside the render, and
  * React drops it (pingSuspendedRoot does nothing in the render phase while the
