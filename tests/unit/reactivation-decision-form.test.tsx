@@ -62,3 +62,20 @@ describe('the reactivation decision, for a screen reader', () => {
     expect((await screen.findByRole('alert')).textContent).toBe('This request was decided already.');
   });
 });
+
+describe('the reactivation decision, for a keyboard', () => {
+  // Keep closed swapped the buttons for the form and focus fell to <body>; Cancel did the same.
+  it('Keep closed moves focus to the named form (not the reason box), and Cancel puts it back on Keep closed', () => {
+    render(<ReactivationDecisionForm editId="e1" />);
+    const open = screen.getByRole('button', { name: 'Keep closed' });
+    open.focus();
+    fireEvent.click(open);
+    const form = screen.getByRole('form', { name: 'Keep this shop closed' });
+    expect(document.activeElement).toBe(form);
+    expect(document.activeElement).not.toBe(screen.getByLabelText('Reason for keeping it closed'));
+
+    fireEvent.click(within(form).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('form', { name: 'Keep this shop closed' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep closed' }));
+  });
+});

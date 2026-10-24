@@ -68,7 +68,7 @@ export function ColumnChart({
         <p className="text-sm text-slate-500">{emptyText}</p>
       ) : (
         <div className="flex gap-2">
-          <div className="flex h-36 flex-col justify-between text-right text-[10px] tabular-nums text-slate-400" aria-hidden="true">
+          <div className="flex h-36 flex-col justify-between text-right text-[10px] tabular-nums text-slate-500" aria-hidden="true">
             <span>{max.toLocaleString('en-GB')}</span>
             <span>0</span>
           </div>

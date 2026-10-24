@@ -165,7 +165,7 @@ describe('UserRowActions — refusals read as errors', () => {
     render(<UserRowActions userId="u-target" username="someone" isActive />);
     resetWith();
     const done = await screen.findByText('Password updated.', {}, SLOW);
-    expect(done.className).toContain('text-emerald-600');
+    expect(done.className).toContain('text-emerald-700');
     expect(done.getAttribute('role')).toBe('status');
     expect(screen.queryByRole('alert')).toBeNull();
   });

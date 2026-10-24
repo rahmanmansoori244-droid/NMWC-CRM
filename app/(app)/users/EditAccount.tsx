@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState, useTransition } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, useTransition } from 'react';
 import { Role } from '@prisma/client';
 import { updateUserAccountAction } from '@/services/users';
 import {
@@ -12,6 +12,7 @@ import {
   type SupervisorCandidate,
 } from '@/lib/account-edit';
 import { AnnounceContext } from './announce';
+import { useDialogFocus } from '@/components/nmwc/useDialogFocus';
 
 /**
  * Owner decision 8 (2026-10-07): the Data Steward's "Edit account" on /users.
@@ -143,6 +144,13 @@ function EditAccountDialog({
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  // A keyboard user opened it from the row's Edit and was left there, behind the
+  // dialog: focus now moves to Role, Tab stays inside, and closing it (Escape
+  // above, Cancel, Save) puts focus back on Edit.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const roleRef = useRef<HTMLSelectElement>(null);
+  useDialogFocus(dialogRef, { initialFocus: roleRef });
+
   const isSalesman = role === Role.SALESMAN;
   const route = isSalesman ? (options.routes.find((r) => r.id === routeId) ?? null) : null;
   const routeOptions = options.routes.filter(
@@ -221,6 +229,7 @@ function EditAccountDialog({
   return (
     <div className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 text-left">
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="edit-account-title"
@@ -237,6 +246,7 @@ function EditAccountDialog({
               Role
             </label>
             <select
+              ref={roleRef}
               id="edit-role"
               value={role}
               onChange={(e) => setRole(e.currentTarget.value as Role)}

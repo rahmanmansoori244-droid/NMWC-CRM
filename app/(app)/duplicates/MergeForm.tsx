@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useEffect, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { mergeCustomersAction, dismissDuplicateAction } from '@/services/duplicates';
 
@@ -30,6 +30,13 @@ export function MergeForm({
   // cross-region merge was a permanent dead-end (SR-UI-01).
   const [crossRegion, setCrossRegion] = useState<{ winnerId: string; loserId: string } | null>(null);
   const [reason, setReason] = useState('');
+  // The reason box appears beside the buttons after a refusal: focus goes to it,
+  // or a keyboard user is left on a Keep button with the box somewhere behind.
+  const reasonRef = useRef<HTMLInputElement>(null);
+  const reasonOpen = crossRegion !== null;
+  useEffect(() => {
+    if (reasonOpen) reasonRef.current?.focus();
+  }, [reasonOpen]);
 
   function merge(winnerId: string, loserId: string, opts?: { confirmCrossRegion: boolean; reason: string }) {
     if (
@@ -119,7 +126,9 @@ export function MergeForm({
       {crossRegion && (
         <div className="flex w-full flex-wrap items-center justify-end gap-2 rounded-md bg-amber-50 p-2 ring-1 ring-amber-200">
           <input
+            ref={reasonRef}
             type="text"
+            aria-label="Reason for the cross-region merge"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
             placeholder="Reason for cross-region merge (5+ chars)"
@@ -129,7 +138,7 @@ export function MergeForm({
             type="button"
             disabled={pending || reason.trim().length < 5}
             onClick={() => merge(crossRegion.winnerId, crossRegion.loserId, { confirmCrossRegion: true, reason: reason.trim() })}
-            className="rounded-md bg-amber-600 px-3 py-1.5 font-semibold text-white hover:bg-amber-700 disabled:bg-slate-300"
+            className="rounded-md bg-amber-700 px-3 py-1.5 font-semibold text-white hover:bg-amber-800 disabled:bg-slate-300"
           >
             Confirm cross-region merge
           </button>
@@ -155,7 +164,7 @@ export function MergeForm({
         type="button"
         disabled={pending}
         onClick={() => merge(aId, bId)}
-        className="rounded-md bg-emerald-600 px-3 py-1.5 font-semibold text-white hover:bg-emerald-700 disabled:bg-slate-300"
+        className="rounded-md bg-emerald-700 px-3 py-1.5 font-semibold text-white hover:bg-emerald-800 disabled:bg-slate-300"
       >
         Keep ← {aLabel.split(' (')[0].slice(0, 24)}
       </button>
@@ -163,7 +172,7 @@ export function MergeForm({
         type="button"
         disabled={pending}
         onClick={() => merge(bId, aId)}
-        className="rounded-md bg-emerald-600 px-3 py-1.5 font-semibold text-white hover:bg-emerald-700 disabled:bg-slate-300"
+        className="rounded-md bg-emerald-700 px-3 py-1.5 font-semibold text-white hover:bg-emerald-800 disabled:bg-slate-300"
       >
         Keep → {bLabel.split(' (')[0].slice(0, 24)}
       </button>

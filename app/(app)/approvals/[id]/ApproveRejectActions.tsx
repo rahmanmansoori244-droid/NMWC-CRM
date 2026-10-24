@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useState, useTransition } from 'react';
+import { useEffect, useId, useRef, useState, useTransition } from 'react';
 import { unstable_rethrow, useRouter } from 'next/navigation';
 import { approveEditAction, approveEditAndGoAction, rejectEditAndGoAction } from '@/services/edits';
 import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
@@ -187,6 +187,20 @@ export function ApproveRejectActions({
   // Each label tied to its field, so a screen reader names it and a tap on the
   // label focuses it (UAT-07, as LabeledField does).
   const uid = useId();
+  // ✗ Reject swaps the buttons for the form: focus follows to the form's heading
+  // (not to a field, so no phone keyboard opens unasked), and Cancel puts it back
+  // on ✗ Reject. Without this it fell to <body> both ways.
+  const rejectHeadingRef = useRef<HTMLHeadingElement>(null);
+  const rejectButtonRef = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef(false);
+  useEffect(() => {
+    if (showReject) {
+      rejectHeadingRef.current?.focus();
+    } else if (returnFocus.current) {
+      returnFocus.current = false;
+      rejectButtonRef.current?.focus();
+    }
+  }, [showReject]);
 
   // Owner decision 2026-10-08: at the last step of a new-customer request the
   // Accountant has created the customer in Temix, and types its code here.
@@ -323,6 +337,7 @@ export function ApproveRejectActions({
       {!showReject ? (
         <div className="flex flex-wrap items-center justify-end gap-2">
           <button
+            ref={rejectButtonRef}
             type="button"
             disabled={busy}
             onClick={() => setShowReject(true)}
@@ -334,14 +349,16 @@ export function ApproveRejectActions({
             type="button"
             disabled={busy}
             onClick={askToApprove}
-            className="rounded-md bg-emerald-600 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:bg-slate-300"
+            className="rounded-md bg-emerald-700 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:bg-slate-300"
           >
             {created ? 'Created — loading…' : pending ? 'Working…' : '✓ Approve'}
           </button>
         </div>
       ) : (
         <form onSubmit={reject} className="grid gap-3">
-          <h3 className="text-sm font-semibold text-slate-900">Reject this submission</h3>
+          <h3 ref={rejectHeadingRef} tabIndex={-1} className="text-sm font-semibold text-slate-900 focus:outline-none">
+            Reject this submission
+          </h3>
           <div>
             <label htmlFor={`${uid}-category`} className="mb-1 block text-xs font-medium text-slate-700">
               Category
@@ -408,7 +425,10 @@ export function ApproveRejectActions({
           <div className="flex items-center justify-end gap-2">
             <button
               type="button"
-              onClick={() => setShowReject(false)}
+              onClick={() => {
+                returnFocus.current = true;
+                setShowReject(false);
+              }}
               className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
             >
               Cancel

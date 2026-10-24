@@ -227,7 +227,12 @@ export function CreateUserForm({
         hint="Minimum 12 characters"
       />
       {errors._form && <FieldError msg={errors._form} />}
-      {success && <p className="text-xs font-medium text-emerald-600">{success}</p>}
+      {/* A live region that is on the page before the message, so "User created." is
+          read out (one that mounts with its text is not). While empty it is sr-only,
+          which takes no grid row: the form looks as it did. */}
+      <div aria-live="polite" className={success ? undefined : 'sr-only'}>
+        {success && <p className="text-xs font-medium text-emerald-700">{success}</p>}
+      </div>
       <button
         type="submit"
         disabled={pending}

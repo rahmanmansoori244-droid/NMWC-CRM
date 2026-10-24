@@ -49,50 +49,54 @@ export default async function DuplicatesPage() {
         ) : (
           // grid-cols-1, here and inside each card: one column no wider than
           // the phone. An auto column took the width of a whole name, which
-          // `truncate` keeps on one line.
-          <ul className="grid grid-cols-1 gap-3">
-            {candidates.map((c) => (
-              <li
-                key={`${c.a.id}-${c.b.id}`}
-                className="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200"
-              >
-                <header className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2">
-                  <div className="flex items-center gap-2 text-xs">
-                    <span
-                      className={`inline-flex rounded-full px-2 py-0.5 font-medium ${
-                        c.reason === 'CR'
-                          ? 'bg-red-50 text-red-700'
-                          : 'bg-amber-50 text-amber-700'
-                      }`}
-                    >
-                      {c.reason === 'CR' ? 'CR-number match' : 'Name + phone + region match'}
-                    </span>
-                    <span className="text-slate-500">high confidence</span>
+          // `truncate` keeps on one line. Each side's name is an h3: the h2 is
+          // the level between them and the page's h1.
+          <>
+            <h2 className="sr-only">Suspected duplicate pairs</h2>
+            <ul className="grid grid-cols-1 gap-3">
+              {candidates.map((c) => (
+                <li
+                  key={`${c.a.id}-${c.b.id}`}
+                  className="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200"
+                >
+                  <header className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2">
+                    <div className="flex items-center gap-2 text-xs">
+                      <span
+                        className={`inline-flex rounded-full px-2 py-0.5 font-medium ${
+                          c.reason === 'CR'
+                            ? 'bg-red-50 text-red-700'
+                            : 'bg-amber-50 text-amber-700'
+                        }`}
+                      >
+                        {c.reason === 'CR' ? 'CR-number match' : 'Name + phone + region match'}
+                      </span>
+                      <span className="text-slate-500">high confidence</span>
+                    </div>
+                    {c.markedDistinctBefore && (
+                      <p className="text-xs text-slate-600">
+                        Marked distinct {stampText(c.markedDistinctBefore)}; back because what they
+                        share has changed since.
+                      </p>
+                    )}
+                  </header>
+                  <div className="grid grid-cols-1 gap-0 md:grid-cols-2">
+                    <Side side={c.a} />
+                    <div className="border-t border-slate-200 md:border-l md:border-t-0">
+                      <Side side={c.b} />
+                    </div>
                   </div>
-                  {c.markedDistinctBefore && (
-                    <p className="text-xs text-slate-600">
-                      Marked distinct {stampText(c.markedDistinctBefore)}; back because what they
-                      share has changed since.
-                    </p>
-                  )}
-                </header>
-                <div className="grid grid-cols-1 gap-0 md:grid-cols-2">
-                  <Side side={c.a} />
-                  <div className="border-t border-slate-200 md:border-l md:border-t-0">
-                    <Side side={c.b} />
-                  </div>
-                </div>
-                <footer className="border-t border-slate-200 bg-slate-50 px-4 py-3">
-                  <MergeForm
-                    aId={c.a.id}
-                    bId={c.b.id}
-                    aLabel={`${c.a.legalName} (${c.a.nmwcCode})`}
-                    bLabel={`${c.b.legalName} (${c.b.nmwcCode})`}
-                  />
-                </footer>
-              </li>
-            ))}
-          </ul>
+                  <footer className="border-t border-slate-200 bg-slate-50 px-4 py-3">
+                    <MergeForm
+                      aId={c.a.id}
+                      bId={c.b.id}
+                      aLabel={`${c.a.legalName} (${c.a.nmwcCode})`}
+                      bLabel={`${c.b.legalName} (${c.b.nmwcCode})`}
+                    />
+                  </footer>
+                </li>
+              ))}
+            </ul>
+          </>
         )}
 
         <MarkedDistinct pairs={markedDistinct} />

@@ -138,7 +138,7 @@ export function ShopPicker({
         >
           <span className="font-mono">{s.code}</span>
           {s.name ? <span className="ml-1.5 [overflow-wrap:anywhere]">{s.name}</span> : null}
-          {s.standing !== 'current' ? <span className="ml-1.5 text-xs opacity-80">({STANDING[s.standing]})</span> : null}
+          {s.standing !== 'current' ? <span className="ml-1.5 text-xs">({STANDING[s.standing]})</span> : null}
         </Link>
       ))}
     </nav>

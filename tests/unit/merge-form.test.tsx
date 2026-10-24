@@ -100,3 +100,27 @@ describe('MergeForm', () => {
     expect(screen.getByRole('status').className).toContain('emerald');
   });
 });
+
+describe('MergeForm — the cross-region reason box', () => {
+  // It had only a placeholder for a name, and appeared beside the buttons with
+  // focus left on the Keep button that revealed it.
+  it('is named, takes focus when it appears, and its reason is what is sent', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    h.merge.mockResolvedValueOnce({
+      ok: false,
+      code: 'VALIDATION_FAILED',
+      message: 'This is a cross-region merge: confirm it with a reason.',
+    });
+    render(<MergeForm {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: /Keep ←/ }));
+    const box = await screen.findByRole('textbox', { name: 'Reason for the cross-region merge' });
+    await waitFor(() => expect(document.activeElement).toBe(box));
+
+    h.merge.mockResolvedValueOnce({ ok: true, data: { winnerId: 'a' } });
+    fireEvent.change(box, { target: { value: 'Same owner, moved region' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm cross-region merge' }));
+    await waitFor(() => expect(h.merge).toHaveBeenCalledTimes(2));
+    const sent = h.merge.mock.calls[1][0] as FormData;
+    expect([sent.get('confirmCrossRegion'), sent.get('reason')]).toEqual(['yes', 'Same owner, moved region']);
+  });
+});

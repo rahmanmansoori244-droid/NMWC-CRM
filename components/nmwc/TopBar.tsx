@@ -47,7 +47,11 @@ export function TopBar({
           >
             <Bell className="h-5 w-5" />
             {unreadCount > 0 ? (
-              <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-none">
+              // White on red-600 (4.83:1); red-500 was 3.76:1.
+              <span
+                data-bell="action"
+                className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold leading-none"
+              >
                 {unreadCount > 9 ? '9+' : unreadCount}
               </span>
             ) : infoCount > 0 ? (

@@ -173,6 +173,8 @@ export default async function AuditPage({
       />
       <form
         method="get"
+        role="search"
+        aria-label="Filter the audit log"
         className={`grid grid-cols-1 gap-2 border-b border-slate-200 bg-white p-3 text-sm sm:px-6 ${isManager ? 'sm:grid-cols-4' : 'sm:grid-cols-5'}`}
       >
         {/* Each filter named by a label a screen reader reads (a placeholder and
@@ -286,11 +288,11 @@ export default async function AuditPage({
           <table className="min-w-full divide-y divide-slate-200 text-xs">
             <thead className="bg-slate-50 text-left uppercase tracking-wide text-slate-500">
               <tr>
-                <th className="px-3 py-2 font-medium">When</th>
-                <th className="px-3 py-2 font-medium">Actor</th>
-                <th className="px-3 py-2 font-medium">Action</th>
-                <th className="px-3 py-2 font-medium">Entity</th>
-                <th className="px-3 py-2 font-medium">Reason</th>
+                <th scope="col" className="px-3 py-2 font-medium">When</th>
+                <th scope="col" className="px-3 py-2 font-medium">Actor</th>
+                <th scope="col" className="px-3 py-2 font-medium">Action</th>
+                <th scope="col" className="px-3 py-2 font-medium">Entity</th>
+                <th scope="col" className="px-3 py-2 font-medium">Reason</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -315,7 +317,7 @@ export default async function AuditPage({
               ))}
               {logs.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-3 py-6 text-center text-slate-400">
+                  <td colSpan={5} className="px-3 py-6 text-center text-slate-500">
                     No audit entries match these filters.
                   </td>
                 </tr>
@@ -324,9 +326,12 @@ export default async function AuditPage({
           </table>
         </TableScroll>
         {lastPage > 1 && (
-          <nav className="mt-4 flex items-center justify-between text-sm">
+          <nav aria-label="Pages of the audit log" className="mt-4 flex items-center justify-between text-sm">
+            {/* An end with nowhere to go says so (aria-disabled), as the batch and
+                history pagers do: it was a muted link a screen reader read as live. */}
             <Link
               href={qs({ page: String(Math.max(1, page - 1)) })}
+              aria-disabled={page === 1}
               className={`rounded-md px-3 py-1.5 ${page === 1 ? 'pointer-events-none text-slate-400' : 'text-brand-700 hover:bg-brand-50'}`}
             >
               ← Previous
@@ -336,6 +341,7 @@ export default async function AuditPage({
             </span>
             <Link
               href={qs({ page: String(Math.min(lastPage, page + 1)) })}
+              aria-disabled={page === lastPage}
               className={`rounded-md px-3 py-1.5 ${page === lastPage ? 'pointer-events-none text-slate-400' : 'text-brand-700 hover:bg-brand-50'}`}
             >
               Next →

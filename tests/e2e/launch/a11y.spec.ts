@@ -8,29 +8,45 @@
  *   salesman   sign-in, forced password change, Today, customer search, a
  *              customer page, the enrich form, the new-customer form, Needs
  *              correction, notifications;
- *   Manager    the approvals queue and a review page (a seeded request waits on
- *              him), reactivations (a real one, when R2 is configured), dashboard;
- *   Steward    users, import, Temix.
+ *   Manager    the approvals queue (as it loads, and with a card ticked so the
+ *              bulk bar shows), a review page (as it loads, with its Reject form
+ *              open, and with its Approve dialog open — closed with Escape, never
+ *              confirmed), reactivations (a real one, when R2 is configured),
+ *              dashboard, users;
+ *   Steward    users (and its Edit account dialog, closed with Escape), routes,
+ *              import and a seeded batch, audit, export, Temix (and its Mark
+ *              loaded dialog, closed with Escape), duplicates (a seeded pair),
+ *              service status, integrity, a customer's history.
  *
- * LAUNCH POLICY — REPORT ONLY. Each scan's axe JSON is attached to its test,
- * each test is annotated with what axe found, and the run's summary (rule,
+ * LAUNCH POLICY — REPORT, AND TWO GATES. Each scan's axe JSON is attached to its
+ * test, each test is annotated with what axe found, and the run's summary (rule,
  * impact, count, page; per project) is written to the report and to
- * test-results/launch-a11y-summary.json. A violation fails nothing, with ONE
- * exception, the last test: on the phone project, a `critical` violation of
+ * test-results/launch-a11y-summary.json. A violation fails no scanning test. The
+ * last tests are the gates:
  *
- *   label · select-name · button-name · input-button-name
+ *   the salesman's phone gate — on the phone project, a `critical` violation of
  *
- * (a form field or a button with no accessible name) on one of the salesman's
- * screens. These make a control unusable rather than harder — TalkBack says
- * "edit box" / "button", voice control cannot reach it, nothing says which box
- * takes the phone number — and they are deterministic DOM checks that do not
- * flake; the app already labels its fields (UAT-07), so a hit is a regression.
- * The reasons are written per rule in support/a11y-helpers.ts (GATE_RULES) and
- * into the summary file. A page that cannot be reached or scanned fails its
- * test (after the other pages of that test have been scanned): that is a broken
- * page or fixture, not a finding.
+ *     label · select-name · button-name · input-button-name
  *
- * Nothing here types a password, so no scanned DOM holds one.
+ *   (a form field or a button with no accessible name) on one of the salesman's
+ *   screens. These make a control unusable rather than harder — TalkBack says
+ *   "edit box" / "button", voice control cannot reach it, nothing says which box
+ *   takes the phone number — and they are deterministic DOM checks that do not
+ *   flake; the app already labels its fields (UAT-07), so a hit is a regression.
+ *   The reasons are written per rule in support/a11y-helpers.ts (GATE_RULES).
+ *
+ *   the back-office gate — on BOTH projects, any violation axe rates critical or
+ *   serious (contrast included) on a Manager's or a Data Steward's screen
+ *   (BACKOFFICE_PAGES). The accessibility pass of October 2026 brought those
+ *   screens to none, so one is a change that brought it back.
+ *
+ * Both are written into the summary file. A page that cannot be reached or
+ * scanned fails its test (after the other pages of that test have been
+ * scanned): that is a broken page or fixture, not a finding.
+ *
+ * Nothing here types a password, so no scanned DOM holds one. Nothing is
+ * approved, rejected, generated or marked loaded: every dialog opened to be
+ * scanned is closed with Escape or Cancel, and the database says so after.
  *
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts a11y --project=phone --project=desktop
  */
@@ -38,6 +54,7 @@ import { expect, test } from '@playwright/test';
 import path from 'node:path';
 import {
   contextAs,
+  db,
   hasR2,
   installLaunchHooks,
   requestReactivationViaApi,
@@ -48,14 +65,18 @@ import {
   uploadPhotoViaApi,
   type World,
 } from './support';
+import { hydrated, seedImportBatch, seedTemixBatch } from './support/access-control-helpers';
 import {
   A11Y_PAGES,
+  BACKOFFICE_GATE_IMPACTS,
+  BACKOFFICE_PAGES,
   GATE_IMPACT,
   GATE_PROJECT,
   GATE_RULES,
   GATED_PAGES,
   SUMMARY_FILE,
   a11yScans,
+  backofficeFindings,
   describeFinding,
   gateFindings,
   projectScans,
@@ -73,6 +94,11 @@ test.describe('a11y report: the main screens, each signed in as its role', { tag
   let pendingId = '';
   /** An update on NODAY1 that M1 sent back to SA (Needs correction). */
   let returnedId = '';
+  /** A promoted customer batch of STW's, for the batch page. */
+  let batchId = '';
+  let batchName = '';
+  /** A Temix batch awaiting STW's "loaded" confirmation, for the Mark loaded dialog. */
+  let temixBatchId = '';
 
   test.beforeAll(async () => {
     test.setTimeout(300_000);
@@ -121,6 +147,14 @@ test.describe('a11y report: the main screens, each signed in as its role', { tag
       editId: pendingId,
       customerId: world.customer('FULL').id,
     });
+    // The Steward's screens with something on them: a suspected pair (same CR
+    // number) on /duplicates, a promoted batch, and a Temix batch to confirm.
+    const cr = `CR${world.SFX}D1`;
+    await world.addCustomer({ key: 'DUPA', phone: true, crNumber: cr, branches: [{ key: 'S', route: 'A' }] });
+    await world.addCustomer({ key: 'DUPB', phone: true, crNumber: cr, branches: [{ key: 'S', route: 'A' }] });
+    batchName = `${world.name('a11y batch')}.xlsx`;
+    batchId = await seedImportBatch(world, { uploader: 'STW', filename: batchName, status: 'PROMOTED' });
+    temixBatchId = await seedTemixBatch(world, { creator: 'STW' });
   });
 
   test.afterAll(async () => {
@@ -128,7 +162,9 @@ test.describe('a11y report: the main screens, each signed in as its role', { tag
     if (world) await world.cleanup();
   });
 
-  test('the Manager’s screens: approvals queue, a review page, reactivations, dashboard (report only)', async ({ browser }) => {
+  test('the Manager’s screens: approvals queue, a review page and its decisions, reactivations, dashboard, users (report; the back-office gate is a last test)', async ({
+    browser,
+  }) => {
     test.setTimeout(600_000);
     const scans = a11yScans();
     const full = world.customer('FULL');
@@ -141,10 +177,51 @@ test.describe('a11y report: the main screens, each signed in as its role', { tag
       await scanPage(page, 'approvals', { heading: 'Approval queue' });
     });
 
+    await scans.page('approvalsSelected', async () => {
+      // One card ticked: the bulk bar (Reject n / Approve n) is on screen. Unticked after; nothing is decided.
+      if (new URL(page.url()).pathname !== '/approvals') await page.goto('/approvals');
+      const tick = page.getByRole('checkbox', { name: `Select edit for ${full.legalName}`, exact: true });
+      await hydrated(tick);
+      await tick.check();
+      await expect(page.getByRole('button', { name: /^✓ Approve \d+$/ })).toBeVisible();
+      await scanPage(page, 'approvalsSelected', { heading: 'Approval queue' });
+      await tick.uncheck();
+      await expect(page.getByRole('button', { name: /^✓ Approve \d+$/ })).toHaveCount(0);
+    });
+
     await scans.page('review', async () => {
       await page.goto(`/approvals/${pendingId}`);
       await expect(page.getByRole('button', { name: /^✓ Approve$/ })).toBeVisible();
       await scanPage(page, 'review', { heading: full.legalName });
+    });
+
+    await scans.page('reviewReject', async () => {
+      // ✗ Reject swaps in the form; focus follows to its heading, and Cancel puts it back.
+      if (new URL(page.url()).pathname !== `/approvals/${pendingId}`) await page.goto(`/approvals/${pendingId}`);
+      const reject = page.getByRole('button', { name: '✗ Reject', exact: true });
+      await hydrated(reject);
+      await reject.click();
+      const heading = page.getByRole('heading', { name: 'Reject this submission', exact: true });
+      await expect(heading).toBeFocused();
+      await scanPage(page, 'reviewReject', { heading: full.legalName });
+      await page.locator('form').filter({ has: heading }).getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(heading).toHaveCount(0);
+      await expect(reject).toBeFocused();
+    });
+
+    await scans.page('reviewConfirm', async () => {
+      // The Approve dialog, scanned open and closed with Escape — never Enter, never its confirm button.
+      if (new URL(page.url()).pathname !== `/approvals/${pendingId}`) await page.goto(`/approvals/${pendingId}`);
+      const approve = page.getByRole('button', { name: /^✓ Approve$/ });
+      await hydrated(approve);
+      await approve.click();
+      const dialog = page.getByRole('dialog');
+      await expect(dialog).toBeVisible();
+      await scanPage(page, 'reviewConfirm', { heading: full.legalName });
+      await page.keyboard.press('Escape');
+      await expect(dialog).toHaveCount(0);
+      const edit = await db.customerEdit.findUniqueOrThrow({ where: { id: pendingId }, select: { state: true } });
+      expect(edit.state, 'the dialog closed with Escape and approved nothing').toBe('SUBMITTED');
     });
 
     await scans.page('reactivations', async () => {
@@ -175,10 +252,15 @@ test.describe('a11y report: the main screens, each signed in as its role', { tag
       await scanPage(page, 'dashboard', { heading: 'Dashboard' });
     });
 
+    await scans.page('usersManager', async () => {
+      await page.goto('/users');
+      await scanPage(page, 'usersManager', { heading: 'Users' });
+    });
+
     scans.done();
   });
 
-  test('the Steward’s screens: users, import, Temix (report only)', async ({ browser }) => {
+  test('the Steward’s screens: users, import, Temix (report; the back-office gate is a last test)', async ({ browser }) => {
     test.setTimeout(600_000);
     const scans = a11yScans();
     const stw = await contextAs(browser, world.user('STW'));
@@ -202,7 +284,95 @@ test.describe('a11y report: the main screens, each signed in as its role', { tag
     scans.done();
   });
 
-  test('the salesman’s screens, from sign-in to notifications (report; the phone gate is the last test)', async ({ browser }) => {
+  test('the Steward’s records and set-up screens, and its two dialogs (report; the back-office gate is a last test)', async ({ browser }) => {
+    test.setTimeout(600_000);
+    const scans = a11yScans();
+    const stw = await contextAs(browser, world.user('STW'));
+    const page = await stw.newPage();
+
+    await scans.page('routes', async () => {
+      await page.goto('/routes');
+      await scanPage(page, 'routes', { heading: 'Routes & Regions' });
+    });
+
+    await scans.page('audit', async () => {
+      await page.goto('/audit');
+      await scanPage(page, 'audit', { heading: 'Audit log' });
+    });
+
+    await scans.page('export', async () => {
+      await page.goto('/export');
+      await scanPage(page, 'export', { heading: 'Export to Excel' });
+    });
+
+    await scans.page('importBatch', async () => {
+      await page.goto(`/import/${batchId}`);
+      await scanPage(page, 'importBatch', { heading: batchName });
+    });
+
+    await scans.page('duplicates', async () => {
+      await page.goto('/duplicates');
+      await expect(page.getByRole('heading', { level: 1, name: 'Duplicate review', exact: true })).toBeVisible();
+      // The seeded pair puts the merge buttons on the scanned page. The page shows the first 50 pairs of
+      // all of UAT, so on a crowded UAT it can be past them: then the pairs shown carry the same form.
+      if (!(await page.getByText(world.customer('DUPA').legalName).first().isVisible())) {
+        test.info().annotations.push({ type: 'a11y', description: 'Duplicates: the seeded pair is not among the first 50 shown; the page is scanned as it is' });
+      }
+      await scanPage(page, 'duplicates', { heading: 'Duplicate review' });
+    });
+
+    await scans.page('status', async () => {
+      await page.goto('/status');
+      await scanPage(page, 'status', { heading: 'Service status' });
+    });
+
+    await scans.page('integrity', async () => {
+      await page.goto('/status/integrity');
+      await scanPage(page, 'integrity', { heading: 'Integrity' });
+    });
+
+    await scans.page('history', async () => {
+      await page.goto(`/customers/${world.customer('FULL').id}/history`);
+      await scanPage(page, 'history', { heading: 'History' });
+    });
+
+    await scans.page('temixConfirm', async () => {
+      // The Mark loaded dialog on the seeded batch, scanned open and closed with Escape.
+      await page.goto('/temix');
+      const row = page.getByRole('row').filter({ hasText: `…${temixBatchId.slice(-6)}` });
+      const markLoaded = row.getByRole('button', { name: 'Mark loaded', exact: true });
+      await hydrated(markLoaded);
+      await markLoaded.click();
+      const dialog = page.getByRole('dialog');
+      await expect(dialog).toBeVisible();
+      await scanPage(page, 'temixConfirm', { heading: 'Temix sync' });
+      await page.keyboard.press('Escape');
+      await expect(dialog).toHaveCount(0);
+      const batch = await db.temixSyncBatch.findUniqueOrThrow({ where: { id: temixBatchId }, select: { markedLoadedAt: true } });
+      expect(batch.markedLoadedAt, 'the dialog closed with Escape and marked nothing loaded').toBeNull();
+    });
+
+    await scans.page('usersEdit', async () => {
+      // The Edit account dialog on SA's row: focus moves into it, and Escape closes it with focus back on Edit.
+      await page.goto('/users');
+      const sa = world.user('SA');
+      const row = page.getByRole('row').filter({ has: page.getByRole('cell', { name: sa.username, exact: true }) });
+      const edit = row.getByRole('button', { name: 'Edit', exact: true });
+      await hydrated(edit);
+      await edit.click();
+      const dialog = page.getByRole('dialog');
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByLabel('Role', { exact: true })).toBeFocused();
+      await scanPage(page, 'usersEdit', { heading: 'Users' });
+      await page.keyboard.press('Escape');
+      await expect(dialog).toHaveCount(0);
+      await expect(edit).toBeFocused();
+    });
+
+    scans.done();
+  });
+
+  test('the salesman’s screens, from sign-in to notifications (report; the phone gate is a last test)', async ({ browser }) => {
     test.setTimeout(600_000);
     const scans = a11yScans();
 
@@ -277,7 +447,7 @@ test.describe('a11y report: the main screens, each signed in as its role', { tag
   });
 });
 
-test.describe('a11y report: the summary and the salesman’s phone gate', { tag: ['@phone', '@desktop'] }, () => {
+test.describe('a11y report: the summary, the salesman’s phone gate and the back-office gate', { tag: ['@phone', '@desktop'] }, () => {
   requireLaunchEnv();
   installLaunchHooks();
 
@@ -298,12 +468,13 @@ test.describe('a11y report: the summary and the salesman’s phone gate', { tag:
       }
     }
     const byImpact = [...nodes.entries()].map(([i, n]) => `${i} ${n}`).join(', ') || 'none';
-    const gate = project === GATE_PROJECT ? `${gateFindings(scanned).length} gate finding(s)` : 'not gated (report only)';
+    const gate = project === GATE_PROJECT ? `${gateFindings(scanned).length} salesman gate finding(s)` : 'salesman gate not applied';
     info.annotations.push({
       type: 'a11y-summary',
       description:
         `${project}: ${scanned.length}/${Object.keys(A11Y_PAGES).length} pages scanned; ${rules.size} rule(s) broken on ` +
-        `${scanned.filter((s) => s.violations.length > 0).length} page(s); nodes ${byImpact}; ${gate}. ` +
+        `${scanned.filter((s) => s.violations.length > 0).length} page(s); nodes ${byImpact}; ${gate}; ` +
+        `${backofficeFindings(scanned).length} back-office gate finding(s). ` +
         `Run summary: ${path.relative(process.cwd(), SUMMARY_FILE)}`,
     });
     expect(scans.length, `${path.basename(SUMMARY_FILE)} holds this run's ${project} scans`).toBeGreaterThan(0);
@@ -317,6 +488,17 @@ test.describe('a11y report: the summary and the salesman’s phone gate', { tag:
     expect(
       gateFindings(scans).map(describeFinding),
       `${GATE_IMPACT} ${Object.keys(GATE_RULES).join(' / ')} violations on the salesman’s phone screens (must not ship)`
+    ).toEqual([]);
+  });
+
+  test('the back-office gate: no critical or serious violation on the Manager’s and the Steward’s screens', async () => {
+    const project = test.info().project.name;
+    const scans = await projectScans(project);
+    const missing = BACKOFFICE_PAGES.filter((k) => !scans.some((s) => s.key === k && !s.error)).map((k) => A11Y_PAGES[k].label);
+    expect.soft(missing, `back-office screens not scanned on ${project} (see the Manager’s and the Steward’s tests)`).toEqual([]);
+    expect(
+      backofficeFindings(scans).map(describeFinding),
+      `${BACKOFFICE_GATE_IMPACTS.join(' or ')} violations on the Manager’s and the Steward’s screens (${project}; must not ship)`
     ).toEqual([]);
   });
 });

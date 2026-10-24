@@ -577,28 +577,37 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
             <header className="border-b border-slate-200 bg-slate-50 px-4 py-2">
               <h2 className="text-sm font-semibold text-slate-700">Approval chain</h2>
             </header>
-            <div className="flex flex-wrap items-center gap-2 px-4 py-3 text-xs">
+            {/* An ordered list of steps: the colour said which is done and which is
+                current, and nothing else did. The state is said in words beside the
+                pill (not inside it: the pill's text stays the step's name). */}
+            <ol aria-label="Approval steps" className="flex flex-wrap items-center gap-2 px-4 py-3 text-xs">
               {chain.map((s, i) => {
                 const isCurrent = isPending && i === edit.currentStepIndex;
                 const isPast = edit.state === 'APPROVED' || i < edit.currentStepIndex;
                 return (
-                  <span key={i} className="flex items-center gap-2">
-                    {i > 0 && <span className="text-slate-300">→</span>}
+                  <li key={i} className="flex items-center gap-2">
+                    {i > 0 && (
+                      <span className="text-slate-300" aria-hidden="true">
+                        →
+                      </span>
+                    )}
                     <span
+                      aria-current={isCurrent ? 'step' : undefined}
                       className={`rounded-full px-2.5 py-1 font-semibold ${
                         isCurrent
                           ? 'bg-brand-600 text-white'
                           : isPast
                             ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200'
-                            : 'bg-slate-100 text-slate-500'
+                            : 'bg-slate-100 text-slate-600'
                       }`}
                     >
                       {stepName(s)}
                     </span>
-                  </span>
+                    <span className="sr-only">{isCurrent ? ' (current step)' : isPast ? ' (done)' : ' (to come)'}</span>
+                  </li>
                 );
               })}
-            </div>
+            </ol>
             {edit.steps.length > 0 && (
               <ul className="divide-y divide-slate-100 border-t border-slate-100 text-xs">
                 {edit.steps.map((s) => (
@@ -949,9 +958,10 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
               const extras = extraPhotos.filter((p) => p.branchExtraId === b.id).map((p) => p.id);
               return (
                 <div key={b.id} className="divide-y divide-slate-100">
-                  <div className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  {/* Each branch's photos under its own heading, below the section's h2. */}
+                  <h3 className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
                     {b.branchName} · {b.branchCode} · {b.route.code}
-                  </div>
+                  </h3>
                   <PhotoRow
                     label="Shop front"
                     ids={b.shopPhotoId ? [b.shopPhotoId] : []}
@@ -1204,11 +1214,11 @@ function DiffRow({
     <div className="grid grid-cols-2 gap-2 px-4 py-3 text-sm sm:grid-cols-[140px_minmax(0,1fr)_minmax(0,1fr)] sm:gap-3">
       <div className="col-span-2 font-medium text-slate-600 sm:col-span-1">{label}</div>
       <div className="rounded-md bg-red-50 px-2 py-1 text-red-700 ring-1 ring-red-200">
-        <div className="text-[10px] font-semibold uppercase tracking-wide opacity-70">Before</div>
+        <div className="text-[10px] font-semibold uppercase tracking-wide">Before</div>
         <div className="break-words">{show(before)}</div>
       </div>
       <div className="rounded-md bg-emerald-50 px-2 py-1 text-emerald-700 ring-1 ring-emerald-200">
-        <div className="text-[10px] font-semibold uppercase tracking-wide opacity-70">After</div>
+        <div className="text-[10px] font-semibold uppercase tracking-wide">After</div>
         {/* F20: an emptied field reads as such; "—" keeps meaning it was empty. */}
         <div className="break-words">
           {isEmpty(after) && !isEmpty(before) ? <em>Cleared</em> : show(after)}

@@ -550,7 +550,7 @@ describe('the bulk queue', () => {
     expect(card.textContent).toContain('Shop c1');
     // It still opens on its own page, where it is decided.
     expect(card.querySelector('a')!.getAttribute('href')).toBe('/approvals/c1');
-    fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
     expect(screen.getByRole('button', { name: '✓ Approve 2' })).toBeTruthy();
   });
 
@@ -570,7 +570,7 @@ describe('the bulk queue', () => {
         'New customers at their last step are approved one at a time: open each card marked with a lock and enter its Temix code.'
       )
     ).toBeTruthy();
-    fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
     expect(screen.getByRole('button', { name: '✓ Approve 2' })).toBeTruthy();
   });
 
@@ -583,7 +583,7 @@ describe('the bulk queue', () => {
         ]}
       />
     );
-    expect(screen.queryByLabelText('Select up to 50 on this page')).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'Select all' })).toBeNull();
     expect(screen.getAllByRole('img', { name: 'Enter its Temix code: open it to approve' })).toHaveLength(1);
     expect(screen.getAllByRole('img', { name: 'Credit application: open it to decide' })).toHaveLength(1);
   });
@@ -603,13 +603,13 @@ describe('the bulk queue', () => {
 
   it('a queue of credit applications only (the Finance Manager’s, the GM’s) shows no dead Select all', () => {
     render(<BulkApprovalQueue items={[item('c1', { paymentTerms: 'CREDIT' }), item('c4', { paymentTerms: 'CREDIT' })]} />);
-    expect(screen.queryByLabelText('Select up to 50 on this page')).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'Select all' })).toBeNull();
     expect(screen.getAllByRole('img', { name: 'Credit application: open it to decide' })).toHaveLength(2);
   });
 
   it('N01: bulk approve sends each selected card with its own token, and no bare id list', async () => {
     render(<BulkApprovalQueue items={ITEMS} />);
-    fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
     fireEvent.click(screen.getByRole('button', { name: '✓ Approve 2' }));
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
     await waitFor(() => expect(h.bulkApprove).toHaveBeenCalledTimes(1));
@@ -644,7 +644,7 @@ describe('the bulk queue', () => {
     expect(resolveRejectTarget(2, 1)).toEqual({ kind: 'TO_SALESMAN' });
 
     render(<BulkApprovalQueue items={ITEMS} />);
-    fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
     fireEvent.click(screen.getByRole('button', { name: '✗ Reject 2' }));
     const dialog = screen.getByRole('dialog');
     const words = dialog.textContent!.replace(/\s+/g, ' ');
@@ -665,7 +665,7 @@ describe('the bulk queue', () => {
       data: { successes: ['c2'], failures: [{ editId: 'u1', code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE }], notAttempted: [] },
     });
     render(<BulkApprovalQueue items={ITEMS} />);
-    fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
     fireEvent.click(screen.getByRole('button', { name: '✓ Approve 2' }));
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
     expect(await screen.findByText(/1 processed, 1 failed/)).toBeTruthy();
@@ -675,7 +675,7 @@ describe('the bulk queue', () => {
   describe('launch browser suite follow-up: what a bulk decision did is read out', () => {
     const approveBoth = () => {
       render(<BulkApprovalQueue items={ITEMS} />);
-      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
       fireEvent.click(screen.getByRole('button', { name: '✓ Approve 2' }));
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
     };
@@ -716,13 +716,13 @@ describe('the bulk queue', () => {
     it('a queue of 60: the first 50 in the order shown are selected, and it says so', async () => {
       const items = many(60);
       render(<BulkApprovalQueue items={items} />);
-      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
       expect(screen.getByRole('status').textContent).toBe(CAPPED);
       expect(screen.getByRole('button', { name: `✓ Approve ${BULK_DECISION_LIMIT}` })).toBeTruthy();
       const ticked = items.filter((i) => (screen.getByLabelText(`Select edit for Shop ${i.id}`) as HTMLInputElement).checked);
       expect(ticked.map((i) => i.id)).toEqual(items.slice(0, BULK_DECISION_LIMIT).map((i) => i.id));
       // The header box reads as checked, so the next click deselects them.
-      expect((screen.getByLabelText('Select up to 50 on this page') as HTMLInputElement).checked).toBe(true);
+      expect((screen.getByRole('checkbox', { name: 'Deselect all' }) as HTMLInputElement).checked).toBe(true);
 
       fireEvent.click(screen.getByRole('button', { name: `✓ Approve ${BULK_DECISION_LIMIT}` }));
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: `Approve ${BULK_DECISION_LIMIT}` }));
@@ -735,15 +735,15 @@ describe('the bulk queue', () => {
 
     it('Deselect all clears it, and the note goes with it', () => {
       render(<BulkApprovalQueue items={many(60)} />);
-      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
-      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Deselect all' }));
       expect(screen.queryByRole('status')).toBeNull();
       expect(screen.getAllByText('0 selected')).toHaveLength(1);
     });
 
     it('the note is only for exactly the first 50 of a longer queue', () => {
       render(<BulkApprovalQueue items={many(60)} />);
-      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
       // One more ticked by hand: no longer "the first 50".
       fireEvent.click(screen.getByLabelText('Select edit for Shop q055'));
       expect(screen.queryByRole('status')).toBeNull();
@@ -751,7 +751,7 @@ describe('the bulk queue', () => {
 
       // A queue at the limit is selected whole, with nothing to explain.
       render(<BulkApprovalQueue items={many(BULK_DECISION_LIMIT)} />);
-      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
       expect(screen.getAllByText(`${BULK_DECISION_LIMIT} selected`).length).toBeGreaterThan(0);
       expect(screen.queryByRole('status')).toBeNull();
     });
@@ -764,7 +764,7 @@ describe('the bulk queue', () => {
         fields: { decisions: BULK_DECISION_LIMIT_MESSAGE },
       });
       render(<BulkApprovalQueue items={ITEMS} />);
-      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
       fireEvent.click(screen.getByRole('button', { name: '✓ Approve 2' }));
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
       expect(await screen.findByText(BULK_DECISION_LIMIT_MESSAGE)).toBeTruthy();
@@ -775,5 +775,76 @@ describe('the bulk queue', () => {
       // loaded machine lets the test look in between.
       expect(await screen.findByRole('button', { name: '✓ Approve 2' })).toBeTruthy();
     });
+  });
+});
+
+describe('keyboard and screen-reader paths through the decision screens', () => {
+  it('✗ Reject moves focus to the form’s heading, not into a field, and Cancel puts it back on ✗ Reject', () => {
+    renderActions();
+    const rejectButton = screen.getByRole('button', { name: '✗ Reject' });
+    rejectButton.focus();
+    fireEvent.click(rejectButton);
+    const heading = screen.getByRole('heading', { name: 'Reject this submission' });
+    expect(document.activeElement).toBe(heading);
+    // A heading, so no phone keyboard opens before the approver has read the form.
+    expect(document.activeElement?.tagName).toBe('H3');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('heading', { name: 'Reject this submission' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '✗ Reject' }));
+  });
+
+  it('the queue’s Select all is named by the words beside it, with the limit as its description', () => {
+    const one = {
+      id: 'q1',
+      decisionToken: 'token-of-q1',
+      ageHours: 3,
+      changesCount: 1,
+      manualGps: false,
+      sla: null,
+      escalationLevel: 0,
+      isCreate: false,
+      needsTemixCode: false,
+      paymentTerms: null,
+      credit: null,
+      customer: { legalName: 'Shop q1', nmwcCode: 'NMWC-000001', completenessScore: 50 },
+      submittedByFullName: 'Salesman One',
+    } satisfies ApprovalQueueItem;
+    render(<BulkApprovalQueue items={[one]} />);
+    const box = screen.getByRole('checkbox', { name: 'Select all' });
+    expect(box).toHaveAccessibleDescription(`Ticks up to ${BULK_DECISION_LIMIT} cards on this page, most overdue first.`);
+    // The count it changes is read out as it changes.
+    expect(screen.getByText('0 selected').getAttribute('aria-live')).toBe('polite');
+    fireEvent.click(box);
+    expect(screen.getByRole('checkbox', { name: 'Deselect all' })).toBe(box);
+    // The cards are h3s: an h2 sits between them and the page's h1.
+    expect(screen.getByRole('heading', { level: 2, name: 'Requests waiting for your decision' })).toBeTruthy();
+  });
+
+  it('what a bulk decision did takes focus when it lands, as the bar that held focus goes', async () => {
+    h.bulkApprove.mockResolvedValue({ ok: true, data: { successes: ['c2'], failures: [], notAttempted: [] } });
+    const one = {
+      id: 'c2',
+      decisionToken: 'token-of-c2',
+      ageHours: 3,
+      changesCount: 0,
+      manualGps: false,
+      sla: null,
+      escalationLevel: 0,
+      isCreate: true,
+      needsTemixCode: false,
+      paymentTerms: 'CASH',
+      credit: null,
+      customer: { legalName: 'Shop c2', nmwcCode: 'NEW', completenessScore: 0 },
+      submittedByFullName: 'Salesman One',
+    } satisfies ApprovalQueueItem;
+    render(<BulkApprovalQueue items={[one]} />);
+    fireEvent.click(screen.getByLabelText('Select edit for Shop c2'));
+    fireEvent.click(screen.getByRole('button', { name: '✓ Approve 1' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 1' }));
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toBe('1 processed.');
+    await waitFor(() => expect(document.activeElement).toBe(status));
+    expect(screen.queryByRole('button', { name: /✓ Approve/ })).toBeNull();
   });
 });

@@ -140,3 +140,22 @@ describe('a workbook too large to send', () => {
     expect(h.customer).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('the file boxes are named (axe `label`, critical, on /import)', () => {
+  // Each was a bare <input type="file">: a screen reader said "Choose file", twice,
+  // with nothing to say which workbook either takes.
+  it('each upload names the workbook it takes', () => {
+    render(
+      <>
+        <UploadAccountForm />
+        <UploadCustomerForm />
+      </>
+    );
+    const account = screen.getByLabelText('Account master workbook (.xlsx)') as HTMLInputElement;
+    const customer = screen.getByLabelText('Customer master workbook (.xlsx)') as HTMLInputElement;
+    expect([account.type, account.name]).toEqual(['file', 'file']);
+    expect([customer.type, customer.name]).toEqual(['file', 'file']);
+    expect(account.closest('form')).toBe(screen.getByRole('button', { name: 'Upload account master' }).closest('form'));
+    expect(customer.closest('form')).toBe(screen.getByRole('button', { name: 'Upload customer master' }).closest('form'));
+  });
+});

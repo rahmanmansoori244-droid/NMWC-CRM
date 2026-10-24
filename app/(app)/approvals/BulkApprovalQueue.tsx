@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useTransition } from 'react';
+import { useEffect, useId, useRef, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Lock } from 'lucide-react';
@@ -82,6 +82,13 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
     // Distinct from a failure: nothing was attempted, so running it again is safe.
     notAttempted: number;
   } | null>(null);
+  // The outcome takes focus when it lands: on success the bulk bar that held focus
+  // unmounts, and focus would otherwise fall to <body>, a screen reader's page top.
+  const outcomeRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (outcome) outcomeRef.current?.focus();
+  }, [outcome]);
+  const selectAllHintId = useId();
 
   // Owner decision 2026-10-05 (X-APPR-1(a): no): a credit application is never
   // ticked into a bulk action; it is opened and approved on its own page. The
@@ -190,10 +197,12 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
     <div className="pb-32">
       {outcome && (
         <div
+          ref={outcomeRef}
+          tabIndex={-1}
           // Read out when it lands: what a bulk decision did was text a screen
           // reader never reached. Anything failed or not attempted is an alert.
           role={outcome.failures.length === 0 && outcome.notAttempted === 0 ? 'status' : 'alert'}
-          className={`mx-4 mb-4 rounded-md p-3 text-sm sm:mx-6 ${
+          className={`mx-4 mb-4 rounded-md p-3 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 sm:mx-6 ${
             outcome.failures.length === 0 && outcome.notAttempted === 0
               ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200'
               : 'bg-amber-50 text-amber-800 ring-1 ring-amber-200'
@@ -243,17 +252,25 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
       )}
       {allOnPage.length > 0 && (
         <div className="mx-4 mb-3 flex items-center justify-between sm:mx-6">
+          {/* WCAG 2.5.3: named by its visible text ("Select all" / "Deselect all"), so a
+              voice-control user can say what they see; the limit is its description. */}
           <label className="inline-flex items-center gap-2 text-sm text-slate-700">
             <input
               type="checkbox"
               checked={allSelected}
               onChange={toggleAll}
               className="h-5 w-5 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
-              aria-label="Select up to 50 on this page"
+              aria-describedby={selectAllHintId}
             />
             {allSelected ? 'Deselect all' : 'Select all'}
           </label>
-          <p className="text-xs text-slate-500">{selected.size} selected</p>
+          <span id={selectAllHintId} className="sr-only">
+            {`Ticks up to ${BULK_DECISION_LIMIT} cards on this page, most overdue first.`}
+          </span>
+          {/* Announced as cards are ticked: the count is the only feedback a tick gives. */}
+          <p className="text-xs text-slate-500" aria-live="polite">
+            {selected.size} selected
+          </p>
         </div>
       )}
       {selectAllCapped && (
@@ -262,6 +279,8 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
         </p>
       )}
 
+      {/* The cards are h3s under the page's h1: this is the level between them. */}
+      <h2 className="sr-only">Requests waiting for your decision</h2>
       <ul className="grid grid-cols-1 gap-3 px-4 sm:px-6">
         {items.map((e) => {
           const checked = selected.has(e.id);
@@ -274,7 +293,7 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
             >
               {isCreditCard(e) ? (
                 <span
-                  className="mt-1 inline-flex h-5 w-5 shrink-0 items-center justify-center text-slate-400"
+                  className="mt-1 inline-flex h-5 w-5 shrink-0 items-center justify-center text-slate-500"
                   title={CREDIT_BULK_REFUSED_MESSAGE}
                   aria-label="Credit application: open it to decide"
                   role="img"
@@ -283,7 +302,7 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
                 </span>
               ) : isTemixCard(e) ? (
                 <span
-                  className="mt-1 inline-flex h-5 w-5 shrink-0 items-center justify-center text-slate-400"
+                  className="mt-1 inline-flex h-5 w-5 shrink-0 items-center justify-center text-slate-500"
                   title={TEMIX_CODE_BULK_REFUSED_MESSAGE}
                   aria-label="Enter its Temix code: open it to approve"
                   role="img"
@@ -387,7 +406,7 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
                 type="button"
                 disabled={pending}
                 onClick={() => setShowApprove(true)}
-                className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:bg-slate-300"
+                className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:bg-slate-300"
               >
                 {pending ? 'Working…' : `✓ Approve ${selected.size}`}
               </button>

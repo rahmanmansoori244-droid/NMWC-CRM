@@ -379,7 +379,8 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
             }`}
           >
             {t.label}
-            <span className="ml-1.5 text-xs text-slate-500">{t.count}</span>
+            {/* slate-600: slate-500 is 4.37:1 on the current tab's brand-50. */}
+            <span className="ml-1.5 text-xs text-slate-600">{t.count}</span>
           </Link>
         ))}
       </nav>
@@ -405,15 +406,17 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
             <table className="min-w-full divide-y divide-slate-200 text-sm">
               <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-600">
                 <tr>
-                  <th className="px-3 py-3 font-medium">Name</th>
-                  <th className="px-3 py-3 font-medium">Username</th>
-                  <th className="px-3 py-3 font-medium">Role</th>
-                  <th className="px-3 py-3 font-medium">Reports to</th>
-                  <th className="px-3 py-3 font-medium">Route</th>
-                  <th className="px-3 py-3 font-medium">Regions</th>
-                  <th className="px-3 py-3 font-medium">Status</th>
-                  <th className="px-3 py-3 font-medium">Last login</th>
-                  <th className="px-3 py-3 font-medium"></th>
+                  <th scope="col" className="px-3 py-3 font-medium">Name</th>
+                  <th scope="col" className="px-3 py-3 font-medium">Username</th>
+                  <th scope="col" className="px-3 py-3 font-medium">Role</th>
+                  <th scope="col" className="px-3 py-3 font-medium">Reports to</th>
+                  <th scope="col" className="px-3 py-3 font-medium">Route</th>
+                  <th scope="col" className="px-3 py-3 font-medium">Regions</th>
+                  <th scope="col" className="px-3 py-3 font-medium">Status</th>
+                  <th scope="col" className="px-3 py-3 font-medium">Last login</th>
+                  <th scope="col" className="px-3 py-3 font-medium">
+                    <span className="sr-only">Actions</span>
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -440,7 +443,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                         className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
                           u.isActive
                             ? 'bg-emerald-50 text-emerald-700'
-                            : 'bg-slate-100 text-slate-500'
+                            : 'bg-slate-100 text-slate-600'
                         }`}
                       >
                         {u.isActive ? 'Active' : 'Disabled'}
@@ -493,7 +496,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                 ))}
                 {users.length === 0 && (
                   <tr>
-                    <td colSpan={9} className="px-3 py-6 text-center text-slate-400">
+                    <td colSpan={9} className="px-3 py-6 text-center text-slate-500">
                       No {status === 'all' ? '' : `${status} `}accounts to show.
                     </td>
                   </tr>
@@ -544,7 +547,7 @@ function RegionsCell({
     const codes = user.managedRegions.map((g) => g.code).sort();
     return <>{codes.join(', ')}</>;
   }
-  if (user.ownedRoute) return <span className="text-slate-400">{user.ownedRoute.region.code}</span>;
+  if (user.ownedRoute) return <span className="text-slate-500">{user.ownedRoute.region.code}</span>;
   return <>—</>;
 }
 

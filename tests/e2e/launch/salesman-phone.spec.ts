@@ -1156,7 +1156,7 @@ test.describe('salesman phone: the bell and the inbox (SM-NOTIFICATIONS)', { tag
     // Wave 1: his red count is returned work only; "approved" and "advanced" are for information.
     await expect(bell).toHaveAttribute('aria-label', 'Notifications (10 unread, 2 for information)');
     await expect(bell).toHaveText('9+');
-    await expect(bell.locator('span')).toHaveClass(/bg-red-500/);
+    await expect(bell.locator('span')).toHaveClass(/bg-red-600/);
 
     await bell.click();
     await expect(page).toHaveURL(/\/notifications$/);

@@ -1045,3 +1045,29 @@ describe('owner decisions 2026-10-11: the credit chain on the review page', () =
     expect(screen.getByRole('link', { name: 'Open profile' })).toBeTruthy();
   });
 });
+
+describe('the review page’s approval chain, for a screen reader', () => {
+  // The pills said by colour alone which step was done and which was current.
+  it('is an ordered list of steps; the current one is aria-current="step", and each says its state in words', async () => {
+    await renderDetail(createRow('CREDIT', 3));
+    const list = screen.getByRole('list', { name: 'Approval steps' });
+    expect(list.tagName).toBe('OL');
+    const items = within(list).getAllByRole('listitem');
+    expect(items.map((li) => li.textContent?.replace(/\s+/g, ' ').replace(/^→ ?/, '').trim())).toEqual([
+      'Supervisor (done)',
+      'Sales Director (done)',
+      'Signed application (done)',
+      'Finance Manager (current step)',
+      'GM (to come)',
+      'Accountant (to come)',
+    ]);
+    const current = list.querySelectorAll('[aria-current]');
+    expect(current).toHaveLength(1);
+    expect(current[0]!.getAttribute('aria-current')).toBe('step');
+    // The pill's own text stays the step's name; the state is a sibling.
+    expect(current[0]!.textContent).toBe('Finance Manager');
+    expect(current[0]!.className).toContain('bg-brand-600');
+    // The arrows between the pills are not read out.
+    for (const arrow of within(list).getAllByText('→')) expect(arrow.getAttribute('aria-hidden')).toBe('true');
+  });
+});

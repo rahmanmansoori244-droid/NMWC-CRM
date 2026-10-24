@@ -235,13 +235,13 @@ export default async function ImportBatchPage({
           <table className="min-w-full divide-y divide-slate-200 text-xs">
             <thead className="bg-slate-50 text-left uppercase tracking-wide text-slate-500">
               <tr>
-                <th className="px-3 py-2 font-medium">Row</th>
-                <th className="px-3 py-2 font-medium">State</th>
-                <th className="px-3 py-2 font-medium">Customer</th>
-                <th className="px-3 py-2 font-medium">Branch · route · day</th>
-                <th className="px-3 py-2 font-medium">What happened</th>
-                <th className="px-3 py-2 font-medium">As uploaded</th>
-                {fixable && <th className="px-3 py-2 font-medium">Fix</th>}
+                <th scope="col" className="px-3 py-2 font-medium">Row</th>
+                <th scope="col" className="px-3 py-2 font-medium">State</th>
+                <th scope="col" className="px-3 py-2 font-medium">Customer</th>
+                <th scope="col" className="px-3 py-2 font-medium">Branch · route · day</th>
+                <th scope="col" className="px-3 py-2 font-medium">What happened</th>
+                <th scope="col" className="px-3 py-2 font-medium">As uploaded</th>
+                {fixable && <th scope="col" className="px-3 py-2 font-medium">Fix</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -354,7 +354,7 @@ export default async function ImportBatchPage({
               })}
               {displayRows.length === 0 && (
                 <tr>
-                  <td colSpan={fixable ? 7 : 6} className="px-3 py-6 text-center text-slate-400">
+                  <td colSpan={fixable ? 7 : 6} className="px-3 py-6 text-center text-slate-500">
                     {view === 'all' ? 'No rows.' : `No rows in "${ROW_VIEW_LABEL[view]}".`}
                   </td>
                 </tr>

@@ -1457,7 +1457,7 @@ test.describe('a credit application, and a new customer at its last step, is nev
     await expect(k4.getByRole('img', { name: CREDIT_LOCK })).toBeVisible();
     await expect(k4.getByRole('checkbox')).toHaveCount(0);
     await expect(m1.getByText(CREDIT_QUEUE_NOTE, { exact: true })).toBeVisible();
-    await m1.getByLabel('Select up to 50 on this page').check();
+    await m1.getByRole('checkbox', { name: 'Select all', exact: true }).check();
     await expect(m1.getByText('2 selected', { exact: true }).first()).toBeVisible();
     for (const k of ['c3', 'c4']) await expect(m1.getByRole('checkbox', { name: `Select edit for ${S[k]!.legalName}` })).toBeChecked();
 
@@ -1534,13 +1534,13 @@ test.describe('a credit application, and a new customer at its last step, is nev
       await expect(card.getByRole('checkbox')).toHaveCount(0);
     }
     await expect(acc1.getByText(TEMIX_LOCK_NOTE, { exact: true })).toBeVisible();
-    await expect(acc1.getByLabel('Select up to 50 on this page'), 'every card at his step is locked: no Select all').toHaveCount(0);
+    await expect(acc1.getByRole('checkbox', { name: 'Select all', exact: true }), 'every card at his step is locked: no Select all').toHaveCount(0);
 
     // A bulk approve captured from M1's queue (two cash requests at the Supervisor step; aborted in the browser),
     // replayed by ACC1 with ONE cash id at his step and its fresh token: refused, nothing written.
     const m1 = await pageAs(browser, w.user('M1'), 'desktop');
     await m1.goto('/approvals');
-    await m1.getByLabel('Select up to 50 on this page').check();
+    await m1.getByRole('checkbox', { name: 'Select all', exact: true }).check();
     await m1.getByRole('button', { name: '✓ Approve 2' }).click();
     const action = await captureServerAction(m1, () =>
       m1.getByRole('dialog', { name: 'Approve 2 edits?' }).getByRole('button', { name: 'Approve 2', exact: true }).click()
@@ -2709,7 +2709,7 @@ test.describe('twelve cash customers, from Select all at the Supervisor step to 
     // Each run stops at the 40 s budget and says how many it did not attempt. Every run must make progress.
     while (left > 0 && runs < 8) {
       runs++;
-      await m3.getByLabel('Select up to 50 on this page').check();
+      await m3.getByRole('checkbox', { name: 'Select all', exact: true }).check();
       await expect(m3.getByText(`${left} selected`, { exact: true }).first()).toBeVisible();
       await m3.getByRole('button', { name: `✓ Approve ${left}` }).click();
       const started = Date.now();
@@ -2740,7 +2740,7 @@ test.describe('twelve cash customers, from Select all at the Supervisor step to 
     await acc1.goto('/approvals');
     expect(await pendingCount(acc1)).toBe(12);
     await expect(acc1.getByRole('img', { name: TEMIX_LOCK_LABEL })).toHaveCount(12);
-    await expect(acc1.getByLabel('Select up to 50 on this page')).toHaveCount(0);
+    await expect(acc1.getByRole('checkbox', { name: 'Select all', exact: true })).toHaveCount(0);
 
     // One at a time, in queue order, each with its own Temix code.
     const seqBefore = await codeSequenceNext();

@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useState, useTransition } from 'react';
+import { useEffect, useId, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { approveReactivationAction, rejectReactivationAction } from '@/services/reactivations';
 import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
@@ -16,6 +16,20 @@ export function ReactivationDecisionForm({ editId }: { editId: string }) {
   // The reason box had only a placeholder: no name for a screen reader once
   // typing hid it, and a refusal was plain text, never read out.
   const uid = useId();
+  // Keep closed swaps the buttons for the form: focus follows to the form (not
+  // to the reason box, so no phone keyboard opens unasked), and Cancel puts it
+  // back on Keep closed. It fell to <body> both ways.
+  const formRef = useRef<HTMLFormElement>(null);
+  const keepClosedRef = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef(false);
+  useEffect(() => {
+    if (showReject) {
+      formRef.current?.focus();
+    } else if (returnFocus.current) {
+      returnFocus.current = false;
+      keepClosedRef.current?.focus();
+    }
+  }, [showReject]);
 
   function approve() {
     setConfirmingApprove(false);
@@ -70,6 +84,7 @@ export function ReactivationDecisionForm({ editId }: { editId: string }) {
       {!showReject ? (
         <div className="flex gap-2">
           <button
+            ref={keepClosedRef}
             type="button"
             onClick={() => setShowReject(true)}
             disabled={pending}
@@ -81,13 +96,19 @@ export function ReactivationDecisionForm({ editId }: { editId: string }) {
             type="button"
             onClick={() => setConfirmingApprove(true)}
             disabled={pending}
-            className="rounded-md bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:bg-slate-300"
+            className="rounded-md bg-emerald-700 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800 disabled:bg-slate-300"
           >
             {pending ? 'Working…' : '✓ Reactivate'}
           </button>
         </div>
       ) : (
-        <form onSubmit={reject} className="flex flex-col items-end gap-2">
+        <form
+          ref={formRef}
+          onSubmit={reject}
+          aria-label="Keep this shop closed"
+          tabIndex={-1}
+          className="flex flex-col items-end gap-2 focus:outline-none"
+        >
           <label htmlFor={`${uid}-reason`} className="sr-only">
             Reason for keeping it closed
           </label>
@@ -105,7 +126,10 @@ export function ReactivationDecisionForm({ editId }: { editId: string }) {
           <div className="flex gap-2">
             <button
               type="button"
-              onClick={() => setShowReject(false)}
+              onClick={() => {
+                returnFocus.current = true;
+                setShowReject(false);
+              }}
               className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700"
             >
               Cancel
