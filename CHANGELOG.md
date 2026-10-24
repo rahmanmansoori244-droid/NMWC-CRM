@@ -104,4 +104,4 @@
 - **The client no longer reads `.env` itself.** Operator scripts and tests build their client as `new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(<guarded URL>)) })`; the scripts production guard accepts only that inline form, and counts `@prisma/adapter-pg` as opening a database
 - **CI drift check:** `migrate diff --to-schema … --output drift.sql`, the shadow database from `SHADOW_DATABASE_URL` (CI only)
 - **Cold start:** the warm-up runs `SELECT 1`, because `$connect()` no longer opens a connection
-- **Not done yet:** 7.10.1 (deepmerge-ts 8 and mysql2 3.24 in the CLI's tree) is taken once it is two weeks old, on or after 2026-10-30; until then `npm audit --omit=dev` lists 12 packages (0 critical), one more than before
+- **Not done yet:** 7.10.1 (deepmerge-ts 8 and mysql2 3.24 in the CLI's tree) is taken once it is two weeks old, on or after 2026-10-30; until then `npm audit --omit=dev` lists 12 packages (0 critical, 6 high, 6 moderate), one more than before (11: 5 high, 6 moderate), and 7.10.1 brings it to 8 (2 high, 6 moderate)

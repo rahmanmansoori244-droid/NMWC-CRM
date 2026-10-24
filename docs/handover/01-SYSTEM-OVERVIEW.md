@@ -145,8 +145,9 @@ flowchart LR
 | Excel | exceljs 4.4: import parsing and a streaming writer for exports. | `lib/excel.ts` |
 
 **Dependency debt to plan for.** `npm audit --omit=dev` is gated at critical in CI.
-Four high and three moderate findings are open; fixing them needs Next 16, zod 4, an
-exceljs change and the Prisma 7.10.1 patch (Prisma 7 itself is in, on 7.10.0)
+It lists 12 vulnerable packages (0 critical, 6 high, 6 moderate); fixing them needs
+Next 16, zod 4, an exceljs change, a newer nodemailer and the Prisma 7.10.1 patch
+(Prisma 7 itself is in, on 7.10.0; 7.10.1, due on or after 2026-10-30, leaves 8)
 ([AUDITOR-BRIEF §8](../../AUDITOR-BRIEF.md#8-security-controls), "Secrets hygiene").
 
 Deeper: [AUDITOR-BRIEF §3](../../AUDITOR-BRIEF.md#3-architecture-and-stack) and
