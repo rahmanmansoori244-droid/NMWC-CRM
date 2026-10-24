@@ -59,7 +59,7 @@ import { normalizePhone } from '@/lib/phone';
 import { manualGpsMarker } from '@/lib/gps-manual';
 import { normalizeCR } from '@/lib/cr';
 import { checkLimit, FORM_LIMIT } from '@/lib/rate-limit';
-import { resolveChain, stepDeadline } from '@/lib/approval-chains';
+import { freezeChain, resolveChain, stepDeadline } from '@/lib/approval-chains';
 import {
   submitCreateSchema,
   collectMissingForCreate,
@@ -420,6 +420,8 @@ async function submitCreateOnce(
 
   const submittedAt = new Date();
   const chain = resolveChain(EditProcess.CREATE, c.paymentTerms);
+  // Gap 37: frozen with the working calendar; the request and its revision hold the same.
+  const frozenChain = freezeChain(chain);
   const firstStep = chain[0]!;
   const isCredit = c.paymentTerms === PaymentTerms.CREDIT;
 
@@ -512,7 +514,7 @@ async function submitCreateOnce(
           // Fresh chain freeze on every submit: paymentTerms may have changed
           // across a correction round, which re-routes CASH ↔ CREDIT.
           paymentTermsAtSubmit: c.paymentTerms,
-          approvalChain: chain as unknown as Prisma.InputJsonValue,
+          approvalChain: frozenChain as unknown as Prisma.InputJsonValue,
           currentStepIndex: 0,
           pendingRole: firstStep.role,
           stageEnteredAt: submittedAt,
@@ -688,7 +690,7 @@ async function submitCreateOnce(
           paymentTerms: c.paymentTerms,
           requestedCreditLimit: creditFields.requestedCreditLimit,
           requestedPaymentTermDays: creditFields.requestedPaymentTermDays,
-          approvalChain: chain as unknown as Prisma.InputJsonValue,
+          approvalChain: frozenChain as unknown as Prisma.InputJsonValue,
           payload: payload as Prisma.InputJsonValue,
           payloadSha256: revisionSha256,
           source: src.edit(editRow.id),

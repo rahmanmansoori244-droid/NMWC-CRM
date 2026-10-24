@@ -92,6 +92,7 @@ import { checkLimit, FORM_LIMIT } from '@/lib/rate-limit';
 import { answerIfLanded, findReceipt, ownOpenRequestMessage } from '@/lib/submission-replay';
 import { submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
 import {
+  freezeChain,
   resolveChain,
   parseChain,
   isFinalStep,
@@ -930,7 +931,8 @@ async function submitEditOnce(
   const firstStep = chain[0]!;
   const chainFields = {
     process,
-    approvalChain: chain as unknown as Prisma.InputJsonValue,
+    // Gap 37: frozen as { v, calendar, steps } (lib/approval-chains.ts freezeChain).
+    approvalChain: freezeChain(chain) as unknown as Prisma.InputJsonValue,
     paymentTermsAtSubmit: customer.paymentTerms,
     currentStepIndex: 0,
     // INVARIANT: `cycle` starts at 1 and is never bumped today, because the only
@@ -1579,9 +1581,10 @@ async function approveEditCore(formData: FormData) {
     );
   }
   // QA-C11 (Critical): a reactivation is a Manager-only decision (region-scoped +
-  // photo-evidence gated) handled exclusively by approveReactivationAction. It is
-  // created directly (no approvalChain), so the generic step engine would treat it
-  // as a single SUPERVISOR step and let the submitter's Supervisor flip the branch
+  // photo-evidence gated) handled exclusively by approveReactivationAction. It was
+  // created with no approvalChain (gap 37 now freezes its Manager step, but rows
+  // sent before have none), so the generic step engine would treat it as a single
+  // SUPERVISOR step and let the submitter's Supervisor flip the branch
   // CLOSED->ACTIVE — bypassing the Manager gate. Refuse it here; the reactivation
   // action is the only lane.
   if (edit.isReactivation) {

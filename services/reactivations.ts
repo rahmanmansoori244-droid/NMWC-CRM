@@ -29,7 +29,7 @@ import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { lockCustomerRow } from '@/lib/locks';
 import { followBranchStatus, statusEvents } from '@/lib/customer-status';
 import { REACTIVATION_STATE_CHANGED_MESSAGE, assertStatusEvidence } from '@/lib/status-evidence';
-import { stepDeadline } from '@/lib/approval-chains';
+import { closeRequestChain, freezeChain, reactivationChain, stepDeadline } from '@/lib/approval-chains';
 import { STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN, stageSnapshot } from '@/lib/working-hours';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import {
@@ -313,6 +313,9 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
         // is Manager-only) — stamping pendingRole keeps them OUT of the
         // Supervisor-step /approvals queues and puts them on the SLA clock.
         pendingRole: Role.MANAGER,
+        // Gap 37: the chain it rides — one Manager step on the Manager's budget,
+        // as it always was — frozen with the working calendar.
+        approvalChain: freezeChain(reactivationChain()) as unknown as Prisma.InputJsonValue,
         stageEnteredAt: reactSubmittedAt,
         slaDueAt: stepDeadline(
           reactSubmittedAt,
@@ -459,6 +462,8 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
         decisionReason: reason,
         // Phase 1 SLA: close requests ride the normal Supervisor approval.
         pendingRole: Role.SUPERVISOR,
+        // Gap 37: the Supervisor step it always rode, frozen with the working calendar.
+        approvalChain: freezeChain(closeRequestChain()) as unknown as Prisma.InputJsonValue,
         stageEnteredAt: closeSubmittedAt,
         slaDueAt: stepDeadline(
           closeSubmittedAt,

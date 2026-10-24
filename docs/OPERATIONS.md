@@ -36,6 +36,15 @@ hold the same value. A test fails when the code reads a variable that list does 
 This section used to keep its own list of eight; the code reads more than thirty, and the
 missing ones included `CRON_SECRET`, `HEALTH_BEARER` and `ALERT_WEBHOOK_URL`.
 
+**Every change to a `WORK_*` or `SLA_*` variable is a dated entry in the private
+operations log** (the owner's handover pack, §5j and §5e; never in this repository): the
+variable, its old and new value, who changed it, why, and the date it took effect (gap 37).
+These set the working calendar and the step budgets every SLA deadline is computed on
+(`lib/working-hours.ts`). Each request freezes the calendar and its budgets with its chain
+when it is sent (`{ v, calendar, steps }`, `lib/approval-chains.ts` `freezeChain`), but
+deadlines are computed on the calendar in force, so the log is what explains a deadline
+computed across a change.
+
 ## 4. Deploy
 
 Branch model: trunk (`main`). Every push to `main` is a deploy, and `main` moves only

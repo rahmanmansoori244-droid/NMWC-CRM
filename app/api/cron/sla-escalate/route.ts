@@ -29,7 +29,7 @@ import { logger } from '@/lib/logger';
 import { cronAuthorized } from '@/lib/cron-auth';
 import { withHeartbeat } from '@/lib/heartbeat';
 import { escalationPlan } from '@/lib/escalation';
-import { parseChain, stepName } from '@/lib/approval-chains';
+import { frozenStepBudgetMin, stepName } from '@/lib/approval-chains';
 import { requestScopeBranches } from '@/lib/permissions';
 import { parseSubmitGate } from '@/lib/edit-scope';
 import {
@@ -112,16 +112,15 @@ function editName(e: DueEdit): string {
 /**
  * The stage's budget in working minutes: from the row's FROZEN chain snapshot
  * (the same source that stamped slaDueAt) so an env override never retimes
- * in-flight edits; rows without a chain (reactivations, deploy-gap) fall back to
- * the env policy for their pendingRole.
+ * in-flight edits — either stored form (gap 37: `{ v, calendar, steps }`, or the
+ * older bare array); rows without a chain (reactivations and closes sent before
+ * gap 37, deploy-gap rows) fall back to the env policy for their pendingRole.
  */
 function stageBudgetMin(e: DueEdit): number {
-  const frozenStep = Array.isArray(e.approvalChain)
-    ? parseChain(e.approvalChain)[e.currentStepIndex]
-    : undefined;
-  return frozenStep
-    ? Math.round(frozenStep.slaHours * 60)
-    : (STAGE_SLA_MINUTES[e.pendingRole ?? Role.SUPERVISOR] ?? DEFAULT_STAGE_SLA_MIN);
+  return (
+    frozenStepBudgetMin(e.approvalChain, e.currentStepIndex) ??
+    (STAGE_SLA_MINUTES[e.pendingRole ?? Role.SUPERVISOR] ?? DEFAULT_STAGE_SLA_MIN)
+  );
 }
 
 /** Resolve the escalation plan to concrete user ids. */
@@ -283,8 +282,8 @@ async function handle(req: NextRequest) {
   // ── 2. Level-2 sweep: past ESCALATION_MULTIPLIER × the stage budget.
   //       Budget comes from the row's FROZEN chain snapshot (same source that
   //       stamped slaDueAt) so an env override never retimes in-flight edits;
-  //       rows without a chain (reactivations, deploy-gap) fall back to the
-  //       env policy for their pendingRole. ──
+  //       rows without a chain (reactivations and closes sent before gap 37,
+  //       deploy-gap rows) fall back to the env policy for their pendingRole. ──
   let level2 = 0;
   const l1 = await prisma.customerEdit.findMany({
     where: { state: 'SUBMITTED', escalationLevel: 1, stageEnteredAt: { not: null } },
