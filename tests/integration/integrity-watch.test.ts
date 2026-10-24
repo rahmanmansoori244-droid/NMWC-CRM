@@ -5,11 +5,17 @@
  * and alerts the Steward it is given — once.
  *
  * A synthetic world (zz<suite><base36>): a customer whose only shop is closed
- * while it stays active (status drift), two customers sharing a Temix code, and
+ * while it stays active (status drift), two customers sharing a CR number, and
  * a change written with no change context (source 'sql'). The same status drift
- * and shared code on a customer the owner flags as a test record must NOT be
+ * and shared CR on a customer the owner flags as a test record must NOT be
  * counted. UAT is shared, so each check is read before and after the faults and
  * the DIFFERENCE is asserted.
+ *
+ * Owner decisions 2026-10-25: two live customers can no longer share a Temix
+ * code — the database refuses the second (migration
+ * 20261025120000_temix_code_unique), so temix-code-shared finds none of this
+ * world's; a shared CR number is allowed and listed by cr-number-shared, as
+ * information.
  *
  * The run writes a seal on UAT's own chain (crons do not run there, and its chain
  * is broken by every integration clean-up anyway, docs/OPERATIONS.md 5k); the
@@ -39,6 +45,8 @@ describe.skipIf(!ENABLED)('gap 29: the nightly integrity checks on Postgres', ()
   const ctx = (): CheckContext => ({ now: new Date(), previous: new Map() });
   const count = async (id: string) => (await CHECK_BY_ID.get(id)!.run!(prisma, ctx())).count;
   const before: Record<string, number> = {};
+  /** The CR number this world's customers share (normalised already). */
+  let CR = '';
 
   beforeAll(async () => {
     assertNotProductionEnv();
@@ -47,18 +55,39 @@ describe.skipIf(!ENABLED)('gap 29: the nightly integrity checks on Postgres', ()
     w = await buildWorld(prisma, 'intwatch');
     const [s] = await prisma.$queryRaw<Array<{ n: number | null }>>`SELECT max("seq") AS n FROM "SealRecord"`;
     sealsBefore = s?.n ?? -1;
-    for (const id of ['customer-status-follows-shops', 'temix-code-shared', 'history-unattributed-since-last-run']) before[id] = await count(id);
+    for (const id of ['customer-status-follows-shops', 'temix-code-shared', 'cr-number-shared', 'history-unattributed-since-last-run']) {
+      before[id] = await count(id);
+    }
 
     const db = contextClient(prisma, { actorId: null, source: src.test('integrity-watch') });
     const SFX = w.sfx.toUpperCase();
+    CR = `ZZCR-${SFX}`;
     // Real faults.
     await prisma.$executeRaw`UPDATE "Branch" SET "status" = 'CLOSED' WHERE "id" = ${w.branch}`; // drift (and a no-context write)
     for (const n of [1, 2]) {
-      const c = await db.customer.create({ data: { nmwcCode: `${SFX}-T${n}`, legalName: `ZZ shared ${n}`, paymentTerms: 'CASH', temixCode: `${SFX}T` } });
+      const c = await db.customer.create({
+        data: {
+          nmwcCode: `${SFX}-T${n}`,
+          legalName: `ZZ shared ${n}`,
+          paymentTerms: 'CASH',
+          crNumber: CR,
+          crNumberNorm: CR,
+          temixCode: n === 1 ? `${SFX}T` : null,
+        },
+      });
       w.customers.push(c.id);
     }
+    // Owner decision 2026-10-25: a second live customer on the Temix code is refused by the database.
+    await expect(
+      db.customer.create({ data: { nmwcCode: `${SFX}-T3`, legalName: 'ZZ shared 3', paymentTerms: 'CASH', temixCode: ` ${SFX.toLowerCase()}t ` } })
+    ).rejects.toMatchObject({ code: 'P2002' });
+    // An archived customer on the CR is not counted.
+    const archived = await db.customer.create({
+      data: { nmwcCode: `${SFX}-A`, legalName: 'ZZ archived', paymentTerms: 'CASH', crNumber: CR, crNumberNorm: CR, deletedAt: new Date() },
+    });
+    w.customers.push(archived.id);
     // The same faults on a test customer.
-    const t = await db.customer.create({ data: { nmwcCode: `${SFX}-X`, legalName: 'ZZ test', paymentTerms: 'CASH', temixCode: `${SFX}T` } });
+    const t = await db.customer.create({ data: { nmwcCode: `${SFX}-X`, legalName: 'ZZ test', paymentTerms: 'CASH', crNumber: CR, crNumberNorm: CR } });
     w.customers.push(t.id);
     const tb = await db.branch.create({
       data: { customerId: t.id, branchCode: `${SFX}-X-01`, branchName: 'ZZ', routeId: w.route, regionId: w.regionA, address: 'ZZ Way 1, synthetic', status: 'CLOSED' },
@@ -80,8 +109,12 @@ describe.skipIf(!ENABLED)('gap 29: the nightly integrity checks on Postgres', ()
 
   it('counts the real faults and not the test record’s', async () => {
     expect((await count('customer-status-follows-shops')) - before['customer-status-follows-shops']!).toBe(1);
-    // The two real customers; the flagged one sharing the code is left out.
-    expect((await count('temix-code-shared')) - before['temix-code-shared']!).toBe(2);
+    // Owner decision 2026-10-25: the database refused the second holder of the code, so none is shared.
+    expect((await count('temix-code-shared')) - before['temix-code-shared']!).toBe(0);
+    // The two real customers on the CR; the archived one and the flagged one are left out.
+    const cr = await CHECK_BY_ID.get('cr-number-shared')!.run!(prisma, ctx());
+    expect(cr.count - before['cr-number-shared']!).toBe(2);
+    expect(CHECK_BY_ID.get('cr-number-shared')!.policy).toBe('info');
     expect((await count('history-unattributed-since-last-run')) - before['history-unattributed-since-last-run']!).toBeGreaterThanOrEqual(1);
   });
 

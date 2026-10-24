@@ -367,8 +367,13 @@ model Customer {
   paymentTermDays Int?
 
   // Phase 1: Temix (ERP) crosswalk + batch-upload queue. nmwcCode == temixCode
-  // for migrated rows, so temixCode is nullable + NON-unique (H-01); a partial
-  // unique index is added later once the Steward confirms crosswalk cleanliness.
+  // for migrated rows, so temixCode is nullable and has no plain unique index
+  // (H-01). Owner decision 2026-10-25: one LIVE customer per code, enforced by
+  // the partial unique index Customer_temixCode_live_unique on
+  // upper(btrim(temixCode)) WHERE deletedAt IS NULL AND temixCode IS NOT NULL
+  // (migration 20261025120000_temix_code_unique). Prisma cannot describe an
+  // index on an expression with a WHERE clause, so it is not declared here; CI's
+  // drift gate allows it by name.
   temixCode              String?
   temixSyncState         TemixSyncState @default(SYNCED)
   temixSyncPendingSince  DateTime?

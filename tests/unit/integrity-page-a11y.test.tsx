@@ -83,6 +83,31 @@ describe('/status/integrity, for a screen reader', () => {
     expect(screen.queryAllByRole('img')).toHaveLength(0);
   });
 
+  it('cr-number-shared (owner decision 2026-10-25): its samples are customer codes, and it links to /duplicates when it finds any', async () => {
+    const cr = (count: number, sampleIds: string[]) =>
+      report({
+        latest: [{ runAt: RUN, checkId: 'cr-number-shared', status: 'info', count, sampleIds, detail: { crNumbers: 1, largest: 2, pairs: 1 } }],
+        trend: new Map([['cr-number-shared', ['info']]]),
+        customerOf: new Map([
+          ['c1', { id: 'c1', code: 'NMWC-2026-000001' }],
+          ['c2', { id: 'c2', code: 'NMWC-2026-000002' }],
+        ]),
+      });
+    h.load.mockResolvedValue(cr(2, ['c1', 'c2']));
+    render(await IntegrityPage());
+    const heading = screen.getByRole('heading', { level: 3, name: /^Live customers sharing a CR number/ });
+    const item = heading.closest('li')!;
+    expect(within(item).getByRole('link', { name: 'NMWC-2026-000001' }).getAttribute('href')).toBe('/customers/c1');
+    expect(within(item).getByRole('link', { name: 'NMWC-2026-000002' }).getAttribute('href')).toBe('/customers/c2');
+    expect(within(item).getByRole('link', { name: 'Review them on the duplicates page' }).getAttribute('href')).toBe('/duplicates');
+    cleanup();
+
+    h.load.mockResolvedValue(cr(0, []));
+    render(await IntegrityPage());
+    const none = screen.getByRole('heading', { level: 3, name: /^Live customers sharing a CR number/ }).closest('li')!;
+    expect(within(none).queryByRole('link')).toBeNull();
+  });
+
   it('each check is a heading under "Last run", and the seal table names its columns', async () => {
     render(await IntegrityPage());
     const lastRun = screen.getByRole('heading', { level: 2, name: /^Last run/ });

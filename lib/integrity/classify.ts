@@ -104,6 +104,34 @@ export function classifyTemixCodes(rows: TemixCodeRow[], knownLegacy = KNOWN_LEG
   return { count: fail.length, sampleIds: capSamples(fail), detail: { byProblem, info: legacy } };
 }
 
+// ── cr-number-shared ───────────────────────────────────────────────────────
+
+/**
+ * Owner decision 2026-10-25: a CR number may be shared, and every shared one is
+ * flagged (information, never alerting). `rows` is one row per shared CR number:
+ * the ids of the live customers on it. The count is the customers, the samples
+ * keep each CR number's customers together (so a pair is seen as a pair), and
+ * the detail says how many CR numbers, the most customers on one (a placeholder
+ * CR shows as one large group) and how many pairs the duplicates detector's CR
+ * rule makes of them before any "Mark distinct" (lib/duplicate-pairing.ts).
+ * Never the CR number itself.
+ */
+export function sharedCrFindings(rows: Array<{ ids: string[] | null }>) {
+  const groups = rows
+    .map((r) => [...new Set(r.ids ?? [])].sort())
+    .filter((g) => g.length > 1)
+    .sort((a, b) => (a[0]! < b[0]! ? -1 : a[0]! > b[0]! ? 1 : 0));
+  let count = 0;
+  let largest = 0;
+  let pairs = 0;
+  for (const g of groups) {
+    count += g.length;
+    largest = Math.max(largest, g.length);
+    pairs += (g.length * (g.length - 1)) / 2;
+  }
+  return { count, sampleIds: capSamples(groups.flat()), detail: { crNumbers: groups.length, largest, pairs } };
+}
+
 // ── 13. customer-code-sequence ─────────────────────────────────────────────
 
 export type CodeScopeRow = { scope: string; next: number; maxSeq: number | null };

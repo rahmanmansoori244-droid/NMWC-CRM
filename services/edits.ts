@@ -118,8 +118,8 @@ import {
   settleRequestAlerts,
 } from '@/lib/notifications';
 import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
-import { finalizeCreateInTx, assertFinalizable } from '@/lib/create-finalize';
-import { normalizeTemixCode, temixCodeProblem } from '@/lib/temix-code';
+import { finalizeCreateInTx, assertFinalizable, temixCodeTakenError } from '@/lib/create-finalize';
+import { normalizeTemixCode, temixCodeProblem, temixCodeRefusal } from '@/lib/temix-code';
 import { salesmanSubmitGate, isRequired, type SubmitGate } from '@/lib/submit-gate';
 import { PRINT_REQUEST_TITLE } from '@/lib/print';
 import { openReturnedIds, RETURNED_CLEARED_REASON } from '@/lib/returned-work';
@@ -1950,7 +1950,16 @@ async function approveEditCore(formData: FormData) {
         // same-shop submit.
       },
       { timeout: 30_000, maxWait: 10_000 }
-    );
+    ).catch(async (err: unknown) => {
+      // Owner decision 2026-10-25: the database refused the code (its unique
+      // index, lib/temix-code.ts). Finalize's own check under the lock found no
+      // holder, so a write that took no lock got there first, or an older row
+      // spells the code with an outer space. The transaction rolled back whole,
+      // so nothing was approved; the Accountant is told, in the code box, which
+      // customer holds the code.
+      const refusal = await temixCodeRefusal(prisma, err, temixCode);
+      throw refusal ? temixCodeTakenError(refusal) : err;
+    });
     logger.info(
       {
         editId,

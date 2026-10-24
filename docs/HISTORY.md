@@ -531,7 +531,7 @@ ranges, so that each is recomputed at least once in 28 nights while the run's bu
 holds. An edit to an old row (same count) is therefore found within that cycle, or at
 once by `verify-seals --all`.
 
-**The checks (gap 29).** The same job runs twenty-one named read-only checks
+**The checks (gap 29).** The same job runs twenty-two named read-only checks
 (`lib/integrity/checks.ts`), among them: every live record has an open history
 interval, and its latest history row's values are the record's (the columns each
 capture trigger records) — which catches a write made with a trigger off or in
@@ -541,10 +541,25 @@ protecting function's body, rights and search path as its last migration made th
 and (gap 31, information) how many older rows break each database rule added NOT
 VALID (OPERATIONS §5l). Results go to `IntegrityCheckResult`, append-only and sealed.
 
-**Which checks alert (owner decisions 2026-10-24).** Every check fails, and alerts, on
-any non-zero count, except four that are information and never alert:
-`test-scaffolding-mixed`, `app-login-is-runtime-role`, `exports-since-last-run` and
-`sign-in-failures-since-last-run`. `scheduled-jobs-on-time` counts only the jobs in
+**Temix codes and CR numbers (owner decisions 2026-10-25).** Temix codes are unique,
+and the database enforces it: the partial unique index `Customer_temixCode_live_unique`
+(migration `20261025120000_temix_code_unique`) refuses a second live customer with a
+code, compared upper case with the ends trimmed. `temix-code-shared` still runs, on
+the same key, and says so: it should find none, and a finding means the index is
+missing or not valid (OPERATIONS §5l). CR numbers are not unique, but every shared one
+is flagged: `cr-number-shared` (information, never alerting) counts the live real
+customers sharing a normalised CR (`crNumberNorm`, the key the duplicates detector's
+CR rule pairs by), with how many CR numbers and pairs, samples shown as NMWC codes
+(never the CR number), and a link to /duplicates. The dated history keeps each
+customer's Temix code (`CustomerHistory.temixCode`), so who held a code on day D is
+answered by `nmwc_customers_on(D)`; the CR number is not a captured column, so who
+shared a CR on day D is not.
+
+**Which checks alert (owner decisions 2026-10-24 and 2026-10-25).** Every check fails,
+and alerts, on any non-zero count, except five that are information and never alert:
+`test-scaffolding-mixed`, `app-login-is-runtime-role`, `exports-since-last-run`,
+`sign-in-failures-since-last-run` and, since 2026-10-25, `cr-number-shared`.
+`scheduled-jobs-on-time` counts only the jobs in
 `ALERTING_JOBS` (`lib/integrity/policy.ts`): the SLA escalation sweep, the nightly dump
 and the integrity watch itself. A missed run of any other job — keep-warm, the e-mail
 drain, photo-gc, the retention sweep, and a job added later until it is listed — is

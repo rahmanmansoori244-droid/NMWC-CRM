@@ -5,7 +5,8 @@
  * Three groups:
  *   data       — the data's own rules (a shop's region is its route's, a
  *                customer's status follows its shops, Temix codes are single and
- *                well formed, test scaffolding is not mixed with real records).
+ *                well formed, the CR numbers live customers share, test
+ *                scaffolding is not mixed with real records).
  *                These leave the flagged test records out (lib/test-records.ts).
  *   mechanism  — the record-keeping itself (every record has an open history
  *                interval that matches it, no change without a cause, the
@@ -22,7 +23,8 @@
  * Policy: every 'alert' check fails on any non-zero count; 'info' checks never
  * fail. Owner decisions 2026-10-24: test-scaffolding-mixed is information, and
  * scheduled-jobs-on-time counts only the jobs in ALERTING_JOBS
- * (lib/integrity/policy.ts), listing the others as information. At what count a
+ * (lib/integrity/policy.ts), listing the others as information. Owner decision
+ * 2026-10-25: cr-number-shared is information. At what count a
  * check alerts is still the owner's open question (docs/OPERATIONS.md section 5k).
  *
  * Each check returns counts, at most ten sample ids and counts by sub-kind —
@@ -32,6 +34,7 @@
  * PURE of lib/db: the client is passed in.
  */
 import { Prisma, type PrismaClient } from '@prisma/client';
+import type { Route } from 'next';
 import { HEARTBEAT_EXPECTATIONS, STALE_AFTER_INTERVALS, heartbeatReport, type HeartbeatRow } from '../heartbeat';
 import {
   APPEND_ONLY_APP_TABLES,
@@ -53,6 +56,7 @@ import {
   functionFindings,
   missedRuns,
   scheduledJobFindings,
+  sharedCrFindings,
   statusDriftFindings,
   testFlagChanges,
   triggerFindings,
@@ -96,6 +100,11 @@ export type IntegrityCheck = {
   policy: CheckPolicy;
   /** Leaves the flagged test records out (the data and behaviour groups). */
   excludesTest: boolean;
+  /**
+   * Where the Steward works through what it lists, shown on /status/integrity
+   * when it finds any. A `Route`, so the page it names is checked to exist.
+   */
+  link?: { href: Route; label: string };
   /** 'seal' checks are reported by the seal step (run.ts), not run here. */
   run?: (db: Tx, ctx: CheckContext) => Promise<CheckOutcome>;
 };
@@ -219,12 +228,17 @@ export const CHECKS: IntegrityCheck[] = [
     },
   },
   {
+    // Owner decision 2026-10-25: Temix codes are unique, and the database now
+    // enforces it (migration 20261025120000_temix_code_unique, the same key as
+    // this query). So this should find nothing; a finding means the index is
+    // gone or was built while it was refused. What it counts did not change.
     id: 'temix-code-shared',
     version: 1,
     group: 'data',
     title: 'No two live customers share a Temix code',
-    why: 'Temix knows one customer per code; two CRM customers on one code make the workbook and the inbound refresh update the wrong one.',
-    remedy: 'Open each customer, find which one Temix really holds under the code, and correct or merge the other.',
+    why: 'Temix knows one customer per code; two CRM customers on one code make the workbook and the inbound refresh update the wrong one. The database now enforces it (owner decision 2026-10-25): it refuses a second live customer with a code, so this check should always find none.',
+    remedy:
+      'The database rule is not holding: check that the unique index Customer_temixCode_live_unique exists and is valid (OPERATIONS.md section 5l). Then open each customer, find which one Temix really holds under the code, and correct or merge the other.',
     policy: 'alert',
     excludesTest: true,
     run: async (db) => {
@@ -260,6 +274,33 @@ export const CHECKS: IntegrityCheck[] = [
       );
       const r = classifyTemixCodes(rows);
       return { count: r.count, sampleIds: r.sampleIds, detail: r.detail };
+    },
+  },
+  {
+    // Owner decision 2026-10-25: CR numbers are NOT unique (one company can trade
+    // as several customers), but every shared one is flagged. Information only,
+    // never alerting. The same key as the duplicates detector's CR rule
+    // (lib/duplicate-pairing.ts crKey: the normalised CR, lib/cr.ts), so every
+    // customer counted here is in a CR pair on /duplicates. The CR numbers are
+    // read to group, never returned: ids and counts only.
+    id: 'cr-number-shared',
+    version: 1,
+    group: 'data',
+    title: 'Live customers sharing a CR number',
+    why: 'A CR number may be shared (owner decision 2026-10-25: one company can trade as several customers), but a shared CR is also how a customer entered twice shows. Each such pair is on the duplicates page, CR pairs first.',
+    remedy:
+      'Information only (owner decision 2026-10-25): it never alerts. On the duplicates page, merge the pairs that are one customer and mark the others distinct; a pair marked distinct is still counted here, because the CR is still shared.',
+    policy: 'info',
+    excludesTest: true,
+    link: { href: '/duplicates', label: 'Review them on the duplicates page' },
+    run: async (db) => {
+      const rows = await q<{ ids: string[] }>(
+        db,
+        Prisma.sql`SELECT array_agg(c."id" ORDER BY c."id") AS ids FROM "Customer" c
+                    WHERE c."deletedAt" IS NULL AND NOT c."isTest" AND c."crNumberNorm" IS NOT NULL AND c."crNumberNorm" <> ''
+                    GROUP BY c."crNumberNorm" HAVING count(*) > 1`
+      );
+      return sharedCrFindings(rows);
     },
   },
   {

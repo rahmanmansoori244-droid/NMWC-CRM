@@ -1,4 +1,5 @@
-import { dbRuleViolated, isDbConflict, isTransientDbError, mayHaveCommitted } from './db-errors';
+import { dbRuleViolated, isDbConflict, isTransientDbError, mayHaveCommitted, temixCodeIndexViolated } from './db-errors';
+import { TEMIX_CODE_UNIQUE_MESSAGE } from './temix-code';
 
 /**
  * Gap 22 (data audit 2026-10-10): the losing side of two people saving at once.
@@ -261,6 +262,8 @@ export type ActionResult<T = void> =
        *   - VALIDATION_FAILED, FORBIDDEN, NOT_FOUND, RATE_LIMITED
        *   - or a custom ConflictError code (e.g. STATUS_BYPASS, EDIT_LOCKED)
        *   - DATA_RULE: a database rule refused the save (gap 31, lib/db-rules.ts)
+       *   - TEMIX_CODE_TAKEN: the Temix code belongs to another live customer
+       *     (the database's unique index, owner decision 2026-10-25)
        */
       code: string;
       /** Human-readable message safe to render verbatim in the UI. */
@@ -321,6 +324,15 @@ export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T
         ...(err.fields ? { fields: err.fields } : {}),
         ...(err instanceof StaleFieldsError ? { current: err.current } : {}),
       };
+    }
+    // Owner decision 2026-10-25: one live customer per Temix code, kept by the
+    // database (lib/db-errors.ts TEMIX_CODE_UNIQUE_INDEX). The paths that write a
+    // code translate the refusal themselves and name the customer holding it
+    // (lib/temix-code.ts temixCodeRefusal); any other is told the rule, as gap
+    // 31's rules are below — the error does not say whose code it is. Before the
+    // generic P2002 below, which it would otherwise be read as.
+    if (temixCodeIndexViolated(err)) {
+      return { ok: false, code: 'TEMIX_CODE_TAKEN', message: TEMIX_CODE_UNIQUE_MESSAGE };
     }
     // Special-case Prisma P2002 unique-constraint as a generic conflict so
     // a forgotten-to-translate Prisma error doesn't blow up as a 500. Caller

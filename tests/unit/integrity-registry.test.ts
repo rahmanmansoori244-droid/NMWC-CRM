@@ -16,6 +16,10 @@
  *    and scheduled-jobs-on-time alerts only for the jobs listed as alerting (the
  *    SLA sweep, the backup and this watch); every other job, a new one included,
  *    is information.
+ *  - The owner's decisions of 2026-10-25: Temix codes are unique and the
+ *    database enforces it (temix-code-shared says so); CR numbers are not, and
+ *    cr-number-shared lists the live customers sharing one, as information, on
+ *    the key the duplicates detector pairs by, with a link to /duplicates.
  *
  * Structural, per CLAUDE.md: comments are stripped before the source is read.
  */
@@ -43,6 +47,7 @@ describe('the registry', () => {
       'customer-status-follows-shops',
       'temix-code-shared',
       'temix-code-shape',
+      'cr-number-shared',
       'test-scaffolding-mixed',
       'history-open-interval',
       'history-matches-master',
@@ -75,8 +80,10 @@ describe('the registry', () => {
     else expect(typeof c.run).toBe('function');
   });
 
-  it('every check alerts but the five that are information (test-scaffolding-mixed by the owner’s decision of 2026-10-24)', () => {
+  it('every check alerts but the six that are information (test-scaffolding-mixed and cr-number-shared by the owner’s decisions of 2026-10-24 and 2026-10-25)', () => {
     expect(CHECKS.filter((c) => c.policy === 'info').map((c) => c.id)).toEqual([
+      // Owner decision 2026-10-25: CR numbers are not unique, but every shared one is flagged.
+      'cr-number-shared',
       'test-scaffolding-mixed',
       'app-login-is-runtime-role',
       // Gap 31: the older rows the NOT VALID rules would refuse — information until 0, then VALIDATE.
@@ -138,6 +145,42 @@ describe('test records: left out of the data, never out of the recorder', () => 
     for (const id of ['shop-region-matches-route', 'customer-status-follows-shops']) {
       expect(block(id)).toContain("realBranchSql('b')");
     }
+  });
+});
+
+describe('owner decisions 2026-10-25: Temix codes unique, CR numbers flagged', () => {
+  it('temix-code-shared still alerts, and says the database now enforces it and which index to check', () => {
+    const c = CHECK_BY_ID.get('temix-code-shared')!;
+    expect(c).toMatchObject({ group: 'data', policy: 'alert', excludesTest: true, version: 1 });
+    expect(c.why).toContain('The database now enforces it');
+    expect(c.why).toContain('should always find none');
+    expect(c.remedy).toContain('Customer_temixCode_live_unique');
+    expect(c.remedy).toContain('OPERATIONS.md section 5l');
+    // The same key as the index: upper case, the ends trimmed, live customers.
+    expect(block('temix-code-shared')).toContain('upper(btrim(c."temixCode"))');
+  });
+
+  it('cr-number-shared is information on the live real customers sharing a normalised CR, linking to /duplicates', () => {
+    const c = CHECK_BY_ID.get('cr-number-shared')!;
+    expect(c).toMatchObject({ group: 'data', policy: 'info', excludesTest: true, version: 1 });
+    expect(c.link).toEqual({ href: '/duplicates', label: 'Review them on the duplicates page' });
+    expect(c.remedy).toContain('it never alerts');
+    expect(checkStatus(c.policy, 0)).toBe('info');
+    expect(checkStatus(c.policy, 4_000)).toBe('info');
+    const b = block('cr-number-shared');
+    // The duplicates detector's CR key (lib/duplicate-pairing.ts crKey): crNumberNorm, never blank.
+    expect(b).toContain('GROUP BY c."crNumberNorm" HAVING count(*) > 1');
+    expect(b).toContain('c."deletedAt" IS NULL AND NOT c."isTest"');
+    expect(b).toContain(`c."crNumberNorm" <> ''`);
+    // Ids and counts only: the CR number groups the rows, it is never selected.
+    expect(b).toContain('SELECT array_agg(c."id" ORDER BY c."id") AS ids FROM "Customer" c');
+    expect(b).toContain('return sharedCrFindings(rows)');
+  });
+
+  it('only cr-number-shared links elsewhere, and its samples are shown as customer codes', async () => {
+    expect(CHECKS.filter((c) => c.link).map((c) => c.id)).toEqual(['cr-number-shared']);
+    const { CUSTOMER_SAMPLES } = await import('@/lib/integrity/report');
+    expect(CUSTOMER_SAMPLES.has('cr-number-shared')).toBe(true);
   });
 });
 

@@ -28,12 +28,21 @@
  * CRM (NMWC-YYYY-…, a customer's or one of its branches') is refused outright:
  * it is never Temix's, and one not allocated yet would pass every other check.
  *
- * No runtime imports but lib/digits.ts: the approval page imports the same rules
- * to check the box before it asks to confirm. The server is the authority
- * (services/edits.ts).
+ * No runtime imports but lib/digits.ts and the pure lib/db-errors.ts: the
+ * approval page imports the same rules to check the box before it asks to
+ * confirm. The server is the authority (services/edits.ts).
+ *
+ * Owner decision 2026-10-25: Temix codes are unique, and the database now says
+ * so too. A partial unique index (migration 20261025120000_temix_code_unique,
+ * lib/db-errors.ts TEMIX_CODE_UNIQUE_INDEX) refuses a second LIVE customer with
+ * a code, compared upper case with the ends trimmed. The checks below still run
+ * first and still name the holder, archived customers and branch codes included,
+ * which the index does not cover; a save the index refuses all the same is
+ * answered by temixCodeRefusal, naming the live customer that holds the code.
  */
 import type { Prisma } from '@prisma/client';
 import { INVISIBLE_FORMAT, asciiDigits } from './digits';
+import { temixCodeIndexViolated } from './db-errors';
 
 export const TEMIX_CODE_MIN = 3;
 export const TEMIX_CODE_MAX = 30;
@@ -97,8 +106,9 @@ export function temixCodeHolderMessage(code: string, holder: TemixCodeHolder): s
  * rollback, as lib/create-guards.ts does for CR numbers). Two Accountants typing
  * the same code into two requests, or a finalize and an inbound refresh or an
  * import creating a customer with it, would otherwise both pass
- * temixCodeHolder and both write it: Customer.temixCode has no unique index
- * (H-01).
+ * temixCodeHolder. The database's unique index (2026-10-25) would then refuse
+ * the second write, but it knows live customers only; the check under this lock
+ * covers archived customers and branch codes too, and says which one it is.
  */
 export async function lockTemixCode(tx: Prisma.TransactionClient, code: string): Promise<void> {
   // $executeRaw: pg_advisory_xact_lock returns void, which $queryRaw cannot read (P2010).
@@ -151,4 +161,77 @@ export async function temixCodeHolder(
     ORDER BY ("branchCode" IS NOT NULL), "archived", "nmwcCode"
     LIMIT 1`;
   return rows[0] ?? null;
+}
+
+/**
+ * The words for a save the database's unique index refused (lib/db-errors.ts
+ * temixCodeIndexViolated) when the code is not known, as in lib/errors.ts
+ * runAction for a path that does not translate the refusal itself: the rule, in
+ * its own words, never a value.
+ */
+export const TEMIX_CODE_UNIQUE_MESSAGE =
+  'That Temix code already belongs to another live customer, and the database allows each code once. Check the code in Temix.';
+
+/**
+ * The refusal naming the live customer that holds `code` (temixCodeHolder's
+ * wording for a live holder, temixCodeTakenMessage). `holder` null: none holds
+ * it any more, so it was archived or merged after the refusal and the save can
+ * be tried again. `holder` undefined: who holds it could not be read.
+ */
+export function temixCodeIndexMessage(code: string, holder: string | null | undefined): string {
+  if (holder) return temixCodeTakenMessage(code, holder);
+  if (holder === null) {
+    return `Temix code ${code} was given to another customer at the same moment, so nothing was saved. Check the code in Temix, then try again.`;
+  }
+  return `Temix code ${code} already belongs to another live customer, and the database allows each code once. Check the code in Temix.`;
+}
+
+/**
+ * The live customer, other than `exceptId`, that holds `code` the way the index
+ * compares it (upper case, the ends trimmed): its customer code, or null.
+ */
+export async function temixCodeIndexHolder(
+  db: Pick<Prisma.TransactionClient, '$queryRaw'>,
+  code: string,
+  exceptId: string | null = null
+): Promise<string | null> {
+  const rows = await db.$queryRaw<Array<{ nmwcCode: string }>>`
+    SELECT c."nmwcCode" FROM "Customer" c
+     WHERE c."deletedAt" IS NULL AND c."temixCode" IS NOT NULL
+       AND upper(btrim(c."temixCode")) = upper(btrim(${code}))
+       AND (${exceptId}::text IS NULL OR c."id" <> ${exceptId})
+     ORDER BY c."nmwcCode"
+     LIMIT 1`;
+  return rows[0]?.nmwcCode ?? null;
+}
+
+/**
+ * What to tell the person when `err` is the database's unique index refusing
+ * `code`, or null for any other error (asked first, so nothing is read then).
+ *
+ * Asked AFTER the refused transaction has rolled back, with a client outside it:
+ * Postgres reads nothing more in an aborted transaction, and the holder has
+ * committed (the index waits for an uncommitted holder, and lets the write
+ * through if it rolls back). Never throws: when the holder cannot be read, the
+ * refusal is still given, without the name. Every path that writes a Temix code
+ * answers through this (the approval's finalize, services/edits.ts; the customer
+ * import's lanes, services/imports.ts); any other is answered by runAction with
+ * TEMIX_CODE_UNIQUE_MESSAGE.
+ */
+export async function temixCodeRefusal(
+  db: Pick<Prisma.TransactionClient, '$queryRaw'>,
+  err: unknown,
+  code: string | null | undefined,
+  exceptId: string | null = null
+): Promise<string | null> {
+  if (!temixCodeIndexViolated(err)) return null;
+  const shown = normalizeTemixCode(code ?? '');
+  if (!shown) return TEMIX_CODE_UNIQUE_MESSAGE;
+  let holder: string | null | undefined;
+  try {
+    holder = await temixCodeIndexHolder(db, shown, exceptId);
+  } catch {
+    holder = undefined;
+  }
+  return temixCodeIndexMessage(shown, holder);
 }

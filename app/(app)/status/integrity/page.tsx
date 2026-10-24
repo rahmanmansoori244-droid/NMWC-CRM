@@ -176,6 +176,14 @@ function LatestRun({ report }: { report: IntegrityReport }) {
               )}
               {r && <Samples r={r} report={report} />}
               {r && <Samples r={r} report={report} ids={infoIds(r)} label="Listed as information, not counted:" />}
+              {/* Where the Steward works through what the check lists (cr-number-shared: /duplicates). */}
+              {r && c.link && (r.count ?? 0) > 0 && (
+                <p className="mt-1 text-xs">
+                  <Link href={c.link.href} className="font-medium text-brand-700 hover:underline">
+                    {c.link.label}
+                  </Link>
+                </p>
+              )}
               {!r && <p className="mt-1 text-xs text-slate-500">Not in the last run.</p>}
             </li>
           );

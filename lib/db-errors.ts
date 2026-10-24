@@ -109,3 +109,46 @@ export function dbRuleViolated(err: unknown): DbRule | null {
   }
   return null;
 }
+
+/**
+ * Owner decision 2026-10-25 (migration 20261025120000_temix_code_unique): one live
+ * customer per Temix code, compared upper case with the ends trimmed. A partial
+ * index on an expression, so Prisma cannot describe it (schema.prisma) and CI's
+ * drift gate allows it by name.
+ */
+export const TEMIX_CODE_UNIQUE_INDEX = 'Customer_temixCode_live_unique';
+
+/** The index's key, with the quotes taken out, as Postgres and Prisma quote it. */
+const TEMIX_CODE_INDEX_KEY = /upper\(btrim\(temixCode(::text)?\)\)/i;
+
+/**
+ * Whether a refused save broke TEMIX_CODE_UNIQUE_INDEX, the way dbRuleViolated
+ * reads a rule: wherever the driver put it. Postgres does not name the index in
+ * the detail of a unique violation, only its key, so the key counts too (seen on
+ * Postgres 17 with Prisma 6.19, 2026-10-25):
+ *   - a model write: P2002, meta.target ["upper(btrim(temixCode))"];
+ *   - a raw write: P2010, meta.code "23505", the message `Key
+ *     (upper(btrim("temixCode")))=(…) already exists.`;
+ *   - an engine error Prisma did not map (no code) that quotes `duplicate key
+ *     value violates unique constraint "Customer_temixCode_live_unique"`.
+ * The index's name is matched whole; any other unique violation is not this one.
+ */
+export function temixCodeIndexViolated(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = (err as { code?: unknown }).code;
+  const message = err instanceof Error ? err.message : String((err as { message?: unknown }).message ?? '');
+  let meta = '';
+  try {
+    meta = JSON.stringify((err as { meta?: unknown }).meta ?? '');
+  } catch {
+    meta = '';
+  }
+  const text = `${message} ${meta}`;
+  const uniqueError =
+    code === 'P2002' ||
+    (code === 'P2010' && /23505|duplicate key value|already exists/i.test(text)) ||
+    ((code === undefined || code === null || code === '') && /duplicate key value violates unique constraint/i.test(text));
+  if (!uniqueError) return false;
+  if (new RegExp(`(^|[^A-Za-z0-9_])${TEMIX_CODE_UNIQUE_INDEX}([^A-Za-z0-9_]|$)`).test(text)) return true;
+  return TEMIX_CODE_INDEX_KEY.test(text.replace(/\\?"/g, ''));
+}

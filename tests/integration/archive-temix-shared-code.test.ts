@@ -1,16 +1,23 @@
 // @vitest-environment node
 /**
- * F11, the archive path, against real Postgres: archiving one of two live
- * customers that share a Temix code no longer queues that code's deactivation.
+ * F11, the archive path, against real Postgres: archiving a customer whose
+ * Temix identity another live customer still holds no longer queues that code's
+ * deactivation.
  *
  * Before: the archive asked resolveArchiveTemixState alone, so the archived
  * customer went DEACTIVATE_PENDING while the other still held the code, and
  * Generate held it back on every run, for good. Now it is parked SYNCED with
  * temixDeactivation 'skipped-shared-code' in the SOFT_DELETE row, and the last
- * live holder archived is the one that deactivates the code. Archive locks the
- * code's live holders first (lib/locks.ts), so two holders archived at once
- * still deactivate the code exactly once: the two-connection case below holds
- * both rows locked until both archives are waiting on that lock.
+ * live holder archived is the one that deactivates the code.
+ *
+ * Owner decision 2026-10-25: two live customers can no longer share a Temix
+ * code — the database refuses the second (migration
+ * 20261025120000_temix_code_unique) — so the shared identity is now the one the
+ * index does not cover: a customer with no Temix code, whose deactivation goes
+ * out keyed on its customer code (lib/temix.ts deactivationCode), and a live
+ * customer holding that code as its Temix code. The two-connection case that
+ * archived two holders of one Temix code at once is replaced by the refusal
+ * that makes it impossible.
  *
  * The queue is read with the batch's own predicate (TEMIX_QUEUE_WHERE),
  * restricted to this test's rows; generating a real batch would flip every
@@ -101,68 +108,53 @@ describe.skipIf(!ENABLED)('F11: archiving a customer whose Temix code another li
     await prisma.$disconnect();
   });
 
-  it('the first holder archived leaves the queue and says why; the last one archived deactivates the code', async () => {
-    const code = `${P}-T1`;
-    const A = await customer('A', code);
+  it('the customer leaving first is parked and says why; the last holder archived deactivates the code', async () => {
+    // A has no Temix code: its deactivation goes out keyed on its customer code,
+    // which B holds as its Temix code.
+    const A = await customer('A', null);
+    const code = A.nmwcCode;
     const B = await customer('B', code);
 
-    const first = await archive(B.id);
+    const first = await archive(A.id);
     expect(first.ok, JSON.stringify(first)).toBe(true);
-    const b = await prisma.customer.findUniqueOrThrow({ where: { id: B.id } });
-    expect(b.deletedAt).not.toBeNull();
-    expect(b.temixSyncState).toBe('SYNCED');
-    expect(b.temixSyncPendingSince).toBeNull();
+    const a = await prisma.customer.findUniqueOrThrow({ where: { id: A.id } });
+    expect(a.deletedAt).not.toBeNull();
+    expect(a.temixSyncState).toBe('SYNCED');
+    expect(a.temixSyncPendingSince).toBeNull();
     expect(await deactivations([A.id, B.id])).toEqual([]);
     const audit = await prisma.auditLog.findFirstOrThrow({
-      where: { actorId: steward, action: 'SOFT_DELETE', entityId: B.id },
+      where: { actorId: steward, action: 'SOFT_DELETE', entityId: A.id },
     });
     expect(audit.after).toEqual({
       temixSyncState: 'SYNCED',
       temixDeactivation: 'skipped-shared-code',
-      temixCodeHeldBy: [A.nmwcCode],
+      temixCodeHeldBy: [B.nmwcCode],
       // Gap 37: the open requests the archive closed or left (none here).
       openRequests: { closedDrafts: [], closedDraftCount: 0, sentBack: [], sentBackCount: 0 },
     });
 
-    const last = await archive(A.id);
+    const last = await archive(B.id);
     expect(last.ok, JSON.stringify(last)).toBe(true);
-    const a = await prisma.customer.findUniqueOrThrow({ where: { id: A.id } });
-    expect(a.temixSyncState).toBe('DEACTIVATE_PENDING');
+    const b = await prisma.customer.findUniqueOrThrow({ where: { id: B.id } });
+    expect(b.temixSyncState).toBe('DEACTIVATE_PENDING');
     expect(await deactivations([A.id, B.id])).toEqual([{ temixCode: code }]);
   });
 
-  it('two connections: both holders archived at once deactivate the code exactly once', async () => {
+  it('two live holders of one Temix code cannot exist: the database refuses the second, and the one holder deactivates the code once', async () => {
     const code = `${P}-T2`;
     const C = await customer('C', code);
-    const D = await customer('D', code);
+    // Any spelling of it: upper case, the ends trimmed, as the index compares.
+    for (const spelling of [code, code.toLowerCase(), ` ${code} `]) {
+      await expect(
+        prisma.customer.create({ data: { nmwcCode: `${P}-D`, legalName: 'ZZ F11A D', temixCode: spelling, temixSyncState: 'SYNCED' } })
+      ).rejects.toMatchObject({ code: 'P2002' });
+    }
+    expect(await prisma.customer.count({ where: { nmwcCode: `${P}-D` } })).toBe(0);
 
-    let archiving: Promise<Array<Awaited<ReturnType<typeof archive>>>> | undefined;
-    await prisma.$transaction(
-      async (tx) => {
-        // A third connection holds both rows, so each archive has read the other
-        // as live before either can decide.
-        await tx.$queryRaw`SELECT "id" FROM "Customer" WHERE "id" IN (${C.id}, ${D.id}) FOR UPDATE`;
-        archiving = Promise.all([archive(C.id), archive(D.id)]);
-        archiving.catch(() => undefined);
-        // Wait until both archives are blocked on the holders lock, by its code.
-        let waiting = 0;
-        for (let i = 0; i < 150 && waiting < 2; i++) {
-          const [r] = await prisma.$queryRaw<Array<{ n: number }>>`
-            SELECT count(*)::int AS n FROM pg_stat_activity
-            WHERE wait_event_type = 'Lock' AND query LIKE '%"temixCode"%FOR UPDATE%'`;
-          waiting = r?.n ?? 0;
-          if (waiting < 2) await new Promise((res) => setTimeout(res, 100));
-        }
-        expect(waiting, 'the archives never waited on the Temix-code holders lock').toBe(2);
-      },
-      { timeout: 30_000, maxWait: 10_000 }
-    );
-    const results = await archiving!;
-    expect(results.map((r) => r.ok), JSON.stringify(results)).toEqual([true, true]);
-
-    const both = await prisma.customer.findMany({ where: { id: { in: [C.id, D.id] } } });
-    expect(both.every((c) => c.deletedAt !== null)).toBe(true);
-    expect(both.map((c) => c.temixSyncState).sort()).toEqual(['DEACTIVATE_PENDING', 'SYNCED']);
-    expect(await deactivations([C.id, D.id])).toEqual([{ temixCode: code }]);
+    const res = await archive(C.id);
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    const c = await prisma.customer.findUniqueOrThrow({ where: { id: C.id } });
+    expect(c.temixSyncState).toBe('DEACTIVATE_PENDING');
+    expect(await deactivations([C.id])).toEqual([{ temixCode: code }]);
   });
 });

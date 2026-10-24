@@ -45,8 +45,12 @@ export function infoIds(r: Pick<ResultRow, 'detail'>): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').slice(0, 10) : [];
 }
 
-/** Checks whose samples are customer ids, and those whose samples are shop ids. */
-export const CUSTOMER_SAMPLES = new Set(['customer-status-follows-shops', 'temix-code-shared', 'temix-code-shape']);
+/**
+ * Checks whose samples are customer ids, and those whose samples are shop ids.
+ * The page shows each as its customer's NMWC code, linked (cr-number-shared:
+ * never the CR number).
+ */
+export const CUSTOMER_SAMPLES = new Set(['customer-status-follows-shops', 'temix-code-shared', 'temix-code-shape', 'cr-number-shared']);
 export const SHOP_SAMPLES = new Set(['shop-region-matches-route']);
 
 export async function loadIntegrityReport(db: Db, now: Date = new Date()): Promise<IntegrityReport> {

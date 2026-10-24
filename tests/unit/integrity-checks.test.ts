@@ -18,11 +18,14 @@ import {
   functionFindings,
   missedRuns,
   scheduledJobFindings,
+  sharedCrFindings,
   statusDriftFindings,
   storedTemixCodeProblem,
   testFlagChanges,
   triggerFindings,
 } from '@/lib/integrity/classify';
+import { crKey, pairCandidates, type DupRow } from '@/lib/duplicate-pairing';
+import { normalizeCR } from '@/lib/cr';
 import { EXPECTED_FUNCTIONS, TRIGGER_BINDINGS } from '@/lib/integrity/expected';
 import { CustomerStatus } from '@prisma/client';
 import { customerStatusFollowing, statusEvents } from '@/lib/customer-status-rule';
@@ -64,6 +67,77 @@ describe('customer-status-follows-shops (the customer-status rule)', () => {
     expect(r.count).toBe(0);
     expect(checkStatus('alert', r.count)).toBe('pass');
     expect(r.detail).toMatchObject({ review: 1, info: ['x'] });
+  });
+});
+
+describe('cr-number-shared (owner decision 2026-10-25: CR numbers are not unique, but flagged)', () => {
+  it('counts the customers on each shared CR number, keeps each CR number’s customers together in the samples, and says how many pairs', () => {
+    const r = sharedCrFindings([
+      { ids: ['c9', 'c2'] },
+      { ids: ['a1', 'a3', 'a2'] },
+      // A CR number on one customer only is not shared (the SQL never returns it).
+      { ids: ['z1'] },
+      { ids: null },
+    ]);
+    expect(r.count).toBe(5);
+    expect(r.sampleIds).toEqual(['a1', 'a2', 'a3', 'c2', 'c9']);
+    expect(r.detail).toEqual({ crNumbers: 2, largest: 3, pairs: 3 + 1 });
+    expect(checkStatus('info', r.count)).toBe('info');
+  });
+
+  it('at most ten samples; a placeholder CR on many customers is one large group; nothing shared is nothing', () => {
+    const many = Array.from({ length: 40 }, (_, i) => `p${String(i).padStart(2, '0')}`);
+    const r = sharedCrFindings([{ ids: many }]);
+    expect(r.count).toBe(40);
+    expect(r.sampleIds).toHaveLength(SAMPLE_LIMIT);
+    expect(r.detail).toEqual({ crNumbers: 1, largest: 40, pairs: 780 });
+    expect(sharedCrFindings([])).toEqual({ count: 0, sampleIds: [], detail: { crNumbers: 0, largest: 0, pairs: 0 } });
+  });
+
+  it('the duplicates detector pairs every customer the check counts, by its CR rule (lib/duplicate-pairing.ts)', () => {
+    const dup = (id: string, crNumber: string | null, over: Partial<DupRow> = {}): DupRow => ({
+      id,
+      nmwcCode: `NMWC-2026-${id}`,
+      legalName: `Shop ${id}`,
+      primaryPhone: null,
+      primaryPhoneNorm: null,
+      crNumber,
+      crNumberNorm: normalizeCR(crNumber),
+      completenessScore: 50,
+      branchCount: 1,
+      regionIds: [`region-${id}`],
+      ...over,
+    });
+    // Spelled differently, one CR once normalised (lib/cr.ts); in different regions.
+    const rows = [
+      dup('000001', '1234567'),
+      dup('000002', ' 12 345 67 '),
+      dup('000003', '١٢٣٤٥٦٧'),
+      dup('000004', '7654321'),
+      dup('000005', '7654321'),
+      dup('000006', '1111111'),
+      dup('000007', null),
+      dup('000008', ''),
+    ];
+    // What the check's SQL returns: the live customers grouped by crNumberNorm
+    // (never null or blank), groups of more than one.
+    const groups = new Map<string, string[]>();
+    for (const r of rows) {
+      if (!r.crNumberNorm) continue;
+      groups.set(r.crNumberNorm, [...(groups.get(r.crNumberNorm) ?? []), r.id]);
+    }
+    const found = sharedCrFindings([...groups.values()].filter((g) => g.length > 1).map((ids) => ({ ids })));
+    expect(found.count).toBe(5);
+
+    const scan = pairCandidates(rows, new Map(), 1_000);
+    const crPairs = scan.pairs.filter((p) => p.reason === 'CR');
+    expect(crPairs).toHaveLength(found.detail.pairs);
+    const paired = new Set(crPairs.flatMap((p) => [p.a.id, p.b.id]));
+    expect([...paired].sort()).toEqual([...found.sampleIds].sort());
+    // The two sides key on the same value.
+    for (const p of crPairs) {
+      expect(crKey(rows.find((r) => r.id === p.a.id)!)).toBe(crKey(rows.find((r) => r.id === p.b.id)!));
+    }
   });
 });
 

@@ -1,11 +1,20 @@
 // @vitest-environment node
 /**
- * F11 against real Postgres: merging two customers that carry the SAME Temix
- * code no longer queues the surviving identity for deactivation.
+ * F11 against real Postgres: merging away a customer whose Temix identity
+ * another live customer still holds no longer queues that identity for
+ * deactivation.
  *
  * Before: the loser went DEACTIVATE_PENDING (resolveArchiveTemixState saw a
  * code) while the winner was re-queued PENDING_UPLOAD, so the next batch held
  * `UPSERT T` and `DEACTIVATE T` — and whichever Temix applied last won.
+ *
+ * Owner decision 2026-10-25: two live customers can no longer carry the same
+ * Temix code — the database refuses the second (migration
+ * 20261025120000_temix_code_unique) — so a same-code merge cannot be set up any
+ * more, and the first case asserts the refusal. The identity is still shared
+ * where the index does not reach: a loser with no Temix code, whose
+ * deactivation goes out keyed on its customer code (lib/temix.ts
+ * deactivationCode), which a third live customer holds as its Temix code.
  *
  * The queue is read here with the batch's own predicate (TEMIX_QUEUE_WHERE) and
  * shaped with the batch's own buildTemixRows, restricted to this test's rows.
@@ -111,10 +120,23 @@ describe.skipIf(!ENABLED)('F11: a same-code merge keeps the surviving Temix iden
     await prisma.$disconnect();
   });
 
-  it('same code: the loser leaves the queue, the winner is the one UPSERT, and the MERGE row says why', async () => {
+  it('same code: the database refuses a second live customer with it, so the merge cannot meet one', async () => {
     const code = `${P}-T1`;
-    const W = await customer('W', code);
-    const L = await customer('L', code);
+    await customer('W', code);
+    for (const spelling of [code, code.toLowerCase(), ` ${code} `]) {
+      await expect(
+        prisma.customer.create({ data: { nmwcCode: `${P}-L`, legalName: 'ZZ F11 L', temixCode: spelling, temixSyncState: 'SYNCED' } })
+      ).rejects.toMatchObject({ code: 'P2002' });
+    }
+    expect(await prisma.customer.count({ where: { nmwcCode: `${P}-L` } })).toBe(0);
+  });
+
+  it("the loser's identity a third live customer holds: the loser leaves the queue, the winner is the one UPSERT, and the MERGE row says why", async () => {
+    const W = await customer('W2', `${P}-TW2`);
+    // No Temix code: its deactivation would go out keyed on its customer code,
+    // which Z holds as its Temix code.
+    const L = await customer('L2', null);
+    const Z = await customer('Z2', L.nmwcCode);
     const res = await merge(W.id, L.id);
     expect(res.ok, JSON.stringify(res)).toBe(true);
 
@@ -127,15 +149,15 @@ describe.skipIf(!ENABLED)('F11: a same-code merge keeps the surviving Temix iden
 
     const rows = await queueRows([W.id, L.id]);
     expect(rows.filter((r) => r.sync_action === 'DEACTIVATE')).toEqual([]);
-    expect(new Set(rows.map((r) => `${r.sync_action}:${r.temix_code}`))).toEqual(new Set([`UPSERT:${code}`]));
+    expect(new Set(rows.map((r) => `${r.sync_action}:${r.temix_code}`))).toEqual(new Set([`UPSERT:${P}-TW2`]));
 
     const audit = await prisma.auditLog.findFirstOrThrow({
       where: { actorId: steward, action: 'MERGE', entityId: W.id },
       orderBy: { at: 'desc' },
     });
     // Gap 8 (lossless paths): the row also lists what moved and the loser's standing.
-    expect(audit.after).toMatchObject({ temixDeactivation: 'skipped-shared-code', temixCodeHeldBy: [W.nmwcCode] });
-    expect(audit.after).toMatchObject({ loserSnapshot: { temixCode: code }, movedBranchIds: expect.any(Array) });
+    expect(audit.after).toMatchObject({ temixDeactivation: 'skipped-shared-code', temixCodeHeldBy: [Z.nmwcCode] });
+    expect(audit.after).toMatchObject({ loserSnapshot: { temixCode: null }, movedBranchIds: expect.any(Array) });
   });
 
   it("crossed identities (the loser's Temix code is the winner's customer code): refused, nothing moved", async () => {

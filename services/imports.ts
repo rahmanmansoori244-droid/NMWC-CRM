@@ -79,7 +79,7 @@ import { fixTarget, masterCollisionMaps, newerUploadsCarrying } from '@/lib/impo
 import { lockCustomerRowByCode } from '@/lib/locks';
 import { branchStatusEvents, followBranchStatus, liveBranchStatuses } from '@/lib/customer-status';
 import { archivedUncodedDeactivationWhere } from '@/lib/temix';
-import { lockTemixCode, normalizeTemixCode, temixCodeHolder } from '@/lib/temix-code';
+import { lockTemixCode, normalizeTemixCode, temixCodeHolder, temixCodeRefusal } from '@/lib/temix-code';
 import {
   branchOnlyNote,
   composeBranchCode,
@@ -2291,6 +2291,11 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         continue;
       }
 
+      // Owner decision 2026-10-25: the Temix code this group may write, and the
+      // customer it may write it to, so that a save the database's unique index
+      // refuses can be answered with the live customer holding the code (the
+      // catch below). Set inside the transaction once the lead row is known.
+      let temixWrite = null as { code: string; customerId: string | null } | null;
       try {
         let refreshedRow = false;
         // Per row: what happened to its branch, when that is worth telling the
@@ -2408,6 +2413,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // customer is written, and the Temix-code guards still apply).
             const lead = plainIdx.length > 0 ? g.parsed[plainIdx[0]] : first;
             const pt = lead.paymentTerms === 'CREDIT' ? 'CREDIT' : 'CASH';
+            temixWrite = lead.temixCode ? { code: lead.temixCode, customerId: existing?.id ?? null } : null;
 
             // ── Phase 1 Temix crosswalk guards (rows carrying temix_code) ──
             // Quarantine-style rejection, never silent overwrite: the crosswalk
@@ -3386,11 +3392,16 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         const code = (err as { code?: string })?.code ?? 'UNKNOWN';
         const meta = (err as { meta?: { target?: string[] } })?.meta?.target;
         // Phase 1 Temix crosswalk conflicts carry a deliberate, PII-safe
-        // message (codes only, never phone/CR values) for the Steward.
+        // message (codes only, never phone/CR values) for the Steward. Owner
+        // decision 2026-10-25: so does a Temix code the database's unique index
+        // refused (lib/temix-code.ts temixCodeRefusal) — on any lane, the full
+        // lane's create, the refresh lane's write or a first Temix code — named
+        // with the live customer that holds it, read now that the group's
+        // transaction has rolled back. Not a database hiccup: never deferred.
         const crosswalk =
           err instanceof Error && err.message.startsWith('CROSSWALK:')
             ? err.message.slice('CROSSWALK:'.length)
-            : null;
+            : await temixCodeRefusal(prisma, err, temixWrite?.code, temixWrite?.customerId ?? null);
 
         // RK-3: a group that failed because the DATABASE hiccuped is NOT a rejected
         // customer. Rejecting it would be permanent — a REJECTED row leaves CLEAN,

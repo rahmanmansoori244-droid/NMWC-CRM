@@ -158,6 +158,14 @@ async function allocateCustomerCode(tx: Tx, year: number): Promise<string> {
 }
 
 /**
+ * The refusal of the code the Accountant typed, shown in the code box on the
+ * approval page (ApproveRejectActions reads fields.temixCode).
+ */
+export function temixCodeTakenError(message: string): AppError {
+  return new AppError('TEMIX_CODE_TAKEN', message, 409, { temixCode: message });
+}
+
+/**
  * DG-06 — the actor arrives as a full `AuditEnvelope`, not a bare id. This
  * function runs INSIDE approveEditCore's interactive transaction, so it must
  * not build its own envelope: the envelope reader degrades to null ip/userAgent
@@ -278,12 +286,12 @@ export async function finalizeCreateInTx(
   //     recording it, services/imports.ts) cannot both pass the check. An
   //     archived customer's code is refused as the customer import refuses it:
   //     given to this customer, every inbound refresh of it would be rejected.
+  //     Owner decision 2026-10-25: the database refuses a second live customer
+  //     with the code as well (lib/temix-code.ts); approveEditCore answers that
+  //     refusal with temixCodeTakenError too, once this transaction has rolled back.
   await lockTemixCode(tx, temixCode);
   const holder = await temixCodeHolder(tx, temixCode);
-  if (holder) {
-    const message = temixCodeHolderMessage(temixCode, holder);
-    throw new AppError('TEMIX_CODE_TAKEN', message, 409, { temixCode: message });
-  }
+  if (holder) throw temixCodeTakenError(temixCodeHolderMessage(temixCode, holder));
 
   // 4. Code + Customer.
   // final-hunt #27/#36: derive the NMWC-YYYY year (and its CodeSequence scope)
