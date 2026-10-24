@@ -102,7 +102,7 @@ Retention periods are the ones the system actually enforces — see `DATA-RETENT
 | **Purpose** | Run, monitor, back up and support the application. |
 | **Personal data** | Error telemetry (scrubbed of phone numbers and e-mail addresses before it leaves the process — `lib/scrub.ts`, applied in all three Sentry runtimes); application logs; login rate-limit state keyed on username and source IP; a nightly encrypted dump of the entire database. |
 | **Recipients** | Vercel, Neon, Cloudflare, GitHub, Sentry — see `DATA-RESIDENCY-REGISTER.md`. |
-| **Retention** | Rate-limit rows 1 day; dumps 30 days; Sentry per its own org setting **[OWNER]**; Vercel logs 30 days with Observability Plus since the Pro upgrade on 2026-09-27 (request paths, including search terms, are not scrubbed: DATA-RETENTION-SCHEDULE.md). |
+| **Retention** | Rate-limit rows 1 day; dumps 30 days; Sentry per its own org setting **[OWNER]**; Vercel logs 30 days with Observability Plus since the Pro upgrade on 2026-09-27 (request paths, including search terms, are not scrubbed: DATA-RETENTION-SCHEDULE.md). Since the watch-and-prove branch (gap 25) every clean-up the application runs keeps a summary of each batch it deletes (`PurgeSummary`: table, rule, count, date range, counts by category — never a key, a name or text), kept for ever; the periods did not change. |
 | **Lawful basis** | **[COUNSEL]** |
 
 **The rows the ledger cannot attribute to a device.** Ten maintenance scripts write
@@ -131,6 +131,16 @@ real accountable person in `actorId` and carries a `reason` describing what was 
 Every other row is written by a single function, `writeAudit()` in `lib/audit.ts`,
 which always populates both columns; a lint rule in `eslint.config.mjs` and
 `tests/unit/audit-guard.test.ts` are what keep that true as the code changes.
+
+### A7 — Integrity monitoring and ledger sealing
+
+| | |
+|---|---|
+| **Purpose** | Watch the data and the record-keeping every night, and make the history and the ledgers tamper-evident: named checks of the data's rules and of the protection, and a daily seal of every append-only ledger (data audit gaps 28 and 29; `docs/OPERATIONS.md` §5k). |
+| **Personal data** | Record ids only: the checks' results hold counts and at most ten sample ids per check (customer, shop, user, route or history row ids), never a name, phone, CR number or code. The seals hold key ranges, counts and SHA-256 digests of the ledger rows — no row content. The checks READ the ledgers, the history and the master tables they test. |
+| **Recipients** | The Data Steward, in the app (one alert a day while something fails, titles and counts; `/status/integrity`, where sample ids are shown as links). The operators' alert channel (`ALERT_WEBHOOK_URL`): counts only. Cloudflare R2: the seals' bodies (no personal data). |
+| **Retention** | Results and seals indefinitely, append-only (DATA-RETENTION-SCHEDULE.md); the R2 copies indefinitely. |
+| **Lawful basis** | **[COUNSEL]** |
 
 ## Cross-border transfer
 

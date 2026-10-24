@@ -204,7 +204,7 @@ ALLOW_PRODUCTION=1 NMWC_APP_URL='postgresql://nmwc_app:<password>@<production po
 
 ## 5d. Cron heartbeats and the health probe (B5, 2026-09-14)
 
-Every scheduled job (`sla-escalate`, `keep-warm`, `photo-gc`, `retention-sweep`, `email-drain`) records a heartbeat row (`CronHeartbeat`) when it finishes, success or failure. The bearer health probe reports them:
+Every scheduled job (`sla-escalate`, `keep-warm`, `photo-gc`, `retention-sweep`, `email-drain`, and since the watch-and-prove branch `integrity-watch`, §5k) records a heartbeat row (`CronHeartbeat`) when it finishes, success or failure. The bearer health probe reports them:
 
 ```bash
 curl -s -H "Authorization: Bearer $HEALTH_BEARER" https://nmwc-cm.vercel.app/api/health | jq .cron
@@ -217,7 +217,7 @@ States: `ok`, `outside-window` (not expected right now), `failed` (last run repo
 | Answer | When | Body |
 |---|---|---|
 | **503** `status: degraded` | a check fails (`db`, `r2`, `heartbeats`), R2 is **unconfigured on production**, or a **critical** job alarms: `sla-escalate` (approvals stop escalating) or `db-backup` (no off-Neon copy) | `cron.alarms` names the critical jobs |
-| **200** `status: warn` | only a **warning** job alarms: `keep-warm` (speed only), `photo-gc`, `retention-sweep` (housekeeping; the next run catches up), `email-drain` (the e-mail copy is late, the in-app row is not; §5i), or R2 unconfigured off production | `warnings: ["keep-warm:failed", …]` |
+| **200** `status: warn` | only a **warning** job alarms: `keep-warm` (speed only), `photo-gc`, `retention-sweep` (housekeeping; the next run catches up), `email-drain` (the e-mail copy is late, the in-app row is not; §5i), `integrity-watch` (the nightly data check and seal, §5k; stale after 36 h — whether it should be critical is an open owner question), or R2 unconfigured off production | `warnings: ["keep-warm:failed", …]` |
 | **200** `status: ok` | nothing to report | |
 
 Point an external uptime monitor at this URL with the bearer header and alert on non-200. It then pages only for the critical row. The warning rows are still visible: in the body, as `warn=[…]` on smoke's dead-man line, and as a `warn` (not `critical`) webhook alert when a warning job's run fails. Before this change any alarm answered 503, so one failed keep-warm ping paged as loudly as a dead SLA sweep. To move a job between tiers, change its `severity` in `HEARTBEAT_EXPECTATIONS`. `tests/unit/health-verdict.test.ts` pins which jobs are critical, so the change has to be deliberate.
@@ -393,6 +393,58 @@ Never e-mailed: a Steward, a Viewer or a salesman (an allowlist of roles, checke
 **Still open with the owner (2026-10-11).** Rule 1 names `scripts/ops/` only, but some runbooks tell the owner to run scripts from elsewhere against production: `scripts/golive/audit-accounts.ts` (GO-LIVE-RUNBOOK step 3), `scripts/golive/bootstrap-accounts.ts`, `scripts/bulk-reset-credentials.ts` ([02 §4](handover/02-ACCESS-ACCOUNTS-AND-SECRETS.md)), the read-only question scripts of HANDOVER §5 and the private-pack scripts of [03 §7](handover/03-OPERATIONS-AND-DEPLOYMENT.md). Whether each moves into `scripts/ops/`, is named as an exception, or stops being run there is the owner's decision. Until then, every one of them that lives in this repository refuses production unless `--expect-host ep-sweet-haze` is on its command line; a private-pack copy (`*.tmp.ts` at a checkout's root) is not checked by the guard test.
 
 **Also guarded since 2026-10-11 (review of the first guard).** `scripts/qa/run-with-env.mjs` refuses to start anything when `DATABASE_URL`, `DIRECT_URL` or any other connection string it holds points at production, percent-escaped or not. It has no opt-in: everything it is documented for runs on UAT or CI. Whether an explicit opt-in is wanted is an open owner question. The guard also treats a percent-escaped marker as production, and no longer prints a full endpoint id given as `--expect-host`. The guard test now parses each script and traces the URL each client is given back to the guard: an aliased `PrismaClient`, a client given a different variable from the one checked, and an import that reaches the app's own client (`lib/db.ts`) all fail it. `scripts/capture-guide-screenshots.ts` and `scripts/capture-steward-screenshots.ts`, whose browser signs in to the live site whatever database a checkout names, refuse to start unless `--expect-host ep-sweet-haze` is on the command line (owner decisions 2026-10-11; `liveSiteNamed` in the shared guard). `scripts/ops/restore-load.sh` is a shell script, so it cannot call the guard; since 2026-10-11 it refuses on its own a `RESTORE_TARGET_URL` with `ep-sweet-haze` anywhere in it — the host or any other part, in any case, as written or percent-decoded — and a `PGHOST` or `PGHOSTADDR` with it, before `psql` or `pg_restore` starts (owner decisions 2026-10-11; `tests/unit/restore-load-guard.test.ts` runs it).
+
+## 5k. Nightly integrity check and ledger seals (watch and prove, data audit gaps 28 and 29)
+
+**What runs.** `/api/cron/integrity-watch`, daily from `vercel.json` at **02:30 UTC (06:30 Oman)**: after the Oman day has ended, and before photo-gc (03:00) and the retention sweep (03:30) delete anything that day, so the checks see the state before the purges. It records the `integrity-watch` heartbeat (warning, stale after 36 h). One run:
+
+1. **Twenty named, read-only checks** (`lib/integrity/checks.ts`), each in its own read-only transaction with a 10 s statement timeout, inside a 22 s budget. Each result goes to `IntegrityCheckResult` (append-only, sealed): the check, pass / fail / info / error, the count, at most ten sample ids and counts by sub-kind — never a name, phone, CR number or code.
+2. **Tonight's seal** of the ledgers (`lib/seal/*`), its copy in R2 under `seals/`, and a recheck of the chain and of the last seven seals' ranges and copies.
+3. **When an alerting check fails:** one in-app alert per active, non-test Data Steward per Oman day (kind `INTEGRITY_ALERT`, check titles and counts only, linking to **/status/integrity**; never e-mailed), and the operators' webhook (§5f, event `integrity.failed`, counts only; `critical` when the seal chain or the protection checks failed, `warn` otherwise). **The in-app alert ships switched off** (`lib/integrity/policy.ts` `INTEGRITY_INAPP_ALERTS_ENABLED = false`) — see "Deploy order" below.
+
+A check that finds a problem does not fail the job. A check that could not run (`error`), or a failed R2 write, does: the heartbeat goes red and `cron.failed` alerts, because an unanswered check is not a passed one.
+
+**The results page** (`/status/integrity`, Data Steward only, linked from the Record keeping card on `/status`): the latest run check by check, with why it matters, what to do and its samples (customers and shops as links); a 14-run trend per check; the last ten seals; the last 30 days of purge summaries (§ DATA-RETENTION-SCHEDULE).
+
+**The checks, and what to do.** The data checks leave the flagged test records out (§7, "Flag a test record"); the record-keeping checks do not — they test the recorder, and a mis-flag must not hide a defect.
+
+| Check | Fails when | What to do |
+|---|---|---|
+| `shop-region-matches-route` | a live shop's region is not its route's | Correct the shop through the app (a route never changes region, §7) |
+| `customer-status-follows-shops` | a customer's status contradicts its live shops (close / reopen / review) | `scripts/ops/customer-status-drift.ts` |
+| `temix-code-shared` | two live customers share a Temix code | Find which one Temix holds; correct or merge the other |
+| `temix-code-shape` | a code with a space, lower case, wrong length, bad shape or a CRM code. The three migrated codes with a space inside (their own customer code) are **information**; a fourth fails | Correct it through the Temix workflow |
+| `test-scaffolding-mixed` | a real customer on the test route or region, a real route in the test region (or the reverse), a real person on test scaffolding | Move the real record off it, or have the owner flag it (§7). **Expect this after a production walk** that creates real-flagged customers on ZZTEST-R1 |
+| `history-open-interval` | a live record with no open history interval, or an open interval for a record that is gone | A write bypassed the capture triggers: find when, repair in a logged maintenance window (§5e) |
+| `history-matches-master` | the latest history values are not the record's (or a route's holder) | As above |
+| `history-unattributed-since-last-run` | a change recorded under source `sql` since the last run | `scripts/ops/history-report.ts`; by the runtime role it is a code defect |
+| `protection-triggers` | a protecting trigger missing, disabled (`D`), replica-only (`R`) or re-pointed | Restore it from its migration at once (owner), then `verify-seals` |
+| `protection-functions` | a protecting function's body (MD5), rights or search path differs from its last migration | Re-create it from the migration; find who changed it |
+| `runtime-role-privileges` | `nmwc_app` holds UPDATE/DELETE/TRUNCATE on a ledger, INSERT on the history, or UPDATE on a ledger sequence | `app-role.ts grant`, then `status` (§5c) |
+| `app-login-is-runtime-role` | (information) the app still connects as the owner | Owner: switch `DATABASE_URL` (CREDENTIAL-ROTATION step 1) |
+| `customer-code-sequence` | a `CUSTOMER-<year>` counter behind the highest code, or lower than last night | Find who moved it |
+| `scheduled-jobs-on-time` | a windowed job left a gap longer than its allowance, a daily job did not run on an Oman day, or a job is `never`/`stale` now (the dump: 40 h) | §5d; a failed run already alerted as `cron.failed` |
+| `test-flags-changed` | the set of flagged test records changed since last night (the first run records it) | Only the owner flags; if he did not, find who did |
+| `seal-written` | tonight's seal was deferred (a transaction open at the last seal is still open) or failed | Retried the next night; repeated: look for a stuck transaction |
+| `seal-chain-intact` | a seal's body, link or range no longer matches the ledgers (rows changed, deleted or slipped into a sealed range) | `verify-seals.ts --all`; record who changed what and why. Alerted once per event, then information |
+| `seal-offsite-copies` | a recent seal's R2 copy is missing (older than two days) or differs | A copy up to two days old is re-written automatically; otherwise compare with `verify-seals` |
+| `exports-since-last-run` | (information) exports by role | Thresholds are the owner's |
+| `sign-in-failures-since-last-run` | (information) failed sign-ins and throttle refusals by kind | Thresholds are the owner's |
+
+**The seals.** Every append-only ledger (`AuditLog`, `EditApproval`, `ExportJob` by their `seq` key, the seven `*History` tables, `EditRevision`, `AuthEvent`, `JobRunDay`, `PurgeSummary`, `IntegrityCheckResult` by their id) is sealed each night: per table the key range since the last seal, its row count and a SHA-256 over every row, chained to the previous seal's hash (`SealRecord`, append-only; a trigger refuses a seal that does not link). The first night writes the genesis (covers nothing); the second seals every row that existed then. A seal is deferred while a transaction that was open at the last one is still open, so a late commit can never land in a sealed range unseen.
+
+**Verify the chain** (read-only; production needs `--expect-host ep-sweet-haze`, through `prod-run.cjs`, §5j):
+
+```bash
+NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs \
+  scripts/ops/verify-seals.ts --expect-host ep-sweet-haze [--from-seq N] [--to-seq N] [--no-offsite] [--all]
+```
+
+It prints the FIRST mismatch (every one with `--all`) as seq, day, table, kind, counts and hash prefixes — never a row — and exits 0 (all match), 1 (a mismatch) or 2 (could not run). Run it before and after every maintenance window (§5e) and on a restored dump as a restore check. **On UAT the chain breaks after any integration run** (their clean-ups delete ledger rows by design) and the crons do not run there.
+
+**R2 (owner, Cloudflare).** Confirm that no lifecycle rule on `nmwc-photos` expires `seals/` (the photos' rule expires only objects photo-gc tags `gc-marked`). **Not configured here:** a bucket lock on `seals/`, or a separate bucket with its own token, is the only thing that makes the off-site copy immutable to the app's own R2 token — and to the owner login, which can otherwise rewrite the ledger rows AND the seal table in a maintenance window.
+
+**Deploy order.** The three migrations (`20261024120000_test_records` … `20261024120400_integrity_results`, with the enum-only `20261024120300`) are additive; an older build keeps working on the new schema, except that it cannot read an `INTEGRITY_ALERT` notification row. So the build that ships them never writes one (`INTEGRITY_INAPP_ALERTS_ENABLED = false`); a one-line follow-up commit turns it on once this deployment has served production and passed smoke. **Before rolling back past this build, delete the `INTEGRITY_ALERT` notification rows** (Notification is deletable). The ledger-seal migration rewrites `AuditLog` under ACCESS EXCLUSIVE for a few seconds: deploy outside working hours; if its `lock_timeout` refuses, deploy again later. After the deploy on production: re-run `app-role.ts grant` (§5c); the first night writes the genesis seal, the second seals every existing ledger row (seconds).
 
 ## 6. Backups, recovery, and what they are actually worth
 
@@ -657,6 +709,21 @@ SELECT b."branchCode", rb."code" AS shop_region, rr."code" AS route_region, r."c
 ```
 
 and put each right through the customer-master import (the shop takes its route's region), so each correction is recorded with its batch and row. It is an owner decision whether to correct them; nothing does it automatically.
+
+### Flag a test record (owner only; gap 30)
+
+The test and synthetic records in production carry `isTest = true` (migration `20261024120000_test_records` marked only accounts starting `zz.test.`, region `ZZTEST`, route `ZZTEST-R1` and customer `NMWC-2026-000001`). Flagged rows are left out of the dashboards, the `/status` approval figures, the exports (the Steward may tick **Include test records**), the `/customers` list (the Steward's **Show test records**), the Temix workbook, verify-load and the nightly data checks. A test account still sees its own records, so a production walk works. Nothing is deleted.
+
+Only the table owner, inside the maintenance window (§5e), can set or clear the flag — a trigger refuses the application and every other session, on insert or update. To flag a new one, log the reason first (§5e step 1), then, as the owner:
+
+```sql
+BEGIN;
+SET LOCAL nmwc.audit_maintenance = 'on';
+UPDATE "Customer" SET "isTest" = true WHERE "id" = '<the id>';   -- or "User", "Route", "Region"
+COMMIT;
+```
+
+The next night's `test-flags-changed` check reports the change (that is expected: it is how an unexpected one is caught). Whether the Steward should have a screen for this instead is an open owner question.
 
 ### Re-import the master after a bulk fix
 1. Sign in as Steward.
@@ -956,6 +1023,13 @@ What users report in their first days, and the control in the app that answers e
 
 ## 8. Incident playbook
 
+### Symptom: an "Integrity alert" (in-app "Data check", or webhook `integrity.failed`)
+
+1. Open **/status/integrity** as the Data Steward. Each failing check says why it matters and what to do (the table in §5k), with up to ten examples.
+2. **`critical`** (the seal chain, or the protection triggers or functions): treat as a possible tampering incident. Run `scripts/ops/verify-seals.ts --all` (§5k), check the private operations log for a maintenance window that explains it, and if none does, preserve the evidence (a fresh dump, §5e step 2) before changing anything.
+3. **`warn`** (a data or record-keeping check): fix the records through the app or the named script; the next night's run shows whether it cleared.
+4. A check in `error` could not run (a timeout, a missing table): it runs again the next night; if it stays, look at the run's heartbeat and logs (§5g).
+
 ### Symptom: `/api/health` (bearer) shows a cron job `stale` / `never` / `failed`
 
 `never` after a deploy: the job has not run yet. Check the scheduler: **Vercel → Settings → Cron Jobs** first (the Service status page's Scheduled jobs list shows when Vercel last ran each job), then GitHub Actions → the workflow's recent runs, and cron-job.org's log while it is still in use. `stale`: the scheduler stopped calling. On Vercel, check that the cron is listed and enabled and that the latest deployment is the production one; the GitHub backups are late and sparse and will not keep it fresh on their own. `failed`: open `cron.jobs[].lastError` in the payload; the SLA sweep also logs `cron.sla.row_failed` per row in Vercel logs.
@@ -1002,6 +1076,8 @@ session cut-offs) refuse UPDATE, DELETE and TRUNCATE the same way; the applicati
 only inserts them, and they are kept for ever. **The window does NOT open the route
 rule** (`20261015100100_route_region_fixed`): a route's region cannot be changed in
 it or anywhere else (§7, "A route never changes region").
+
+**And, since the watch-and-prove branch (2026-10-24):** `PurgeSummary`, `SealRecord` and `IntegrityCheckResult` refuse UPDATE, DELETE and TRUNCATE the same way, and the test-record flag (`isTest` on Customer, User, Route, Region) can be set or cleared only inside this window. **Every change to a sealed ledger row made in the window is reported by the next night's `seal-chain-intact` check and stays visible to `scripts/ops/verify-seals.ts` for good** (§5k): run `verify-seals` before and after, and log the reason with the rest of the entry. The window itself still leaves no trace of its own (an `AuditMaintenanceLog` is not built).
 
 Legitimate uses so far: test-fixture clean-up on isolated branches
 (`tests/support/audit.ts`, including `purgeHistory`; the launch e2e clean-up's step 10;

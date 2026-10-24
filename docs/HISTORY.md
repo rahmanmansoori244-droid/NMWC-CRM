@@ -403,3 +403,51 @@ up; a row whose `keyId` differs was written under an earlier secret.
 Kept for ever: `JobRunDay`, `AuthEvent`, and the new `EditApproval` columns with
 their table. An `ESCALATE` and a `CONFLICT` row are `AuditLog` rows and are kept
 like the rest of it.
+
+## 11. Proving it untouched: the daily seal, the nightly checks, the purge summaries and the test flag (watch and prove)
+
+Data audit gaps 25, 28, 29 and 30; migrations `20261024120000_test_records` to
+`20261024120400_integrity_results`; `docs/OPERATIONS.md` §5k.
+
+**The seal (gap 28).** Each night (`/api/cron/integrity-watch`, `lib/seal/*`) one
+REPEATABLE READ transaction seals every append-only ledger: `AuditLog`,
+`EditApproval` and `ExportJob` by their `seq` key (their ids are cuids; `seq` was
+added by the seal migration, numbering existing rows in physical order), the seven
+`*History` tables, `EditRevision`, `AuthEvent`, `JobRunDay`, `PurgeSummary` and
+`IntegrityCheckResult` by their id. Per table the seal records the key range, the row
+count and a digest (the SHA-256 of every row's SHA-256, each row being Postgres's
+`json_build_array` of an explicit, versioned column list), the highest key it could
+see, and its snapshot's xmax; its body is canonical JSON, its hash the SHA-256 of it,
+chained to the previous seal (`SealRecord`, append-only; `nmwc_seal_link_guard`
+refuses a seal that does not link). Seal k covers what seal k-1 could see, and is
+written only once every transaction open at seal k-1 has ended, so a row with a low
+key committed late cannot land unseen in a sealed range. The genesis covers nothing;
+the next night's seal covers every row that existed then — the past before the
+genesis is not proven. A copy of each body goes to R2 under `seals/`.
+`scripts/ops/verify-seals.ts` recomputes it all and names the first mismatch: body
+edited, chain link broken, rows deleted, rows added into a sealed range, rows changed,
+off-site copy missing or different.
+
+**The checks (gap 29).** The same job runs twenty named read-only checks
+(`lib/integrity/checks.ts`), among them: every live record has an open history
+interval, and its latest history row's values are the record's (the columns each
+capture trigger records) — which catches a write made with a trigger off or in
+replica mode; no change recorded under `sql` since the last run; every protecting
+trigger present, enabled for normal sessions and bound to its table and function; every
+protecting function's body, rights and search path as its last migration made them.
+Results go to `IntegrityCheckResult`, append-only and sealed.
+
+**The purge summaries (gap 25).** Every retention rule writes one `PurgeSummary` row
+per batch in the same statement as the deletion (`lib/purge-summary.ts`), so what a
+clean-up removed — how many, which dates, counts by category — is answerable after it.
+
+**The test flag (gap 30).** `isTest` on Customer, User, Route and Region is not a
+watched column (no history row; the nightly `test-flags-changed` check reports any
+change) and moves only in the owner's maintenance window. **The as-of functions above
+do not filter it**: they answer for every record, test ones included.
+
+**What none of this proves.** The owner login can still rewrite ledger rows and the
+seal table in the maintenance window, and the app's R2 token can overwrite the copies,
+until `seals/` is locked (owner); the maintenance window still leaves no trace of its
+own, so a mismatch says that a sealed row changed, not who changed it.
+

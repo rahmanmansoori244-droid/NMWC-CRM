@@ -86,3 +86,10 @@
 - Every role but the salesman prints, within its own scope (`lib/print.ts` PRINT_ALLOWED); out of scope is the branded 404
 - Every print writes a `PRINT` audit row first (ids only; the Steward and, for their regions, Managers read it on /audit), and a print that cannot be recorded is not started; Ctrl+P prints a notice instead of the form; printing the credit application answers the printer's own "Credit application to print" alert
 - Customer profile: the customer's e-mail
+
+### Watch and prove (data audit gaps 25, 28, 29, 30; 2026-10-24)
+- **Test records flagged:** `isTest` on Customer, User, Route and Region; only the known production test records marked (accounts `zz.test.*`, ZZTEST, ZZTEST-R1, NMWC-2026-000001), nothing deleted; the flag moves only in the owner's maintenance window. Dashboards, `/status` approval figures, the exports, the `/customers` list, the Temix workbook, verify-load and the data checks leave them out; the Steward can include them in an export or the list; a test account sees its own
+- **Purge summaries:** every retention rule (periods unchanged, now in `lib/retention-rules.ts`) deletes through one statement that also writes a `PurgeSummary` row (what, how many, date range, counts by category)
+- **Ledger seals:** a daily SHA-256 chain over every append-only ledger (`SealRecord`, `seq` keys on AuditLog, EditApproval, ExportJob), copied to R2 under `seals/`; `scripts/ops/verify-seals.ts` names the first mismatch
+- **Nightly integrity check:** `/api/cron/integrity-watch` (06:30 Oman) runs twenty named read-only checks, stores their results (`IntegrityCheckResult`), and alerts the Data Steward in-app (switched on by a follow-up commit) and the operators' webhook; results on `/status/integrity`
+
