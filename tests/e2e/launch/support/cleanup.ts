@@ -310,7 +310,9 @@ function rateLimitKeys(f: Fixture): string[] {
   for (const u of f.usernames) keys.push(`login:user:${u}`);
   for (const ip of [...f.ips, ...LOCALHOST_IPS]) keys.push(`login:ip:${ip}`);
   for (const id of f.users) {
-    for (const p of ['edit', 'photo', 'import', 'temix', 'temix-download', 'passwordreset']) keys.push(`${p}:${id}`);
+    // Every per-account throttle the app keys by user id (checkLimit callers): a draft
+    // save is 'edit-draft', a printout 'print' (credit flow).
+    for (const p of ['edit', 'edit-draft', 'photo', 'import', 'temix', 'temix-download', 'print', 'passwordreset']) keys.push(`${p}:${id}`);
   }
   return keys;
 }
