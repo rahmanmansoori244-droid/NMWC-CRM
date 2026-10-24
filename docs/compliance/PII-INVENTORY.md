@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**487 stored columns across 34 tables** — Customer contact: 29 · Employee: 95 · Customer entity (personal if a sole establishment): 50 · Not personal data: 313.
+**491 stored columns across 34 tables** — Customer contact: 29 · Employee: 95 · Customer entity (personal if a sole establishment): 50 · Not personal data: 317.
 
 ## Columns holding personal data
 
@@ -334,14 +334,17 @@ Every column the database stores, classified by whose personal data it is. This 
 | Region | `name` | String | geographic area of operations |
 | Region | `code` | String | structural / operational value |
 | Region | `isActive` | Boolean | structural / operational value |
+| Region | `isTest` | Boolean | a test or synthetic record left in production (gap 30); set by the owner only |
 | Region | `createdAt` | DateTime | record timestamp, not an attribute of a person |
 | Region | `updatedAt` | DateTime | record timestamp, not an attribute of a person |
 | Route | `id` | String | foreign key / structural value |
 | Route | `name` | String | structural / operational value |
 | Route | `regionId` | String | foreign key / structural value |
 | Route | `isActive` | Boolean | structural / operational value |
+| Route | `isTest` | Boolean | a test or synthetic record left in production (gap 30); set by the owner only |
 | Route | `createdAt` | DateTime | record timestamp, not an attribute of a person |
 | Route | `updatedAt` | DateTime | record timestamp, not an attribute of a person |
+| User | `isTest` | Boolean | a test or synthetic record left in production (gap 30); set by the owner only |
 | PasswordHistory | `id` | String | foreign key / structural value |
 | SavedView | `id` | String | foreign key / structural value |
 | SavedView | `createdAt` | DateTime | record timestamp, not an attribute of a person |
@@ -372,6 +375,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | Customer | `updatedAt` | DateTime | record timestamp, not an attribute of a person |
 | Customer | `deletedAt` | DateTime | soft-delete marker |
 | Customer | `mergedIntoId` | String | the customer a duplicate merge folded this one into (lossless paths, gap 8); structural |
+| Customer | `isTest` | Boolean | a test or synthetic record left in production (gap 30); set by the owner only |
 | Branch | `customerId` | String | foreign key / structural value |
 | Branch | `regionId` | String | foreign key / structural value |
 | Branch | `routeId` | String | foreign key / structural value |

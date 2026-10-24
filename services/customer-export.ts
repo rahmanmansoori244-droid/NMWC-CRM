@@ -19,8 +19,10 @@ import {
   customerBranchPredicate,
   customerListBranchScope,
   parseCustomerFilters,
+  testRecordsRequested,
   type CustomerFilterParams,
 } from '@/lib/customer-filters';
+import { includeTestRows } from '@/lib/test-records';
 
 /**
  * P2.3 (2026-05-10) — filtered xlsx export of the /customers list.
@@ -93,6 +95,7 @@ async function exportFilteredCustomersCore(
     createdBefore: usp.get('createdBefore') ?? undefined,
     editedAfter: usp.get('editedAfter') ?? undefined,
     editedBefore: usp.get('editedBefore') ?? undefined,
+    test: usp.get('test') ?? undefined,
   };
   const filters = parseCustomerFilters(sp);
 
@@ -108,7 +111,14 @@ async function exportFilteredCustomersCore(
         select: { ownedRouteId: true },
       },
       managedRegions: { select: { id: true } },
+      isTest: true,
     },
+  });
+  // Gap 30: the same rule as the /customers list it mirrors, so the file is the list.
+  filters.includeTest = includeTestRows({
+    viewerIsTest: meRow.isTest,
+    role: meRow.role,
+    requested: testRecordsRequested(sp),
   });
 
   const baseWhere: Prisma.CustomerWhereInput = { deletedAt: null };
@@ -240,6 +250,7 @@ async function exportFilteredCustomersCore(
     kind: 'customers-filtered',
     filters: {
       urlParams: usp.toString(),
+      includeTest: filters.includeTest,
       scope: {
         role: meRow.role,
         forceEmpty: listScope.forceEmpty,

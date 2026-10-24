@@ -155,6 +155,8 @@ function cust(over: Partial<Cust> & { nmwcCode: string }): Record<string, unknow
     id: `id-${over.nmwcCode}`,
     temixCode: null,
     deletedAt: null,
+    // Gap 30: a real customer (TEMIX_QUEUE_WHERE leaves test customers out).
+    isTest: false,
     temixSyncState: TemixSyncState.SYNCED,
     lastTemixUploadAt: null,
     lastTemixUploadBatchId: null,

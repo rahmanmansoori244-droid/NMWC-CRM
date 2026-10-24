@@ -14,8 +14,10 @@ import {
   customerBranchPredicate,
   customerListBranchScope,
   parseCustomerFilters,
+  testRecordsRequested,
   type CustomerFilterParams,
 } from '@/lib/customer-filters';
+import { includeTestRows } from '@/lib/test-records';
 import { listSavedViewsForCurrentUser } from '@/services/saved-views';
 import { customerCountFast } from '@/lib/customer-count';
 import { mergedCodeMatches } from '@/lib/merged-customers';
@@ -56,6 +58,7 @@ export default async function CustomersPage({
         ownedRouteId: true,
         reports: { where: { ownedRouteId: { not: null } }, select: { ownedRouteId: true } },
         managedRegions: { select: { id: true } },
+        isTest: true,
       },
     }),
     filters.supervisorId
@@ -71,6 +74,16 @@ export default async function CustomersPage({
         })
       : Promise.resolve(null),
   ]);
+
+  // Gap 30 (lib/test-records.ts): the test customers are left out of the list, as
+  // of the export that mirrors it, except for a test account and for the Steward
+  // who asked ("Show test records" below).
+  filters.includeTest = includeTestRows({
+    viewerIsTest: me.isTest,
+    role: me.role,
+    requested: testRecordsRequested(sp),
+  });
+  const stewardTestToggle = me.role === Role.STEWARD && !me.isTest;
 
   const baseWhere: Prisma.CustomerWhereInput = { deletedAt: null };
   type BranchSomeWhere = NonNullable<
@@ -309,6 +322,13 @@ export default async function CustomersPage({
   if (sp.createdBefore) baseSp.set('createdBefore', sp.createdBefore);
   if (sp.editedAfter) baseSp.set('editedAfter', sp.editedAfter);
   if (sp.editedBefore) baseSp.set('editedBefore', sp.editedBefore);
+  // Gap 30: the Steward's "Show test records" stays on across pages.
+  const showingTest = stewardTestToggle && filters.includeTest;
+  if (showingTest) baseSp.set('test', '1');
+  const toggledTestSp = new URLSearchParams(baseSp);
+  if (showingTest) toggledTestSp.delete('test');
+  else toggledTestSp.set('test', '1');
+  const testToggleHref: Route = `?${toggledTestSp.toString()}`;
 
   function pageHref(p: number): Route {
     const sp = new URLSearchParams(baseSp);
@@ -340,7 +360,7 @@ export default async function CustomersPage({
           editedAfter: sp.editedAfter ?? '',
           editedBefore: sp.editedBefore ?? '',
         }}
-        flags={{ showRegion, showRoute, showSupervisor, showSalesman, canExport }}
+        flags={{ showRegion, showRoute, showSupervisor, showSalesman, canExport, includeTest: showingTest }}
         regions={regions}
         routes={routes}
         channels={channels}
@@ -355,6 +375,14 @@ export default async function CustomersPage({
       />
 
       <section className="px-4 py-4 sm:px-6">
+        {stewardTestToggle && (
+          <p className="mb-3 text-xs text-slate-500">
+            {showingTest ? 'Test records are shown. ' : 'Test records are left out. '}
+            <Link href={testToggleHref} className="font-medium text-brand-700 hover:underline">
+              {showingTest ? 'Hide test records' : 'Show test records'}
+            </Link>
+          </p>
+        )}
         {mergedShown.length > 0 && (
           <ul className="mb-3 space-y-1 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
             {mergedShown.map((m) => (

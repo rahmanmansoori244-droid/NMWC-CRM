@@ -61,6 +61,7 @@ import { MANAGER_PENDING_STEP_ROLES, MAP, NEW_CUSTOMERS, OMAN_OFFSET_HOURS, UPDA
 import { STATEMENT_TIMEOUT_MS, WAVE_DEADLINE_MS, withinDeadline } from './rollout';
 import { singleRegionInView, type InsightScope } from './scope';
 import { branchInScopeSql, draftInScopeSql, requestInScopeSql } from './sql';
+import { viewerIsTest } from '../test-records';
 import {
   shapeCreated,
   shapeHeat,
@@ -471,4 +472,17 @@ export async function loadInsights(scope: ActiveScope, period: InsightPeriod): P
     pipeline: section('requests', pipeline, shapePipeline),
     heat: section('heat', heat, (rows) => shapeHeat(rows, cellDeg)),
   };
+}
+
+/**
+ * Gap 30 (lib/test-records.ts): whether the viewer's own account is a test
+ * account, whose dashboard then counts the test records too. A read that fails is
+ * read as "no": the figures without the test records, never with them.
+ */
+export async function loadViewerIsTest(userId: string): Promise<boolean> {
+  try {
+    return await withinDeadline(viewerIsTest(prisma, userId), WAVE_DEADLINE_MS);
+  } catch {
+    return false;
+  }
 }

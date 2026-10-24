@@ -406,7 +406,12 @@ export async function slaSweepImpact(worldEditIds: string[]): Promise<{
     db.customerEdit.count({ where: { id: notMine, state: 'SUBMITTED', slaDueAt: { lt: new Date() }, escalationLevel: 0 } }),
     db.customerEdit.count({ where: { id: notMine, state: 'SUBMITTED', escalationLevel: 1, stageEnteredAt: { not: null } } }),
     db.customer.count({
-      where: { OR: [{ temixSyncState: 'PENDING_UPLOAD', deletedAt: null }, { temixSyncState: 'DEACTIVATE_PENDING' }] },
+      where: {
+        OR: [
+          { temixSyncState: 'PENDING_UPLOAD', deletedAt: null, isTest: false },
+          { temixSyncState: 'DEACTIVATE_PENDING', isTest: false },
+        ],
+      },
     }),
     db.notification.count({ where: { readAt: { not: null, lt: new Date(Date.now() - 90 * 86_400_000) } } }),
   ]);

@@ -30,6 +30,7 @@ import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { GOLIVE_REGION_CODES } from '../../lib/ops/golive-accounts';
 import { isDemoAccount } from '../../lib/demo-accounts';
+import { REAL_BRANCH } from '../../lib/test-records';
 import { canApproveSpecificEdit } from '../../lib/permissions';
 import { OperatorRefusal, operatorErrorLabel } from './error-label';
 import { assertNotProduction } from '../lib/assert-not-production';
@@ -106,12 +107,49 @@ type Check = { name: string; why: string; run: () => Promise<Result> };
 
 const n = (v: unknown) => Number(v ?? 0);
 
+/**
+ * Gap 30 (lib/test-records.ts): every count below leaves the flagged test records
+ * out (customers, shops on a test route or region or of a test customer,
+ * accounts, routes, regions), so a load day's figures are the business's. This
+ * check only says how many were left out; it never fails.
+ */
+export const testRecordsCheck = (prisma: PrismaClient): Check => ({
+  name: 'test records left out of these counts',
+  why: 'information only: the flagged test records (gap 30) are not part of the load',
+  run: async () => {
+    const [customers, branches, users, routes, regions] = await Promise.all([
+      prisma.customer.count({ where: { deletedAt: null, isTest: true } }),
+      prisma.branch.count({
+        where: {
+          deletedAt: null,
+          OR: [{ customer: { isTest: true } }, { route: { isTest: true } }, { region: { isTest: true } }],
+        },
+      }),
+      prisma.user.count({ where: { isTest: true } }),
+      prisma.route.count({ where: { isTest: true } }),
+      prisma.region.count({ where: { isTest: true } }),
+    ]);
+    return {
+      ok: true,
+      detail: `${customers} customer(s), ${branches} branch(es), ${users} account(s), ${routes} route(s), ${regions} region(s)`,
+    };
+  },
+});
+
+/** SQL: the shop aliased b is real (lib/test-records.ts realBranchSql). */
+const REAL_B = Prisma.raw(
+  `NOT EXISTS (SELECT 1 FROM "Customer" zt_c WHERE zt_c."id" = b."customerId" AND zt_c."isTest")` +
+    ` AND NOT EXISTS (SELECT 1 FROM "Route" zt_r WHERE zt_r."id" = b."routeId" AND zt_r."isTest")` +
+    ` AND NOT EXISTS (SELECT 1 FROM "Region" zt_g WHERE zt_g."id" = b."regionId" AND zt_g."isTest")`
+);
+
 export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Check[] => [
+  testRecordsCheck(prisma),
   {
     name: 'customers exist',
     why: 'the load either ran or it did not',
     run: async () => {
-      const total = await prisma.customer.count({ where: { deletedAt: null } });
+      const total = await prisma.customer.count({ where: { deletedAt: null, isTest: false } });
       return { ok: total > 0, detail: `${total} live customers` };
     },
   },
@@ -121,7 +159,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
     run: async () => {
       const rows = await prisma.$queryRaw<{ n: bigint }[]>`
         SELECT count(*) AS n FROM "Customer" c
-        WHERE c."deletedAt" IS NULL
+        WHERE c."deletedAt" IS NULL AND NOT c."isTest"
           AND NOT EXISTS (SELECT 1 FROM "Branch" b WHERE b."customerId" = c.id AND b."deletedAt" IS NULL)`;
       const bad = n(rows[0]?.n);
       return {
@@ -139,7 +177,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
         SELECT
           count(*) FILTER (WHERE "routeId" IS NULL)  AS noroute,
           count(*) FILTER (WHERE "regionId" IS NULL) AS noregion
-        FROM "Branch" WHERE "deletedAt" IS NULL`;
+        FROM "Branch" b WHERE b."deletedAt" IS NULL AND ${REAL_B}`;
       const noRoute = n(rows[0]?.noroute);
       const noRegion = n(rows[0]?.noregion);
       return { ok: noRoute === 0 && noRegion === 0, detail: `${noRoute} without a route, ${noRegion} without a region` };
@@ -152,7 +190,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
       const rows = await prisma.$queryRaw<{ n: bigint }[]>`
         SELECT count(*) AS n FROM "Branch" b
         JOIN "Route" r ON r.id = b."routeId"
-        WHERE b."deletedAt" IS NULL AND b."regionId" <> r."regionId"`;
+        WHERE b."deletedAt" IS NULL AND b."regionId" <> r."regionId" AND ${REAL_B}`;
       const bad = n(rows[0]?.n);
       return { ok: bad === 0, detail: `${bad} mismatched` };
     },
@@ -172,9 +210,9 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
       // promoted while its branch loop was skipped. That shows up as days going
       // MISSING against what the master supplied, which is what this asks.
       const withDay = await prisma.branch.count({
-        where: { deletedAt: null, dayOfVisit: { not: null } },
+        where: { deletedAt: null, dayOfVisit: { not: null }, ...REAL_BRANCH },
       });
-      const branches = await prisma.branch.count({ where: { deletedAt: null } });
+      const branches = await prisma.branch.count({ where: { deletedAt: null, ...REAL_BRANCH } });
 
       // There is deliberately no "a day but no route" check here: Branch.routeId
       // and Branch.regionId are non-nullable in the schema, so the database
@@ -301,7 +339,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
     run: async () => {
       const rows = await prisma.$queryRaw<{ n: bigint }[]>`
         SELECT count(*) AS n FROM (
-          SELECT lower("nmwcCode") k FROM "Customer" WHERE "deletedAt" IS NULL
+          SELECT lower("nmwcCode") k FROM "Customer" WHERE "deletedAt" IS NULL AND NOT "isTest"
           GROUP BY lower("nmwcCode") HAVING count(*) > 1
         ) d`;
       const bad = n(rows[0]?.n);
@@ -313,7 +351,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
     why: 'a salesman with no route sees nothing; a route with two owners splits the audit trail',
     run: async () => {
       const noRoute = await prisma.user.count({
-        where: { role: 'SALESMAN', isActive: true, ownedRouteId: null },
+        where: { role: 'SALESMAN', isActive: true, ownedRouteId: null, isTest: false },
       });
       // ownedRouteId is unique in the schema, so a double-owner cannot exist;
       // this reports routes with NO owner, which is the reachable half. Active
@@ -321,8 +359,8 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
       // 2026-10-05 production walk, whose test salesman is disabled, is not one.
       const rows = await prisma.$queryRaw<{ n: bigint }[]>`
         SELECT count(*) AS n FROM "Route" r
-        JOIN "Region" g ON g.id = r."regionId" AND g."isActive"
-        WHERE r."isActive"
+        JOIN "Region" g ON g.id = r."regionId" AND g."isActive" AND NOT g."isTest"
+        WHERE r."isActive" AND NOT r."isTest"
           AND NOT EXISTS (SELECT 1 FROM "User" u WHERE u."ownedRouteId" = r.id AND u."isActive")`;
       const orphanRoutes = n(rows[0]?.n);
       return {
@@ -338,7 +376,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
     run: async () => {
       const rows = await prisma.$queryRaw<{ n: bigint }[]>`
         SELECT count(*) AS n FROM "Customer"
-        WHERE "deletedAt" IS NULL AND "paymentTerms" = 'CREDIT'
+        WHERE "deletedAt" IS NULL AND NOT "isTest" AND "paymentTerms" = 'CREDIT'
           AND "creditLimit" IS NOT NULL AND "paymentTermDays" IS NULL`;
       const bad = n(rows[0]?.n);
       return { ok: bad === 0, detail: `${bad} with a limit but no term days` };
@@ -349,7 +387,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
     why: 'the Temix export suppresses a CASH customer limit, so the CRM and the ERP would disagree silently',
     run: async () => {
       const bad = await prisma.customer.count({
-        where: { deletedAt: null, paymentTerms: 'CASH', creditLimit: { not: null } },
+        where: { deletedAt: null, isTest: false, paymentTerms: 'CASH', creditLimit: { not: null } },
       });
       return { ok: bad === 0, detail: `${bad} CASH customer(s) with a credit limit` };
     },
@@ -359,7 +397,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
     why: 'born SYNCED with no code means the ERP never learns the customer exists and cannot invoice it',
     run: async () => {
       const bad = await prisma.customer.count({
-        where: { deletedAt: null, temixCode: null, temixSyncState: 'SYNCED' },
+        where: { deletedAt: null, isTest: false, temixCode: null, temixSyncState: 'SYNCED' },
       });
       return {
         ok: bad === 0,
@@ -373,10 +411,10 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
     why: 'the forced change is the entire mitigation for a shared or printed initial password',
     run: async () => {
       const stale = await prisma.user.count({
-        where: { isActive: true, mustChangePassword: true, lastLoginAt: { not: null } },
+        where: { isActive: true, isTest: false, mustChangePassword: true, lastLoginAt: { not: null } },
       });
       const never = await prisma.user.count({
-        where: { isActive: true, mustChangePassword: true, lastLoginAt: null },
+        where: { isActive: true, isTest: false, mustChangePassword: true, lastLoginAt: null },
       });
       return {
         ok: stale === 0,
@@ -396,13 +434,13 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
       // operator reads on load day; leftover accounts are audit-accounts.ts's job.
       const blind = (
         await prisma.user.findMany({
-          where: { role: 'MANAGER', isActive: true, managedRegions: { none: {} } },
+          where: { role: 'MANAGER', isActive: true, isTest: false, managedRegions: { none: {} } },
           select: { username: true },
         })
       ).filter((u) => !isDemoAccount(u.username));
       const usable = (
         await prisma.user.findMany({
-          where: { role: 'MANAGER', isActive: true },
+          where: { role: 'MANAGER', isActive: true, isTest: false },
           select: { username: true },
         })
       ).filter((u) => !isDemoAccount(u.username));
@@ -427,7 +465,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
         managedRegions: { select: { id: true } },
       } as const;
       const salesmen = await prisma.user.findMany({
-        where: { role: 'SALESMAN', isActive: true },
+        where: { role: 'SALESMAN', isActive: true, isTest: false },
         select: {
           id: true,
           username: true,
@@ -437,7 +475,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
         },
       });
       const managers = await prisma.user.findMany({
-        where: { role: 'MANAGER', isActive: true },
+        where: { role: 'MANAGER', isActive: true, isTest: false },
         select: approverSelect,
       });
       const stranded = salesmen
@@ -472,7 +510,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
       // ZZTEST region left inactive by the 2026-10-05 production walk was
       // reported here as a region with no accountant on every run.
       const regions = await prisma.region.findMany({
-        where: { code: { not: 'UNASSIGNED' }, isActive: true },
+        where: { code: { not: 'UNASSIGNED' }, isActive: true, isTest: false },
         select: { code: true, managers: { where: { isActive: true, role: 'ACCOUNTANT' }, select: { username: true } } },
       });
       const uncovered = regions.filter((r) => r.managers.length === 0).map((r) => r.code);
@@ -497,14 +535,14 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
     why: 'an ACCOUNTANT with no managed region is fail-closed everywhere — it signs in normally and sees an empty approval queue for good, which is exactly what a silently dropped region_code produces',
     run: async () => {
       const blind = await prisma.user.findMany({
-        where: { role: 'ACCOUNTANT', isActive: true, managedRegions: { none: {} } },
+        where: { role: 'ACCOUNTANT', isActive: true, isTest: false, managedRegions: { none: {} } },
         select: { username: true },
       });
       // Zero accountants would mean none is blind, so require at least one. NOT
       // an exact count: the go-live issues one per region, but a second added
       // later for cover is legitimate and must not turn this red. Whether every
       // region is actually covered is the check above.
-      const total = await prisma.user.count({ where: { role: 'ACCOUNTANT', isActive: true } });
+      const total = await prisma.user.count({ where: { role: 'ACCOUNTANT', isActive: true, isTest: false } });
       const expected = GOLIVE_REGION_CODES.length;
       return {
         ok: blind.length === 0 && total > 0,
@@ -528,7 +566,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
         // (lib/demo-accounts.ts), so they do not count, as for the managers above.
         const holders = (
           await prisma.user.findMany({
-            where: { role, isActive: true },
+            where: { role, isActive: true, isTest: false },
             select: { username: true, mustChangePassword: true },
           })
         ).filter((u) => !isDemoAccount(u.username));

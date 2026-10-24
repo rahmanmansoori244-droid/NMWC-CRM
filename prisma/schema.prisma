@@ -158,6 +158,12 @@ model Region {
   name      String   @unique
   code      String   @unique
   isActive  Boolean  @default(true)
+  // Gap 30 (data audit 2026-10-10; migration 20261024120000_test_records): a
+  // test or synthetic region left in production. Marked only by the owner (a
+  // trigger refuses any other writer); dashboards, exports, the Temix workbook,
+  // verify-load and the nightly data checks leave flagged rows out by default
+  // (lib/test-records.ts). Nothing is deleted.
+  isTest    Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -173,6 +179,12 @@ model Route {
   code      String   @unique
   regionId  String
   isActive  Boolean  @default(true)
+  // Gap 30 (data audit 2026-10-10; migration 20261024120000_test_records): a
+  // test or synthetic route left in production. Marked only by the owner (a
+  // trigger refuses any other writer); dashboards, exports, the Temix workbook,
+  // verify-load and the nightly data checks leave flagged rows out by default
+  // (lib/test-records.ts). Nothing is deleted.
+  isTest    Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -205,6 +217,12 @@ model User {
   // AUTH-09: forces redirect to /profile/change-password on next login. Cleared
   // by a successful change-password action.
   mustChangePassword Boolean   @default(false)
+  // Gap 30 (data audit 2026-10-10; migration 20261024120000_test_records): a
+  // test or synthetic account left in production. Marked only by the owner (a
+  // trigger refuses any other writer); dashboards, exports, the Temix workbook,
+  // verify-load and the nightly data checks leave flagged rows out by default
+  // (lib/test-records.ts). Nothing is deleted.
+  isTest             Boolean   @default(false)
 
   // Hierarchy
   supervisorId String?
@@ -355,6 +373,13 @@ model Customer {
   // customer page follow it to the survivor. RESTRICT: a survivor cannot be
   // hard-deleted while a merged customer points at it.
   mergedIntoId String?
+
+  // Gap 30 (data audit 2026-10-10; migration 20261024120000_test_records): a
+  // test or synthetic customer left in production. Marked only by the owner (a
+  // trigger refuses any other writer); dashboards, exports, the Temix workbook,
+  // verify-load and the nightly data checks leave flagged rows out by default
+  // (lib/test-records.ts). Nothing is deleted.
+  isTest       Boolean @default(false)
 
   channel    Channel?    @relation(fields: [channelId], references: [id])
   subChannel SubChannel? @relation(fields: [subChannelId], references: [id])

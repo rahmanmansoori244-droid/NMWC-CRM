@@ -30,7 +30,11 @@ vi.mock('@/lib/audit', () => ({
 }));
 vi.mock('@/lib/db', () => ({
   prisma: {
-    user: { findMany: async () => h.teamRoutes.map((r) => ({ ownedRouteId: r })) },
+    user: {
+      findMany: async () => h.teamRoutes.map((r) => ({ ownedRouteId: r })),
+      // Gap 30: the exporter is not a test account.
+      findUnique: async () => ({ isTest: false }),
+    },
     region: { findMany: async () => h.managedRegions.map((id) => ({ id })) },
     branch: { count: h.count_, findMany: h.findMany },
     $transaction: async (fn: (tx: unknown) => unknown) =>

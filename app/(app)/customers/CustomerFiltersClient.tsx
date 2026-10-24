@@ -14,7 +14,18 @@ type RoleFlags = {
   showSupervisor: boolean;
   showSalesman: boolean;
   canExport: boolean;
+  /**
+   * Gap 30: the Steward chose "Show test records" (test=1). Kept on a filter
+   * change and sent with the export, so the file is still the list.
+   */
+  includeTest?: boolean;
 };
+
+/** Gap 30: the URL params with the Steward's test-records choice kept on. */
+function withTestParam(params: string, on: boolean | undefined): string {
+  if (!on) return params;
+  return params ? `${params}&test=1` : 'test=1';
+}
 
 type Region = { id: string; name: string; code: string };
 type RouteRow = { id: string; code: string; name: string; regionId: string };
@@ -327,8 +338,9 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
     // we DO want resynced — otherwise the amber hint sticks forever under a
     // filter that is applied.
     setSelfPushed(params);
+    const pushed = withTestParam(params, props.flags.includeTest);
     startApply(() => {
-      router.push(params ? `/customers?${params}` : '/customers');
+      router.push(pushed ? `/customers?${pushed}` : '/customers');
     });
   }
 
@@ -369,7 +381,7 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
     setExportError(null);
     setExportBusy(true);
     const fd = new FormData();
-    fd.set('urlParams', buildUrlParams());
+    fd.set('urlParams', withTestParam(buildUrlParams(), props.flags.includeTest));
     const res = await exportFilteredCustomersAction(fd);
     setExportBusy(false);
     if (!res.ok) {

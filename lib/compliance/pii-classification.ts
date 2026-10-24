@@ -88,6 +88,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'Region.name': { subject: 'none', note: 'geographic area of operations' },
   'Region.code': { subject: 'none' },
   'Region.isActive': { subject: 'none' },
+  'Region.isTest': { subject: 'none', note: 'a test or synthetic record left in production (gap 30); set by the owner only' },
   'Region.createdAt': { subject: 'none', note: RECORD_META },
   'Region.updatedAt': { subject: 'none', note: RECORD_META },
 
@@ -101,6 +102,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   },
   'Route.regionId': { subject: 'none', note: STRUCTURAL },
   'Route.isActive': { subject: 'none' },
+  'Route.isTest': { subject: 'none', note: 'a test or synthetic record left in production (gap 30); set by the owner only' },
   'Route.createdAt': { subject: 'none', note: RECORD_META },
   'Route.updatedAt': { subject: 'none', note: RECORD_META },
 
@@ -120,6 +122,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'User.mustChangePassword': { subject: 'employee', kind: 'credential' },
   'User.supervisorId': { subject: 'employee', note: 'reporting line' },
   'User.ownedRouteId': { subject: 'employee', note: 'the round this person works' },
+  'User.isTest': { subject: 'none', note: 'a test or synthetic record left in production (gap 30); set by the owner only' },
 
   // ---- PasswordHistory -----------------------------------------------------
   'PasswordHistory.id': { subject: 'none', note: STRUCTURAL },
@@ -173,6 +176,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'Customer.version': { subject: 'none', note: 'optimistic-concurrency counter' },
   'Customer.importBatchId': { subject: 'none', note: STRUCTURAL },
   'Customer.importRowId': { subject: 'none', note: STRUCTURAL },
+  'Customer.isTest': { subject: 'none', note: 'a test or synthetic record left in production (gap 30); set by the owner only' },
   'Customer.mergedIntoId': { subject: 'none', note: 'the customer a duplicate merge folded this one into (lossless paths, gap 8); structural' },
   'Customer.crPhotoId': { subject: 'none', note: 'reference to the CR document image in R2' },
   'Customer.creditLimit': { subject: 'business-or-person', kind: 'financial' },

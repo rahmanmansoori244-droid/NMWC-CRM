@@ -30,6 +30,8 @@ export type CustomerFilterParams = {
   createdBefore?: string;
   editedAfter?: string;
   editedBefore?: string;
+  /** Gap 30: '1' = show the test records too (honoured for the Steward only, see includeTest). */
+  test?: string;
 };
 
 /** Parsed/normalized filter values used by the where-builder. */
@@ -49,7 +51,18 @@ export type ParsedCustomerFilters = {
   createdBefore: Date | null;
   editedAfter: Date | null;
   editedBefore: Date | null;
+  /**
+   * Gap 30 (lib/test-records.ts): keep the test records in. Always false from
+   * parseCustomerFilters: the caller sets it, from testRecordsRequested() and who
+   * is asking (includeTestRows), so a URL alone can never turn it on.
+   */
+  includeTest: boolean;
 };
+
+/** Gap 30: the URL asks for the test records too ('test=1'). Whether it is honoured is includeTestRows'. */
+export function testRecordsRequested(sp: CustomerFilterParams): boolean {
+  return sp.test === '1';
+}
 
 function splitCsv(value: string | undefined): string[] {
   if (!value) return [];
@@ -93,6 +106,7 @@ export function parseCustomerFilters(sp: CustomerFilterParams): ParsedCustomerFi
     createdBefore: parseDate(sp.createdBefore),
     editedAfter: parseDate(sp.editedAfter),
     editedBefore: parseDate(sp.editedBefore),
+    includeTest: false,
   };
 }
 
@@ -249,6 +263,10 @@ export function applyCustomerFilters(
       },
     ];
   }
+  // Gap 30: the test customers are left out unless the caller decided otherwise.
+  // On the customer only: a real customer with a shop on the test route still
+  // shows (the nightly check test-scaffolding-mixed reports it).
+  if (!filters.includeTest) where.isTest = false;
   if (filters.status) where.status = filters.status;
   if (filters.channelIds.length) where.channelId = { in: filters.channelIds };
   if (filters.subChannelIds.length) where.subChannelId = { in: filters.subChannelIds };

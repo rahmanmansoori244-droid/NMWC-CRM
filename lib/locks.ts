@@ -65,9 +65,9 @@ export async function lockCustomersAndTemixCodeHolders(
  * Postgres aborts one side as a deadlock (review of 023173c). Returns the ids
  * locked; Generate claims only those, so no customer lock of its own is taken out
  * of this order, and a customer that joins the queue after this statement waits
- * for the next batch.
+ * for the next batch. A test customer is never in the queue (gap 30).
  */
 export async function lockTemixQueue(tx: Prisma.TransactionClient): Promise<string[]> {
-  const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "Customer" WHERE ("temixSyncState" = 'PENDING_UPLOAD' AND "deletedAt" IS NULL) OR "temixSyncState" = 'DEACTIVATE_PENDING' ORDER BY "id" COLLATE "C" FOR UPDATE`;
+  const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "Customer" WHERE (("temixSyncState" = 'PENDING_UPLOAD' AND "deletedAt" IS NULL) OR "temixSyncState" = 'DEACTIVATE_PENDING') AND NOT "isTest" ORDER BY "id" COLLATE "C" FOR UPDATE`;
   return rows.map((r) => r.id);
 }

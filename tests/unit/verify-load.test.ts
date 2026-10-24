@@ -310,6 +310,35 @@ describe('verify-load: the org-wide approvers and the regions it counts (launch 
     expect(r.ok).toBe(true);
     expect(sql).toHaveLength(1);
     expect(sql[0]).toContain('JOIN "Region" g ON g.id = r."regionId" AND g."isActive"');
-    expect(sql[0]).toMatch(/WHERE r\."isActive" AND NOT EXISTS/);
+    // Gap 30: and never a flagged test route or region.
+    expect(sql[0]).toContain('AND g."isActive" AND NOT g."isTest"');
+    expect(sql[0]).toMatch(/WHERE r\."isActive" AND NOT r\."isTest" AND NOT EXISTS/);
+  });
+});
+
+describe('verify-load: gap 30, the test records are left out of every count', () => {
+  it('says how many it left out, as information that never fails', async () => {
+    const count = vi.fn(async () => 1);
+    const db = { customer: { count }, branch: { count }, user: { count }, route: { count }, region: { count } };
+    const c = loadChecks(db as unknown as PrismaClient, { branches: 500, visitDays: 200 })[0]!;
+    expect(c.name).toBe('test records left out of these counts');
+    const r = await c.run();
+    expect(r).toMatchObject({ ok: true, detail: '1 customer(s), 1 branch(es), 1 account(s), 1 route(s), 1 region(s)' });
+  });
+
+  it('every customer, branch and account count names the flag', async () => {
+    const real = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const src = real.readFileSync('scripts/ops/verify-load.ts', 'utf8');
+    const checks = src.slice(src.indexOf('export const loadChecks'));
+    const plain = [...checks.matchAll(/prisma\.(customer|user)\.(count|findMany)\(\{\s*where: \{([^}]*)/g)];
+    expect(plain.length).toBeGreaterThan(10);
+    for (const m of plain) expect(m[3], m[0]).toContain('isTest: false');
+    // The whole where, nested braces and all: up to the call's closing `})`.
+    const shops = [...checks.matchAll(/prisma\.branch\.count\(\{\s*where: \{([\s\S]*?)\},?\s*\}\)/g)];
+    expect(shops.length).toBe(2);
+    for (const m of shops) expect(m[1], m[0]).toContain('...REAL_BRANCH');
+    const raw = [...checks.matchAll(/FROM "(Customer|Branch)"[^`]*`/g)];
+    expect(raw.length).toBeGreaterThan(3);
+    for (const m of raw) expect(m[0], m[0]).toMatch(/isTest|REAL_B/);
   });
 });

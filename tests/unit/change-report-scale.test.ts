@@ -17,7 +17,7 @@ vi.mock('@/lib/db', () => ({
     branch: { count: h.count, findMany: h.findMany.mockResolvedValue([]) },
     channel: { findMany: async () => [] },
     subChannel: { findMany: async () => [] },
-    user: { findMany: async () => [] },
+    user: { findMany: async () => [], findUnique: async () => ({ isTest: false }) },
     attachment: { findMany: async () => [] },
     customerEdit: { findMany: async () => h.edits },
   },
@@ -158,7 +158,8 @@ describe('buildChangeReport — reads a page at a time', () => {
     for (const a of calls) {
       expect(a.take).toBe(2);
       expect(a.orderBy).toEqual({ branchCode: 'asc' });
-      expect(a.where.customer).toEqual({ deletedAt: null });
+      // Gap 30: the test customers stay out of the report.
+      expect(a.where.customer).toEqual({ deletedAt: null, isTest: false });
       expect(a.where.AND[0]).toEqual(calls[0].where.AND[0]);
       expect(a.cursor).toBeUndefined();
       expect(a.skip).toBeUndefined();

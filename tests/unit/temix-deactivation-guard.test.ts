@@ -141,11 +141,15 @@ describe('Generate takes the queue locks in the holders lock order, before it wr
   it('locks exactly the queue, in byte id order, in one statement', () => {
     const sql = /\$queryRaw<[^`]*>`([^`]*)`/.exec(lockFn)?.[1] ?? '';
     expect(sql).toBe(
-      `SELECT "id" FROM "Customer" WHERE ("temixSyncState" = 'PENDING_UPLOAD' AND "deletedAt" IS NULL) OR "temixSyncState" = 'DEACTIVATE_PENDING' ORDER BY "id" COLLATE "C" FOR UPDATE`
+      `SELECT "id" FROM "Customer" WHERE (("temixSyncState" = 'PENDING_UPLOAD' AND "deletedAt" IS NULL) OR "temixSyncState" = 'DEACTIVATE_PENDING') AND NOT "isTest" ORDER BY "id" COLLATE "C" FOR UPDATE`
     );
     // The same two lanes as the queue predicate: change one, change both.
     expect(TEMIX_QUEUE_WHERE).toEqual({
-      OR: [{ temixSyncState: 'PENDING_UPLOAD', deletedAt: null }, { temixSyncState: 'DEACTIVATE_PENDING' }],
+      // Gap 30: a test customer never reaches the ERP file, on either lane.
+      OR: [
+        { temixSyncState: 'PENDING_UPLOAD', deletedAt: null, isTest: false },
+        { temixSyncState: 'DEACTIVATE_PENDING', isTest: false },
+      ],
     });
   });
 

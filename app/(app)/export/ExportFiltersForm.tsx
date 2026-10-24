@@ -23,9 +23,15 @@ function refusalText(status: number, error: string): string {
 export function ExportFiltersForm({
   regions,
   routes,
+  canIncludeTest = false,
 }: {
   regions: Region[];
   routes: Route[];
+  /**
+   * Gap 30 (lib/test-records.ts): the Data Steward may ask for the test records
+   * too. The server honours it for him only, whatever is sent.
+   */
+  canIncludeTest?: boolean;
 }) {
   const [regionIds, setRegionIds] = useState<string[]>([]);
   const [routeIds, setRouteIds] = useState<string[]>([]);
@@ -43,6 +49,8 @@ export function ExportFiltersForm({
   const [changesUntil, setChangesUntil] = useState<string>(todayIso);
   const [onlyChanged, setOnlyChanged] = useState(false);
   const [includePending, setIncludePending] = useState(true);
+  const [includeTest, setIncludeTest] = useState(false);
+  const withTest = canIncludeTest && includeTest;
   // Launch fix: each download used to be a navigation (window.location.href or
   // a plain link), so any refusal — 403 "Export too large…", 400, 401, 500 —
   // replaced this page with raw JSON. It is fetched instead: a file is saved, a
@@ -100,6 +108,7 @@ export function ExportFiltersForm({
     if (minCompleteness) sp.set('minCompleteness', minCompleteness);
     if (maxCompleteness) sp.set('maxCompleteness', maxCompleteness);
     if (updatedSince) sp.set('updatedSince', updatedSince);
+    if (withTest) sp.set('includeTest', '1');
     return `/api/exports/customers?${sp.toString()}`;
   }
 
@@ -111,6 +120,7 @@ export function ExportFiltersForm({
     if (changesUntil) sp.set('until', changesUntil);
     sp.set('onlyChanged', onlyChanged ? '1' : '0');
     sp.set('includePending', includePending ? '1' : '0');
+    if (withTest) sp.set('includeTest', '1');
     return `/api/exports/changes?${sp.toString()}`;
   }
 
@@ -257,11 +267,29 @@ export function ExportFiltersForm({
         </div>
       </div>
 
+      {canIncludeTest && (
+        <label className="flex items-start gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={includeTest}
+            onChange={(e) => setIncludeTest(e.currentTarget.checked)}
+          />
+          <span>
+            Include test records
+            <span className="block text-xs text-slate-500">
+              The test accounts, the ZZTEST region and route, and the walk-through customer are left
+              out of both files unless this is ticked. The export record says which you chose.
+            </span>
+          </span>
+        </label>
+      )}
+
       <div className="flex items-center justify-between border-t border-slate-200 pt-4">
         <button
           type="button"
           disabled={busy}
-          onClick={() => void download('/api/exports/customers')}
+          onClick={() => void download(withTest ? '/api/exports/customers?includeTest=1' : '/api/exports/customers')}
           className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
         >
           Download all (no filters)

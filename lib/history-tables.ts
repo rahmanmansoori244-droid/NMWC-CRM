@@ -19,6 +19,8 @@ export const HISTORY_MIGRATIONS = [
   // the rule that a route never changes region (gap 16).
   '20261015100000_authority_jobs_auth_events',
   '20261015100100_route_region_fixed',
+  // Watch and prove (gap 30): the test-record flag and its owner-only guard.
+  '20261024120000_test_records',
 ] as const;
 
 /** INSERT-only tables written by the capture triggers, never by the application. */
@@ -66,6 +68,13 @@ export const EVIDENCE_TRIGGERS = [
   ]),
 ] as const;
 
+/**
+ * Gap 30 (20261024120000_test_records): the tables carrying the isTest flag. Only
+ * the owner, inside the maintenance window, may set or clear it
+ * (nmwc_is_test_guard), on insert or update.
+ */
+export const TEST_FLAG_TABLES = ['Customer', 'User', 'Route', 'Region'] as const;
+
 /** Every trigger the history migrations create. */
 export const HISTORY_TRIGGERS: readonly string[] = [
   ...CAPTURED_TABLES.flatMap((t) => [
@@ -88,6 +97,8 @@ export const HISTORY_TRIGGERS: readonly string[] = [
     `${t.toLowerCase()}_insert_guard`,
   ]),
   ...EVIDENCE_TRIGGERS,
+  // Gap 30: the test flag moves only in the owner's maintenance window.
+  ...TEST_FLAG_TABLES.flatMap((t) => [`${t.toLowerCase()}_is_test_guard_ins`, `${t.toLowerCase()}_is_test_guard_upd`]),
 ];
 
 /** The functions behind them, and the as-of / report functions (docs/HISTORY.md). */
@@ -126,6 +137,7 @@ export const HISTORY_FUNCTIONS = [
   'nmwc_route_owner_intervals',
   'nmwc_customer_route_intervals',
   'nmwc_history_unattributed',
+  'nmwc_is_test_guard',
 ] as const;
 
 /** The SECURITY DEFINER capture functions: EXECUTE revoked from PUBLIC. */
@@ -147,6 +159,7 @@ export const GUARD_FUNCTIONS = [
   'nmwc_customeredit_original_customer',
   'nmwc_customeredit_evidence_guard',
   'nmwc_route_region_fixed',
+  'nmwc_is_test_guard',
 ] as const;
 
 /** The sequence behind each table's BIGSERIAL id (Prisma's naming). */

@@ -32,6 +32,7 @@ import { EditState, ImportBatchStatus, Prisma } from '@prisma/client';
 import { prisma } from './db';
 import { loadHeartbeatReport, type HeartbeatReport } from './heartbeat';
 import { TEMIX_QUEUE_WHERE } from './temix';
+import { realRequestSql } from './test-records';
 import { workingMinutesBetween } from './working-hours';
 import {
   PARSING_LOOKBACK_HOURS,
@@ -270,6 +271,8 @@ async function approvalTiers(
       JOIN "CustomerEdit" e ON e."id" = a."editId"
      WHERE a."at" >= ${from}
        AND e."isReactivation" = false
+       -- Gap 30: a request by a test account or about a test customer is not counted.
+       AND ${realRequestSql('e')}
        ${managerScopeSql(scope, Prisma.sql`a."role"::text`)}
      GROUP BY a."role"
      ORDER BY a."role"`;
@@ -282,6 +285,8 @@ async function approvalTiers(
       JOIN "CustomerEdit" e ON e."id" = a."editId"
      WHERE a."slaDueAt" IS NOT NULL
        AND e."isReactivation" = false
+       -- Gap 30: a request by a test account or about a test customer is not counted.
+       AND ${realRequestSql('e')}
        ${managerScopeSql(scope, Prisma.sql`a."role"::text`)}`;
 
   const tiers: TierDecisions[] = steps.map((s) => ({
@@ -302,6 +307,10 @@ async function approvalTiers(
     // "Keep closed" ends REJECTED since 2026-10-07 (NEEDS_CORRECTION before it).
     state: { in: [EditState.APPROVED, EditState.NEEDS_CORRECTION, EditState.REJECTED] },
     ...(scope === 'company' ? {} : { AND: [countedInRegions(scope.regionIds)] }),
+    // Gap 30 (lib/test-records.ts): realRequestSql's rule for a reactivation,
+    // which always has its customer and is never a new-customer request.
+    submittedBy: { isTest: false },
+    customer: { isTest: false },
   };
   const [reactivations, firstReactivation] = await Promise.all([
     prisma.customerEdit.findMany({
@@ -358,6 +367,7 @@ async function openApprovals(now: Date, scope: ApprovalsScope): Promise<OpenTier
            min(COALESCE(e."stageEnteredAt", e."submittedAt")) AS "oldest"
       FROM "CustomerEdit" e
      WHERE e."state" = 'SUBMITTED'
+       AND ${realRequestSql('e')}
        ${managerScopeSql(scope, Prisma.sql`COALESCE(e."pendingRole"::text, 'SUPERVISOR')`)}
      GROUP BY 1`;
   // Every step, waiting or not, so the page lists the same steps whatever waits.
