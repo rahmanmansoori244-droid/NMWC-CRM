@@ -7,8 +7,11 @@
  *
  * What it reads: the history tables (CustomerHistory, BranchHistory,
  * AttachmentHistory, UserHistory) and nmwc_customer_route_intervals, plus the
- * live tables for labels. Never AuditLog: its before/after values and typed
- * reasons can hold personal values, and the history stores those by name only.
+ * live tables for labels. Those labels include name data, as the customer page
+ * shows it: today's Customer.legalName (page header), Branch.branchName (shop
+ * picker) and User.fullName (who). No personal value comes from the history:
+ * it stores changed personal fields by name only. Never AuditLog: its
+ * before/after values and typed reasons can hold personal values.
  *
  * Access: the Data Steward only (lib/permissions.ts canSeeCustomerHistory). The
  * page checks it before calling; this checks again and answers null, as for an

@@ -9,14 +9,20 @@
  * rows; everything here is unit-tested without a database
  * (tests/unit/customer-history.test.ts).
  *
- * Personal values never reach the page (PDPL-ASSESSMENT Q4). The history stores a
- * name, phone, CR number, contact, e-mail, note, address or GPS point by FIELD
- * NAME only, and AuditLog — whose before/after and typed reasons can hold them —
- * is never read. A field shows a value only when it is on its table's
- * VALUE_FIELDS list, and the value is read from the history row's own column
- * ("to" from this row, "from" from the same record's previous row). Every other
- * field, including one this code does not know yet, reads "<label>: changed":
- * the rule fails closed.
+ * No personal value from the history reaches the page (PDPL-ASSESSMENT Q4). The
+ * history stores a name, phone, CR number, contact, e-mail, note, address or GPS
+ * point by FIELD NAME only, and AuditLog — whose before/after and typed reasons
+ * can hold them — is never read. A field shows a value only when it is on its
+ * table's VALUE_FIELDS list, and the value is read from the history row's own
+ * column ("to" from this row, "from" from the same record's previous row). Every
+ * other field, including one this code does not know yet, reads "<label>:
+ * changed": the rule fails closed. So does a cause that fails SOURCE_RE
+ * (parseSource): its text is not shown.
+ *
+ * Labels come from today's live rows, as on the customer page: the customer's
+ * legal name (page header), today's shop names (shop picker), and account full
+ * names (who). The PII register classes these as name data; the Data Steward
+ * sees the same on the customer page.
  */
 import type {
   AttachmentKind,
@@ -411,16 +417,22 @@ export type ParsedSource =
   | { kind: 'migration'; name: string }
   | { kind: 'harness'; source: string }
   | { kind: 'sql' }
-  | { kind: 'unknown'; source: string };
+  | { kind: 'unknown'; source: string }
+  | { kind: 'malformed' };
 
 /**
- * A source (lib/change-context.ts src.*) read back into its parts. Sources are
- * identifiers by SOURCE_RE, never text a person typed; one that does not match
- * the taxonomy is 'unknown' and shown as it is.
+ * A source (lib/change-context.ts src.*) read back into its parts. The app only
+ * writes sources that match SOURCE_RE: identifiers, never text a person typed.
+ * The database does not check that (nmwc_change_ctx keeps any nmwc.source text up
+ * to 200 characters, one typed in psql say, which could hold a name or a phone),
+ * so a source that fails SOURCE_RE is 'malformed' and its text goes no further:
+ * the rule fails closed, as for a personal field. A source that matches SOURCE_RE
+ * but whose kind (or shape) this code does not know yet is 'unknown' and shown as
+ * it is.
  */
 export function parseSource(source: string): ParsedSource {
   if (source === 'sql') return { kind: 'sql' };
-  if (typeof source !== 'string' || !SOURCE_RE.test(source)) return { kind: 'unknown', source: String(source) };
+  if (typeof source !== 'string' || !SOURCE_RE.test(source)) return { kind: 'malformed' };
   const [k, ...p] = source.split(':');
   switch (k) {
     case 'edit':
@@ -480,9 +492,12 @@ export type HistoryHref = Route<`/import/${string}` | `/customers/${string}`>;
 export type SourceView = {
   label: string;
   href: HistoryHref | null;
-  /** The raw source, shown in monospace: a kind this code does not know. */
+  /** The raw source, shown in monospace: a SOURCE_RE-valid kind this code does not know. */
   raw: boolean;
 };
+
+/** The label of a source that fails SOURCE_RE; its own text is never shown. */
+export const MALFORMED_SOURCE_LABEL = "A cause not in the app's list (its text is not shown)";
 
 /** The record a change is about, for a cause whose audit rows are keyed by it (a photo). */
 export type SourceAbout = { entityType: 'Customer' | 'Branch' | 'Attachment'; entityId: string };
@@ -582,6 +597,9 @@ export function describeSource(source: string, L: HistoryLookups, about?: Source
       return v('No recorded cause (changed directly in the database)');
     case 'unknown':
       return { label: p.source, href: null, raw: true };
+    case 'malformed':
+      // Not an identifier the app writes: its text could be anything, so none of it is shown.
+      return v(MALFORMED_SOURCE_LABEL);
   }
 }
 

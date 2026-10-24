@@ -419,12 +419,21 @@ changed what and when". Read-only; nothing in the database changed for it.
 | Terms over time | cash/credit, credit limit (OMR), credit days, Temix code, status, channel, and whether the record was live, archived or merged — one card per stretch in which none of them moved, with who set it and why | `CustomerHistory` |
 | Every change | one entry per transaction and cause, newest first, 25 a page: when (the effective time, and when it was recorded if an effective date was asked for or the two are a minute or more apart), who (name and role **at that moment**, or the job, script or file), what (field by field: values for the non-personal fields, "**<field>: changed**" for every personal one), and a link to what caused it | `CustomerHistory`, `BranchHistory`, `AttachmentHistory` (the credit documents and the guarantee), `UserHistory` (role then) |
 
-- **No personal value is shown.** The page reads only the history tables, which
-  store a name, phone, CR number, contact, e-mail, note, address, opening hours
-  or GPS point by field name only (§2). It never reads `AuditLog`, whose
-  before/after values and typed reasons can hold them. A field the code does not
-  know reads "changed" too (`lib/customer-history.ts`, `fieldChange`;
-  `tests/unit/customer-history.test.ts` pins the lists to the PII register).
+- **No personal value from the history is shown.** Changed personal fields read
+  "**<field>: changed**": the history tables store a name, phone, CR number,
+  contact, e-mail, note, address, opening hours or GPS point by field name only
+  (§2), and the page never reads `AuditLog`, whose before/after values and typed
+  reasons can hold them. A field the code does not know reads "changed" too
+  (`lib/customer-history.ts`, `fieldChange`; `tests/unit/customer-history.test.ts`
+  pins the lists to the PII register). The page header and the shop picker show
+  today's customer and shop names (`Customer.legalName`, `Branch.branchName`),
+  and "who" shows account full names, read from the live tables as the customer
+  page does; the PII register classes these as name data.
+- **A cause the app does not write is not printed.** The database keeps any
+  `nmwc.source` text (up to 200 characters, one typed in psql say), so a source
+  that fails `SOURCE_RE` reads "A cause not in the app's list (its text is not
+  shown)". A source that matches `SOURCE_RE` but whose kind this version does not
+  know yet is shown as it is, in monospace, with no link.
 - **Links** go only where the Data Steward can go: a request to
   `/audit?entityType=CustomerEdit&q=<editId>` (a Manager's or Steward's direct
   write to `/audit?entityType=Customer&q=<customerId>`, where its ledger row is),

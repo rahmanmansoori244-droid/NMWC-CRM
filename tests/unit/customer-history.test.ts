@@ -16,6 +16,7 @@ import { omanDate, omanDateTime } from '@/lib/tz';
 import {
   BRANCH_VALUE_FIELDS,
   CUSTOMER_VALUE_FIELDS,
+  MALFORMED_SOURCE_LABEL,
   NAME_ONLY_LABELS,
   PAGE_SIZE,
   READ_CAP,
@@ -603,10 +604,36 @@ describe('what caused it', () => {
     expect(describeSource('photo:a1', L, { entityType: 'Branch', entityId: 'b1' }).href).toBe('/audit?entityType=Branch&q=b1');
   });
 
-  it('an unknown kind is shown as it is, in monospace, with no link', () => {
+  it('a SOURCE_RE-valid kind this code does not know is shown as it is, in monospace, with no link', () => {
     expect(describeSource('print:abc', L)).toEqual({ label: 'print:abc', href: null, raw: true });
-    expect(describeSource('not a source', L)).toEqual({ label: 'not a source', href: null, raw: true });
     expect(parseSource('edit:a:b')).toEqual({ kind: 'unknown', source: 'edit:a:b' });
+    expect(describeSource('edit:a:b', L)).toEqual({ label: 'edit:a:b', href: null, raw: true });
+  });
+
+  it('a source that fails SOURCE_RE (typed in psql, say) is never printed: a neutral label, no link', () => {
+    // nmwc_change_ctx keeps any nmwc.source text up to 200 characters; the app checks SOURCE_RE, the database does not.
+    const typed = [
+      'not a source',
+      'fixed for Ahmed Al Balushi +968 9123 4567',
+      'call 91234567',
+      'Edit:abc',
+      'edit:',
+      'x',
+      '',
+      `edit:${'a'.repeat(81)}`,
+      'edit:a b',
+      "note:o'brien",
+    ];
+    for (const s of typed) {
+      expect(parseSource(s), s).toEqual({ kind: 'malformed' });
+      const view = describeSource(s, L, { entityType: 'Customer', entityId: X });
+      expect(view, s).toEqual({ label: MALFORMED_SOURCE_LABEL, href: null, raw: false });
+      if (s.length > 1) expect(view.label, s).not.toContain(s);
+    }
+    // The neutral label names no part of what was stored.
+    expect(MALFORMED_SOURCE_LABEL).not.toMatch(/\d/);
+    // 'sql', the database's own fallback, is still its own cause.
+    expect(parseSource('sql')).toEqual({ kind: 'sql' });
   });
 
   it('every link is to a page the Data Steward can open', () => {

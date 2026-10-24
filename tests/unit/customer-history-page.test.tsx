@@ -306,6 +306,23 @@ describe('the Data Steward’s view', () => {
     expect(container.innerHTML).not.toContain('99991234');
   });
 
+  it('a cause typed straight into the database (not SOURCE_RE) is not printed, only a neutral label', async () => {
+    // nmwc_change_ctx keeps any nmwc.source text up to 200 characters, one typed in psql say.
+    const typed = 'fixed per Ahmed Al Balushi, call +968 7777 1234';
+    (db.prisma.customerHistory as { findMany: ReturnType<typeof vi.fn> }).findMany.mockResolvedValue([
+      customerRow({ changedFields: ['temixCode'], temixCode: 'T-42', validFrom: T1, source: typed, sourceKind: 'fixed' }),
+      birth,
+    ]);
+    const { container } = await renderHistory();
+    const first = within(screen.getByRole('list', { name: 'Changes' })).getAllByRole('listitem')[0];
+    expect(first).toHaveTextContent("A cause not in the app's list (its text is not shown)");
+    expect(first).toHaveTextContent('T-42');
+    for (const leak of ['Ahmed', '7777', 'call']) {
+      expect(container.textContent, leak).not.toContain(leak);
+      expect(container.innerHTML, leak).not.toContain(leak);
+    }
+  });
+
   it('only reads — no write, no transaction — and never the audit log', async () => {
     await renderHistory();
     const touched = [...db.touched].sort();
