@@ -8,7 +8,8 @@ in §9, migration `20261014100000_lossless_paths`. Who decided as what (gap 11),
 the scheduled jobs' days (21), the losing side of two saves at once (22), sign-in
 events and session cut-offs (23) and the rule that a route never changes region
 (16) are in §10, migrations `20261015100000_authority_jobs_auth_events` and
-`20261015100100_route_region_fixed`.
+`20261015100100_route_region_fixed`. Where to read a customer's history in the
+app (the Data Steward's History page) is §11.
 
 The owner's rule (2026-10-11): everything is logged, history is appended and never
 rewritten, and it is kept for ever. Effective dates matter from the day this
@@ -403,3 +404,50 @@ up; a row whose `keyId` differs was written under an earlier secret.
 Kept for ever: `JobRunDay`, `AuthEvent`, and the new `EditApproval` columns with
 their table. An `ESCALATE` and a `CONFLICT` row are `AuditLog` rows and are kept
 like the rest of it.
+
+## 11. In the app: the customer's History page (Data Steward)
+
+`/customers/<id>/history`, opened from the **History** button on the customer
+page (and **Shop history** on each shop card, `?shop=<branchId>`). The owner's
+goal: "this route served it, then that route; the date it was created; who
+changed what and when". Read-only; nothing in the database changed for it.
+
+| Section | What it shows | Read from |
+|---|---|---|
+| Created | how the customer came to be: the new-customer request (who sent it, who approved it), the import file and row (who promoted it), or another cause; a customer that existed when history began reads "on record at history start", with the lineage its live row carries (import batch, creator). A shop's view: the shop's first row on this customer, or its move in | its first `CustomerHistory` row (read on its own, so it survives the read cap) |
+| Routes that served this customer | per shop: route, the salesman who held it in that stretch (his name now, and the username he signed in with then), from – until in Oman dates (the last day is inclusive: a move effective at Oman midnight on 16/10 reads "… – 15/10", then "16/10 – now"); "Nobody held the route", "Salesman not recorded", the inferred badge, and the merged / not-on-record notes | `nmwc_customer_route_intervals` (§6) |
+| Terms over time | cash/credit, credit limit (OMR), credit days, Temix code, status, channel, and whether the record was live, archived or merged — one card per stretch in which none of them moved, with who set it and why | `CustomerHistory` |
+| Every change | one entry per transaction and cause, newest first, 25 a page: when (the effective time, and when it was recorded if an effective date was asked for or the two are a minute or more apart), who (name and role **at that moment**, or the job, script or file), what (field by field: values for the non-personal fields, "**<field>: changed**" for every personal one), and a link to what caused it | `CustomerHistory`, `BranchHistory`, `AttachmentHistory` (the credit documents and the guarantee), `UserHistory` (role then) |
+
+- **No personal value is shown.** The page reads only the history tables, which
+  store a name, phone, CR number, contact, e-mail, note, address, opening hours
+  or GPS point by field name only (§2). It never reads `AuditLog`, whose
+  before/after values and typed reasons can hold them. A field the code does not
+  know reads "changed" too (`lib/customer-history.ts`, `fieldChange`;
+  `tests/unit/customer-history.test.ts` pins the lists to the PII register).
+- **Links** go only where the Data Steward can go: a request to
+  `/audit?entityType=CustomerEdit&q=<editId>` (a Manager's or Steward's direct
+  write to `/audit?entityType=Customer&q=<customerId>`, where its ledger row is),
+  an import row to `/import/<batch>`, a merge to `/audit?action=MERGE&q=<winner>`,
+  an archive to the customer's audit rows, a photo change to the audit rows of
+  the customer, shop or document it was on, route and Temix changes to `/routes`
+  and `/temix`. A job, script, daily Temix file, test harness or `sql` has no link.
+- **Who may open it:** the Data Steward only (`lib/permissions.ts`
+  `canSeeCustomerHistory`), checked before anything is read, so any other role
+  is sent home whether the customer exists or not. A default for the owner to
+  confirm: whether the GM, the Sales Director, Managers (for their regions) or
+  Viewers should see it too is an open question. Archived and merged customers
+  are shown, with a banner.
+- **Opening it is not audited.** No page view is recorded anywhere in the app
+  (only photo views, `PHOTO_VIEW`, and printouts, `PRINT`); the page shows no
+  photo, so it writes nothing.
+- **Not listed (first version):** extra shop photos (they carry no customer id),
+  and request events that change nothing (sent back, rejected) — those stay in
+  the customer page's Recent activity and on `/audit`.
+- **Limits:** at most 5,000 rows per history table are read; past that the page
+  says "Only the latest 5,000 changes are listed; older ones are in the audit
+  log", and the creation entry still comes from the first row.
+- Code: `app/(app)/customers/[id]/history/`, `lib/customer-history.ts` (pure
+  assembly), `lib/customer-history-load.ts` (the reads). Tests:
+  `tests/unit/customer-history.test.ts`, `tests/unit/customer-history-page.test.tsx`,
+  `tests/e2e/launch/customer-history.spec.ts`.
