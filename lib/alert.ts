@@ -35,7 +35,9 @@ import { logger } from './logger';
 export type AlertEvent =
   | 'sla.escalated'
   | 'cron.failed'
-  | 'import.rejections';
+  | 'import.rejections'
+  // Gap 29: the nightly integrity check found problems (counts only).
+  | 'integrity.failed';
 
 export type AlertSeverity = 'info' | 'warn' | 'critical';
 

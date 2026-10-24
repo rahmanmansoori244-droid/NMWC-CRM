@@ -702,6 +702,8 @@ describe('every alert has a caller and every caller has an alert', () => {
     'app/api/cron/sla-escalate/route.ts',
     'services/imports.ts',
     'lib/heartbeat.ts',
+    // Gap 29 (watch and prove): the nightly integrity check, counts only.
+    'lib/integrity/run.ts',
   ];
 
   const sources = new Map(CALL_SITES.map((f) => [f, strip(readFileSync(f, 'utf8'))]));
@@ -770,10 +772,10 @@ describe('every alert has a caller and every caller has an alert', () => {
         expect(m[1], `${file}: ${m[2]}(…) must be awaited`).toBe('await');
       }
     }
-    // Four raises across three files: the route, the import service, and the
-    // heartbeat's two hops. A raise written with NOTHING in front of it matches
-    // nothing above, so the count is what catches that shape.
-    expect(checked, 'every raise must be seen by the loop above').toBe(4);
+    // Five raises across four files: the route, the import service, the
+    // heartbeat's two hops and the integrity watch. A raise written with NOTHING in
+    // front of it matches nothing above, so the count is what catches that shape.
+    expect(checked, 'every raise must be seen by the loop above').toBe(5);
   });
 
   it('pins WHEN each of the two written-in-a-handler alerts fires', () => {

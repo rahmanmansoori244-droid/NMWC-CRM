@@ -375,6 +375,25 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'JobRunDay.sources': { subject: 'none', note: 'the CronRun scheduler labels seen that day, never a User-Agent' },
   'JobRunDay.recordedAt': { subject: 'none', note: RECORD_META },
 
+  // ---- IntegrityCheckResult (gap 29: one row per nightly check) ----
+  'IntegrityCheckResult.id': { subject: 'none', note: 'the strict order of the results' },
+  'IntegrityCheckResult.runAt': { subject: 'none', note: 'when the run started (groups a run)' },
+  'IntegrityCheckResult.day': { subject: 'none', note: 'the Oman day of the run' },
+  'IntegrityCheckResult.checkId': { subject: 'none', note: 'lib/integrity/checks.ts check id' },
+  'IntegrityCheckResult.version': { subject: 'none' },
+  'IntegrityCheckResult.status': { subject: 'none', note: 'pass, fail, info or error' },
+  'IntegrityCheckResult.count': { subject: 'none', note: 'how many records broke the rule' },
+  'IntegrityCheckResult.sampleIds': {
+    subject: 'employee',
+    kind: 'identifier',
+    note: 'at most ten ids: may hold user ids, and customer, shop, route or history row ids, trigger names, job keys or code scopes — never a value',
+  },
+  'IntegrityCheckResult.detail': { subject: 'none', note: 'counts by sub-kind and ids as above — never a name, phone, CR number or code' },
+  'IntegrityCheckResult.durationMs': { subject: 'none' },
+  'IntegrityCheckResult.recordedAt': { subject: 'none', note: RECORD_META },
+  'IntegrityCheckResult.source': { subject: 'none', note: 'the change-context source (the nightly job)' },
+  'IntegrityCheckResult.txId': { subject: 'none', note: 'database transaction id' },
+
   // ---- PurgeSummary (gap 25: one row per batch a retention rule removed) ----
   'PurgeSummary.id': { subject: 'none', note: 'the strict order of the summaries' },
   'PurgeSummary.at': { subject: 'none', note: RECORD_META },

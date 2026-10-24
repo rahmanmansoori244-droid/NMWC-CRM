@@ -150,6 +150,7 @@ enum NotificationKind {
   REQUEST_FYI // F1: a salesman's request, for the region's Accountant to know of (lib/notify-policy.ts)
   REACTIVATION_REQUESTED // F1: a reactivation waiting on a Manager; decided only on /reactivations
   SIGNED_FORM_REQUESTED // Owner decisions 2026-10-11: the salesman must upload the signed credit application
+  INTEGRITY_ALERT // Gap 29: the nightly data check found a problem; to the Data Steward, in-app only (lib/integrity)
 }
 
 // ── ORG HIERARCHY ────────────────────────────────────────
@@ -721,6 +722,35 @@ model JobRunDay {
   recordedAt    DateTime @default(now())
 
   @@unique([key, day])
+}
+
+// Gap 29 (data audit 2026-10-10; migration 20261024120400_integrity_results):
+// one row per named check per nightly run of the integrity watch
+// (app/api/cron/integrity-watch, lib/integrity). runAt groups a run. count is
+// how many records broke the rule (null when the check could not run);
+// sampleIds holds at most ten record ids, trigger names, job keys or code scopes
+// — never a name, a phone, a CR number or a code — and detail counts by
+// sub-kind. Append-only like AuditLog, and itself sealed. Kept for ever.
+model IntegrityCheckResult {
+  id         BigInt   @id @default(autoincrement())
+  runAt      DateTime
+  // The Oman day of the run.
+  day        DateTime @db.Date
+  checkId    String
+  version    Int
+  // pass | fail | info | error (CHECK IntegrityCheckResult_status_check).
+  status     String
+  count      Int?
+  sampleIds  String[]
+  detail     Json?
+  durationMs Int
+  recordedAt DateTime @default(now())
+  source     String?
+  txId       BigInt?
+
+  @@unique([runAt, checkId])
+  @@index([checkId, runAt(sort: Desc)])
+  @@index([runAt(sort: Desc)])
 }
 
 // Gap 28 (data audit 2026-10-10; migration 20261024120200_ledger_seals): the

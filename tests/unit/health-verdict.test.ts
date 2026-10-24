@@ -125,6 +125,8 @@ describe('item 11: the tiers themselves', () => {
     expect([...v.criticalJobs].sort()).toEqual(['db-backup', 'sla-escalate']);
     expect([...v.warnings].sort()).toEqual([
       'email-drain:never',
+      // Gap 29: a warning, not critical (an owner's open question).
+      'integrity-watch:never',
       'keep-warm:never',
       'photo-gc:never',
       'retention-sweep:never',

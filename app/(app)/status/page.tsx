@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { PageHeader } from '@/components/nmwc/PageHeader';
@@ -93,6 +94,12 @@ export default async function StatusPage() {
               Record keeping
             </h2>
             <HistoryCard report={history} />
+            {/* Gap 29: the nightly integrity check, the seals and the purge summaries. */}
+            <p className="mt-2 text-sm">
+              <Link href="/status/integrity" className="font-medium text-brand-700 hover:underline">
+                Integrity: the nightly data check, the ledger seals and what the clean-ups deleted
+              </Link>
+            </p>
           </section>
         )}
 

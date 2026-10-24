@@ -25,6 +25,8 @@ export const HISTORY_MIGRATIONS = [
   '20261024120100_purge_summaries',
   // Watch and prove (gap 28): the ledgers' keys and the daily seal.
   '20261024120200_ledger_seals',
+  // Watch and prove (gap 29): the nightly integrity check's results.
+  '20261024120400_integrity_results',
 ] as const;
 
 /** INSERT-only tables written by the capture triggers, never by the application. */
@@ -57,6 +59,8 @@ export const APPEND_ONLY_APP_TABLES = [
   'PurgeSummary',
   // Watch and prove (gap 28): the daily seal of the ledgers.
   'SealRecord',
+  // Watch and prove (gap 29): what each nightly integrity check found.
+  'IntegrityCheckResult',
 ] as const;
 
 /**
@@ -64,7 +68,14 @@ export const APPEND_ONLY_APP_TABLES = [
  * (nextval on insert) but may not set it (setval would make inserts collide).
  * ExportJob's id is a cuid.
  */
-export const LEDGER_SEQUENCE_TABLES = ['EditRevision', 'JobRunDay', 'AuthEvent', 'PurgeSummary', 'SealRecord'] as const;
+export const LEDGER_SEQUENCE_TABLES = [
+  'EditRevision',
+  'JobRunDay',
+  'AuthEvent',
+  'PurgeSummary',
+  'SealRecord',
+  'IntegrityCheckResult',
+] as const;
 
 /**
  * Gap 28 (20261024120200_ledger_seals): the sequences behind the seq key of the
@@ -127,6 +138,8 @@ export const HISTORY_TRIGGERS: readonly string[] = [
   // Gap 28: a seal carries its writer's cause, and links to the last one.
   'sealrecord_stamp_context',
   'sealrecord_link_guard',
+  // Gap 29: a check result carries its writer's cause and transaction.
+  'integritycheckresult_stamp_context',
   // Part C (gap 16): a route never changes region.
   'route_region_fixed',
   ...HISTORY_TABLES.flatMap((t) => [

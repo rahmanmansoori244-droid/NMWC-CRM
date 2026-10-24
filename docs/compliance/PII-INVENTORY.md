@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**522 stored columns across 36 tables** — Customer contact: 29 · Employee: 95 · Customer entity (personal if a sole establishment): 50 · Not personal data: 348.
+**535 stored columns across 37 tables** — Customer contact: 29 · Employee: 96 · Customer entity (personal if a sole establishment): 50 · Not personal data: 360.
 
 ## Columns holding personal data
 
@@ -147,6 +147,12 @@ Every column the database stores, classified by whose personal data it is. This 
 | `excludedAt` | Employee | behaviour |  |
 | `excludedById` | Employee | behaviour |  |
 | `excludedReason` | Employee | free text | why the Steward accepted the row as excluded; may name the customer |
+
+### IntegrityCheckResult
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `sampleIds` | Employee | identifier | at most ten ids: may hold user ids, and customer, shop, route or history row ids, trigger names, job keys or code scopes — never a value |
 
 ### RateLimit
 
@@ -468,6 +474,18 @@ Every column the database stores, classified by whose personal data it is. This 
 | JobRunDay | `maxDurationMs` | Int | structural / operational value |
 | JobRunDay | `sources` | String[] | the CronRun scheduler labels seen that day, never a User-Agent |
 | JobRunDay | `recordedAt` | DateTime | record timestamp, not an attribute of a person |
+| IntegrityCheckResult | `id` | BigInt | the strict order of the results |
+| IntegrityCheckResult | `runAt` | DateTime | when the run started (groups a run) |
+| IntegrityCheckResult | `day` | DateTime | the Oman day of the run |
+| IntegrityCheckResult | `checkId` | String | lib/integrity/checks.ts check id |
+| IntegrityCheckResult | `version` | Int | structural / operational value |
+| IntegrityCheckResult | `status` | String | pass, fail, info or error |
+| IntegrityCheckResult | `count` | Int | how many records broke the rule |
+| IntegrityCheckResult | `detail` | Json | counts by sub-kind and ids as above — never a name, phone, CR number or code |
+| IntegrityCheckResult | `durationMs` | Int | structural / operational value |
+| IntegrityCheckResult | `recordedAt` | DateTime | record timestamp, not an attribute of a person |
+| IntegrityCheckResult | `source` | String | the change-context source (the nightly job) |
+| IntegrityCheckResult | `txId` | BigInt | database transaction id |
 | SealRecord | `id` | BigInt | foreign key / structural value |
 | SealRecord | `seq` | Int | the seal number, 0 = genesis |
 | SealRecord | `day` | DateTime | the Oman day of the run |

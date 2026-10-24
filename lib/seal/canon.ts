@@ -217,6 +217,11 @@ export const SEALED_TABLES: Record<number, readonly SealedTable[]> = {
         'txId',
       ],
     },
+    {
+      table: 'IntegrityCheckResult',
+      key: 'id',
+      columns: ['id', 'runAt', 'day', 'checkId', 'version', 'status', 'count', 'sampleIds', 'detail', 'durationMs', 'recordedAt', 'source', 'txId'],
+    },
   ],
 };
 
