@@ -454,6 +454,18 @@ describe.skipIf(!ENABLED)(
         before: { ownedRouteCode: code('A1'), username: signIn },
         after: { ownedRouteCode: null, username: retired },
       });
+      // Gap 37: what he left open is on the REASSIGN row, and on the disable row —
+      // request ids and a photo count only.
+      const work = (reassign!.after as { openWork: { inReview: string[]; counts: Record<string, number>; unattachedPhotos: number } }).openWork;
+      expect(work.inReview).toContain(ids.edit);
+      expect(work.counts.inReview).toBe(work.inReview.length);
+      expect(typeof work.unattachedPhotos).toBe('number');
+      const disabled = await prisma.auditLog.findFirstOrThrow({
+        where: { entityId: ids.leaver, action: 'UPDATE', reason: 'disabled' },
+        orderBy: { at: 'desc' },
+      });
+      expect((disabled.after as { isActive: boolean; openWork: { inReview: string[] } })).toMatchObject({ isActive: false });
+      expect((disabled.after as { openWork: { inReview: string[] } }).openWork.inReview).toContain(ids.edit);
       // His request in review is untouched: still his, still in review, so the
       // region's Managers decide it as before.
       expect(
@@ -608,6 +620,10 @@ describe.skipIf(!ENABLED)(
       expect(await lastAudit(ids.joiner)).toMatchObject({
         before: { role: 'SALESMAN', route: code('B1'), supervisor: `mgb.${sfx}` },
         after: { role: 'VIEWER', route: null, supervisor: null },
+      });
+      // Gap 37: a role or route change records his open work (ids and counts only).
+      expect((await lastAudit(ids.joiner))?.after).toMatchObject({
+        openWork: { counts: expect.any(Object), withdrawn: [], unattachedPhotos: expect.any(Number) },
       });
     });
 

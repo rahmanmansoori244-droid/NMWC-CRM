@@ -33,6 +33,7 @@ import { notifyUsers } from '@/lib/notifications';
 import { sendAlert } from '@/lib/alert';
 import { importRejectionAlert } from '@/lib/import-rejection-alert';
 import { randomUUID } from 'node:crypto';
+import { loadOpenWork } from '@/lib/open-work';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { sha256Hex } from '@/lib/fingerprint';
 import { routeRegionHeldMessage } from '@/lib/route-region';
@@ -1083,6 +1084,8 @@ async function uploadAccountMasterCore(
                 // here — User.ownedRouteId is @unique, so at most ONE user can own
                 // a route and this list is 0 or 1 rows by construction.
                 for (const u of displacedOwners) {
+                  // Gap 37: what the displaced owner left open (ids and a count only).
+                  const openWork = await loadOpenWork(tx, u.id);
                   await writeAudit(tx, env, {
                     action: 'REASSIGN',
                     entityType: 'User',
@@ -1091,6 +1094,7 @@ async function uploadAccountMasterCore(
                     after: {
                       ownedRouteCode: null,
                       batchId: batch.id,
+                      openWork,
                     } as unknown as Prisma.InputJsonValue,
                     reason: `route ${ownedRouteCode} reassigned to ${username} via import`,
                   });

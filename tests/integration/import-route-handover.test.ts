@@ -352,7 +352,8 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
           action: 'REASSIGN',
           entityId: holderId,
           reason: `route ${routeCode} reassigned to ${viewer} via import`,
-          after: { ownedRouteCode: null, batchId: res.batchId },
+          // Gap 37: with the displaced owner's open work (ids and counts only).
+          after: { ownedRouteCode: null, batchId: res.batchId, openWork: expect.objectContaining({ counts: expect.any(Object) }) },
         }),
         expect.objectContaining({
           action: 'UPDATE',

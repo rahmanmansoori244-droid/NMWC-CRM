@@ -144,6 +144,10 @@ vi.mock('@/lib/db', () => {
   const client = (tables: () => Tables, via: 'tx' | 'prisma') => ({
     // Gap 24: the change context each transaction sets first (lib/change-context.ts).
     $executeRaw: async () => 1,
+    // Gap 37: the open-work record a disable writes (lib/open-work.ts) reads his
+    // sent-back requests (raw SQL) and his unattached photos: none here.
+    $queryRaw: async () => [],
+    attachment: { count: async () => 0 },
     user: model(tables, 'user', via),
     region: model(tables, 'region', via),
     route: model(tables, 'route', via),

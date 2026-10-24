@@ -497,3 +497,59 @@ export function importRouteHolderIssue(p: {
   if (!h || h.username === p.username || !h.isActive || p.wantsRouteChange) return null;
   return `route ${p.routeCode} is worked by "${h.username}", whose account is active. Nothing was written for "${p.username}". A route has one salesman: disable "${h.username}" on Users first if he has left, or set change_route to yes to move the route to "${p.username}" (then "${h.username}" has no route unless his own row gives him one).`;
 }
+
+/** At most this many ids per list of a hand-over's open-work record; the counts are whole. */
+export const OPEN_WORK_LIST_CAP = 200;
+
+/**
+ * Gap 37 (data audit 2026-10-10): what a person left open when his account
+ * changed hands — written into the REASSIGN row of a route hand-over (/users and
+ * the account import), the disable row, and the account_edit row of a route or
+ * role change, as `after.openWork`. The Steward is shown the same on screen
+ * (routeMoveNotes); the ledger now keeps it. Request ids and a photo count only:
+ * no name, no value.
+ */
+export type OpenWork = {
+  /** His requests in review (SUBMITTED). */
+  inReview: string[];
+  /** His unsent drafts. */
+  drafts: string[];
+  /** His sent-back requests still waiting on him (lib/returned-work.ts). */
+  sentBack: string[];
+  /** The requests this change withdrew (lib/stranded-creates.ts). */
+  withdrawn: string[];
+  /** How many of each, whole (the lists are capped). */
+  counts: { inReview: number; drafts: number; sentBack: number; withdrawn: number };
+  /** His live photos on no customer, shop, extra slot or request. */
+  unattachedPhotos: number;
+};
+
+/**
+ * The record, tidy: each list sorted with each id once, a withdrawn id taken out
+ * of the other lists (the change closed it), each list capped, the counts whole.
+ */
+export function openWorkRecord(
+  p: {
+    inReview: readonly string[];
+    drafts: readonly string[];
+    sentBack: readonly string[];
+    withdrawn: readonly string[];
+    unattachedPhotos: number;
+  },
+  cap = OPEN_WORK_LIST_CAP
+): OpenWork {
+  const withdrawn = [...new Set(p.withdrawn)].sort();
+  const gone = new Set(withdrawn);
+  const tidy = (ids: readonly string[]) => [...new Set(ids)].filter((id) => !gone.has(id)).sort();
+  const inReview = tidy(p.inReview);
+  const drafts = tidy(p.drafts);
+  const sentBack = tidy(p.sentBack);
+  return {
+    inReview: inReview.slice(0, cap),
+    drafts: drafts.slice(0, cap),
+    sentBack: sentBack.slice(0, cap),
+    withdrawn: withdrawn.slice(0, cap),
+    counts: { inReview: inReview.length, drafts: drafts.length, sentBack: sentBack.length, withdrawn: withdrawn.length },
+    unattachedPhotos: Math.max(0, Math.floor(p.unattachedPhotos)),
+  };
+}

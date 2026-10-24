@@ -25,6 +25,7 @@ import {
   type UserRegionFootprint,
 } from '@/lib/permissions';
 import { loadScope } from '@/lib/access';
+import { loadOpenWork } from '@/lib/open-work';
 import { getAuditEnvelope, writeAudit, type AuditEnvelope } from '@/lib/audit';
 import {
   REGION_SCOPED_ROLES,
@@ -378,12 +379,14 @@ async function handOverRoute(
     where: { id: p.from.id },
     data: { ownedRouteId: null, ...(p.retired ? { username: p.retired } : {}) },
   });
+  // Gap 37: what he left open, as the route left him (ids and a count only).
+  const openWork = await loadOpenWork(tx, p.from.id);
   await writeAudit(tx, env, {
     action: 'REASSIGN',
     entityType: 'User',
     entityId: p.from.id,
     before: { ownedRouteCode: p.routeCode, ...(p.retired ? { username: p.from.username } : {}) },
-    after: { ownedRouteCode: null, ...(p.retired ? { username: p.retired } : {}) },
+    after: { ownedRouteCode: null, ...(p.retired ? { username: p.retired } : {}), openWork } as unknown as Prisma.InputJsonValue,
     reason: `route ${p.routeCode} handed to ${p.toUsername} on /users`,
   });
 }
@@ -741,12 +744,14 @@ async function toggleUserActiveCore(formData: FormData) {
       },
     });
 
+    // Gap 37: a disable records what he left open, after the withdrawals above.
+    const openWork = newActive ? null : await loadOpenWork(tx, userId, atSignedForm.map((e) => e.id));
     await writeAudit(tx, env, {
       action: 'UPDATE',
       entityType: 'User',
       entityId: userId,
       before: { isActive: user.isActive },
-      after: { isActive: updated.isActive },
+      after: { isActive: updated.isActive, ...(openWork ? { openWork } : {}) } as unknown as Prisma.InputJsonValue,
       reason: newActive ? 'enabled' : 'disabled',
     });
   });
@@ -1490,12 +1495,18 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
           ...(revoke ? { sessionsRevokedAt: now } : {}),
         },
       });
+      // Gap 37: a route or role change records what he left open, after the
+      // withdrawals above (ids and a count only).
+      const openWork =
+        before.route !== after.route || before.role !== after.role
+          ? await loadOpenWork(tx, target.id, strandedCreates.map((e) => e.id))
+          : null;
       await writeAudit(tx, env, {
         action: 'UPDATE',
         entityType: 'User',
         entityId: target.id,
         before: audit.before,
-        after: audit.after,
+        after: (openWork ? { ...audit.after, openWork } : audit.after) as unknown as Prisma.InputJsonValue,
         reason: 'account_edit',
       });
     });

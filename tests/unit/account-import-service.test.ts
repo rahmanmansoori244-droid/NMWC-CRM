@@ -227,6 +227,13 @@ function makeClient(isTx: boolean): any {
     // PurgeSummary row (lib/purge-summary.ts passwordHistoryPurgeSql): the user
     // and the ids kept are its two bound values.
     $queryRaw: async (sql: { sql: string; values: unknown[] }) => {
+      // Gap 37: a displaced owner's sent-back requests (lib/returned-work.ts), for the
+      // REASSIGN row's open-work record: none in this model.
+      // (a tagged template there: its strings arrive as an array)
+      if (Array.isArray(sql) && sql.join('?').includes('FROM "CustomerEdit" e')) {
+        gate('customerEdit', 'openReturned', sql, false);
+        return [];
+      }
       if (!sql.sql.includes('DELETE FROM "PasswordHistory"')) throw new Error('unexpected raw query');
       gate('passwordHistory', 'deleteMany', sql, true);
       const [userId, keepIds] = sql.values as [string, string[]];
@@ -387,6 +394,13 @@ function makeClient(isTx: boolean): any {
     // route than the one the row leaves him with — and (owner decisions 2026-10-11,
     // lib/stranded-creates.ts) one waiting at his signed-application step.
     customerEdit: {
+      // Gap 37: his requests in review and his drafts, for the open-work record.
+      findMany: async (args: any) => {
+        gate('customerEdit', 'findMany', args, false);
+        return st()
+          .creates.filter((c) => c.submittedById === args.where.submittedById && c.state === args.where.state)
+          .map((c) => ({ id: (c as { id?: string }).id ?? `${c.submittedById}-${c.state}` }));
+      },
       count: async (args: any) => {
         gate('customerEdit', 'count', args, false);
         const w = args.where;
@@ -399,6 +413,13 @@ function makeClient(isTx: boolean): any {
             (w.OR ? w.OR.some((x: any) => stateMatches(c, x)) : stateMatches(c, w)) &&
             (other === undefined || c.routeIds.some((r) => r !== other))
         ).length;
+      },
+    },
+    // Gap 37: his unattached photos, for the open-work record: none in this model.
+    attachment: {
+      count: async (args: any) => {
+        gate('attachment', 'count', args, false);
+        return 0;
       },
     },
     auditLog: {
@@ -754,7 +775,22 @@ describe('F08: without change_role the row must name the stored role', () => {
     // Each names the batch that did it.
     const batchId = h.store.batches[0].id;
     expect(rowAudits().map((a) => [a.before, a.after])).toEqual([
-      [{ ownedRouteCode: 'MCT-01' }, { ownedRouteCode: null, batchId }],
+      // Gap 37: the displaced owner's open work, as the route left him (none here).
+      [
+        { ownedRouteCode: 'MCT-01' },
+        {
+          ownedRouteCode: null,
+          batchId,
+          openWork: {
+            inReview: [],
+            drafts: [],
+            sentBack: [],
+            withdrawn: [],
+            counts: { inReview: 0, drafts: 0, sentBack: 0, withdrawn: 0 },
+            unattachedPhotos: 0,
+          },
+        },
+      ],
       [{ role: 'VIEWER' }, { role: 'SALESMAN', batchId }],
       [{ route: null }, { username: 'viewer.a', route: 'MCT-01', changed: ['fullName'], batchId }],
     ]);

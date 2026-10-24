@@ -1534,7 +1534,8 @@ test.describe('accounts: a disable or a role change ends the live session', { ta
     const edit = (await auditFor({ entityId: mg.id, action: 'UPDATE' })).find((a) => a.reason === 'account_edit');
     expect(edit?.actorId).toBe(stw.id);
     expect(edit?.before).toEqual({ role: 'MANAGER', regions: [r1.code] });
-    expect(edit?.after).toEqual({ role: 'VIEWER', regions: [] });
+    // Gap 37: a role change also records his open work (ids and counts only).
+    expect(edit?.after).toMatchObject({ role: 'VIEWER', regions: [], openWork: expect.objectContaining({ counts: expect.any(Object) }) });
 
     await expect
       .poll(async () => (await old.request.get(probe, { failOnStatusCode: false })).status(), { timeout: 45_000, intervals: [3_000] })
@@ -1955,7 +1956,8 @@ test.describe('accounts: the Steward resets, disables and enables on /users', { 
     expect(row.ownedRouteId, 'the route stays his (route codes are usernames)').toBe(world.route('A2').id);
     const disabled = (await auditFor({ entityId: sd.id, action: 'UPDATE' })).find((a) => a.reason === 'disabled');
     expect(disabled?.before).toEqual({ isActive: true });
-    expect(disabled?.after).toEqual({ isActive: false });
+    // Gap 37: a disable also records what he left open (ids and counts only).
+    expect(disabled?.after).toMatchObject({ isActive: false, openWork: expect.objectContaining({ counts: expect.any(Object) }) });
     await expectSignInRefused(browser, sd, world.ip(4), INVALID_LOGIN);
 
     await page.goto('/users?status=disabled');
@@ -2281,7 +2283,8 @@ test.describe('accounts: the Steward’s Edit account', { tag: ['@desktop'] }, (
     const reassign = (await auditFor({ entityId: lv.id, action: 'REASSIGN' }))[0];
     expect(reassign?.actorId).toBe(stw.id);
     expect(reassign?.before).toEqual({ ownedRouteCode: leave.code, username: lv.username });
-    expect(reassign?.after).toEqual({ ownedRouteCode: null, username: retired });
+    // Gap 37: the row also records what he left open (ids and counts only).
+    expect(reassign?.after).toMatchObject({ ownedRouteCode: null, username: retired, openWork: expect.objectContaining({ counts: expect.any(Object) }) });
     lv.username = retired;
 
     await page.goto('/users?status=disabled');
@@ -2318,7 +2321,8 @@ test.describe('accounts: the Steward’s Edit account', { tag: ['@desktop'] }, (
     const edit = (await auditFor({ entityId: mv.id, action: 'UPDATE' })).find((a) => a.reason === 'account_edit');
     expect(edit?.actorId).toBe(stw.id);
     expect(edit?.before).toEqual({ username: mv.username, route: world.route('MVR').code, supervisor: m1.username });
-    expect(edit?.after).toEqual({ username: newName, route: free.code, supervisor: m2.username });
+    // Gap 37: a route change also records his open work (ids and counts only).
+    expect(edit?.after).toMatchObject({ username: newName, route: free.code, supervisor: m2.username, openWork: expect.objectContaining({ counts: expect.any(Object) }) });
     world.adopt.user(newName);
     mv.username = newName;
   });
