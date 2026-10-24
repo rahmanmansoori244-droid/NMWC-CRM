@@ -7,6 +7,8 @@
  * percentile_cont over the snapshot minutes, the enum casts, the whole loader
  * running end to end, and the region test that decides which approvals a Manager's
  * figures are made of: exactly the requests /approvals/[id] lets that Manager open.
+ * Gap 30: a reactivation asked for by a test account, or about a test customer,
+ * is left out of the MANAGER tier.
  *
  * Every row this suite writes is dated in 2099 and every query reads from 2099
  * on, so rows other suites write in parallel cannot change what it asserts.
@@ -14,7 +16,7 @@
  *   RUN_SERVICE_LEVELS=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/service-levels.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { purgeCustomerEdits } from '../support/audit';
+import { purgeCustomerEdits, withAuditMaintenance } from '../support/audit';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
@@ -32,6 +34,8 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
   let svc: typeof import('@/lib/service-status');
   let userId = '';
   let managerId = '';
+  // A test account (isTest, gap 30): its requests are left out of the figures.
+  let testerId = '';
   const editIds: string[] = [];
   // A Manager of region "in"; region "out" is someone else's.
   const reg = { in: '', out: '', routeIn: '', routeOut: '' };
@@ -96,19 +100,6 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
     await step(2, T('13:00:00'), T('12:00:00'), 600);
     await step(3, T('07:00:00'), null, null);
 
-    // A reactivation decided on time: the MANAGER tier.
-    const re = await prisma.customerEdit.create({
-      data: {
-        target: 'CUSTOMER', submittedById: userId, state: 'APPROVED', isReactivation: true,
-        fieldChanges: [], attachmentChanges: [],
-        submittedAt: T('04:00:00'), stageEnteredAt: T('04:00:00'), slaDueAt: T('12:00:00'), reviewedAt: T('06:00:00'),
-        // Who decided it: the tier's "people" count, which decides whether a
-        // Manager may see the tier on its own.
-        reviewedById: userId,
-      },
-    });
-    editIds.push(re.id);
-
     // ── Regions: which requests a Manager of region "in" can open ────────────
     const rIn = await prisma.region.create({ data: { name: `SLO In ${sfx}`, code: `${sfx}-IN` } });
     const rOut = await prisma.region.create({ data: { name: `SLO Out ${sfx}`, code: `${sfx}-OUT` } });
@@ -145,6 +136,42 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
       { regionId: rOut.id, routeId: reg.routeOut },
       { regionId: rIn.id, routeId: reg.routeIn },
     ]);
+
+    // A reactivation decided on time on 1 June: the MANAGER tier. Shaped the way
+    // services/reactivations.ts writes one: about a closed shop, so with its
+    // branch and that branch's customer. A reactivation always has both; gap 30's
+    // rule for it (lib/service-status.ts) reads its customer, so a fixture with
+    // no customer is not a reactivation the app can write, and is not counted.
+    const juneReactivation = async (submittedById: string, c: { id: string; branchIds: string[] }) => {
+      const re = await prisma.customerEdit.create({
+        data: {
+          target: 'BRANCH', submittedById, state: 'APPROVED', isReactivation: true,
+          customerId: c.id, branchId: c.branchIds[0]!, fieldChanges: [], attachmentChanges: [],
+          submittedAt: T('04:00:00'), stageEnteredAt: T('04:00:00'), slaDueAt: T('12:00:00'), reviewedAt: T('06:00:00'),
+          // Who decided it: the tier's "people" count, which decides whether a
+          // Manager may see the tier on its own.
+          reviewedById: userId,
+        },
+      });
+      editIds.push(re.id);
+    };
+    const cReact = await customer('CREACT', [{ regionId: rIn.id, routeId: reg.routeIn }]);
+    await juneReactivation(userId, cReact);
+    // Gap 30: the same decision asked for by a test account, and one about a test
+    // customer, are left out of the figures (lib/test-records.ts), so the June
+    // MANAGER tier stays at the one real reactivation. The flag moves only in
+    // the owner's maintenance window (migration 20261024120000_test_records).
+    const tester = await prisma.user.create({
+      data: { username: `${sfx}.tst`, fullName: 'SLO Test Account', role: 'SALESMAN', passwordHash: 'x' },
+    });
+    testerId = tester.id;
+    const cTest = await customer('CTEST', [{ regionId: rIn.id, routeId: reg.routeIn }]);
+    await withAuditMaintenance(prisma, async (tx) => {
+      await tx.user.update({ where: { id: tester.id }, data: { isTest: true } });
+      await tx.customer.update({ where: { id: cTest.id }, data: { isTest: true } });
+    });
+    await juneReactivation(tester.id, cReact);
+    await juneReactivation(userId, cTest);
 
     // One decided request per case, each with one tracked decision.
     const decided = async (
@@ -257,7 +284,7 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
     }
     await prisma.route.deleteMany({ where: { id: { in: [reg.routeIn, reg.routeOut].filter(Boolean) } } });
     await prisma.region.deleteMany({ where: { id: { in: [reg.in, reg.out].filter(Boolean) } } });
-    await prisma.user.deleteMany({ where: { id: { in: [userId, managerId].filter(Boolean) } } });
+    await prisma.user.deleteMany({ where: { id: { in: [userId, managerId, testerId].filter(Boolean) } } });
     await prisma.$disconnect();
   });
 
@@ -283,6 +310,7 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
     const { tiers } = await svc.__internal.approvalTiers(FROM, 'company');
     const sup = tiers.find((t) => t.role === 'SUPERVISOR');
     expect(sup).toEqual({ role: 'SUPERVISOR', decided: 4, tracked: 3, within: 2, p50Minutes: 120, p90Minutes: 504 });
+    // The one real June reactivation: not the test account's, not the test customer's.
     const mgr = tiers.find((t) => t.role === 'MANAGER');
     expect(mgr).toEqual({ role: 'MANAGER', decided: 1, tracked: 1, within: 1, p50Minutes: 120, p90Minutes: 120 });
   });
@@ -385,8 +413,9 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
     expect(company.tiers.find((t) => t.role === 'GM')?.decided).toBe(1);
     expect(company.tiers.find((t) => t.role === 'FINANCE_MANAGER')?.decided).toBe(1);
     expect(company.tiers.find((t) => t.role === 'ACCOUNTANT')?.decided).toBe(2);
-    // Three region reactivations on 10 May, and the suite's first one on 1 June —
-    // counted once each: reactIn's own EditApproval row is not a second decision.
+    // Three region reactivations on 10 May, and the suite's real one on 1 June —
+    // counted once each: reactIn's own EditApproval row is not a second decision,
+    // and the June ones by a test account or about a test customer are not counted.
     expect(company.tiers.filter((t) => t.role === 'MANAGER')).toHaveLength(1);
     expect(company.tiers.find((t) => t.role === 'MANAGER')?.decided).toBe(4);
     expect(company.firstCounted!.getTime()).toBeLessThanOrEqual(new Date('2099-05-09T06:00:00Z').getTime());
