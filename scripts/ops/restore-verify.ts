@@ -42,6 +42,7 @@ import { readFileSync, readdirSync, writeFileSync } from 'fs';
 import { parsePrismaSchema, implicitJoinTables } from '../../lib/compliance/prisma-schema';
 import { describeError } from './describe-error';
 import { setChangeContext, src } from '../../lib/change-context';
+import { DB_RULES, NOT_VALID_LINKS_NO_OLDER_ROW_BREAKS } from '../../lib/db-rules';
 import {
   APPEND_ONLY_APP_TABLES,
   GUARD_FUNCTIONS,
@@ -89,6 +90,11 @@ type Status = 'pass' | 'fail' | 'skip';
 type Result = { id: string; title: string; status: Status; detail: string; meansIfFailed: string };
 
 const results: Result[] = [];
+/** Gap 31: the constraints added NOT VALID on purpose, which T-04 and T-05 accept unvalidated. */
+const NOT_VALID_BY_DESIGN: ReadonlySet<string> = new Set(
+  [...DB_RULES, ...NOT_VALID_LINKS_NO_OLDER_ROW_BREAKS].map((r) => r.name)
+);
+
 function record(id: string, title: string, status: Status, detail: string, meansIfFailed: string) {
   results.push({ id, title, status, detail, meansIfFailed });
   const mark = status === 'pass' ? '✓' : status === 'skip' ? '–' : '✗';
@@ -297,27 +303,35 @@ async function main() {
       'the dated history stops being written (a master write may then fail outright), or the as-of answers are gone'
     );
 
-    const [{ total: fkTotal, validated: fkValidated }] = await q<{ total: number; validated: number }>(
-      `SELECT count(*)::int AS total, count(*) FILTER (WHERE convalidated)::int AS validated
-       FROM pg_constraint WHERE contype='f' AND connamespace='public'::regnamespace`
+    // Gap 31: the database rules added NOT VALID on purpose (lib/db-rules.ts;
+    // docs/OPERATIONS.md section 5l) are enforced on every new or changed row but
+    // not validated until their own VALIDATE migration. Those, by name, may be
+    // unvalidated; any other unvalidated constraint still fails the check.
+    const constraints = await q<{ name: string; type: string; validated: boolean }>(
+      `SELECT conname::text AS name, contype::text AS type, convalidated AS validated
+       FROM pg_constraint WHERE contype IN ('f', 'c') AND connamespace='public'::regnamespace AND conname !~ '_not_null$'`
     );
+    const fks = constraints.filter((c) => c.type === 'f');
+    const fkUnvalidated = fks.filter((c) => !c.validated);
+    const fkUnexpected = fkUnvalidated.filter((c) => !NOT_VALID_BY_DESIGN.has(c.name)).map((c) => c.name);
     record(
       'T-04',
-      'foreign keys present and validated',
-      fkTotal > 0 && fkTotal === fkValidated ? 'pass' : 'fail',
-      `${fkValidated}/${fkTotal} validated`,
+      'foreign keys present and validated (the NOT VALID database rules by design)',
+      fks.length > 0 && fkUnexpected.length === 0 ? 'pass' : 'fail',
+      `${fks.length - fkUnvalidated.length}/${fks.length} validated, ${fkUnvalidated.length - fkUnexpected.length} NOT VALID by design` +
+        (fkUnexpected.length ? `; NOT VALID unexpectedly: ${fkUnexpected.join(', ')}` : ''),
       'referential integrity is not enforced on the restored database — later writes can create orphans'
     );
 
-    const [{ total: ckTotal, validated: ckValidated }] = await q<{ total: number; validated: number }>(
-      `SELECT count(*)::int AS total, count(*) FILTER (WHERE convalidated)::int AS validated
-       FROM pg_constraint WHERE contype='c' AND connamespace='public'::regnamespace AND conname !~ '_not_null$'`
-    );
+    const checks = constraints.filter((c) => c.type === 'c');
+    const ckUnvalidated = checks.filter((c) => !c.validated);
+    const ckUnexpected = ckUnvalidated.filter((c) => !NOT_VALID_BY_DESIGN.has(c.name)).map((c) => c.name);
     record(
       'T-05',
-      'CHECK constraints present and validated',
-      ckTotal > 0 && ckTotal === ckValidated ? 'pass' : 'fail',
-      `${ckValidated}/${ckTotal} validated`,
+      'CHECK constraints present and validated (the NOT VALID database rules by design)',
+      checks.length > 0 && ckUnexpected.length === 0 ? 'pass' : 'fail',
+      `${checks.length - ckUnvalidated.length}/${checks.length} validated, ${ckUnvalidated.length - ckUnexpected.length} NOT VALID by design` +
+        (ckUnexpected.length ? `; NOT VALID unexpectedly: ${ckUnexpected.join(', ')}` : ''),
       'GPS-range and minimum-length guards are missing, so bad coordinates can be written after recovery'
     );
 

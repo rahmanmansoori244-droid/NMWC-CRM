@@ -144,6 +144,9 @@ function receiptFor(meId: string, formData: FormData, isReactivation: boolean) {
 
 type SessionUser = Awaited<ReturnType<typeof require>>;
 
+/** Gap 37: a request write that waits on the customer's row lock (lib/locks.ts lockLiveCustomer). */
+const LOCKED_SUBMIT_TX = { timeout: 30_000, maxWait: 10_000 };
+
 /**
  * Launch review: the close / reactivate form (BranchStatusActions) attached its
  * evidence photo to the LIVE branch, as an extra photo, the moment it was
@@ -364,7 +367,8 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
       subject: { legalName: branch.customer.legalName, nmwcCode: branch.customer.nmwcCode },
     });
     return e;
-  }).catch((err: unknown) =>
+    // Gap 37: the customer lock can wait behind a photo attach or an import.
+  }, LOCKED_SUBMIT_TX).catch((err: unknown) =>
     openEditConflict(err, me.id, branch.customerId, { kind: 'reactivate', branchId: branch.id })
   );
 
@@ -520,7 +524,7 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
       subject: { legalName: branch.customer.legalName, nmwcCode: branch.customer.nmwcCode },
     });
     return e;
-  }).catch((err: unknown) =>
+  }, LOCKED_SUBMIT_TX).catch((err: unknown) =>
     openEditConflict(err, me.id, branch.customerId, { kind: 'close', branchId: branch.id })
   );
   logger.info({ editId: edit.id, by: me.id }, 'branch.close.request');

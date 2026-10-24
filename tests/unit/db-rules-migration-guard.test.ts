@@ -261,3 +261,19 @@ describe('schema.prisma holds the same foreign keys', () => {
     expect(model('SubChannel').some((l) => l.trim() === '@@unique([id, channelId])')).toBe(true);
   });
 });
+
+describe('the restore check knows the NOT VALID rules (scripts/ops/restore-verify.ts T-04, T-05)', () => {
+  // It required every foreign key and CHECK validated, so the gap-31 rules would
+  // fail every restore drill; now exactly those, by name, may be unvalidated.
+  const src = readFileSync('scripts/ops/restore-verify.ts', 'utf8').replace(/\r\n/g, '\n');
+  it('accepts unvalidated only the rules of lib/db-rules.ts, by name, and fails on any other', () => {
+    expect(src).toContain("import { DB_RULES, NOT_VALID_LINKS_NO_OLDER_ROW_BREAKS } from '../../lib/db-rules';");
+    expect(src).toMatch(/const NOT_VALID_BY_DESIGN: ReadonlySet<string> = new Set\(\s*\[\.\.\.DB_RULES, \.\.\.NOT_VALID_LINKS_NO_OLDER_ROW_BREAKS\]\.map\(\(r\) => r\.name\)\s*\);/);
+    for (const t of ['T-04', 'T-05']) {
+      const at = src.indexOf(`'${t}',`);
+      expect(at, t).toBeGreaterThan(-1);
+      expect(src.slice(at, at + 200)).toMatch(/Unexpected\.length === 0 \? 'pass' : 'fail'/);
+    }
+    expect(src.match(/\.filter\(\(c\) => !NOT_VALID_BY_DESIGN\.has\(c\.name\)\)/g)).toHaveLength(2);
+  });
+});

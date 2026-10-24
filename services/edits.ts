@@ -1173,7 +1173,9 @@ async function submitEditOnce(
             });
           }
           return e;
-        });
+          // Gap 37: the customer lock can wait behind a photo attach or an import,
+          // as the direct write's does.
+        }, LOCKED_SUBMIT_TX);
       }
     } catch (err) {
       // QA-017 / EL-09 — partial unique index `CustomerEdit_open_per_customer`
@@ -1278,6 +1280,9 @@ async function submitEditOnce(
  * way), so two saves at once cannot both insert. A submit is always a new row:
  * a draft never becomes a request, so the cycle invariant in submitEditOnce holds.
  */
+/** Gap 37: a request write that waits on the customer's row lock (lib/locks.ts lockLiveCustomer). */
+const LOCKED_SUBMIT_TX = { timeout: 30_000, maxWait: 10_000 };
+
 async function saveUpdateDraft(
   submittedById: string,
   customerId: string,
@@ -1322,7 +1327,7 @@ async function saveUpdateDraft(
         attachmentChanges: [] as unknown as Prisma.InputJsonValue,
       },
     });
-  });
+  }, LOCKED_SUBMIT_TX);
 }
 
 /**

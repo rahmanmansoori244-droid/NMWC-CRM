@@ -78,7 +78,8 @@ describe('where the hierarchy is told of a salesman request', () => {
     const tx = s.indexOf('withChangeContext(prisma,');
     const insert = s.indexOf('tx.customerEdit.create(');
     const call = s.indexOf('notifySalesmanRequest(tx, {');
-    const conflict = s.indexOf(`}).catch((err: unknown) =>`);
+    // Gap 37: the transaction waits on the customer lock with the direct write's budget.
+    const conflict = s.indexOf(`}, LOCKED_SUBMIT_TX).catch((err: unknown) =>`);
     expect(tx, 'transaction').toBeGreaterThan(-1);
     expect(insert).toBeGreaterThan(tx);
     expect(call).toBeGreaterThan(insert);
