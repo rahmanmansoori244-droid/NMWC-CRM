@@ -1,6 +1,6 @@
 'use client';
 
-import { useContext, useState, useTransition } from 'react';
+import { useContext, useId, useRef, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { toggleUserActiveAction, resetPasswordAction, updateUserEmailAction } from '@/services/users';
 import { AnnounceContext } from './announce';
@@ -103,6 +103,11 @@ export function UserRowActions({
   const [resetMismatch, setResetMismatch] = useState(false);
   const [showResetPassword, setShowResetPassword] = useState(false);
   const announce = useContext(AnnounceContext);
+  // The toggles say whether their form is open and which one it is.
+  const emailFormId = useId();
+  const resetFormId = useId();
+  const resetFormRef = useRef<HTMLFormElement>(null);
+  const resetButtonRef = useRef<HTMLButtonElement>(null);
 
   function toggle() {
     // The dialog says where the row goes, because on the Active list it goes
@@ -166,7 +171,13 @@ export function UserRowActions({
         }
         setResetMsg({ text: 'Password updated.', ok: true });
         (e.target as HTMLFormElement).reset();
-        setTimeout(() => setShowReset(false), 1200);
+        setTimeout(() => {
+          // The form closes under the keyboard user: focus goes back to its toggle,
+          // not to <body>. Only when it was in the form — never stolen from elsewhere.
+          const hadFocus = !!resetFormRef.current?.contains(document.activeElement);
+          setShowReset(false);
+          if (hadFocus) resetButtonRef.current?.focus();
+        }, 1200);
       } catch (err) {
         setResetMsg({ text: err instanceof Error ? err.message : 'Failed.', ok: false });
       }
@@ -224,6 +235,8 @@ export function UserRowActions({
         <button
           type="button"
           disabled={pending}
+          aria-expanded={showEmail}
+          aria-controls={showEmail ? emailFormId : undefined}
           onClick={() => {
             setShowEmail((s) => !s);
             setEmailMsg(null);
@@ -235,6 +248,7 @@ export function UserRowActions({
       )}
       {canEditEmail && showEmail && (
         <form
+          id={emailFormId}
           onSubmit={saveEmail}
           autoComplete="off"
           className="flex w-full flex-wrap items-center justify-end gap-1 rounded-md border border-slate-300 bg-white px-2 py-1"
@@ -273,8 +287,11 @@ export function UserRowActions({
         {isActive ? 'Disable' : 'Enable'}
       </button>
       <button
+        ref={resetButtonRef}
         type="button"
         disabled={pending}
+        aria-expanded={showReset}
+        aria-controls={showReset ? resetFormId : undefined}
         onClick={() => {
           // Reopened, the box starts masked and without the last attempt's error.
           setShowReset((s) => !s);
@@ -287,6 +304,8 @@ export function UserRowActions({
       </button>
       {showReset && (
         <form
+          id={resetFormId}
+          ref={resetFormRef}
           onSubmit={reset}
           className="flex w-full flex-wrap items-center justify-end gap-1 rounded-md border border-slate-300 bg-white px-2 py-1"
         >
@@ -339,7 +358,7 @@ export function UserRowActions({
       {resetMsg && (
         <span
           role={resetMsg.ok ? 'status' : 'alert'}
-          className={`self-center ${resetMsg.ok ? 'text-emerald-600' : 'font-medium text-red-600'}`}
+          className={`self-center ${resetMsg.ok ? 'text-emerald-700' : 'font-medium text-red-600'}`}
         >
           {resetMsg.text}
         </span>

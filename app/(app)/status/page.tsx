@@ -347,15 +347,17 @@ function QueueCard({
   q: { open: number; pastDue: number; oldestWorkingMinutes: number | null };
 }) {
   const late = q.pastDue > 0;
+  // Muted by a darker shade, not by opacity: amber-900 at 70% on amber-50 was 4.09:1.
+  const muted = late ? 'text-amber-800' : 'text-slate-600';
   return (
     <article
       className={`rounded-lg p-4 shadow-sm ring-1 ${
         late ? 'bg-amber-50 text-amber-900 ring-amber-200' : 'bg-white text-slate-800 ring-slate-200'
       }`}
     >
-      <h3 className="text-xs font-medium uppercase tracking-wide opacity-70">{label}</h3>
+      <h3 className={`text-xs font-medium uppercase tracking-wide ${muted}`}>{label}</h3>
       <p className="mt-1 text-3xl font-bold tabular-nums">{q.open}</p>
-      <p className="mt-1 text-xs tabular-nums opacity-80">
+      <p className={`mt-1 text-xs tabular-nums ${muted}`}>
         {q.pastDue > 0 ? `${q.pastDue} past due` : 'none past due'}
         {q.oldestWorkingMinutes !== null &&
           ` · oldest waiting ${formatWorkingMinutes(q.oldestWorkingMinutes)} of working time`}

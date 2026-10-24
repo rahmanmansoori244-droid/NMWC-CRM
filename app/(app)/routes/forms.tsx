@@ -12,18 +12,25 @@ import { errorTiedTo } from '@/components/nmwc/LabeledField';
 // B-17: actions now return `{ ok, ... }` (runAction wrapping) instead of
 // throwing AppError. The form translates that shape into inline errors.
 
+/** The code as the server stores it (services/routes.ts upper-cases and trims it). */
+const typedCode = (fd: FormData) => String(fd.get('code') ?? '').toUpperCase().trim();
+
 export function CreateRegionForm() {
   const [pending, start] = useTransition();
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // A success emptied the form and said nothing; a screen reader now hears it.
+  const [created, setCreated] = useState('');
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setErrors({});
+    setCreated('');
     const form = e.currentTarget;
     const fd = new FormData(form);
     start(async () => {
       const res = await createRegionAction(fd);
       if (res.ok) {
+        setCreated(`Created region ${typedCode(fd)}.`);
         form.reset();
       } else if (res.fields) {
         setErrors(res.fields);
@@ -49,6 +56,9 @@ export function CreateRegionForm() {
           {errors._form}
         </p>
       )}
+      <p className="sr-only" aria-live="polite">
+        {created}
+      </p>
     </form>
   );
 }
@@ -62,15 +72,18 @@ export function CreateRouteForm({
   const [errors, setErrors] = useState<Record<string, string>>({});
   // The Region select is tied to its label and its error, as Input is.
   const regionField = useId();
+  const [created, setCreated] = useState('');
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setErrors({});
+    setCreated('');
     const form = e.currentTarget;
     const fd = new FormData(form);
     start(async () => {
       const res = await createRouteAction(fd);
       if (res.ok) {
+        setCreated(`Created route ${typedCode(fd)}.`);
         form.reset();
       } else if (res.fields) {
         setErrors(res.fields);
@@ -120,6 +133,9 @@ export function CreateRouteForm({
           {errors._form}
         </p>
       )}
+      <p className="sr-only" aria-live="polite">
+        {created}
+      </p>
     </form>
   );
 }

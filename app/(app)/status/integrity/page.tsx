@@ -71,6 +71,15 @@ const TONE: Record<string, string> = {
 };
 const DOT: Record<string, string> = { pass: 'bg-emerald-500', fail: 'bg-red-500', info: 'bg-slate-400', error: 'bg-amber-500' };
 
+/**
+ * The trend's words. The dots said it by colour alone, and their aria-label sat on
+ * a plain span, where ARIA does not allow one (axe aria-prohibited-attr). The
+ * report builds the trend oldest run first (lib/integrity/report.ts).
+ */
+function trendLabel(trend: string[]): string {
+  return `Last ${trend.length} run${trend.length === 1 ? '' : 's'}, oldest first: ${trend.join(', ')}`;
+}
+
 function Badge({ status }: { status: string }) {
   return (
     <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide ring-1 ${TONE[status] ?? TONE.info}`}>
@@ -140,14 +149,19 @@ function LatestRun({ report }: { report: IntegrityReport }) {
           return (
             <li key={c.id} className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-medium text-slate-900">
+                {/* Each check is a heading under "Last run", so the page can be walked check by check. */}
+                <h3 className="text-sm font-medium text-slate-900">
                   {c.title}
                   {r?.count !== null && r?.count !== undefined && <span className="ml-2 tabular-nums text-slate-600">{r.count}</span>}
-                </p>
+                </h3>
                 <div className="flex items-center gap-2">
-                  <span className="flex gap-0.5" aria-label={`last ${trend.length} runs`}>
+                  <span
+                    className="flex gap-0.5"
+                    role={trend.length > 0 ? 'img' : undefined}
+                    aria-label={trend.length > 0 ? trendLabel(trend) : undefined}
+                  >
                     {trend.map((s, i) => (
-                      <span key={i} title={s} className={`inline-block h-2 w-2 rounded-full ${DOT[s] ?? DOT.info}`} />
+                      <span key={i} title={s} aria-hidden="true" className={`inline-block h-2 w-2 rounded-full ${DOT[s] ?? DOT.info}`} />
                     ))}
                   </span>
                   <Badge status={r?.status ?? 'info'} />
@@ -193,11 +207,11 @@ function Seals({ report }: { report: IntegrityReport }) {
           <table className="min-w-full text-left text-xs">
             <thead className="bg-slate-50 text-slate-500">
               <tr>
-                <th className="px-3 py-2">Seal</th>
-                <th className="px-3 py-2">Day</th>
-                <th className="px-3 py-2">Hash</th>
-                <th className="px-3 py-2">Rows sealed</th>
-                <th className="px-3 py-2">Tables</th>
+                <th scope="col" className="px-3 py-2">Seal</th>
+                <th scope="col" className="px-3 py-2">Day</th>
+                <th scope="col" className="px-3 py-2">Hash</th>
+                <th scope="col" className="px-3 py-2">Rows sealed</th>
+                <th scope="col" className="px-3 py-2">Tables</th>
               </tr>
             </thead>
             <tbody>
@@ -235,12 +249,12 @@ function Purges({ report }: { report: IntegrityReport }) {
           <table className="min-w-full text-left text-xs">
             <thead className="bg-slate-50 text-slate-500">
               <tr>
-                <th className="px-3 py-2">Rule</th>
-                <th className="px-3 py-2">Table</th>
-                <th className="px-3 py-2">Batches</th>
-                <th className="px-3 py-2">Rows</th>
-                <th className="px-3 py-2">Oldest</th>
-                <th className="px-3 py-2">Newest</th>
+                <th scope="col" className="px-3 py-2">Rule</th>
+                <th scope="col" className="px-3 py-2">Table</th>
+                <th scope="col" className="px-3 py-2">Batches</th>
+                <th scope="col" className="px-3 py-2">Rows</th>
+                <th scope="col" className="px-3 py-2">Oldest</th>
+                <th scope="col" className="px-3 py-2">Newest</th>
               </tr>
             </thead>
             <tbody>

@@ -700,3 +700,48 @@ describe('/users — Regions column and the Steward’s Edit', () => {
     expect(screen.queryAllByRole('button', { name: 'Edit' })).toHaveLength(0);
   });
 });
+
+describe('Edit account — the keyboard', () => {
+  // It had no focus move, no trap and no restore: a keyboard user pressed Edit and
+  // stayed on the row behind the dialog, and closing it left focus on <body>.
+  it('Edit moves focus to Role, Tab stays inside, and Escape closes it with focus back on Edit', () => {
+    render(
+      <UsersFeedback editOptions={OPTIONS}>
+        <EditAccountButton account={ALI} />
+      </UsersFeedback>
+    );
+    const edit = screen.getByRole('button', { name: 'Edit' });
+    edit.focus();
+    fireEvent.click(edit);
+    const dialog = screen.getByRole('dialog');
+    expect(document.activeElement).toBe(within(dialog).getByLabelText('Role'));
+
+    // From the last control, Tab wraps to the first; from the first, Shift+Tab to the last.
+    const save = within(dialog).getByRole('button', { name: 'Save' });
+    save.focus();
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab' });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(within(dialog).getByLabelText('Role'));
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(save);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(edit);
+    expect(h.edit).not.toHaveBeenCalled();
+  });
+
+  it('Cancel puts focus back on Edit too', () => {
+    render(
+      <UsersFeedback editOptions={OPTIONS}>
+        <EditAccountButton account={ALI} />
+      </UsersFeedback>
+    );
+    const edit = screen.getByRole('button', { name: 'Edit' });
+    edit.focus();
+    fireEvent.click(edit);
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(edit);
+  });
+});

@@ -123,17 +123,19 @@ export default async function ImportPage() {
           <table className="min-w-full divide-y divide-slate-200 text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
               <tr>
-                <th className="px-4 py-2 font-medium">When</th>
-                <th className="px-4 py-2 font-medium">File</th>
-                <th className="px-4 py-2 font-medium">Type</th>
-                <th className="px-4 py-2 font-medium">By</th>
-                <th className="px-4 py-2 font-medium">Status</th>
-                <th className="px-4 py-2 font-medium">Total</th>
-                <th className="px-4 py-2 font-medium">Clean</th>
-                <th className="px-4 py-2 font-medium">Quarantined</th>
-                <th className="px-4 py-2 font-medium">Promoted</th>
-                <th className="px-4 py-2 font-medium">Rejected</th>
-                <th></th>
+                <th scope="col" className="px-4 py-2 font-medium">When</th>
+                <th scope="col" className="px-4 py-2 font-medium">File</th>
+                <th scope="col" className="px-4 py-2 font-medium">Type</th>
+                <th scope="col" className="px-4 py-2 font-medium">By</th>
+                <th scope="col" className="px-4 py-2 font-medium">Status</th>
+                <th scope="col" className="px-4 py-2 font-medium">Total</th>
+                <th scope="col" className="px-4 py-2 font-medium">Clean</th>
+                <th scope="col" className="px-4 py-2 font-medium">Quarantined</th>
+                <th scope="col" className="px-4 py-2 font-medium">Promoted</th>
+                <th scope="col" className="px-4 py-2 font-medium">Rejected</th>
+                <th scope="col">
+                  <span className="sr-only">Actions</span>
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -163,7 +165,7 @@ export default async function ImportPage() {
               ))}
               {batches.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="px-4 py-6 text-center text-xs text-slate-400">
+                  <td colSpan={11} className="px-4 py-6 text-center text-xs text-slate-500">
                     No imports yet.
                   </td>
                 </tr>

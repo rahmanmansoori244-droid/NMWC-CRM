@@ -120,13 +120,13 @@ describe('what the bell counts', () => {
     const { container } = render(<TopBar user={USER} unreadCount={0} infoCount={14} />);
     const link = container.querySelector('a[href="/notifications"]')!;
     expect(link.getAttribute('aria-label')).toBe('Notifications (14 for information)');
-    expect(container.querySelector('.bg-red-500')).toBeNull();
+    expect(container.querySelector('[data-bell="action"]')).toBeNull();
     expect(container.querySelector('[data-bell="information"]')?.textContent).toBe('9+');
   });
 
   it('a row that waits on him is red, whatever the information count', () => {
     const { container } = render(<TopBar user={USER} unreadCount={1} infoCount={30} />);
-    expect(container.querySelector('.bg-red-500')?.textContent).toBe('1');
+    expect(container.querySelector('[data-bell="action"]')?.textContent).toBe('1');
     expect(container.querySelector('[data-bell="information"]')).toBeNull();
     expect(container.querySelector('a[href="/notifications"]')!.getAttribute('aria-label')).toBe(
       'Notifications (1 unread, 30 for information)'
@@ -135,7 +135,7 @@ describe('what the bell counts', () => {
 
   it('nothing unread: no badge', () => {
     const { container } = render(<TopBar user={USER} />);
-    expect(container.querySelector('.bg-red-500')).toBeNull();
+    expect(container.querySelector('[data-bell="action"]')).toBeNull();
     expect(container.querySelector('[data-bell="information"]')).toBeNull();
   });
 });
@@ -146,13 +146,13 @@ describe('the layout feeds the bell', () => {
     expect(container.querySelector('a[href="/notifications"]')!.getAttribute('aria-label')).toBe(
       'Notifications (2 unread, 2 for information)'
     );
-    expect(container.querySelector('.bg-red-500')?.textContent).toBe('2');
+    expect(container.querySelector('[data-bell="action"]')?.textContent).toBe('2');
   });
 
   it('information alone never turns the badge red', async () => {
     h.rows = h.rows.filter((r) => r.kind === 'REQUEST_FYI');
     const { container } = render(await AppLayout({ children: null }));
-    expect(container.querySelector('.bg-red-500')).toBeNull();
+    expect(container.querySelector('[data-bell="action"]')).toBeNull();
     expect(container.querySelector('[data-bell="information"]')?.textContent).toBe('2');
   });
 });
@@ -172,7 +172,7 @@ describe('a salesman’s bell', () => {
 
   it('is red only for the request returned to him', async () => {
     const { container } = render(await AppLayout({ children: null }));
-    expect(container.querySelector('.bg-red-500')?.textContent).toBe('1');
+    expect(container.querySelector('[data-bell="action"]')?.textContent).toBe('1');
     expect(container.querySelector('a[href="/notifications"]')!.getAttribute('aria-label')).toBe(
       'Notifications (1 unread, 2 for information)'
     );

@@ -47,9 +47,12 @@ function uploadOutcome(data: UploadOk): { tone: Tone; message: string } {
 
 function UploadForm({
   label,
+  fileLabel,
   action,
 }: {
   label: string;
+  /** The file box's name: it had none, so a screen reader said only "Choose file". */
+  fileLabel: string;
   action: (formData: FormData) => Promise<ActionResult<UploadOk>>;
 }) {
   const [pending, start] = useTransition();
@@ -103,6 +106,7 @@ function UploadForm({
         name="file"
         accept=".xlsx"
         required
+        aria-label={fileLabel}
         className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-brand-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-brand-700 hover:file:bg-brand-100"
       />
       <button
@@ -136,6 +140,7 @@ export function UploadAccountForm() {
   return (
     <UploadForm
       label="Upload account master"
+      fileLabel="Account master workbook (.xlsx)"
       action={uploadAccountMasterAction as (fd: FormData) => Promise<ActionResult<UploadOk>>}
     />
   );
@@ -145,6 +150,7 @@ export function UploadCustomerForm() {
   return (
     <UploadForm
       label="Upload customer master"
+      fileLabel="Customer master workbook (.xlsx)"
       action={uploadCustomerMasterAction as (fd: FormData) => Promise<ActionResult<UploadOk>>}
     />
   );

@@ -691,7 +691,7 @@ test.describe('approvals: Select all stops at 50, most overdue first', { tag: ['
     await expect(creditCard.getByRole('checkbox')).toHaveCount(0);
     await expect(page.getByText('Credit applications are approved one at a time: open each card marked with a lock.')).toBeVisible();
 
-    await page.getByRole('checkbox', { name: 'Select up to 50 on this page' }).check();
+    await page.getByRole('checkbox', { name: 'Select all', exact: true }).check();
     await expect(page.getByRole('status').filter({ hasText: 'Selected the first 50 — the limit per action.' })).toBeVisible();
     const ticked = await page.evaluate(() =>
       Array.from(document.querySelectorAll<HTMLInputElement>('main li input[type="checkbox"]'))

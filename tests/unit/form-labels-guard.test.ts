@@ -49,6 +49,12 @@ const FILES = [
   'app/(app)/export/ExportFiltersForm.tsx',
   'app/(app)/routes/forms.tsx',
   'app/(app)/audit/page.tsx',
+  // The Steward's back-office forms: the import uploads and a batch's row fixes,
+  // the duplicate merge, and the dashboard's filters.
+  'app/(app)/import/forms.tsx',
+  'app/(app)/import/[batchId]/RowActions.tsx',
+  'app/(app)/duplicates/MergeForm.tsx',
+  'app/(app)/dashboard/InsightFilters.tsx',
 ];
 
 const CONTROLS = new Set(['input', 'select', 'textarea']);

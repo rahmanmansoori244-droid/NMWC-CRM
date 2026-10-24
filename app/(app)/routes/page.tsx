@@ -81,7 +81,7 @@ export default async function RoutesPage() {
                   <ToggleButton id={region.id} kind="region" isActive={region.isActive} />
                 ) : (
                   !region.isActive && (
-                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
                       Region off
                     </span>
                   )
@@ -91,11 +91,13 @@ export default async function RoutesPage() {
                 <table className="min-w-full divide-y divide-slate-100 text-sm">
                   <thead className="text-left text-xs uppercase tracking-wide text-slate-500">
                     <tr>
-                      <th className="px-4 py-2 font-medium">Code</th>
-                      <th className="px-4 py-2 font-medium">Name</th>
-                      <th className="px-4 py-2 font-medium">Salesman</th>
-                      <th className="px-4 py-2 font-medium">Status</th>
-                      <th></th>
+                      <th scope="col" className="px-4 py-2 font-medium">Code</th>
+                      <th scope="col" className="px-4 py-2 font-medium">Name</th>
+                      <th scope="col" className="px-4 py-2 font-medium">Salesman</th>
+                      <th scope="col" className="px-4 py-2 font-medium">Status</th>
+                      <th scope="col">
+                        <span className="sr-only">Actions</span>
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -108,7 +110,7 @@ export default async function RoutesPage() {
                           {route.owner && !route.owner.isActive && (
                             <span
                               title="His account is disabled. The Steward hands the route to the new salesman on Users."
-                              className="ml-1 text-xs text-slate-400"
+                              className="ml-1 text-xs text-slate-500"
                             >
                               (disabled)
                             </span>
@@ -119,7 +121,7 @@ export default async function RoutesPage() {
                             className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
                               route.isActive
                                 ? 'bg-emerald-50 text-emerald-700'
-                                : 'bg-slate-100 text-slate-500'
+                                : 'bg-slate-100 text-slate-600'
                             }`}
                           >
                             {route.isActive ? 'Active' : 'Disabled'}
@@ -134,7 +136,7 @@ export default async function RoutesPage() {
                     ))}
                     {region.routes.length === 0 && (
                       <tr>
-                        <td colSpan={5} className="px-4 py-3 text-center text-xs text-slate-400">
+                        <td colSpan={5} className="px-4 py-3 text-center text-xs text-slate-500">
                           No routes in this region yet.
                         </td>
                       </tr>

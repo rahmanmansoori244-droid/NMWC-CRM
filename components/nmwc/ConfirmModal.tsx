@@ -8,7 +8,8 @@ import { useEffect, useRef } from 'react';
  *
  * Behavior:
  *  - Backdrop dims content behind a centered card.
- *  - Esc cancels, Enter confirms while focus is inside the modal.
+ *  - Esc cancels. Enter confirms, except with focus on Cancel, where it
+ *    presses Cancel (the native button click).
  *  - On open, focus is moved to the confirm button. A simple focus
  *    trap keeps Tab cycling between Cancel and Confirm.
  *  - Body scroll is locked while the modal is open so a long approval
@@ -47,7 +48,7 @@ export function ConfirmModal({
     };
   }, [open]);
 
-  // Esc cancels, Enter confirms (while focus is inside the modal).
+  // Esc cancels; Enter confirms unless focus is on Cancel.
   useEffect(() => {
     if (!open) return;
     function onKey(e: KeyboardEvent) {
@@ -57,6 +58,8 @@ export function ConfirmModal({
         return;
       }
       if (e.key === 'Enter') {
+        // On Cancel, Enter is Cancel: let the native click run (onCancel) instead of confirming.
+        if (document.activeElement === cancelRef.current) return;
         e.preventDefault();
         onConfirm();
         return;
@@ -89,7 +92,7 @@ export function ConfirmModal({
   const confirmClass =
     confirmTone === 'danger'
       ? 'bg-red-600 hover:bg-red-700 focus-visible:ring-red-500'
-      : 'bg-emerald-600 hover:bg-emerald-700 focus-visible:ring-emerald-500';
+      : 'bg-emerald-700 hover:bg-emerald-800 focus-visible:ring-emerald-600';
 
   return (
     <div

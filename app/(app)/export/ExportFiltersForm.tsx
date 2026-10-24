@@ -136,6 +136,12 @@ export function ExportFiltersForm({
       }}
       className="grid gap-4"
     >
+      {/* Only the submit button's own words changed while a file was prepared, and
+          the field-update button said nothing: this is read out for either. sr-only
+          is out of the grid's flow, so the form looks as it did. */}
+      <p className="sr-only" aria-live="polite">
+        {busy ? 'Preparing the file…' : ''}
+      </p>
       {error && (
         <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm font-medium text-red-700 ring-1 ring-red-200">
           {error}
@@ -179,7 +185,7 @@ export function ExportFiltersForm({
               </label>
             ))}
             {filteredRoutes.length === 0 && (
-              <p className="col-span-full text-xs text-slate-400">
+              <p className="col-span-full text-xs text-slate-500">
                 Pick a region first to filter routes.
               </p>
             )}
@@ -362,7 +368,7 @@ export function ExportFiltersForm({
             type="button"
             disabled={busy}
             onClick={() => void download(buildChangesHref())}
-            className="ml-auto rounded-md bg-amber-600 px-5 py-2 text-sm font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+            className="ml-auto rounded-md bg-amber-700 px-5 py-2 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
           >
             Download field-update report
           </button>

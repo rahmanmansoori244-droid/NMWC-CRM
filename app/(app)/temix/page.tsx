@@ -110,11 +110,11 @@ export default async function TemixPage({
             <table className="w-full text-left text-sm">
               <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                 <tr>
-                  <th className="px-4 py-2">Created</th>
-                  <th className="px-4 py-2">By</th>
-                  <th className="px-4 py-2">Customers</th>
-                  <th className="px-4 py-2">Loaded into Temix</th>
-                  <th className="px-4 py-2 text-right">Actions</th>
+                  <th scope="col" className="px-4 py-2">Created</th>
+                  <th scope="col" className="px-4 py-2">By</th>
+                  <th scope="col" className="px-4 py-2">Customers</th>
+                  <th scope="col" className="px-4 py-2">Loaded into Temix</th>
+                  <th scope="col" className="px-4 py-2 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -122,7 +122,7 @@ export default async function TemixPage({
                   <tr key={b.id}>
                     <td className="px-4 py-2.5 text-slate-900">
                       {omanDateTime(b.createdAt)}
-                      <span className="ml-2 font-mono text-[11px] text-slate-400">
+                      <span className="ml-2 font-mono text-[11px] text-slate-500">
                         …{b.id.slice(-6)}
                       </span>
                     </td>
@@ -208,9 +208,10 @@ function StatTile({
   };
   return (
     <div className={`rounded-lg p-4 shadow-sm ring-1 ${tones[tone]}`}>
-      <p className="text-xs font-medium uppercase tracking-wide opacity-70">{label}</p>
+      {/* No opacity on the label and hint: at 70% they fell to 3.5:1 on their tile. */}
+      <p className="text-xs font-medium uppercase tracking-wide">{label}</p>
       <p className="mt-1 text-3xl font-bold tabular-nums">{value}</p>
-      <p className="mt-1 text-xs opacity-70">{hint}</p>
+      <p className="mt-1 text-xs">{hint}</p>
     </div>
   );
 }

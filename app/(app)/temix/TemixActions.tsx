@@ -68,9 +68,14 @@ export function GenerateBatchButton({ disabled }: { disabled: boolean }) {
       >
         {pending ? 'Generating…' : '⬇ Generate upload file'}
       </button>
-      {error && <p className="text-xs font-medium text-red-600">{error}</p>}
+      {/* Read out when they land: a refusal is an alert, the held-back note a status. */}
+      {error && (
+        <p role="alert" className="text-xs font-medium text-red-600">
+          {error}
+        </p>
+      )}
       {held.length > 0 && (
-        <p className="max-w-md text-right text-xs font-medium text-amber-700">
+        <p role="status" className="max-w-md text-right text-xs font-medium text-amber-700">
           Not in this file, still queued: {held.slice(0, 10).join(', ')}
           {held.length > 10 ? ` and ${held.length - 10} more` : ''}. Deactivating these archived
           customers would take away a Temix code a live customer still holds; the codes need
@@ -130,9 +135,13 @@ export function BatchRowActions({ batchId, loaded }: { batchId: string; loaded: 
 
   return (
     <div className="flex items-center justify-end gap-2">
-      {error && <span className="text-xs font-medium text-red-600">{error}</span>}
+      {error && (
+        <span role="alert" className="text-xs font-medium text-red-600">
+          {error}
+        </span>
+      )}
       {held.length > 0 && (
-        <span className="max-w-xs text-right text-xs font-medium text-amber-700">
+        <span role="status" className="max-w-xs text-right text-xs font-medium text-amber-700">
           Left out of this file: {held.slice(0, 10).join(', ')}
           {held.length > 10 ? ` and ${held.length - 10} more` : ''}. Deactivating these archived
           customers now would take away a Temix code a live customer holds.
@@ -151,7 +160,7 @@ export function BatchRowActions({ batchId, loaded }: { batchId: string; loaded: 
           type="button"
           disabled={pending}
           onClick={() => setConfirming(true)}
-          className="rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+          className="rounded-md bg-emerald-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
         >
           Mark loaded
         </button>

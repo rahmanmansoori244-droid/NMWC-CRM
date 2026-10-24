@@ -1,10 +1,18 @@
 import { cn } from '@/lib/utils';
 import { completenessBand, completenessPct } from '@/lib/completeness';
 
-const BAND_COLOR: Record<'high' | 'medium' | 'low', string> = {
+/** The ring's stroke (a graphic: 3:1 against white is enough, WCAG 1.4.11). */
+const STROKE_COLOR: Record<'high' | 'medium' | 'low', string> = {
   high: 'text-emerald-600',
   medium: 'text-amber-500',
   low: 'text-red-600',
+};
+
+/** The number inside (text: 4.5:1 against white, WCAG 1.4.3). */
+const TEXT_COLOR: Record<'high' | 'medium' | 'low', string> = {
+  high: 'text-emerald-700',
+  medium: 'text-amber-700',
+  low: 'text-red-700',
 };
 
 export function CompletenessRing({
@@ -58,10 +66,10 @@ export function CompletenessRing({
           strokeDasharray={circumference}
           strokeDashoffset={offset}
           strokeLinecap="round"
-          className={cn('transition-[stroke-dashoffset] duration-500', BAND_COLOR[band])}
+          className={cn('transition-[stroke-dashoffset] duration-500', STROKE_COLOR[band])}
         />
       </svg>
-      <span className={cn('absolute text-xs font-semibold', BAND_COLOR[band])}>{pct}</span>
+      <span className={cn('absolute text-xs font-semibold', TEXT_COLOR[band])}>{pct}</span>
     </div>
   );
 }
