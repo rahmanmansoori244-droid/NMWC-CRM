@@ -198,16 +198,17 @@ export async function runIntegrityWatch(db: Db, deps: WatchDeps): Promise<WatchS
     add({ checkId: 'seal-written', version: 1, status: 'error', count: null, sampleIds: [], detail: { error: errorText(e) }, durationMs: Date.now() - t0 });
   }
 
-  // The chain and the copies.
+  // The chain, from the database alone (no R2 call inside a transaction).
   t0 = Date.now();
+  const deadline = started + RUN_DEADLINE_MS;
+  let recheck: Awaited<ReturnType<typeof recheckSeals>> | null = null;
   try {
-    const deadline = started + RUN_DEADLINE_MS;
-    const recheck = await readOnly(
+    recheck = await readOnly(
       db,
       (tx) =>
         recheckSeals(tx, {
           window: SEAL_RECHECK_WINDOW,
-          offsite: deps.store,
+          offsite: null,
           onStep: () => {
             if (Date.now() > deadline) throw new Error('the run’s deadline passed during the recheck');
           },
@@ -235,40 +236,62 @@ export async function runIntegrityWatch(db: Db, deps: WatchDeps): Promise<WatchS
       },
       durationMs: Date.now() - t0,
     });
+  } catch (e) {
+    add({ checkId: 'seal-chain-intact', version: 1, status: 'error', count: null, sampleIds: [], detail: { error: errorText(e) }, durationMs: Date.now() - t0 });
+  }
 
-    // Copies: a missing one up to two days old is written again (a failed upload).
-    t0 = Date.now();
-    const copies = recheck.mismatches.filter((m) => m.kind === 'offsite-missing' || m.kind === 'offsite-differs');
-    const failed: Mismatch[] = [];
+  // The copies of the last seals, read back from R2 one by one. A missing one up
+  // to two days old is written again (a failed upload): information. Older and
+  // missing, or different: a failure. An R2 call that fails is an R2 error.
+  t0 = Date.now();
+  if (!recheck) {
+    add({ checkId: 'seal-offsite-copies', version: 1, status: 'error', count: null, sampleIds: [], detail: { error: 'the seals could not be read' }, durationMs: 0 });
+  } else {
+    const failed: Array<{ seq: number; kind: 'offsite-missing' | 'offsite-differs' }> = [];
     let rewritten = 0;
-    for (const m of copies) {
-      const s = recheck.seals.find((x) => x.seq === m.seq)!;
-      if (m.kind === 'offsite-missing' && offsiteRetryable(s, now, SEAL_OFFSITE_RETRY_DAYS)) {
+    let unread = 0;
+    for (const seq of recheck.windowSeqs) {
+      const sealRow = recheck.seals.find((x) => x.seq === seq);
+      if (!sealRow) continue;
+      if (Date.now() > deadline) {
+        unread += 1;
+        continue;
+      }
+      let copy: string | null;
+      try {
+        copy = await deps.store.get(sealRow.r2Key);
+      } catch {
+        r2Errors += 1;
+        unread += 1;
+        continue;
+      }
+      if (copy === sealRow.bodyText) continue;
+      if (copy === null && offsiteRetryable(sealRow, now, SEAL_OFFSITE_RETRY_DAYS)) {
         try {
-          await deps.store.put(s.r2Key, s.bodyText, s.hash);
+          await deps.store.put(sealRow.r2Key, sealRow.bodyText, sealRow.hash);
           rewritten += 1;
           continue;
         } catch {
           r2Errors += 1;
         }
       }
-      failed.push(m);
+      failed.push({ seq, kind: copy === null ? 'offsite-missing' : 'offsite-differs' });
     }
     add({
       checkId: 'seal-offsite-copies',
       version: 1,
-      status: failed.length > 0 ? 'fail' : rewritten > 0 ? 'info' : 'pass',
-      count: failed.length,
+      status: failed.length > 0 ? 'fail' : unread > 0 ? 'error' : rewritten > 0 ? 'info' : 'pass',
+      count: unread > 0 && failed.length === 0 ? null : failed.length,
       sampleIds: failed.map((m) => String(m.seq)),
-      detail: { checked: recheck.windowSeqs.length, rewritten, missing: failed.filter((m) => m.kind === 'offsite-missing').length, differs: failed.filter((m) => m.kind === 'offsite-differs').length },
+      detail: {
+        checked: recheck.windowSeqs.length - unread,
+        unread,
+        rewritten,
+        missing: failed.filter((m) => m.kind === 'offsite-missing').length,
+        differs: failed.filter((m) => m.kind === 'offsite-differs').length,
+      },
       durationMs: Date.now() - t0,
     });
-  } catch (e) {
-    const detail = { error: errorText(e) };
-    // An R2 failure while reading the copies is an R2 error too.
-    if (/R2|r2|S3|aborted|ECONN|ENOTFOUND|timeout/i.test(detail.error)) r2Errors += 1;
-    add({ checkId: 'seal-chain-intact', version: 1, status: 'error', count: null, sampleIds: [], detail, durationMs: Date.now() - t0 });
-    add({ checkId: 'seal-offsite-copies', version: 1, status: 'error', count: null, sampleIds: [], detail, durationMs: 0 });
   }
 
   // ── 3. the results, and the Steward's alert ──

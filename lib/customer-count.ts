@@ -35,8 +35,11 @@ export type CustomerCountResult = { total: number; isApprox: boolean };
  */
 function hasUserFilter(where: Prisma.CustomerWhereInput): boolean {
   // Strip deletedAt: null and consider any remaining keys as a user filter.
+  // Gap 30: `isTest: false` is the always-on test-record rule
+  // (lib/test-records.ts), not a filter the user chose; the estimate it then
+  // returns (marked approximate) counts the handful of test records too.
   const keys = Object.keys(where).filter(
-    (k) => k !== 'deletedAt'
+    (k) => k !== 'deletedAt' && !(k === 'isTest' && where.isTest === false)
   );
   if (keys.length > 0) return true;
   // deletedAt may be exactly `null` (the always-on scope) — that's not a

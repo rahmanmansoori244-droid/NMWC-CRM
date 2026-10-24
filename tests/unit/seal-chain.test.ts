@@ -178,6 +178,23 @@ describe('what each seal covers', () => {
     expect(f.seals).toHaveLength(1);
   });
 
+  it('a range never goes backwards: the newest row deleted between seals leaves an empty range, and the totals say so', async () => {
+    const f = fakeDb();
+    for (const k of [1n, 2n, 3n]) add(f, 'AuditLog', k);
+    await seal(f, 20); // genesis: next 3
+    f.horizon = { xmin: 500n, xmax: 500n, currentXid: 500n, oldBackends: 0 };
+    await seal(f, 21); // (0, 3]
+    f.rows.get('AuditLog')!.delete(3n); // the newest row goes: the highest key is now 2
+    f.horizon = { xmin: 600n, xmax: 600n, currentXid: 600n, oldBackends: 0 };
+    await seal(f, 22); // (3, 3], next 2
+    f.horizon = { xmin: 700n, xmax: 700n, currentXid: 700n, oldBackends: 0 };
+    await seal(f, 23);
+    expect(entry(f.seals[3]!, 'AuditLog')).toMatchObject({ from: '3', to: '3', n: 0 });
+    const ms = (await recheckSeals(f.tx as never, { window: 'all', offsite: null })).mismatches;
+    expect(ms.filter((m) => m.kind === 'chain-broken')).toEqual([]);
+    expect(ms[0]).toMatchObject({ kind: 'rows-deleted', seq: 1, table: 'AuditLog' });
+  });
+
   it('a table new to the format starts at (0, 0]', () => {
     const prev = { v: 1, seq: 0, day: 'x', sealedAt: 'x', prev: null, xmax: '1', tables: [{ t: 'AuditLog', from: '0', to: '0', n: 0, digest: EMPTY_DIGEST, next: '9' }] };
     const plan = planRanges(prev, 1);

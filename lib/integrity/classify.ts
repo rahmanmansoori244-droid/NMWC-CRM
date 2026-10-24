@@ -10,6 +10,7 @@ import type { CustomerStatus } from '@prisma/client';
 import type { HeartbeatExpectation, HeartbeatReport } from '../heartbeat';
 import { statusDrift } from '../customer-status-rule';
 import { normalizeTemixCode, temixCodeProblem } from '../temix-code';
+import { omanDateISO } from '../tz';
 import { DEFAULT_THRESHOLD, KNOWN_LEGACY_SPACED_TEMIX_CODES, SAMPLE_LIMIT, ALERT_BODY_CHECKS } from './policy';
 
 export type CheckStatus = 'pass' | 'fail' | 'info' | 'error';
@@ -123,8 +124,7 @@ export function codeSequenceFindings(rows: CodeScopeRow[], previous: Record<stri
 
 export type MissedRun = { key: string; kind: 'gap' | 'no-run' | 'never' | 'stale'; day?: string; gaps?: number };
 
-const OMAN_MS = 4 * 60 * 60 * 1000;
-const omanDay = (d: Date) => new Date(d.getTime() + OMAN_MS).toISOString().slice(0, 10);
+const omanDay = (d: Date) => omanDateISO(d);
 
 /**
  * The scheduled runs that did not happen, over complete Oman days:
@@ -172,14 +172,19 @@ export function missedRuns(input: {
   return out;
 }
 
-/** The complete Oman days after `after` up to and including `through` (both YYYY-MM-DD). */
+/**
+ * The calendar days after `after` up to and including `through` (both
+ * YYYY-MM-DD, already Oman days): date arithmetic on the calendar, no instant
+ * is cut to a date.
+ */
 export function daysBetween(after: string, through: string, max = 31): string[] {
   const out: string[] = [];
-  let t = Date.parse(`${after}T00:00:00Z`) + 86_400_000;
-  const end = Date.parse(`${through}T00:00:00Z`);
-  while (t <= end && out.length < max) {
-    out.push(new Date(t).toISOString().slice(0, 10));
-    t += 86_400_000;
+  const [y, m, d] = after.split('-').map(Number) as [number, number, number];
+  for (let i = 1; out.length < max; i++) {
+    const c = new Date(Date.UTC(y, m - 1, d + i));
+    const day = `${c.getUTCFullYear()}-${String(c.getUTCMonth() + 1).padStart(2, '0')}-${String(c.getUTCDate()).padStart(2, '0')}`;
+    if (day > through) break;
+    out.push(day);
   }
   return out;
 }

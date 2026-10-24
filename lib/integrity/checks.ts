@@ -39,6 +39,7 @@ import {
 } from '../history-tables';
 import { loadUnattributed, RUNTIME_ROLE } from '../history-report';
 import { realBranchSql } from '../test-records';
+import { omanDateISO } from '../tz';
 import {
   capSamples,
   classifyTemixCodes,
@@ -91,8 +92,7 @@ export type IntegrityCheck = {
 };
 
 const ts = (d: Date) => Prisma.sql`(${d.toISOString()}::timestamptz AT TIME ZONE 'UTC')`;
-const OMAN_MS = 4 * 60 * 60 * 1000;
-const omanDay = (d: Date) => new Date(d.getTime() + OMAN_MS).toISOString().slice(0, 10);
+const omanDay = (d: Date) => omanDateISO(d);
 const DAY_MS = 86_400_000;
 
 /** The count and the first ids of a set of rows with an `id` column. */
@@ -655,7 +655,7 @@ export const CHECKS: IntegrityCheck[] = [
       const rows = await q<{ kind: string; n: number }>(
         db,
         Prisma.sql`SELECT 'LOGIN_FAIL'::text AS kind, count(*)::int AS n FROM "AuditLog" a JOIN "User" u ON u."id" = a."actorId"
-                    WHERE a."action" = 'LOGIN_FAIL' AND a."at" >= ${ts(from)} AND NOT u."isTest"
+                    WHERE a."action" = 'LOGIN_FAIL' AND a."entityType" = 'User' AND a."at" >= ${ts(from)} AND NOT u."isTest"
                    UNION ALL
                    SELECT e."kind", count(*)::int FROM "AuthEvent" e LEFT JOIN "User" u ON u."id" = e."userId"
                     WHERE e."kind" IN ('LOGIN_FAIL_UNKNOWN', 'LOGIN_FAIL_REUSED_NAME', 'LOGIN_RATE_LIMITED')

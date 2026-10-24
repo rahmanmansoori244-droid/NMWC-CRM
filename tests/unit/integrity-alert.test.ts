@@ -28,6 +28,8 @@ const h = vi.hoisted(() => ({
   mismatches: [] as Array<Record<string, unknown>>,
   /** The latest earlier results, as loadPrevious reads them. */
   previous: [] as Array<Record<string, unknown>>,
+  /** When the rechecked seals were made. */
+  sealedAt: '2026-10-20T02:30:00.000Z',
 }));
 
 vi.mock('@/lib/integrity/checks', () => ({
@@ -48,7 +50,12 @@ vi.mock('@/lib/integrity/checks', () => ({
 }));
 vi.mock('@/lib/seal/seal', () => ({ writeSeal: async () => h.seal }));
 vi.mock('@/lib/seal/verify', () => ({
-  recheckSeals: async () => ({ seals: [], windowSeqs: [1, 2, 3], rangesRecomputed: 0, mismatches: h.mismatches }),
+  recheckSeals: async () => ({
+    seals: [1, 2, 3].map((seq) => ({ seq, r2Key: `seals/${seq}`, bodyText: '{}', hash: 'd'.repeat(64), sealedAt: h.sealedAt })),
+    windowSeqs: [1, 2, 3],
+    rangesRecomputed: 0,
+    mismatches: h.mismatches,
+  }),
 }));
 
 import { runIntegrityWatch, integrityAlertAudience } from '@/lib/integrity/run';
@@ -102,6 +109,7 @@ beforeEach(() => {
   h.stewards = ['stw-1', 'stw-2'];
   h.mismatches = [];
   h.previous = [];
+  h.sealedAt = '2026-10-20T02:30:00.000Z';
   h.checks = [check('shop-region-matches-route', 2, 'alert', 'Shop region matches its route'), check('exports-since-last-run', 5, 'info', 'Exports since the last run')];
 });
 
@@ -220,5 +228,33 @@ describe('the operators’ webhook', () => {
     await runIntegrityWatch(fakeDb(), { store, now: new Date(NOW.getTime() + 86_400_000), alert: again, inAppAlerts: false });
     expect(h.results.find((r) => r.checkId === 'seal-chain-intact')).toMatchObject({ status: 'info', count: 1 });
     expect(again).not.toHaveBeenCalled();
+  });
+});
+
+describe('the off-site copies of the last seals', () => {
+  const run = (store: { get: (k: string) => Promise<string | null>; put: (k: string, b: string) => Promise<void> }) =>
+    runIntegrityWatch(fakeDb(), { store, now: NOW, alert: vi.fn(async () => true), inAppAlerts: false });
+  const copies = () => h.results.find((r) => r.checkId === 'seal-offsite-copies')!;
+
+  it('a copy missing for a seal at most two days old is written again: information', async () => {
+    h.sealedAt = '2026-10-23T02:30:00.000Z';
+    const put = vi.fn(async () => undefined);
+    const s = await run({ get: async (k) => (k === 'seals/2' ? null : '{}'), put });
+    expect(copies()).toMatchObject({ status: 'info', count: 0, detail: { rewritten: 1 } });
+    expect(put).toHaveBeenCalledWith('seals/2', '{}', 'd'.repeat(64));
+    expect(s.r2Errors).toBe(0);
+  });
+
+  it('missing and older, or different: a failure named by seal', async () => {
+    await run({ get: async (k) => (k === 'seals/1' ? null : k === 'seals/3' ? '{"x":1}' : '{}'), put: async () => undefined });
+    expect(copies()).toMatchObject({ status: 'fail', count: 2, sampleIds: ['1', '3'], detail: { missing: 1, differs: 1 } });
+  });
+
+  it('R2 not answering is an R2 error (the run goes red), not a pass and not a failure of the chain', async () => {
+    const s = await run({ get: async () => { throw new Error('R2 timeout'); }, put: async () => undefined });
+    expect(copies()).toMatchObject({ status: 'error', count: null, detail: { unread: 3 } });
+    expect(h.results.find((r) => r.checkId === 'seal-chain-intact')).toMatchObject({ status: 'pass' });
+    // Tonight's own copy, and the three read back.
+    expect(s.r2Errors).toBe(4);
   });
 });

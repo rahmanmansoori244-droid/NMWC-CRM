@@ -102,12 +102,24 @@ export function sealObjectKey(version: number, day: string, seq: number, hash: s
   return `seals/v${version}/${day.slice(0, 4)}/${day}-${String(seq).padStart(6, '0')}-${hash.slice(0, 16)}.json`;
 }
 
+/**
+ * The range a seal covers after `before`: from its `to` up to the highest key it
+ * saw. Never backwards: if the highest key went DOWN since (the newest row was
+ * deleted in a maintenance window), the range is empty, and the deletion shows in
+ * the totals (verifyChain step 5).
+ */
+export function nextRange(before: Pick<SealTableEntry, 'to' | 'next'>): { from: bigint; to: bigint } {
+  const from = BigInt(before.to);
+  const next = BigInt(before.next);
+  return { from, to: next > from ? next : from };
+}
+
 /** The ranges the next seal covers (see the header). */
 export function planRanges(prev: SealBody | null, version: number): Array<{ t: string; from: bigint; to: bigint }> {
   return sealedTables(version).map(({ table }) => {
     const before = prev?.tables.find((x) => x.t === table);
     if (!prev || !before) return { t: table, from: 0n, to: 0n };
-    return { t: table, from: BigInt(before.to), to: BigInt(before.next) };
+    return { t: table, ...nextRange(before) };
   });
 }
 
@@ -262,8 +274,9 @@ export function verifyChain(input: ChainCheckInput): Mismatch[] {
     if (body && prev?.body) {
       for (const e of body.tables) {
         const before = prev.body.tables.find((x) => x.t === e.t);
-        const expectedFrom = before ? before.to : '0';
-        const expectedTo = before ? before.next : '0';
+        const due = before ? nextRange(before) : { from: 0n, to: 0n };
+        const expectedFrom = due.from.toString();
+        const expectedTo = due.to.toString();
         if (e.from !== expectedFrom || e.to !== expectedTo) {
           out.push({ ...at, table: e.t, kind: 'chain-broken', detail: `range (${e.from}, ${e.to}] where (${expectedFrom}, ${expectedTo}] was due` });
         }

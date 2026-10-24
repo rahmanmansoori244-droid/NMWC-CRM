@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { PageHeader } from '@/components/nmwc/PageHeader';
+import { TableScroll } from '@/components/nmwc/TableScroll';
 import { omanDateTime } from '@/lib/tz';
 import { CHECKS, CHECK_BY_ID } from '@/lib/integrity/checks';
 import { INTEGRITY_INAPP_ALERTS_ENABLED } from '@/lib/integrity/policy';
@@ -177,7 +178,7 @@ function Seals({ report }: { report: IntegrityReport }) {
           No seal yet. The first night writes the genesis; the second seals every ledger row that existed then.
         </p>
       ) : (
-        <div className="overflow-x-auto rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
+        <TableScroll label="Ledger seals" className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
           <table className="min-w-full text-left text-xs">
             <thead className="bg-slate-50 text-slate-500">
               <tr>
@@ -200,7 +201,7 @@ function Seals({ report }: { report: IntegrityReport }) {
               ))}
             </tbody>
           </table>
-        </div>
+        </TableScroll>
       )}
       <p className="mt-2 text-xs text-slate-500">
         Whether the chain and the off-site copies still match is the two seal checks above. The full chain is checked with
@@ -219,7 +220,7 @@ function Purges({ report }: { report: IntegrityReport }) {
       {report.purges.length === 0 ? (
         <p className="rounded-lg bg-white p-4 text-sm text-slate-600 shadow-sm ring-1 ring-slate-200">Nothing was deleted in the last 30 days.</p>
       ) : (
-        <div className="overflow-x-auto rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
+        <TableScroll label="Purge summaries" className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
           <table className="min-w-full text-left text-xs">
             <thead className="bg-slate-50 text-slate-500">
               <tr>
@@ -244,7 +245,7 @@ function Purges({ report }: { report: IntegrityReport }) {
               ))}
             </tbody>
           </table>
-        </div>
+        </TableScroll>
       )}
       <p className="mt-2 text-xs text-slate-500">
         One summary is kept for every batch a retention rule deletes (docs/compliance/DATA-RETENTION-SCHEDULE.md); the summaries are
