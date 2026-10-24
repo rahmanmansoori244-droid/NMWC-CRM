@@ -34,6 +34,7 @@ import {
   resolveArchiveTemixState,
 } from '@/lib/temix';
 import { lockCustomersAndTemixCodeHolders } from '@/lib/locks';
+import { closeOpenRequestsOnArchive } from '@/lib/archive-open-requests';
 
 export async function archiveCustomerAction(formData: FormData): SafeAction<void> {
   return runAction(() => archiveCustomerCore(formData));
@@ -81,9 +82,19 @@ async function archiveCustomerCore(formData: FormData) {
   const env = await getAuditEnvelope(session.user.id);
   const cause = { actorId: session.user.id, source: src.archive(customerId) };
   await withChangeContext(prisma, cause, async (tx) => {
+    // F11: the customer and every other live customer holding, as its Temix
+    // code, the code this archive would deactivate (its customer code when it
+    // has no Temix code), locked in one order before anything is read
+    // (lib/locks.ts), so two customers sharing a code cannot both be archived
+    // each thinking the other still holds it.
+    await lockCustomersAndTemixCodeHolders(tx, [customerId], deactivationCode(customer));
     // Re-checked INSIDE the tx (pre-tx check would be TOCTOU): a request
     // mid-approval must be decided first — archiving under it would orphan
-    // the reviewers' queue rows and confuse the audit trail.
+    // the reviewers' queue rows and confuse the audit trail. Gap 37: AFTER the
+    // lock. Every transaction that writes a SUBMITTED request on a customer
+    // takes this row lock and re-reads deletedAt first, so the two serialise:
+    // a submit that committed first is seen here, and one that waited sees the
+    // archive and is refused (lib/archive-open-requests.ts).
     const openEdit = await tx.customerEdit.findFirst({
       where: { customerId, state: EditState.SUBMITTED },
       select: { id: true },
@@ -94,12 +105,6 @@ async function archiveCustomerCore(formData: FormData) {
         'A submitted request is still in review for this customer. Approve or reject it before archiving.'
       );
     }
-    // F11: the customer and every other live customer holding, as its Temix
-    // code, the code this archive would deactivate (its customer code when it
-    // has no Temix code), locked in one order before anything is read
-    // (lib/locks.ts), so two customers sharing a code cannot both be archived
-    // each thinking the other still holds it.
-    await lockCustomersAndTemixCodeHolders(tx, [customerId], deactivationCode(customer));
     // Decide the Temix state from a FRESH in-tx read and pin the claim on the
     // observed state — a batch generation committing between a stale read and
     // the write would otherwise get its UPLOADED clobbered and the
@@ -169,6 +174,14 @@ async function archiveCustomerCore(formData: FormData) {
       where: { customerId, deletedAt: null },
       data: { deletedAt: archivedAt, lastEditedById: session.user.id },
     });
+    // Gap 37: his unsent drafts are closed (they could never be sent now), each
+    // with its own row; the requests sent back to him stay as the record of the
+    // send-back. Both are listed on the SOFT_DELETE row below.
+    const openRequests = await closeOpenRequestsOnArchive(tx, env, {
+      customerId,
+      byId: session.user.id,
+      at: archivedAt,
+    });
     await writeAudit(tx, env, {
       action: 'SOFT_DELETE',
       entityType: 'Customer',
@@ -184,6 +197,8 @@ async function archiveCustomerCore(formData: FormData) {
         ...(sharedWith.length > 0
           ? { temixDeactivation: 'skipped-shared-code', temixCodeHeldBy: sharedWith }
           : {}),
+        // Gap 37: the drafts this archive closed and the sent-back requests it left (ids only).
+        openRequests,
       } as unknown as Prisma.InputJsonValue,
     });
     return nextState;

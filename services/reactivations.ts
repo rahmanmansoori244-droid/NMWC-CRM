@@ -26,7 +26,7 @@ import {
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
-import { lockCustomerRow } from '@/lib/locks';
+import { lockCustomerRow, lockLiveCustomer } from '@/lib/locks';
 import { followBranchStatus, statusEvents } from '@/lib/customer-status';
 import { REACTIVATION_STATE_CHANGED_MESSAGE, assertStatusEvidence } from '@/lib/status-evidence';
 import { closeRequestChain, freezeChain, reactivationChain, stepDeadline } from '@/lib/approval-chains';
@@ -298,6 +298,9 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
   // names everything after the request exists.
   const cause = { actorId: me.id, source: src.photo(att.id) };
   const edit = await withChangeContext(prisma, cause, async (tx) => {
+    // Gap 37: the customer's row lock first (lib/locks.ts), then its deletedAt
+    // again: no request lands on a customer archived a moment earlier.
+    await lockLiveCustomer(tx, branch.customerId);
     if (unwired) await wireEvidence(tx, env, att.id, branch.id, me.id);
     const e = await tx.customerEdit.create({
       data: {
@@ -450,6 +453,8 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
   // names everything after the request exists.
   const cause = { actorId: me.id, source: src.photo(att.id) };
   const edit = await withChangeContext(prisma, cause, async (tx) => {
+    // Gap 37: as for a reactivation — the customer's lock and deletedAt first.
+    await lockLiveCustomer(tx, branch.customerId);
     if (unwired) await wireEvidence(tx, env, att.id, branch.id, me.id);
     const e = await tx.customerEdit.create({
       data: {

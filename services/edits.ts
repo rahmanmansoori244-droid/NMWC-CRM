@@ -85,7 +85,7 @@ import { resolveChannelPair } from '@/lib/channel-pair';
 import { markManualGps, takeManualGpsReason, type FieldChange } from '@/lib/gps-manual';
 import { isGpsTooInaccurate, gpsTooInaccurateMessage } from '@/lib/gps-accuracy';
 import { normalizeCR } from '@/lib/cr';
-import { lockCustomerRow } from '@/lib/locks';
+import { lockCustomerRow, lockLiveCustomer } from '@/lib/locks';
 import { assertStatusEvidence, evidenceIds } from '@/lib/status-evidence';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { checkLimit, FORM_LIMIT } from '@/lib/rate-limit';
@@ -1129,6 +1129,10 @@ async function submitEditOnce(
         const cause = { actorId: me.id, source: src.edit('new') };
         const env = submitEnv!;
         edit = await withChangeContext(prisma, cause, async (tx) => {
+          // Gap 37: the customer's row lock, then its deletedAt again, before the
+          // request is written — so it cannot land on a customer archived a moment
+          // earlier, and an archive after it sees it (services/customers.ts).
+          await lockLiveCustomer(tx, customer.id);
           const e = await tx.customerEdit.create({ data: submitted });
           await setChangeContext(tx, { actorId: me.id, source: src.edit(e.id) });
           await writeAudit(tx, env, {
@@ -1270,6 +1274,9 @@ async function saveUpdateDraft(
   const cause = { actorId: submittedById, source: src.edit('draft') };
   return withChangeContext(prisma, cause, async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`nmwc:edit-draft:${submittedById}:${customerId}`}, 42))`;
+    // Gap 37: as for a sent request — no draft lands on a customer archived meanwhile,
+    // whose drafts the archive closes under this same lock.
+    await lockLiveCustomer(tx, customerId);
     const saved = await tx.customerEdit.findFirst({
       where: {
         submittedById,

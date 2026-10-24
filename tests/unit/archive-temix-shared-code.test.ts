@@ -13,6 +13,12 @@
  * holder archived deactivates the code. Persistence is mocked here; the real
  * archive (and a two-connection race) against Postgres is
  * tests/integration/archive-temix-shared-code.test.ts.
+ *
+ * Gap 37: the request-in-review check runs AFTER the lock (so it serialises with
+ * a submit that takes the same lock), the customer's unsent drafts are closed
+ * with a row each, its sent-back requests are left as they are, and the
+ * SOFT_DELETE row lists both (openRequests). The real race is
+ * tests/integration/archive-open-requests.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -30,6 +36,10 @@ const h = vi.hoisted(() => ({
   freshTemixCode: undefined as string | null | undefined,
   calls: [] as Array<{ op: string; args: unknown }>,
   writeAudit: vi.fn(),
+  // Gap 37: the customer's open requests as the archive reads them.
+  open: [] as Array<{ id: string; state: string; cycle: number; process: string }>,
+  inReview: null as { id: string } | null,
+  claimCount: 1,
 }));
 
 vi.mock('@/lib/auth', () => ({
@@ -60,7 +70,20 @@ vi.mock('@/lib/db', () => {
       h.calls.push({ op: '$queryRaw', args: { sql: strings.join('?'), values } });
       return [];
     },
-    customerEdit: { findFirst: async () => null },
+    customerEdit: {
+      findFirst: async (args: unknown) => {
+        h.calls.push({ op: 'customerEdit.findFirst', args });
+        return h.inReview;
+      },
+      findMany: async (args: unknown) => {
+        h.calls.push({ op: 'customerEdit.findMany', args });
+        return h.open;
+      },
+      updateMany: async (args: unknown) => {
+        h.calls.push({ op: 'customerEdit.updateMany', args });
+        return { count: h.claimCount };
+      },
+    },
     customer: {
       findUniqueOrThrow: async ({ where }: { where: { id: string } }) => {
         h.calls.push({ op: 'customer.findUniqueOrThrow', args: where });
@@ -119,7 +142,13 @@ beforeEach(() => {
   h.freshTemixCode = undefined;
   h.writeAudit.mockReset();
   h.writeAudit.mockResolvedValue(undefined);
+  h.open = [];
+  h.inReview = null;
+  h.claimCount = 1;
 });
+
+/** Gap 37: what the SOFT_DELETE row says when the customer had no open request. */
+const NONE = { closedDrafts: [], closedDraftCount: 0, sentBack: [], sentBackCount: 0 };
 
 describe('archiveCustomerAction — F11', () => {
   it('another live customer holds the same Temix code: parked SYNCED, not queued for deactivation, and the SOFT_DELETE row says so', async () => {
@@ -133,6 +162,7 @@ describe('archiveCustomerAction — F11', () => {
       temixSyncState: 'SYNCED',
       temixDeactivation: 'skipped-shared-code',
       temixCodeHeldBy: ['N1'],
+      openRequests: NONE,
     });
   });
 
@@ -142,7 +172,7 @@ describe('archiveCustomerAction — F11', () => {
     expect(res.ok, JSON.stringify(res)).toBe(true);
     expect(claim().args.data).toMatchObject({ temixSyncState: 'DEACTIVATE_PENDING' });
     expect(claim().args.data.temixSyncPendingSince).toBeInstanceOf(Date);
-    expect(h.writeAudit.mock.calls[0][2].after).toEqual({ temixSyncState: 'DEACTIVATE_PENDING' });
+    expect(h.writeAudit.mock.calls[0][2].after).toEqual({ temixSyncState: 'DEACTIVATE_PENDING', openRequests: NONE });
   });
 
   it("locks the customer and the code's live holders before the fresh read, and asks who holds the code before the claim", async () => {
@@ -188,6 +218,7 @@ describe('archiveCustomerAction — F11', () => {
       temixSyncState: 'SYNCED',
       temixDeactivation: 'skipped-shared-code',
       temixCodeHeldBy: ['C0100'],
+      openRequests: NONE,
     });
     // The holders of its customer code are locked first, then asked about.
     const lock = h.calls.find((c) => c.op === '$queryRaw') as { args: { sql: string; values: unknown[] } };
@@ -204,7 +235,7 @@ describe('archiveCustomerAction — F11', () => {
     expect((await archive('C3')).ok).toBe(true);
     // A migrated (SYNCED) row is known to Temix even without a code.
     expect(claim().args.data).toMatchObject({ temixSyncState: 'DEACTIVATE_PENDING' });
-    expect(h.writeAudit.mock.calls[0][2].after).toEqual({ temixSyncState: 'DEACTIVATE_PENDING' });
+    expect(h.writeAudit.mock.calls[0][2].after).toEqual({ temixSyncState: 'DEACTIVATE_PENDING', openRequests: NONE });
     const holders = h.calls.find((c) => c.op === 'customer.findMany') as { args: { where: unknown } };
     expect(holders.args.where).toEqual({ temixCode: 'N3', deletedAt: null, id: { not: 'C3' } });
   });
@@ -214,7 +245,70 @@ describe('archiveCustomerAction — F11', () => {
     expect((await archive('C4')).ok).toBe(true);
     // Never uploaded, no code: nothing for Temix to deactivate.
     expect(claim().args.data).toMatchObject({ temixSyncState: 'SYNCED' });
-    expect(h.writeAudit.mock.calls[0][2].after).toEqual({ temixSyncState: 'SYNCED' });
+    expect(h.writeAudit.mock.calls[0][2].after).toEqual({ temixSyncState: 'SYNCED', openRequests: NONE });
     expect(at('customer.findMany')).toBe(-1);
+  });
+});
+
+describe('archiveCustomerAction — gap 37, the customer’s open requests', () => {
+  it('checks for a request in review only AFTER the lock, and a request in review still refuses the archive', async () => {
+    h.rows = { C1: live('N1', 'T1') };
+    h.inReview = { id: 'E-REVIEW' };
+    const res = await archive('C1');
+    expect(res.ok).toBe(false);
+    expect(!res.ok && res.code).toBe('EDIT_OPEN');
+    expect(at('$queryRaw')).toBeLessThan(at('customerEdit.findFirst'));
+    expect(h.calls.filter((c) => c.op.endsWith('updateMany'))).toEqual([]);
+    expect(h.writeAudit).not.toHaveBeenCalled();
+  });
+
+  it('closes his unsent drafts with a row each, leaves the sent-back ones, and the SOFT_DELETE row lists both', async () => {
+    h.rows = { C1: live('N1', 'T1') };
+    h.open = [
+      { id: 'E-D2', state: 'DRAFT', cycle: 1, process: 'UPDATE' },
+      { id: 'E-N1', state: 'NEEDS_CORRECTION', cycle: 1, process: 'UPDATE' },
+      { id: 'E-D1', state: 'DRAFT', cycle: 1, process: 'UPDATE' },
+    ];
+    const res = await archive('C1');
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    const read = h.calls.find((c) => c.op === 'customerEdit.findMany') as { args: { where: unknown } };
+    expect(read.args.where).toEqual({ customerId: 'C1', state: { in: ['DRAFT', 'NEEDS_CORRECTION'] } });
+    const claims = h.calls.filter((c) => c.op === 'customerEdit.updateMany') as Array<{ args: { where: Record<string, unknown>; data: Record<string, unknown> } }>;
+    // The drafts only, each claimed on its state and cycle; the sent-back one is not touched.
+    expect(claims.map((c) => c.args.where.id)).toEqual(['E-D2', 'E-D1']);
+    for (const c of claims) {
+      expect(c.args.where).toMatchObject({ customerId: 'C1', state: 'DRAFT', cycle: 1 });
+      expect(c.args.data).toMatchObject({
+        state: 'REJECTED',
+        decisionCategory: 'withdrawn',
+        reviewedById: 'stew',
+        pendingRole: null,
+        slaDueAt: null,
+        escalationLevel: 0,
+      });
+      expect(c.args.data.reviewedAt).toBeInstanceOf(Date);
+      expect(String(c.args.data.decisionReason)).toMatch(/archived/);
+    }
+    // One UPDATE row per closed draft, then the SOFT_DELETE row listing them.
+    const rows = h.writeAudit.mock.calls.map((c) => c[2]);
+    expect(rows.map((r) => [r.action, r.entityId])).toEqual([
+      ['UPDATE', 'E-D2'],
+      ['UPDATE', 'E-D1'],
+      ['SOFT_DELETE', 'C1'],
+    ]);
+    expect(rows[0].after).toMatchObject({ state: 'REJECTED', from: 'DRAFT', closedBy: 'archive', customerId: 'C1' });
+    expect(rows[2].after.openRequests).toEqual({ closedDrafts: ['E-D1', 'E-D2'], closedDraftCount: 2, sentBack: ['E-N1'], sentBackCount: 1 });
+    // After the customer's own claim, inside the same transaction.
+    expect(at('customer.updateMany')).toBeLessThan(at('customerEdit.findMany'));
+  });
+
+  it('a draft that moved meanwhile is left, and not listed as closed', async () => {
+    h.rows = { C1: live('N1', 'T1') };
+    h.open = [{ id: 'E-D1', state: 'DRAFT', cycle: 1, process: 'UPDATE' }];
+    h.claimCount = 0;
+    expect((await archive('C1')).ok).toBe(true);
+    const rows = h.writeAudit.mock.calls.map((c) => c[2]);
+    expect(rows.map((r) => r.action)).toEqual(['SOFT_DELETE']);
+    expect(rows[0].after.openRequests).toEqual(NONE);
   });
 });

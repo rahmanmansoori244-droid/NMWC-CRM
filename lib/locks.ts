@@ -9,6 +9,7 @@
  * or the two orders deadlock on the same branch (pre-merge review of eb1a430).
  */
 import { Prisma } from '@prisma/client';
+import { NotFoundError } from './errors';
 
 export async function lockCustomerRow(tx: Prisma.TransactionClient, customerId: string): Promise<void> {
   await tx.$queryRaw`SELECT "id" FROM "Customer" WHERE "id" = ${customerId} FOR UPDATE`;
@@ -70,4 +71,21 @@ export async function lockCustomersAndTemixCodeHolders(
 export async function lockTemixQueue(tx: Prisma.TransactionClient): Promise<string[]> {
   const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "Customer" WHERE (("temixSyncState" = 'PENDING_UPLOAD' AND "deletedAt" IS NULL) OR "temixSyncState" = 'DEACTIVATE_PENDING') AND NOT "isTest" ORDER BY "id" COLLATE "C" FOR UPDATE`;
   return rows.map((r) => r.id);
+}
+
+/** What a request sent on a customer archived a moment earlier is told (gap 37). */
+export const CUSTOMER_ARCHIVED_MESSAGE = 'This customer was archived while this was being sent, so nothing was sent.';
+
+/**
+ * Gap 37: the customer's row lock (above), then its deletedAt read again under
+ * it. Every transaction that writes a request on a customer takes this before
+ * its insert; the archive takes the same lock before it checks for a request in
+ * review (services/customers.ts), so the two serialise: an archive that
+ * committed while this waited refuses the request, and a request that committed
+ * first makes the archive refuse.
+ */
+export async function lockLiveCustomer(tx: Prisma.TransactionClient, customerId: string): Promise<void> {
+  await lockCustomerRow(tx, customerId);
+  const now = await tx.customer.findUnique({ where: { id: customerId }, select: { deletedAt: true } });
+  if (!now || now.deletedAt) throw new NotFoundError(CUSTOMER_ARCHIVED_MESSAGE);
 }

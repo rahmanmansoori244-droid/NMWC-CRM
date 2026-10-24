@@ -120,6 +120,8 @@ describe.skipIf(!ENABLED)('F11: archiving a customer whose Temix code another li
       temixSyncState: 'SYNCED',
       temixDeactivation: 'skipped-shared-code',
       temixCodeHeldBy: [A.nmwcCode],
+      // Gap 37: the open requests the archive closed or left (none here).
+      openRequests: { closedDrafts: [], closedDraftCount: 0, sentBack: [], sentBackCount: 0 },
     });
 
     const last = await archive(A.id);
