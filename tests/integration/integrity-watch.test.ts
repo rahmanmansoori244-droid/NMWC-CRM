@@ -90,6 +90,20 @@ describe.skipIf(!ENABLED)('gap 29: the nightly integrity checks on Postgres', ()
     expect(await count('protection-functions')).toBe(0);
   });
 
+  it('gap 31: every NOT VALID database rule is present, and its older rows are counted as information', async () => {
+    const c = CHECK_BY_ID.get('db-rules-older-rows')!;
+    const out = await c.run!(prisma, ctx());
+    const d = out.detail as { byRule: Record<string, { violations: number; validated: boolean | 'missing' }>; missing: string[]; readyToValidate: string[] };
+    expect(d.missing).toEqual([]);
+    for (const [name, r] of Object.entries(d.byRule)) {
+      expect(r.validated, name).not.toBe('missing');
+      // Ready means none left and not validated yet.
+      expect(d.readyToValidate.includes(name)).toBe(r.violations === 0 && r.validated === false);
+    }
+    expect(out.sampleIds.length).toBeLessThanOrEqual(10);
+    expect(c.policy).toBe('info');
+  });
+
   it('one run appends its results and alerts the Steward it is given', async () => {
     const store = { get: async () => null, put: async () => undefined, list: async () => [] };
     const alert = vi.fn(async () => true);

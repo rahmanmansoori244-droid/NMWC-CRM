@@ -10,6 +10,7 @@ import type { CustomerStatus } from '@prisma/client';
 import type { HeartbeatExpectation, HeartbeatReport } from '../heartbeat';
 import { statusDrift } from '../customer-status-rule';
 import { normalizeTemixCode, temixCodeProblem } from '../temix-code';
+import { DB_RULE_NAMES } from '../db-rules';
 import { omanDateISO } from '../tz';
 import { ALERTING_JOBS, DEFAULT_THRESHOLD, KNOWN_LEGACY_SPACED_TEMIX_CODES, SAMPLE_LIMIT, ALERT_BODY_CHECKS } from './policy';
 
@@ -280,6 +281,44 @@ export function testFlagChanges(current: Record<string, string[]>, previous: Rec
   }
   const changed = previous ? Object.keys(hashes).filter((t) => previous[t] !== hashes[t]) : [];
   return { hashes, changed, firstRun: previous === null };
+}
+
+// ── db-rules-older-rows (gap 31) ───────────────────────────────────────────
+
+/** One rule's count, as the UNION ALL of lib/db-rules.ts dbRulesCountSql returns it. */
+export type DbRuleCountRow = { rule: string; n: number; ids: string[] | null };
+/** One constraint as pg_constraint holds it. */
+export type DbRuleCatalogRow = { name: string; validated: boolean };
+
+/**
+ * The older rows that break the rules added NOT VALID (lib/db-rules.ts), per
+ * rule: how many, whether the constraint is there and validated, and which
+ * rules are ready for their VALIDATE migration (none left, not validated yet).
+ * A rule the catalog does not hold is 'missing' (the migration not applied, or
+ * the constraint dropped) and is never ready. The samples are `rule:id`, ids
+ * only, at most SAMPLE_LIMIT. Information only: the policy never alerts.
+ */
+export function dbRuleFindings(rows: DbRuleCountRow[], catalog: DbRuleCatalogRow[], names: readonly string[] = DB_RULE_NAMES) {
+  const counts = new Map(rows.map((r) => [r.rule, r]));
+  const present = new Map(catalog.map((c) => [c.name, c.validated]));
+  const byRule: Record<string, { violations: number; validated: boolean | 'missing' }> = {};
+  const readyToValidate: string[] = [];
+  const samples: string[] = [];
+  let count = 0;
+  for (const name of names) {
+    const r = counts.get(name);
+    const violations = Number(r?.n ?? 0);
+    const validated = present.has(name) ? present.get(name)! : ('missing' as const);
+    byRule[name] = { violations, validated };
+    count += violations;
+    if (violations === 0 && validated === false) readyToValidate.push(name);
+    for (const id of r?.ids ?? []) samples.push(`${name}:${id}`);
+  }
+  return {
+    count,
+    sampleIds: capSamples(samples),
+    detail: { byRule, readyToValidate, missing: names.filter((n) => !present.has(n)) },
+  };
 }
 
 // ── The day's alert ────────────────────────────────────────────────────────

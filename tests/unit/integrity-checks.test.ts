@@ -14,6 +14,7 @@ import {
   classifyTemixCodes,
   codeSequenceFindings,
   daysBetween,
+  dbRuleFindings,
   functionFindings,
   missedRuns,
   scheduledJobFindings,
@@ -26,6 +27,7 @@ import { EXPECTED_FUNCTIONS, TRIGGER_BINDINGS } from '@/lib/integrity/expected';
 import { CustomerStatus } from '@prisma/client';
 import { customerStatusFollowing, statusEvents } from '@/lib/customer-status-rule';
 import { KNOWN_LEGACY_SPACED_TEMIX_CODES, SAMPLE_LIMIT } from '@/lib/integrity/policy';
+import { DB_RULE_NAMES } from '@/lib/db-rules';
 
 describe('status and samples', () => {
   it('an alert check fails on any record; an info check never; an override wins', () => {
@@ -275,6 +277,48 @@ describe('test-flags-changed', () => {
     expect(testFlagChanges({ ...now, Customer: ['c1', 'c2'] }, first.hashes).changed).toEqual([]);
     expect(testFlagChanges({ ...now, Customer: ['c1'] }, first.hashes).changed).toEqual(['Customer']);
     expect(testFlagChanges({ ...now, Route: ['r9'] }, first.hashes).changed).toEqual(['Route']);
+  });
+});
+
+describe('db-rules-older-rows (gap 31: dbRuleFindings)', () => {
+  const names = ['A_rule', 'B_rule', 'C_rule', 'D_rule'];
+
+  it('per rule: the violations, validated or missing, and which are ready to validate', () => {
+    const r = dbRuleFindings(
+      [
+        { rule: 'A_rule', n: 232, ids: ['n1', 'n2', 'n3'] },
+        { rule: 'B_rule', n: 0, ids: null },
+        { rule: 'C_rule', n: 0, ids: null },
+        { rule: 'D_rule', n: 1, ids: ['c9'] },
+      ],
+      [
+        { name: 'A_rule', validated: false },
+        { name: 'B_rule', validated: false },
+        { name: 'C_rule', validated: true },
+      ],
+      names
+    );
+    expect(r.count).toBe(233);
+    expect(r.detail.byRule).toEqual({
+      A_rule: { violations: 232, validated: false },
+      B_rule: { violations: 0, validated: false },
+      C_rule: { violations: 0, validated: true },
+      D_rule: { violations: 1, validated: 'missing' },
+    });
+    // Only a rule with no breaking row left, present and not yet validated.
+    expect(r.detail.readyToValidate).toEqual(['B_rule']);
+    expect(r.detail.missing).toEqual(['D_rule']);
+    expect(r.sampleIds).toEqual(['A_rule:n1', 'A_rule:n2', 'A_rule:n3', 'D_rule:c9']);
+  });
+
+  it('a rule the query did not return counts 0; samples are capped; the default names are lib/db-rules.ts', () => {
+    const many = Array.from({ length: 4 }, (_, i) => ({ rule: names[i]!, n: 5, ids: ['1', '2', '3'] }));
+    const r = dbRuleFindings(many, names.map((n) => ({ name: n, validated: false })), names);
+    expect(r.sampleIds).toHaveLength(SAMPLE_LIMIT);
+    const empty = dbRuleFindings([], [], ['X']);
+    expect(empty).toMatchObject({ count: 0, sampleIds: [], detail: { byRule: { X: { violations: 0, validated: 'missing' } }, readyToValidate: [] } });
+    const all = dbRuleFindings([], []);
+    expect(Object.keys(all.detail.byRule)).toEqual([...DB_RULE_NAMES]);
   });
 });
 

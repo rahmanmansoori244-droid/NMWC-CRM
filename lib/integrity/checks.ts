@@ -12,7 +12,8 @@
  *                protection triggers and functions are as the migrations made
  *                them, the runtime role holds no ledger write it should not, the
  *                code counter never went back, the scheduled jobs ran, the test
- *                flags did not move, the seals). These do NOT leave test records
+ *                flags did not move, the older rows the NOT VALID database
+ *                rules would refuse, the seals). These do NOT leave test records
  *                out: they test the recorder, not the data, and a mis-flag must
  *                not hide a defect.
  *   behaviour  — information only until the owner sets thresholds (exports and
@@ -48,6 +49,7 @@ import {
   classifyTemixCodes,
   codeSequenceFindings,
   daysBetween,
+  dbRuleFindings,
   functionFindings,
   missedRuns,
   scheduledJobFindings,
@@ -56,10 +58,13 @@ import {
   triggerFindings,
   type CheckPolicy,
   type CheckStatus,
+  type DbRuleCatalogRow,
+  type DbRuleCountRow,
   type FunctionRow,
   type TriggerRow,
 } from './classify';
 import { EXPECTED_FUNCTIONS, TRIGGER_BINDINGS } from './expected';
+import { DB_RULE_NAMES, dbRulesCountSql } from '../db-rules';
 
 type Tx = Pick<PrismaClient, '$queryRaw'> | Pick<Prisma.TransactionClient, '$queryRaw'>;
 
@@ -597,6 +602,30 @@ export const CHECKS: IntegrityCheck[] = [
         };
       }
       return { count: r.changed.length, sampleIds: capSamples(r.changed), detail: { hashes: r.hashes, flagged, changed: r.changed } };
+    },
+  },
+  {
+    // Gap 31: the rules added NOT VALID (lib/db-rules.ts). Every row is counted,
+    // test rows included, because a VALIDATE scans them all.
+    id: 'db-rules-older-rows',
+    version: 1,
+    group: 'mechanism',
+    title: 'Older rows that break the newer database rules',
+    why: 'The rules the application keeps were added to the database NOT VALID: new and changed rows are checked, older ones are not. An older row that breaks a CHECK cannot be saved again by any path until it is corrected, and no rule can be validated while one row still breaks it.',
+    remedy:
+      'Information only. Correct the counted rows (OPERATIONS.md section 5l: CR keys with scripts/ops/recompute-cr-norm.ts, notification orphans with the owner’s OK, the rest through the app or with the Steward). A rule at 0 here on UAT and on production is listed as ready, and is then validated by a migration of its own.',
+    policy: 'info',
+    excludesTest: false,
+    run: async (db) => {
+      const [rows, catalog] = await Promise.all([
+        q<DbRuleCountRow>(db, Prisma.raw(dbRulesCountSql())),
+        q<DbRuleCatalogRow>(
+          db,
+          Prisma.sql`SELECT c.conname::text AS name, c.convalidated AS validated FROM pg_catalog.pg_constraint c
+                      WHERE c.connamespace = 'public'::regnamespace AND c.conname = ANY(${[...DB_RULE_NAMES]}::text[])`
+        ),
+      ]);
+      return dbRuleFindings(rows, catalog);
     },
   },
   {

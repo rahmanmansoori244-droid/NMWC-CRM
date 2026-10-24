@@ -398,7 +398,7 @@ Never e-mailed: a Steward, a Viewer or a salesman (an allowlist of roles, checke
 
 **What runs.** `/api/cron/integrity-watch`, daily from `vercel.json` at **02:30 UTC (06:30 Oman)**: after the Oman day has ended, and before photo-gc (03:00) and the retention sweep (03:30) delete anything that day, so the checks see the state before the purges. It records the `integrity-watch` heartbeat (warning, stale after 36 h). One run:
 
-1. **Twenty named, read-only checks** (`lib/integrity/checks.ts`), each in its own read-only transaction with a 10 s statement timeout, inside a 22 s budget. Each result goes to `IntegrityCheckResult` (append-only, sealed): the check, pass / fail / info / error, the count, at most ten sample ids and counts by sub-kind — never a name, phone, CR number or code.
+1. **Twenty-one named, read-only checks** (`lib/integrity/checks.ts`), each in its own read-only transaction with a 10 s statement timeout, inside a 22 s budget. Each result goes to `IntegrityCheckResult` (append-only, sealed): the check, pass / fail / info / error, the count, at most ten sample ids and counts by sub-kind — never a name, phone, CR number or code.
 2. **Tonight's seal** of the ledgers (`lib/seal/*`), its copy in R2 under `seals/`, and a recheck: every seal's body and link, the last seven seals' ranges and copies, **a rotating slice of the older seals' ranges** (each older seal is recomputed at least once every 28 nights while the run's budget holds; the result's `rotationCursor` says where the next night goes on), and **a listing of all of `seals/`** (one object per seal, at its own key, and nothing else).
 3. **When an alerting check fails:** one in-app alert per active, non-test Data Steward per Oman day (kind `INTEGRITY_ALERT`, check titles and counts only, linking to **/status/integrity**; never e-mailed), and the operators' webhook (§5f, event `integrity.failed`, counts only; `critical` when the seal chain or the protection checks failed, `warn` otherwise). **The in-app alert ships switched off** (`lib/integrity/policy.ts` `INTEGRITY_INAPP_ALERTS_ENABLED = false`) — see "Deploy order" below.
 
@@ -425,6 +425,7 @@ A check that finds a problem does not fail the job. A check that could not run (
 | `customer-code-sequence` | a `CUSTOMER-<year>` counter behind the highest code, or lower than last night | Find who moved it |
 | `scheduled-jobs-on-time` | one of the jobs that alert — `sla-escalate` (late requests are escalated), `db-backup` and `integrity-watch` itself (`ALERTING_JOBS`, `lib/integrity/policy.ts`; owner decision 2026-10-24) — left a gap longer than its allowance (windowed), did not run on an Oman day (daily), or is `never`/`stale` now (the dump: 40 h). The same for any other job — `keep-warm`, `email-drain`, `photo-gc`, `retention-sweep`, and a job added later until it is listed — is **information, never alerted**: listed on the page, not counted (the result is `info` when only such jobs missed) | §5d; a failed run already alerted as `cron.failed` |
 | `test-flags-changed` | the set of flagged test records changed since last night (the first run records it) | Only the owner flags; if he did not, find who did |
+| `db-rules-older-rows` | (information, never alerts — gap 31) per database rule added NOT VALID (§5l), how many existing rows break it (test rows included: a VALIDATE scans them all), whether the constraint is present and validated, and which rules read 0 and are ready for their VALIDATE migration. Samples are `rule:row id` | Correct the rows (§5l); a rule at 0 here and in `db-rules-report` on production can be validated |
 | `seal-written` | tonight's seal was deferred (a transaction open at the last seal is still open) or failed | Retried the next night; repeated: look for a stuck transaction |
 | `seal-chain-intact` | a seal's body, link or range no longer matches the ledgers (rows changed, deleted or slipped into a sealed range), or a seal sealed fewer rows (or other rows) than the seal before it saw waiting for it | `verify-seals.ts --all`; record who changed what and why. **Alerted once per event, then information.** An event is its kind, table and seal — for the whole-chain totals, the number of rows short or over, never the moving last seal — so a deletion alerts once, and a second deletion (a new number) alerts again. A range mismatch whose seal is not recomputed tonight (it left the last seven, and the rotation has not come back to it) stays **open as information**, never a pass; recomputed clean, it is resolved, and found again later it is new again |
 | `seal-offsite-copies` | a recent seal's R2 copy is missing (older than two days) or differs; the listing of `seals/` finds an older seal's copy missing, an object for a seq after the last seal, an object in another chain's folder or of no seal layout, or a seal row naming another key than its own | A copy up to two days old is re-written automatically; otherwise compare with `verify-seals`. Alerted once per event, then information; **critical** when the new finding is a copy that differs, an unexpected object or a wrong key (a sign that a copy or the seal table was rewritten), `warn` for a missing copy |
@@ -457,9 +458,62 @@ It prints the FIRST mismatch (every one with `--all`) as seq, day, table, kind, 
 | 3. **The one-line enable commit:** `INTEGRITY_INAPP_ALERTS_ENABLED = true` in `lib/integrity/policy.ts` (and its unit test), deployed | operator | the first working day after this build has served production through one nightly run and passed smoke (it is then the rollback target, so no build that cannot read `INTEGRITY_ALERT` is left to roll back to) — **the owner sets the date** | |
 | 4. Gap 29 closed: step 2 and step 3 are both dated above | operator | after 2 and 3 | |
 
-**Decided by the owner (2026-10-24).** Which checks alert: every check above alerts on any non-zero count, except the four information checks (`test-scaffolding-mixed`, `app-login-is-runtime-role` and the two behaviour checks) and the information lists; `scheduled-jobs-on-time` alerts only for `sla-escalate`, `db-backup` and `integrity-watch`, and lists every other job's missed runs as information (a new job is information until it is added to `ALERTING_JOBS`). The owner named the SLA sweep and the watch itself, and made the warning-tier jobs information; the nightly dump, the other job the heartbeat tiers critical (§5d), was not among them and still alerts — taking it out is one line in `ALERTING_JOBS`. The retention periods (DATA-RETENTION-SCHEDULE.md) were accepted by the owner on 11 October 2026.
+**Decided by the owner (2026-10-24).** Which checks alert: every check above alerts on any non-zero count, except the four information checks (`test-scaffolding-mixed`, `app-login-is-runtime-role` and the two behaviour checks) and the information lists (and `db-rules-older-rows`, information by its design since gap 31: an older row is known and counted, not a new fault); `scheduled-jobs-on-time` alerts only for `sla-escalate`, `db-backup` and `integrity-watch`, and lists every other job's missed runs as information (a new job is information until it is added to `ALERTING_JOBS`). The owner named the SLA sweep and the watch itself, and made the warning-tier jobs information; the nightly dump, the other job the heartbeat tiers critical (§5d), was not among them and still alerts — taking it out is one line in `ALERTING_JOBS`. The retention periods (DATA-RETENTION-SCHEDULE.md) were accepted by the owner on 11 October 2026.
 
 **Open owner questions (the safe default built is in brackets).** At what count a check alerts [any non-zero count]; how `customer-status-follows-shops` treats **review** cases [information, not counted: the rule leaves them, and a person decides each]; how often the Steward is told [once per Steward per Oman day]; whether the seal findings should alert every night while they stay [once per event, then information]; whether a planned change (a PDPL erasure, a repair in a maintenance window) may be **acknowledged** in the system so it does not raise the critical alert [no: an acknowledgement the owner login can write would let that same login silence the alert for its own change; the explanation goes in the private operations log]; whether `integrity-watch` should be a critical heartbeat [warning]; the thresholds of the two behaviour checks [information only].
+
+## 5l. Database rules added NOT VALID, and the VALIDATE step (data audit gap 31)
+
+**What changed.** The rules the application already keeps are kept by the database too (migration `20261025090000_db_rules_not_valid`; the single source is `lib/db-rules.ts`, which also holds what each rule is for and what a refused save tells the person). Every one was added **NOT VALID**: the migration scans nothing and changes no row, so it cannot fail on old data.
+
+| Rule (constraint) | Table(s) | Refuses |
+|---|---|---|
+| `*_credit_terms_only_credit` | Customer | a credit limit or term days on a customer that is not CREDIT |
+| `*_subChannel_needs_channel` | Customer, EditCustomerDraft | a sub-channel with no channel |
+| `*_subChannelId_channelId_fkey` | Customer, EditCustomerDraft | a sub-channel that is not one of the channel's (composite foreign key to `SubChannel(id, channelId)`) |
+| `*_primaryPhoneNorm_shape` | Customer, EditCustomerDraft | a phone de-duplication key that is not `+968` and eight digits (what `normalizePhone` writes) |
+| `*_crNumberNorm_shape` | Customer, EditCustomerDraft | an empty CR key, or one holding a character `normalizeCR` removes or folds (lower case, spaces, invisible marks, Arabic or Persian digits) |
+| `*_gps_in_oman` | Branch, EditBranchDraft | a point outside 16–27°N, 51–61°E (the forms' own bounds) |
+| `Branch_gps_pair` | Branch | a shop with only one coordinate (a draft may hold one) |
+| `*_gpsAccuracy_range` | Branch, EditBranchDraft | an accuracy outside 0–10,000 m |
+| `*_equipment_counts_range` | Branch, EditBranchDraft | coolers or stands outside 0–100, empty bottles outside 0–1,000 |
+| foreign keys, SET NULL | Customer (`createdById`, `lastEditedById`, `importBatchId`, `lastTemixUploadBatchId`), Branch (`createdById`, `lastEditedById`), Attachment (`customerId`, `branchId`), Notification (`customerId`) | a link to a row that does not exist; deleting the row it names leaves the link null |
+| foreign keys, RESTRICT | CustomerEdit (`originalCustomerId`, `newRouteId`), EditApproval (`submitterRouteId`) | a link to a row that does not exist; deleting the row it names |
+| `CustomerEdit_customerId_fkey`, `CustomerEdit_branchId_fkey` | CustomerEdit | changed from SET NULL to **RESTRICT**: a customer or shop a request names can no longer be hard-deleted (the application never does). No older row can break them (the old keys held), so they are not counted below and can be validated at any time |
+
+**What NOT VALID means — read before any change that saves old rows.**
+
+- A NOT VALID **CHECK** is evaluated on **every INSERT and every UPDATE** of a row, an update to an unrelated column included. An older row that breaks one can **not be saved again by any path** until it is corrected: an edit, an approval, a merge, an archive, the Temix refresh, a customer-status follow, a completeness rescore, or a user delete that sets its creator to null. The import names the constraint on the row.
+- A NOT VALID **foreign key** is checked only when its own columns change. An older orphan (UAT held 232 notification orphans) can still be saved as long as its link is left alone.
+
+**Before the rules merge, count production** (read-only, through `prod-run.cjs`, §5j):
+
+```bash
+NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs \
+  scripts/ops/db-rules-report.ts --expect-host ep-sweet-haze
+```
+
+It prints, per rule, how many rows break it and whether it is present and validated — names and counts only, never an id. Every CHECK with rows here means saves of those rows will be refused once the rules are live: decide with the owner whether to correct the rows first or to ship and correct them as they surface (open question, 04-PENDING-WORK). After the deploy, the nightly check `db-rules-older-rows` (§5k) gives the same counts with sample ids (`rule:row id`) on `/status/integrity`.
+
+**Correcting the rows.**
+
+- **CR keys** written before the CR rule of 2026-09-25 (item 16): `scripts/ops/recompute-cr-norm.ts` (dry run first; it recomputes `crNumberNorm` from `crNumber`).
+- **Notification orphans:** null the link (`UPDATE "Notification" SET "customerId" = NULL WHERE …`), in a logged window, **only with the owner's OK** — the notification text still names the customer.
+- **Everything else** (credit figures on a cash customer, a sub-channel of another channel, a point outside Oman, a single coordinate, a count over its cap, a phone key in another shape, a dangling creator or batch): correct it through the app where a screen allows, or decide each with the Data Steward. Never correct a row by switching a rule off.
+
+**The VALIDATE step — one rule at a time, by a new migration.** When `db-rules-older-rows` shows **0** for a rule on UAT **and** `db-rules-report` shows 0 for it on production, add a migration of its own:
+
+```sql
+ALTER TABLE "Customer" VALIDATE CONSTRAINT "Customer_credit_terms_only_credit";
+```
+
+- VALIDATE scans the table and **fails the migration on any row that breaks the rule** — which blocks the deploy. CI's database starts empty, but **UAT applies every pushed migration** (a branch push builds a preview that migrates UAT), and UAT holds its own older rows (232 notification orphans on 2026-10-10): count UAT before pushing.
+- VALIDATE takes SHARE UPDATE EXCLUSIVE on the table (and ROW SHARE on the referenced table for a foreign key): reads and writes go on.
+- After it, the check shows `validated: true` for the rule. The two re-added request keys and `CustomerEdit_routeIdAtSubmit_fkey` (gap 18) can be validated at any time.
+
+**Not added, and why.** Address and name lengths (the import accepts any length; the address minimum is already `Branch_address_minlength`); display phones (`primaryPhone`, `altPhone`: typed formats in older rows and fixtures, and `altPhone` has no key — the phone key above is the guard); the Temix code's shape (three migrated codes hold a space, so a CHECK would refuse every later save of those customers; the nightly `temix-code-shape` stays); a unique live Temix code (a unique index cannot be NOT VALID and would fail the migration on any duplicate at deploy time, the H-01 crosswalk is the Steward's, and the daily import may "create and flag" a duplicate until a merge — `temix-code-shared` stays; open question); a unique live CR (the owner's decision; UAT holds one shared value); CREDIT carrying a limit, and a limit carrying term days (the refresh lane can write one without the other; UAT has three credit customers with no limit); the e-mail rules (the refresh lane can flip CREDIT to CASH without clearing the e-mail, and `isEmailAddress` cannot be written exactly in SQL); a shop's region equal to its route's (already the triggers `branch_region_consistency_check` and `route_region_fixed`); a photo's kind matching its slot, and the draft photo slots' links (cross-row triggers that photo-gc's hard deletes would meet); the ledger and history links (no foreign key on purpose: the ledgers outlive the rows they describe); id lists in arrays or JSON (no foreign key is possible); the account rules (role, route and regions; not covered in this pass).
+
+**A correction.** The comment in migration `20260510160000_p1_drop_phone_unique` says a `crNumberNorm` partial-unique index exists. There is none: `Customer_crNumberNorm_idx` is an ordinary index. Migrations are never edited once applied, so the correction is in the header of `20261025090000_db_rules_not_valid`, here and in AUDITOR-BRIEF §7.
 
 ## 6. Backups, recovery, and what they are actually worth
 

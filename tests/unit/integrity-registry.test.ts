@@ -54,6 +54,7 @@ describe('the registry', () => {
       'customer-code-sequence',
       'scheduled-jobs-on-time',
       'test-flags-changed',
+      'db-rules-older-rows',
       'seal-written',
       'seal-chain-intact',
       'seal-offsite-copies',
@@ -74,10 +75,12 @@ describe('the registry', () => {
     else expect(typeof c.run).toBe('function');
   });
 
-  it('every check alerts but the four that are information (test-scaffolding-mixed by the owner’s decision of 2026-10-24)', () => {
+  it('every check alerts but the five that are information (test-scaffolding-mixed by the owner’s decision of 2026-10-24)', () => {
     expect(CHECKS.filter((c) => c.policy === 'info').map((c) => c.id)).toEqual([
       'test-scaffolding-mixed',
       'app-login-is-runtime-role',
+      // Gap 31: the older rows the NOT VALID rules would refuse — information until 0, then VALIDATE.
+      'db-rules-older-rows',
       'exports-since-last-run',
       'sign-in-failures-since-last-run',
     ]);
@@ -135,6 +138,22 @@ describe('test records: left out of the data, never out of the recorder', () => 
     for (const id of ['shop-region-matches-route', 'customer-status-follows-shops']) {
       expect(block(id)).toContain("realBranchSql('b')");
     }
+  });
+});
+
+describe('db-rules-older-rows (gap 31)', () => {
+  it('counts every row the rules of lib/db-rules.ts would refuse, test rows included, and reads the catalog', () => {
+    const c = CHECK_BY_ID.get('db-rules-older-rows')!;
+    expect(c).toMatchObject({ group: 'mechanism', policy: 'info', excludesTest: false, version: 1 });
+    expect(c.title).toBe('Older rows that break the newer database rules');
+    expect(c.remedy).toContain('OPERATIONS.md section 5l');
+    const b = block('db-rules-older-rows');
+    // One statement from the shared builder, the catalog by name, the pure classifier.
+    expect(b).toContain('Prisma.raw(dbRulesCountSql())');
+    expect(b).toContain('pg_catalog.pg_constraint');
+    expect(b).toContain('convalidated');
+    expect(b).toContain('return dbRuleFindings(rows, catalog)');
+    expect(checkStatus(c.policy, 232)).toBe('info');
   });
 });
 
