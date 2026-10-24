@@ -61,6 +61,26 @@ export function canManageReactivation(user: SessionUser): boolean {
 }
 
 /**
+ * The customer's History page (app/(app)/customers/[id]/history; docs/HISTORY.md
+ * §11): the routes that served it and the salesman of each stretch, its terms
+ * over time, and every change with who, when and why, read from the dated
+ * history. Safe default: the Data Steward only. He already reads every audit row
+ * of every customer, so the page shows him nothing he could not see.
+ *
+ * OPEN QUESTION for the owner: should the GM, the Sales Director, Managers (for
+ * their regions) or Viewers see it too? Widening it needs canSeeCustomer and a
+ * per-shop scope filter like filterBranchesByScope, a rule for the region-scoped
+ * roles (the shops in their regions now, or while the shops were in them), and
+ * every link the page shows re-checked for that role (it links to /audit,
+ * /import and /temix, which are the Steward's).
+ *
+ * Here, not in lib/access.ts: the profile's render tests mock that module whole.
+ */
+export function canSeeCustomerHistory(role: Role): boolean {
+  return role === Role.STEWARD;
+}
+
+/**
  * The roles that attach and remove a photo (services/photos.ts) — the same
  * three that edit a customer (owner decision 2026-09-27) — and so the only
  * roles that may upload one (app/api/photos/presign and finalize, ENH-3). Any

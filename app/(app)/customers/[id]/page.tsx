@@ -19,7 +19,8 @@ import { ArchiveCustomerButton } from './ArchiveCustomerButton';
 import { ROUTE_INACTIVE_MESSAGE } from '@/lib/errors';
 import { canPrint } from '@/lib/print';
 import { survivorOf } from '@/lib/merged-customers';
-import { MapPin, Phone, Mail, User as UserIcon, Camera, Calendar, Image as ImageIcon, Pencil, Printer } from 'lucide-react';
+import { canSeeCustomerHistory } from '@/lib/permissions';
+import { MapPin, Phone, Mail, User as UserIcon, Camera, Calendar, Image as ImageIcon, Pencil, Printer, History as HistoryIcon } from 'lucide-react';
 
 export const metadata = { title: 'Customer · NMWC' };
 
@@ -103,6 +104,15 @@ export default async function CustomerProfilePage({
                 .
               </>
             )}
+            {canSeeCustomerHistory(session.user.role) && (
+              <>
+                {' '}
+                <Link href={`/customers/${id}/history`} className="underline">
+                  See its history
+                </Link>
+                .
+              </>
+            )}
           </p>
         </section>
       </main>
@@ -180,6 +190,18 @@ export default async function CustomerProfilePage({
                 <Printer className="h-4 w-4" />
                 Print customer form
               </a>
+            )}
+            {/* The customer's dated history: routes, terms, every change
+                (docs/HISTORY.md §11). The Data Steward only, a default for the
+                owner to confirm (lib/permissions.ts canSeeCustomerHistory). */}
+            {canSeeCustomerHistory(session.user.role) && (
+              <Link
+                href={`/customers/${customer.id}/history`}
+                className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-4 py-2.5 text-base font-medium text-slate-700 hover:bg-slate-50"
+              >
+                <HistoryIcon className="h-4 w-4" />
+                History
+              </Link>
             )}
           </div>
         }
@@ -318,6 +340,15 @@ export default async function CustomerProfilePage({
                     />
                   )}
                 </div>
+                {canSeeCustomerHistory(session.user.role) && (
+                  <Link
+                    href={`/customers/${customer.id}/history?shop=${b.id}`}
+                    aria-label={`Shop history: ${b.branchCode}`}
+                    className="mt-2 inline-flex min-h-11 items-center text-sm font-medium text-brand-700 underline underline-offset-2"
+                  >
+                    Shop history
+                  </Link>
+                )}
               </article>
             ))}
           </div>
