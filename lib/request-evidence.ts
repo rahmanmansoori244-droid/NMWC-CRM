@@ -30,6 +30,9 @@ type SentRequest = {
   cycle: number;
   submissionId?: string | null;
   decisionReason?: string | null;
+  /** Gap 18: where it was raised (lib/scope-at-submit.ts). */
+  routeIdAtSubmit?: string | null;
+  regionIdsAtSubmit?: string[] | null;
 };
 
 /** The `after` of a sent request's CREATE audit row: the request as it was sent. */
@@ -49,6 +52,9 @@ export function sentRequestAudit(e: SentRequest): Prisma.InputJsonObject {
     pendingRole: e.pendingRole ?? null,
     cycle: e.cycle,
     submissionId: e.submissionId ?? null,
+    // Gap 18: where it was raised, sealed with the rest of what was sent.
+    routeIdAtSubmit: e.routeIdAtSubmit ?? null,
+    regionIdsAtSubmit: [...(e.regionIdsAtSubmit ?? [])],
     // A close or reactivation request's reason is the salesman's, typed with it.
     ...(e.decisionReason ? { requestReason: e.decisionReason } : {}),
   } as Prisma.InputJsonObject;

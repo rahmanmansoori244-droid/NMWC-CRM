@@ -38,6 +38,8 @@ describe('sentRequestAudit', () => {
         cycle: 1,
         submissionId: 's-1',
         decisionReason: 'Reopened after renovation',
+        routeIdAtSubmit: 'r1',
+        regionIdsAtSubmit: ['g1'],
       })
     ).toEqual({
       process: 'UPDATE',
@@ -54,8 +56,27 @@ describe('sentRequestAudit', () => {
       pendingRole: 'MANAGER',
       cycle: 1,
       submissionId: 's-1',
+      // Gap 18: where it was raised, sealed with the rest.
+      routeIdAtSubmit: 'r1',
+      regionIdsAtSubmit: ['g1'],
       requestReason: 'Reopened after renovation',
     });
+  });
+
+  it('gap 18: a row sent before the columns existed carries null and an empty list', () => {
+    const row = sentRequestAudit({
+      process: 'UPDATE',
+      target: 'CUSTOMER',
+      state: 'SUBMITTED',
+      customerId: 'c1',
+      branchId: null,
+      isReactivation: false,
+      fieldChanges: [],
+      attachmentChanges: [],
+      submittedAt: null,
+      cycle: 1,
+    });
+    expect(row).toMatchObject({ routeIdAtSubmit: null, regionIdsAtSubmit: [] });
   });
 });
 

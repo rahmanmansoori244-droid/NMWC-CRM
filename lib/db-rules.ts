@@ -521,6 +521,19 @@ export const NOT_VALID_LINKS_NO_OLDER_ROW_BREAKS: readonly DbFkRule[] = [
     why: 'The application never hard-deletes a shop; a request keeps the shop it is about (it was SET NULL).',
     refusal: DANGLING('a shop'),
   },
+  {
+    // Gap 18 (migration 20261025090100_request_scope_at_submit): a new column.
+    name: 'CustomerEdit_routeIdAtSubmit_fkey',
+    kind: 'fk',
+    table: 'CustomerEdit',
+    columns: ['routeIdAtSubmit'],
+    refTable: 'Route',
+    refColumns: ['id'],
+    onDelete: 'RESTRICT',
+    onUpdate: 'CASCADE',
+    why: 'The route a request was raised from (gap 18): a sent request is evidence, so the route it names stays (RESTRICT).',
+    refusal: DANGLING('a route'),
+  },
 ];
 
 export const DB_RULE_BY_NAME: ReadonlyMap<string, DbRule> = new Map(

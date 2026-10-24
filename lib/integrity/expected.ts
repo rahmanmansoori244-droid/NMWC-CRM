@@ -100,7 +100,7 @@ export type ExpectedFunction = { md5: string; securityDefiner: boolean; searchPa
 export const EXPECTED_FUNCTIONS: Record<string, ExpectedFunction> = {
   nmwc_auditlog_stamp_context: { md5: '2661ca65dd20769076b7c03099f3151a', securityDefiner: false, searchPath: 'pg_catalog, public, pg_temp' },
   nmwc_change_ctx: { md5: '3475a813555986410bf0f50174b54922', securityDefiner: false, searchPath: 'pg_catalog, public, pg_temp' },
-  nmwc_customeredit_evidence_guard: { md5: 'f819601fafb0fdf1dd35bc2124eaac5d', securityDefiner: false, searchPath: 'pg_catalog, public, pg_temp' },
+  nmwc_customeredit_evidence_guard: { md5: 'c1413cbbd5d0fde4f7d784a88cd09af7', securityDefiner: false, searchPath: 'pg_catalog, public, pg_temp' },
   nmwc_customeredit_original_customer: { md5: '26dc698497068561d475a44cb8eebc65', securityDefiner: false, searchPath: 'pg_catalog, public, pg_temp' },
   nmwc_forbid_audit_mutation: { md5: '8324ddcaab94e45548d3e512045dfbd8', securityDefiner: false, searchPath: 'pg_catalog, public, pg_temp' },
   nmwc_history_attachment: { md5: '7705a94a832b7d25197eb7bd7147c4dd', securityDefiner: true, searchPath: 'pg_catalog, public, pg_temp' },

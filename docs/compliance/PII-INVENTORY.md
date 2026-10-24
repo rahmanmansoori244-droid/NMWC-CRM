@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**535 stored columns across 37 tables** — Customer contact: 29 · Employee: 96 · Customer entity (personal if a sole establishment): 50 · Not personal data: 360.
+**537 stored columns across 37 tables** — Customer contact: 29 · Employee: 96 · Customer entity (personal if a sole establishment): 50 · Not personal data: 362.
 
 ## Columns holding personal data
 
@@ -410,6 +410,8 @@ Every column the database stores, classified by whose personal data it is. This 
 | CustomerEdit | `newRouteId` | String | foreign key / structural value |
 | CustomerEdit | `submissionId` | String | a random id the phone mints for each submit, so a retry is never written twice (item 22); identifies the request, not a person or a device |
 | CustomerEdit | `submitGate` | Json | the ids of the branches a salesman submit was checked against (F05); structural |
+| CustomerEdit | `routeIdAtSubmit` | String | the route the request was raised from when it was sent (gap 18); structural |
+| CustomerEdit | `regionIdsAtSubmit` | String[] | the regions of the request’s scope when it was sent (gap 18); structural |
 | CustomerEdit | `originalCustomerId` | String | the customer the request was first about, set once by the database (lossless paths, gap 8); structural |
 | CustomerEdit | `process` | EditProcess | structural / operational value |
 | CustomerEdit | `currentStepIndex` | Int | structural / operational value |

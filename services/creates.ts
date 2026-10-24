@@ -60,6 +60,7 @@ import { manualGpsMarker } from '@/lib/gps-manual';
 import { normalizeCR } from '@/lib/cr';
 import { checkLimit, FORM_LIMIT } from '@/lib/rate-limit';
 import { freezeChain, resolveChain, stepDeadline } from '@/lib/approval-chains';
+import { createScopeAtSubmit } from '@/lib/scope-at-submit';
 import {
   submitCreateSchema,
   collectMissingForCreate,
@@ -515,6 +516,9 @@ async function submitCreateOnce(
           // across a correction round, which re-routes CASH ↔ CREDIT.
           paymentTermsAtSubmit: c.paymentTerms,
           approvalChain: frozenChain as unknown as Prisma.InputJsonValue,
+          // Gap 18: where it was raised — the draft route and its region, on
+          // every submit and resubmit (lib/scope-at-submit.ts).
+          ...createScopeAtSubmit(route),
           currentStepIndex: 0,
           pendingRole: firstStep.role,
           stageEnteredAt: submittedAt,
@@ -712,6 +716,8 @@ async function submitCreateOnce(
         duplicateSignals,
         // Gap 12: the round as sent (EditRevision), by its fingerprint.
         ...(revisionSha256 ? { revisionSha256 } : {}),
+        // Gap 18: where it was raised, as sent (ids only).
+        ...(isDraft ? {} : createScopeAtSubmit(route)),
       } as unknown as Prisma.InputJsonValue,
     });
 

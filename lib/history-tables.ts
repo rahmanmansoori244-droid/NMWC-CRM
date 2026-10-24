@@ -27,6 +27,8 @@ export const HISTORY_MIGRATIONS = [
   '20261024120200_ledger_seals',
   // Watch and prove (gap 29): the nightly integrity check's results.
   '20261024120400_integrity_results',
+  // Gap 18: where a request was raised, frozen by the evidence guard (redefined there).
+  '20261025090100_request_scope_at_submit',
 ] as const;
 
 /** INSERT-only tables written by the capture triggers, never by the application. */

@@ -8,6 +8,8 @@
  *    production migration cannot fail on old data;
  *  - the constraints added are exactly DB_RULES, the two request links re-added
  *    as RESTRICT, and (gap 18) the route a request was sent from;
+ *  - gap 18's migration adds its two columns, its route link NOT VALID, and the
+ *    evidence guard as it last was with exactly two more frozen columns;
  *  - each CHECK expression is rule.sql, each foreign key's columns, table and
  *    actions are the rule's;
  *  - no VALIDATE, no data change, nothing dropped but the two request keys —
@@ -22,7 +24,8 @@ import { readFileSync } from 'node:fs';
 import { DB_RULES, NOT_VALID_LINKS_NO_OLDER_ROW_BREAKS, type DbFkRule } from '@/lib/db-rules';
 
 const MIGRATION_A = '20261025090000_db_rules_not_valid';
-const MIGRATIONS = [MIGRATION_A];
+const MIGRATION_B = '20261025090100_request_scope_at_submit';
+const MIGRATIONS = [MIGRATION_A, MIGRATION_B];
 /** Foreign keys the migrations add NOT VALID that the nightly count leaves out. */
 const OTHER_FKS: readonly DbFkRule[] = NOT_VALID_LINKS_NO_OLDER_ROW_BREAKS;
 
@@ -31,10 +34,12 @@ const read = (name: string) => readFileSync(`prisma/migrations/${name}/migration
 function stripSqlComments(sql: string): string {
   let out = '';
   let inQuote = false;
+  let inBody = false;
   for (let i = 0; i < sql.length; i++) {
     const ch = sql[i]!;
-    if (ch === "'") inQuote = !inQuote;
-    if (!inQuote && ch === '-' && sql[i + 1] === '-') {
+    if (!inQuote && ch === '$' && sql[i + 1] === '$') inBody = !inBody;
+    if (!inBody && ch === "'") inQuote = !inQuote;
+    if (!inQuote && !inBody && ch === '-' && sql[i + 1] === '-') {
       const nl = sql.indexOf('\n', i);
       i = nl < 0 ? sql.length : nl - 1;
       continue;
@@ -50,10 +55,14 @@ function splitTop(s: string, sep: string): string[] {
   const out: string[] = [];
   let depth = 0;
   let inQuote = false;
+  let inBody = false;
   let cur = '';
+  let prev = '';
   for (const ch of s) {
-    if (ch === "'") inQuote = !inQuote;
-    if (!inQuote) {
+    if (!inQuote && ch === '$' && prev === '$') inBody = !inBody;
+    prev = ch;
+    if (!inBody && ch === "'") inQuote = !inQuote;
+    if (!inQuote && !inBody) {
       if (ch === '(') depth++;
       else if (ch === ')') depth--;
       else if (ch === sep && depth === 0) {
@@ -193,6 +202,36 @@ describe('the gap-31 migrations', () => {
     expect(a.sql).toMatch(/20260510160000_p1_drop_phone_unique says a crNumberNorm partial-unique\n-- index exists\. There is none/);
     // The old migration is never edited once applied.
     expect(read('20260510160000_p1_drop_phone_unique')).toMatch(/The crNumberNorm partial-unique index is NOT touched/);
+  });
+});
+
+describe('gap 18: the request-scope migration', () => {
+  const b = parsed.find((p) => p.name === MIGRATION_B)!;
+
+  it('adds the two columns as Prisma writes them, and the route link NOT VALID', () => {
+    const alter = b.statements.find((st) => st.startsWith('ALTER TABLE "CustomerEdit"'))!;
+    expect(alter).toContain('ADD COLUMN "regionIdsAtSubmit" TEXT[]');
+    expect(alter).toContain('ADD COLUMN "routeIdAtSubmit" TEXT,');
+    expect(b.added.map((a) => a.name)).toEqual(['CustomerEdit_routeIdAtSubmit_fkey']);
+    expect(b.dropped).toEqual([]);
+  });
+
+  it('the evidence guard is its last definition with exactly the two columns frozen too', () => {
+    const body = (sql: string) => {
+      const start = sql.lastIndexOf('CREATE OR REPLACE FUNCTION nmwc_customeredit_evidence_guard()');
+      const open = sql.indexOf('$$', start);
+      return sql.slice(open + 2, sql.indexOf('$$', open + 2));
+    };
+    const before = body(read('20261014100000_lossless_paths'));
+    const after = body(b.sql);
+    const added = [
+      `    IF NEW."routeIdAtSubmit" IS DISTINCT FROM OLD."routeIdAtSubmit" THEN changed := changed || 'routeIdAtSubmit'::text; END IF;\n`,
+      `    IF NEW."regionIdsAtSubmit" IS DISTINCT FROM OLD."regionIdsAtSubmit" THEN changed := changed || 'regionIdsAtSubmit'::text; END IF;\n`,
+    ];
+    for (const line of added) expect(after).toContain(line);
+    expect(added.reduce((x, line) => x.replace(line, ''), after)).toBe(before);
+    expect(b.sql).toMatch(/REVOKE EXECUTE ON FUNCTION nmwc_customeredit_evidence_guard\(\) FROM PUBLIC;/);
+    expect(b.sql).toContain('SET search_path = pg_catalog, public, pg_temp');
   });
 });
 

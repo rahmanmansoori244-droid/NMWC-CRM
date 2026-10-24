@@ -31,6 +31,7 @@ import { redirect } from 'next/navigation';
 import { logger } from '@/lib/logger';
 import { getAuditEnvelope, writeAudit, type AuditEnvelope } from '@/lib/audit';
 import { approvalOutcome, sentRequestAudit } from '@/lib/request-evidence';
+import { requestScopeAtSubmit } from '@/lib/scope-at-submit';
 import {
   followBranchStatus,
   mergeStatusEvents,
@@ -548,7 +549,8 @@ async function submitEditOnce(
       ownedRouteId: true,
       role: true,
       supervisorId: true,
-      ownedRoute: { select: { isActive: true } },
+      // regionId: gap 18, the region of his route as the request is sent.
+      ownedRoute: { select: { isActive: true, regionId: true } },
     },
   });
   // final-hunt #17: a Manager's customer-level authorization (assertCanEditCustomer)
@@ -1050,6 +1052,13 @@ async function submitEditOnce(
             // written twice — before, it was: two APPROVED edits, two audit rows.
             submissionId,
             ...chainFields,
+            // Gap 18: where it was raised (lib/scope-at-submit.ts).
+            ...requestScopeAtSubmit({
+              branches: now.branches,
+              fieldChanges: apply,
+              submitterRouteId: me.ownedRouteId,
+              submitterRegionId: me.ownedRoute?.regionId ?? null,
+            }),
           },
         });
         await setChangeContext(tx, { actorId: me.id, source: src.edit(e.id) });
@@ -1113,6 +1122,18 @@ async function submitEditOnce(
       ...(submitGate ? { submitGate } : {}),
       ...chainFields,
       ...pendingFields,
+      // Gap 18: where it was raised — his route, and the regions of its scope by
+      // the queue's own rule (lib/scope-at-submit.ts). Only a sent request: a
+      // draft is saved by saveUpdateDraft, which takes none of this.
+      ...(isDraft
+        ? {}
+        : requestScopeAtSubmit({
+            branches: customer.branches,
+            fieldChanges,
+            homeBranchIds: salesmanBranches(customer.branches, me.ownedRouteId).map((b) => b.id),
+            submitterRouteId: me.ownedRouteId,
+            submitterRegionId: me.ownedRoute?.regionId ?? null,
+          })),
     };
     try {
       if (isDraft) {

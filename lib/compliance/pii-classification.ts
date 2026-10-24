@@ -257,6 +257,8 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
     subject: 'none',
     note: 'the ids of the branches a salesman submit was checked against (F05); structural',
   },
+  'CustomerEdit.routeIdAtSubmit': { subject: 'none', note: 'the route the request was raised from when it was sent (gap 18); structural' },
+  'CustomerEdit.regionIdsAtSubmit': { subject: 'none', note: 'the regions of the request’s scope when it was sent (gap 18); structural' },
   'CustomerEdit.process': { subject: 'none' },
   'CustomerEdit.paymentTermsAtSubmit': { subject: 'business-or-person', kind: 'financial' },
   'CustomerEdit.approvalChain': { subject: 'employee', kind: 'snapshot', note: 'the roles and step order frozen at submit time' },

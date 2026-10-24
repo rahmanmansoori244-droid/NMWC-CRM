@@ -195,6 +195,7 @@ model Route {
   branchDrafts EditBranchDraft[] @relation("DraftRoute")
   newRouteEdits CustomerEdit[]   @relation("EditNewRoute")
   approvalsOnRoute EditApproval[] @relation("ApprovalSubmitterRoute")
+  submittedOnEdits CustomerEdit[] @relation("EditRouteAtSubmit")
 
   @@unique([regionId, code])
   @@index([regionId])
@@ -526,6 +527,14 @@ model CustomerEdit {
   // direct writes, close/reactivation requests and rows written before it.
   submitGate        Json?
 
+  // Gap 18 (data audit 2026-10-10): where the request was raised, as it was sent —
+  // a new customer's draft route, else the submitter's own route (null if he holds
+  // none) — and the regions of its scope at that moment (lib/scope-at-submit.ts:
+  // the same rule the queue uses). Written once with the SUBMITTED state, frozen by
+  // the evidence guard; null and empty on rows sent before 20261025090100.
+  routeIdAtSubmit   String?
+  regionIdsAtSubmit String[]
+
   // Gap 8 (lossless paths): the customer the request was first about, set once by
   // the database (trigger customeredit_original_customer) from the first non-null
   // customerId and never changed after. A merge repoints customerId to the
@@ -567,6 +576,7 @@ model CustomerEdit {
   originalCustomer Customer? @relation("EditOriginalCustomer", fields: [originalCustomerId], references: [id], onDelete: Restrict)
   branch      Branch?   @relation(fields: [branchId], references: [id], onDelete: Restrict)
   newRoute    Route?    @relation("EditNewRoute", fields: [newRouteId], references: [id], onDelete: Restrict)
+  routeAtSubmit Route?  @relation("EditRouteAtSubmit", fields: [routeIdAtSubmit], references: [id], onDelete: Restrict)
   submittedBy User      @relation("EditSubmitter", fields: [submittedById], references: [id])
   reviewedBy  User?     @relation("EditReviewer", fields: [reviewedById], references: [id])
 

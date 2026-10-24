@@ -238,6 +238,9 @@ const FROZEN = [
   'cycle',
   'branchId',
   'submissionId',
+  // Gap 18: where the request was raised (20261025090100_request_scope_at_submit).
+  'routeIdAtSubmit',
+  'regionIdsAtSubmit',
 ];
 /** What still moves after a request is sent: its state, decision, SLA clock and customer. */
 const MOVABLE = [

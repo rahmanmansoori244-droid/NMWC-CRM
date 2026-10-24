@@ -44,6 +44,7 @@ import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
 import { notifyUsers, settleRequestAlerts } from '@/lib/notifications';
 import { UNWIRED_LIVE } from '@/lib/photo-attach';
 import { closureFromHistory, evidenceEntry, readEvidenceEntry, sentRequestAudit } from '@/lib/request-evidence';
+import { requestScopeAtSubmit } from '@/lib/scope-at-submit';
 
 async function require(role?: Role[]) {
   const user = await requireActor(); // F15: refuses a session that must change its password
@@ -240,7 +241,7 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
   const meRow = await prisma.user.findUniqueOrThrow({
     where: { id: me.id },
     // supervisorId: F1, who is told of this request (lib/notify-hierarchy.ts).
-    select: { ownedRouteId: true, supervisorId: true, ownedRoute: { select: { isActive: true } } },
+    select: { ownedRouteId: true, supervisorId: true, ownedRoute: { select: { isActive: true, regionId: true } } },
   });
   // Launch fix (P2): a switched-off route takes no new request from him, as New
   // customer already refused (services/creates.ts). A Manager still decides the
@@ -312,6 +313,14 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
         submittedAt: reactSubmittedAt,
         isReactivation: true,
         decisionReason: reason,
+        // Gap 18: where it was raised — his route, and the shop's region.
+        ...requestScopeAtSubmit({
+          branches: [branch],
+          fieldChanges: [],
+          branchId: branch.id,
+          submitterRouteId: meRow.ownedRouteId,
+          submitterRegionId: meRow.ownedRoute?.regionId ?? null,
+        }),
         // Phase 1 SLA: reactivations are decided by MANAGER (approveReactivation
         // is Manager-only) — stamping pendingRole keeps them OUT of the
         // Supervisor-step /approvals queues and puts them on the SLA clock.
@@ -401,7 +410,7 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
   const meRow = await prisma.user.findUniqueOrThrow({
     where: { id: me.id },
     // supervisorId: F1, who is told of this request (lib/notify-hierarchy.ts).
-    select: { ownedRouteId: true, supervisorId: true, ownedRoute: { select: { isActive: true } } },
+    select: { ownedRouteId: true, supervisorId: true, ownedRoute: { select: { isActive: true, regionId: true } } },
   });
   // Launch fix (P2): as for a reactivation (above).
   if (meRow.ownedRoute?.isActive === false) throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
@@ -465,6 +474,14 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
         submittedById: me.id,
         submittedAt: closeSubmittedAt,
         decisionReason: reason,
+        // Gap 18: where it was raised — his route, and the shop's region.
+        ...requestScopeAtSubmit({
+          branches: [branch],
+          fieldChanges: [],
+          branchId: branch.id,
+          submitterRouteId: meRow.ownedRouteId,
+          submitterRegionId: meRow.ownedRoute?.regionId ?? null,
+        }),
         // Phase 1 SLA: close requests ride the normal Supervisor approval.
         pendingRole: Role.SUPERVISOR,
         // Gap 37: the Supervisor step it always rode, frozen with the working calendar.
