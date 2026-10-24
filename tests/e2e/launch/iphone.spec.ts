@@ -472,7 +472,13 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
     expect(sent, 'one request').toHaveLength(1);
     expect((sent[0]!.fieldChanges as Array<{ field: string }>).map((c) => c.field)).toContain('customer.contactPerson');
 
-    // Reopened, the form says when it was sent — on the Oman clock.
+    // Reopened, the form says when it was sent — on the Oman clock. The customer page first
+    // finishes prefetching its links (each goes through the cookie bridge, a Node round trip to
+    // UAT): a page.goto() while one is still queued makes WebKit cancel that prefetch and report
+    // it as a page error, "Fetch API cannot load …?_rsc=… due to access control checks" (3 of 3
+    // runs on 2026-10-24, on /profile or the Enrich link). The test's own address-bar load cuts
+    // it off, not the app; with the wait it passed 2 of 2.
+    await settled(page);
     await page.goto(`/customers/${en3.id}/edit`);
     await expect(
       page.getByText(`Your changes sent at ${omanHm(sent[0]!.submittedAt!)} arrived and are waiting for approval.`, { exact: false })
