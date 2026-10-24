@@ -126,7 +126,9 @@ describe.skipIf(!ENABLED)('the dated history is written by the database', () => 
         },
       });
       await tx.customer.create({
-        data: { id: ids.customer, nmwcCode: `C${SFX}`, legalName: `History customer ${sfx}` },
+        // CREDIT: the suite writes a credit limit and term days below, which a cash
+        // customer may not carry (Customer_credit_terms_only_credit, gap 31).
+        data: { id: ids.customer, nmwcCode: `C${SFX}`, legalName: `History customer ${sfx}`, paymentTerms: 'CREDIT' },
       });
       await tx.branch.createMany({
         data: [

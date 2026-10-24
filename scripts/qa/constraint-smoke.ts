@@ -8,6 +8,7 @@
 import { readFileSync } from 'node:fs';
 import { PrismaClient } from '@prisma/client';
 import { assertNotProduction } from '../lib/assert-not-production';
+import { DB_RULES } from '../../lib/db-rules';
 
 for (const line of readFileSync('.env', 'utf8').split(/\r?\n/)) {
   const m = /^([A-Z0-9_]+)=(.*)$/.exec(line);
@@ -36,6 +37,8 @@ const REQUIRED_CHECKS = [
   'EditBranchDraft_gpsLat_range', 'EditBranchDraft_gpsLng_range', 'EditBranchDraft_address_minlength',
   'Customer_creditLimit_nonneg', 'Customer_paymentTermDays_range',
   'CustomerEdit_reqCreditLimit_nonneg', 'CustomerEdit_reqPaymentTermDays_range',
+  // Gap 31: the rules the application keeps, added NOT VALID (lib/db-rules.ts).
+  ...DB_RULES.filter((r) => r.kind === 'check').map((r) => r.name),
 ];
 const REQUIRED_TRIGGERS = [
   'branch_region_consistency_check', 'editbranchdraft_region_consistency_check',

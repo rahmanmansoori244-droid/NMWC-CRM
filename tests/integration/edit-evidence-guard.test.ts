@@ -14,8 +14,9 @@
  *     works;
  *   - a request cannot be deleted or truncated outside the owner's maintenance
  *     window — which is what fixture clean-up uses;
- *   - a shop hard-deleted by the owner nulls a request's branchId (its FK), and
- *     that is allowed: the shop is gone, the request's ledger row keeps its id;
+ *   - gap 31: a shop (or a customer) a request is about can no longer be
+ *     hard-deleted at all: CustomerEdit_branchId_fkey and _customerId_fkey are
+ *     RESTRICT now (they were SET NULL), so the request keeps what it is about;
  *   - originalCustomerId is set by the database from the first customer, and a
  *     merge repointing customerId does not move it; one the back-fill could not
  *     know (NULL) stays unknown when the request is repointed;
@@ -187,12 +188,13 @@ describe.skipIf(!ENABLED)('a sent request is evidence (gap 19)', () => {
     expect(gone.count).toBe(1);
   });
 
-  it('a shop the owner hard-deletes nulls a sent request’s branchId (its FK); changing it otherwise is refused', async () => {
+  it('gap 31: a shop or customer a sent request names cannot be hard-deleted (RESTRICT); changing its branchId is refused', async () => {
     // On the other customer: one open request per customer (CustomerEdit_open_per_customer).
     const e = await newEdit({ customerId: ids.c2, branchId: ids.branch2, target: 'BRANCH', state: 'SUBMITTED', submittedAt: new Date() });
     await expect(db.customerEdit.update({ where: { id: e.id }, data: { branchId: ids.branch } })).rejects.toThrow(REFUSED);
-    await write((tx) => tx.branch.delete({ where: { id: ids.branch2 } }));
-    expect((await db.customerEdit.findUniqueOrThrow({ where: { id: e.id } })).branchId).toBeNull();
+    await expect(write((tx) => tx.branch.delete({ where: { id: ids.branch2 } }))).rejects.toThrow(/CustomerEdit_branchId_fkey|Foreign key constraint/);
+    await expect(write((tx) => tx.customer.delete({ where: { id: ids.c2 } }))).rejects.toThrow(/CustomerEdit_customerId_fkey|Foreign key constraint/);
+    expect((await db.customerEdit.findUniqueOrThrow({ where: { id: e.id } })).branchId).toBe(ids.branch2);
   });
 
   it('gap 8: originalCustomerId is set once by the database; a merge repointing customerId leaves it', async () => {

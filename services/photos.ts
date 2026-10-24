@@ -488,7 +488,8 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
         where: { id: b.id },
         select: { shopPhotoId: true, signboardPhotoId: true },
       });
-      const updateBranch: Prisma.BranchUpdateInput = { lastEditedById: session.user.id };
+      // Gap 31: lastEditedById is a foreign key now, so the checked input names the relation.
+      const updateBranch: Prisma.BranchUpdateInput = { lastEditedBy: { connect: { id: session.user.id } } };
       // NEW-PHOTO-003: soft-delete the prior shop/signboard photo on
       // replacement so storage doesn't balloon and dedupe stays correct.
       // Gap 15 (lossless paths): it keeps its fingerprint, and the slot write

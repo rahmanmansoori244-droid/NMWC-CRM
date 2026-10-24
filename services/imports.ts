@@ -2729,9 +2729,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 await tx.customer.update({
                   where: { id: existing!.id },
                   data: {
+                    // Scalars only, with lastEditedById (a foreign key since gap 31): the unchecked input.
                     ...(Object.fromEntries(
                       refreshChanged.map((f) => [f, refreshWrite[f]])
-                    ) as Prisma.CustomerUpdateInput),
+                    ) as Prisma.CustomerUncheckedUpdateInput),
                     lastEditedById: me.id,
                     // B-05: make the refresh visible to the optimistic lock so a
                     // concurrent edit-approve sees VERSION_CONFLICT, not a silent
@@ -2908,9 +2909,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 const customer = await tx.customer.upsert({
                   where: { nmwcCode: custCode },
                   update: {
+                    // Scalars only, with lastEditedById (a foreign key since gap 31): the unchecked input.
                     ...(Object.fromEntries(
                       (customerChanged ?? Object.keys(customerWrite)).map((f) => [f, customerWrite[f]])
-                    ) as Prisma.CustomerUpdateInput),
+                    ) as Prisma.CustomerUncheckedUpdateInput),
                     // Re-import of an EXISTING customer via a non-Temix row must not
                     // clobber CRM-owned data (adversarial-review CONFIRMED). Presence-
                     // aware, mirroring the refresh lane: an ABSENT payment_terms column

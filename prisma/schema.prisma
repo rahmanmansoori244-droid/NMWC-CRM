@@ -193,6 +193,8 @@ model Route {
   owner        User?             @relation("RouteOwner")
   branches     Branch[]
   branchDrafts EditBranchDraft[] @relation("DraftRoute")
+  newRouteEdits CustomerEdit[]   @relation("EditNewRoute")
+  approvalsOnRoute EditApproval[] @relation("ApprovalSubmitterRoute")
 
   @@unique([regionId, code])
   @@index([regionId])
@@ -253,6 +255,10 @@ model User {
   stepDecisions       EditApproval[]    @relation("StepActor")
   notifications       Notification[]    @relation("UserNotifications")
   temixSyncBatches    TemixSyncBatch[]  @relation("TemixBatchCreator")
+  createdCustomers    Customer[]        @relation("CustomerCreatedBy")
+  editedCustomers     Customer[]        @relation("CustomerLastEditedBy")
+  createdBranches     Branch[]          @relation("BranchCreatedBy")
+  editedBranches      Branch[]          @relation("BranchLastEditedBy")
 
   @@index([role, isActive])
 }
@@ -311,8 +317,14 @@ model SubChannel {
   channel   Channel             @relation(fields: [channelId], references: [id])
   customers Customer[]
   drafts    EditCustomerDraft[] @relation("DraftSubChannel")
+  pairedCustomers Customer[] @relation("CustomerSubChannelPair")
+  pairedDrafts    EditCustomerDraft[] @relation("DraftSubChannelPair")
 
   @@unique([channelId, key])
+  // Gap 31: the pair the composite foreign keys of Customer and EditCustomerDraft
+  // point at, so a sub-channel is always one of its own channel's. It cannot fail
+  // to build: id alone is already the primary key.
+  @@unique([id, channelId])
 }
 
 // ── CUSTOMER & BRANCH ─────────────────────────────────
@@ -388,9 +400,22 @@ model Customer {
   crPhoto    Attachment? @relation("CrPhoto", fields: [crPhotoId], references: [id])
   mergedInto Customer?   @relation("CustomerMerge", fields: [mergedIntoId], references: [id], onDelete: Restrict)
   mergedFrom Customer[]  @relation("CustomerMerge")
+  // Gap 31 (data audit 2026-10-10): links the application always kept, now
+  // foreign keys as well, added NOT VALID (prisma/migrations/20261025090000_db_rules_not_valid, lib/db-rules.ts): checked on every
+  // new or changed link, older rows untouched until a VALIDATE. The pair is
+  // MATCH SIMPLE, so Customer_subChannel_needs_channel (a CHECK) covers a
+  // sub-channel with no channel.
+  subChannelPair SubChannel? @relation("CustomerSubChannelPair", fields: [subChannelId, channelId], references: [id, channelId], onDelete: NoAction, onUpdate: NoAction)
+  createdBy    User? @relation("CustomerCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  lastEditedBy User? @relation("CustomerLastEditedBy", fields: [lastEditedById], references: [id], onDelete: SetNull)
+  importBatch  ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  lastTemixUploadBatch TemixSyncBatch? @relation(fields: [lastTemixUploadBatchId], references: [id], onDelete: SetNull)
 
   branches Branch[]
-  edits    CustomerEdit[]
+  edits    CustomerEdit[] @relation("EditCustomer")
+  originalEdits CustomerEdit[] @relation("EditOriginalCustomer")
+  attachments   Attachment[]   @relation("AttachmentCustomer")
+  notifications Notification[]
 
   @@index([status, deletedAt])
   @@index([channelId])
@@ -456,6 +481,10 @@ model Branch {
 
   extraPhotos Attachment[]   @relation("BranchExtraPhotos")
   edits       CustomerEdit[]
+  attachments Attachment[]   @relation("AttachmentBranch")
+  // Gap 31: foreign keys added NOT VALID (prisma/migrations/20261025090000_db_rules_not_valid, lib/db-rules.ts).
+  createdBy    User? @relation("BranchCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  lastEditedBy User? @relation("BranchLastEditedBy", fields: [lastEditedById], references: [id], onDelete: SetNull)
   // Gap 27: the new-customer request draft this shop was born from (set at finalize).
   birthDrafts EditBranchDraft[] @relation("DraftBranch")
 
@@ -530,8 +559,14 @@ model CustomerEdit {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  customer    Customer? @relation(fields: [customerId], references: [id])
-  branch      Branch?   @relation(fields: [branchId], references: [id])
+  // Gap 31: RESTRICT (it was SET NULL) — a customer or shop a request is about
+  // is never hard-deleted, so no request loses what it was about. The original
+  // customer, the new route and the route at submit are RESTRICT too: the
+  // evidence guard refuses a SET NULL on a sent request. All NOT VALID (prisma/migrations/20261025090000_db_rules_not_valid, lib/db-rules.ts).
+  customer    Customer? @relation("EditCustomer", fields: [customerId], references: [id], onDelete: Restrict)
+  originalCustomer Customer? @relation("EditOriginalCustomer", fields: [originalCustomerId], references: [id], onDelete: Restrict)
+  branch      Branch?   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  newRoute    Route?    @relation("EditNewRoute", fields: [newRouteId], references: [id], onDelete: Restrict)
   submittedBy User      @relation("EditSubmitter", fields: [submittedById], references: [id])
   reviewedBy  User?     @relation("EditReviewer", fields: [reviewedById], references: [id])
 
@@ -585,6 +620,9 @@ model Attachment {
   deletedAt     DateTime?
 
   capturedBy  User          @relation("AttachmentCapturer", fields: [capturedById], references: [id])
+  // Gap 31: SET NULL like branchExtra; AttachmentHistory keeps the old link (NOT VALID, prisma/migrations/20261025090000_db_rules_not_valid, lib/db-rules.ts).
+  customer    Customer?     @relation("AttachmentCustomer", fields: [customerId], references: [id], onDelete: SetNull)
+  branch      Branch?       @relation("AttachmentBranch", fields: [branchId], references: [id], onDelete: SetNull)
   branchExtra Branch?       @relation("BranchExtraPhotos", fields: [branchExtraId], references: [id])
   edit        CustomerEdit? @relation("EditAttachments", fields: [editId], references: [id])
 
@@ -632,6 +670,7 @@ model ImportBatch {
 
   uploadedBy User        @relation("ImportUploader", fields: [uploadedById], references: [id])
   rows       ImportRow[]
+  customers  Customer[]
 
   // Resume picks a batch up by (status, lease) — index the pair the claim filters on.
   @@index([status, promoteLeaseUntil])
@@ -1235,6 +1274,8 @@ model EditCustomerDraft {
   edit       CustomerEdit @relation(fields: [editId], references: [id], onDelete: Cascade)
   channel    Channel?     @relation("DraftChannel", fields: [channelId], references: [id])
   subChannel SubChannel?  @relation("DraftSubChannel", fields: [subChannelId], references: [id])
+  // Gap 31: as on Customer — the draft's sub-channel is one of its channel's (NOT VALID, prisma/migrations/20261025090000_db_rules_not_valid, lib/db-rules.ts).
+  subChannelPair SubChannel? @relation("DraftSubChannelPair", fields: [subChannelId, channelId], references: [id, channelId], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([crNumberNorm])
   @@index([primaryPhoneNorm])
@@ -1319,6 +1360,8 @@ model EditApproval {
 
   edit  CustomerEdit @relation(fields: [editId], references: [id], onDelete: Cascade)
   actor User         @relation("StepActor", fields: [actorId], references: [id])
+  // Gap 31: RESTRICT — this ledger is append-only, so the route it names stays (NOT VALID, prisma/migrations/20261025090000_db_rules_not_valid, lib/db-rules.ts).
+  submitterRoute Route? @relation("ApprovalSubmitterRoute", fields: [submitterRouteId], references: [id], onDelete: Restrict)
 
   @@index([editId, at(sort: Desc)])
   @@index([actorId])
@@ -1349,6 +1392,8 @@ model Notification {
 
   user User          @relation("UserNotifications", fields: [userId], references: [id])
   edit CustomerEdit? @relation(fields: [editId], references: [id])
+  // Gap 31: SET NULL, NOT VALID (prisma/migrations/20261025090000_db_rules_not_valid, lib/db-rules.ts); UAT held 232 orphans on 2026-10-10.
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
 
   @@index([userId, readAt])
   @@index([emailedAt, createdAt])
@@ -1369,6 +1414,7 @@ model TemixSyncBatch {
   markedLoadedAt DateTime?
 
   createdBy User @relation("TemixBatchCreator", fields: [createdById], references: [id])
+  customers Customer[]
 }
 
 // Atomic per-scope counter for app-minted provisional codes (NMWC-YYYY-NNNNNN),

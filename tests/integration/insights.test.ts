@@ -127,9 +127,17 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
       { regionId: reg.in, routeId: rt.in1, gps: [23.62, 58.42] },
     ]);
     await customer('nogps', [{ regionId: reg.in, routeId: rt.in2 }]);
-    // GPS outside the map box (a mistyped point): counted as located, not drawn.
-    await customer('odd', [{ regionId: reg.in, routeId: rt.in1, gps: [30.0, 58.0] }]);
-    // First created by an import inside the window.
+    // A point at the box's far corner. Gap 31: a point outside the box (Oman's,
+    // the app's own bounds) is refused by the database now (Branch_gps_in_oman),
+    // so only an older row can be one and a test can no longer write it; such a
+    // row is counted as having GPS and not located, and the nightly check
+    // db-rules-older-rows counts it.
+    await customer('odd', [{ regionId: reg.in, routeId: rt.in1, gps: [26.99, 60.99] }]);
+    // First created by an import inside the window. Gap 31: a real batch, since
+    // Customer.importBatchId is a foreign key now.
+    await prisma.importBatch.create({
+      data: { id: `${sfx}-batch`, filename: 'zz-insights.xlsx', uploadedById: users.steward, status: 'PROMOTED' },
+    });
     await customer('imported', [{ regionId: reg.in, routeId: rt.in2 }], {
       importBatchId: `${sfx}-batch`,
       createdAt: D('2099-06-10T06:00:00'),
@@ -236,6 +244,7 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
       await prisma.branch.deleteMany({ where: { customerId: { in: ids } } });
       await prisma.customer.deleteMany({ where: { id: { in: ids } } });
     }
+    await prisma.importBatch.deleteMany({ where: { id: `${sfx}-batch` } });
     if (users.salesman) await prisma.user.update({ where: { id: users.salesman }, data: { ownedRouteId: null } });
     await prisma.route.deleteMany({ where: { id: { in: Object.values(rt).filter(Boolean) } } });
     await prisma.region.deleteMany({ where: { id: { in: Object.values(reg).filter(Boolean) } } });
@@ -455,7 +464,7 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
     expect(h.cellDeg).toBe(0.01);
     expect(h.openBranches).toBe(5);
     expect(h.openWithGps).toBe(3);
-    expect(h.located).toBe(2); // odd is outside the box
+    expect(h.located).toBe(3); // odd sits at the box's corner (gap 31: a point outside it is refused)
     for (const cell of h.cells) expect(cell.lat).toBeGreaterThan(20);
   });
 
