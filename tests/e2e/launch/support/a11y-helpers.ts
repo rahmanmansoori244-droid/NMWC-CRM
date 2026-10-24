@@ -2,12 +2,20 @@
  * Accessibility scans for the launch suite: Deque's axe-core through
  * @axe-core/playwright (pinned 4.13.0), WCAG 2.0 and 2.1, levels A and AA.
  *
- * LAUNCH POLICY — REPORT ONLY. Every scan is attached to the HTML report (the
- * axe JSON as returned), annotated on its test (rule, impact, node count) and
- * merged into test-results/launch-a11y-summary.json (rule, impact, count, page;
- * per project, per run). Nothing here fails a test on a violation. The one gate
- * is evaluated by the spec, on the phone project only, over the salesman's
- * screens and the GATE_RULES below — see a11y.spec.ts.
+ * LAUNCH POLICY — REPORT, AND TWO GATES. Every scan is attached to the HTML
+ * report (the axe JSON as returned), annotated on its test (rule, impact, node
+ * count) and merged into test-results/launch-a11y-summary.json (rule, impact,
+ * count, page; per project, per run). Nothing here fails a test on a violation.
+ * The gates are evaluated by the spec's last tests (a11y.spec.ts):
+ *
+ *   the salesman's phone gate — on the phone project only, over the salesman's
+ *     screens and the four GATE_RULES below, at GATE_IMPACT;
+ *   the back-office gate — on BOTH projects, over every Manager and Data Steward
+ *     screen (BACKOFFICE_PAGES: the queues, the review page with its Reject form
+ *     and its Approve dialog open, users with the Edit account dialog, routes,
+ *     import and a batch, audit, export, Temix with its Mark loaded dialog open,
+ *     duplicates, status, integrity, a customer's history, the dashboard), at
+ *     BACKOFFICE_GATE_IMPACTS: any rule axe rates critical or serious.
  *
  * Why these four rules gate and nothing else does:
  *   - each one makes a control unusable, not merely harder: a field or button
@@ -20,10 +28,17 @@
  *     between headless Chromium and a real phone, or with the data on screen;
  *   - the app already labels its fields (UAT-07: LabeledField's htmlFor/id; the
  *     icon buttons carry aria-label), so a hit is a regression, not old debt.
- * axe rates all four 'critical'. Contrast (serious), ARIA attribute misuse, list
- * structure, link names and the rest are reported for a person to triage after
- * launch. Touch-target size is WCAG 2.2 (`target-size`, tag wcag22aa) and is not
- * in the scanned tags at all.
+ * axe rates all four 'critical'. On the salesman's screens, contrast (serious),
+ * ARIA attribute misuse, list structure, link names and the rest are reported for
+ * a person to triage after launch. Touch-target size is WCAG 2.2 (`target-size`,
+ * tag wcag22aa) and is not in the scanned tags at all.
+ *
+ * Why the back-office gate takes every critical and serious rule, contrast
+ * included: those screens are few, built from the same handful of components,
+ * and the accessibility pass of October 2026 brought them to no critical or
+ * serious finding, so a new one is a change that brought it back, not old debt.
+ * Moderate and minor findings (heading order, an empty header) stay report only
+ * there too.
  *
  * The summary file lives outside the step's output folder (Playwright wipes
  * that), keyed by E2E_RUN_ID: a new run starts it afresh. The phone and desktop
@@ -52,6 +67,8 @@ export const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] as const;
 export const GATE_PROJECT = 'phone';
 /** Only violations axe rates at this impact gate. */
 export const GATE_IMPACT: Impact = 'critical';
+/** The back-office gate: any rule at these impacts, on BACKOFFICE_PAGES, on every project. */
+export const BACKOFFICE_GATE_IMPACTS: readonly Impact[] = ['critical', 'serious'];
 
 /** The must-not-ship rules on the salesman's phone screens, and why each one gates. */
 export const GATE_RULES: Readonly<Record<string, string>> = {
@@ -72,30 +89,62 @@ export interface A11yPageDef {
   role: string;
   /** One of the salesman's phone screens: the gate applies on GATE_PROJECT. */
   gate: boolean;
+  /** A Manager's or a Data Steward's screen: the back-office gate applies, on every project. */
+  backoffice: boolean;
 }
 
 /** Every page the a11y report scans, signed in as the role that uses it. */
 export const A11Y_PAGES = {
-  signIn: { label: 'Sign-in', route: '/login', role: 'signed out', gate: true },
-  forcedChange: { label: 'Forced password change', route: '/profile/change-password', role: 'SALESMAN (must change password)', gate: true },
-  today: { label: 'Today', route: '/today', role: 'SALESMAN', gate: true },
-  search: { label: 'Customer search', route: '/customers?q=…', role: 'SALESMAN', gate: true },
-  customer: { label: 'Customer page', route: '/customers/[id]', role: 'SALESMAN', gate: true },
-  enrich: { label: 'Enrich form', route: '/customers/[id]/edit', role: 'SALESMAN', gate: true },
-  newCustomer: { label: 'New-customer form', route: '/customers/new', role: 'SALESMAN', gate: true },
-  needsCorrection: { label: 'Needs correction', route: '/rejected', role: 'SALESMAN', gate: true },
-  notifications: { label: 'Notifications', route: '/notifications', role: 'SALESMAN', gate: true },
-  approvals: { label: 'Approvals queue', route: '/approvals', role: 'MANAGER', gate: false },
-  review: { label: 'Review page', route: '/approvals/[id]', role: 'MANAGER', gate: false },
-  reactivations: { label: 'Reactivations', route: '/reactivations', role: 'MANAGER', gate: false },
-  dashboard: { label: 'Dashboard', route: '/dashboard', role: 'MANAGER', gate: false },
-  users: { label: 'Users', route: '/users', role: 'STEWARD', gate: false },
-  import: { label: 'Import', route: '/import', role: 'STEWARD', gate: false },
-  temix: { label: 'Temix', route: '/temix', role: 'STEWARD', gate: false },
+  signIn: { label: 'Sign-in', route: '/login', role: 'signed out', gate: true, backoffice: false },
+  forcedChange: {
+    label: 'Forced password change',
+    route: '/profile/change-password',
+    role: 'SALESMAN (must change password)',
+    gate: true,
+    backoffice: false,
+  },
+  today: { label: 'Today', route: '/today', role: 'SALESMAN', gate: true, backoffice: false },
+  search: { label: 'Customer search', route: '/customers?q=…', role: 'SALESMAN', gate: true, backoffice: false },
+  customer: { label: 'Customer page', route: '/customers/[id]', role: 'SALESMAN', gate: true, backoffice: false },
+  enrich: { label: 'Enrich form', route: '/customers/[id]/edit', role: 'SALESMAN', gate: true, backoffice: false },
+  newCustomer: { label: 'New-customer form', route: '/customers/new', role: 'SALESMAN', gate: true, backoffice: false },
+  needsCorrection: { label: 'Needs correction', route: '/rejected', role: 'SALESMAN', gate: true, backoffice: false },
+  notifications: { label: 'Notifications', route: '/notifications', role: 'SALESMAN', gate: true, backoffice: false },
+  // ── the Manager's screens ──
+  approvals: { label: 'Approvals queue', route: '/approvals', role: 'MANAGER', gate: false, backoffice: true },
+  approvalsSelected: {
+    label: 'Approvals queue, a card ticked (bulk bar shown)',
+    route: '/approvals',
+    role: 'MANAGER',
+    gate: false,
+    backoffice: true,
+  },
+  review: { label: 'Review page', route: '/approvals/[id]', role: 'MANAGER', gate: false, backoffice: true },
+  reviewReject: { label: 'Review page, Reject form open', route: '/approvals/[id]', role: 'MANAGER', gate: false, backoffice: true },
+  reviewConfirm: { label: 'Review page, Approve dialog open', route: '/approvals/[id]', role: 'MANAGER', gate: false, backoffice: true },
+  reactivations: { label: 'Reactivations', route: '/reactivations', role: 'MANAGER', gate: false, backoffice: true },
+  dashboard: { label: 'Dashboard', route: '/dashboard', role: 'MANAGER', gate: false, backoffice: true },
+  usersManager: { label: 'Users (as the Manager)', route: '/users', role: 'MANAGER', gate: false, backoffice: true },
+  // ── the Data Steward's screens ──
+  users: { label: 'Users', route: '/users', role: 'STEWARD', gate: false, backoffice: true },
+  usersEdit: { label: 'Users, Edit account dialog open', route: '/users', role: 'STEWARD', gate: false, backoffice: true },
+  routes: { label: 'Routes & Regions', route: '/routes', role: 'STEWARD', gate: false, backoffice: true },
+  import: { label: 'Import', route: '/import', role: 'STEWARD', gate: false, backoffice: true },
+  importBatch: { label: 'Import batch', route: '/import/[batchId]', role: 'STEWARD', gate: false, backoffice: true },
+  audit: { label: 'Audit log', route: '/audit', role: 'STEWARD', gate: false, backoffice: true },
+  export: { label: 'Export', route: '/export', role: 'STEWARD', gate: false, backoffice: true },
+  temix: { label: 'Temix', route: '/temix', role: 'STEWARD', gate: false, backoffice: true },
+  temixConfirm: { label: 'Temix, Mark loaded dialog open', route: '/temix', role: 'STEWARD', gate: false, backoffice: true },
+  duplicates: { label: 'Duplicate review', route: '/duplicates', role: 'STEWARD', gate: false, backoffice: true },
+  status: { label: 'Service status', route: '/status', role: 'STEWARD', gate: false, backoffice: true },
+  integrity: { label: 'Integrity', route: '/status/integrity', role: 'STEWARD', gate: false, backoffice: true },
+  history: { label: 'Customer history', route: '/customers/[id]/history', role: 'STEWARD', gate: false, backoffice: true },
 } as const satisfies Record<string, A11yPageDef>;
 
 export type A11yPageKey = keyof typeof A11Y_PAGES;
 export const GATED_PAGES = (Object.keys(A11Y_PAGES) as A11yPageKey[]).filter((k) => A11Y_PAGES[k].gate);
+/** The Manager's and the Data Steward's screens: the back-office gate's pages. */
+export const BACKOFFICE_PAGES = (Object.keys(A11Y_PAGES) as A11yPageKey[]).filter((k) => A11Y_PAGES[k].backoffice);
 
 export interface RuleCount {
   rule: string;
@@ -152,16 +201,19 @@ interface SummaryFile {
   updatedAt: string;
   axe: { package: string; version: string; tags: readonly string[] };
   policy: {
-    mode: 'report-only';
+    mode: 'report-and-gates';
     gate: { project: string; impact: Impact; rules: Readonly<Record<string, string>>; pages: string[] };
+    backofficeGate: { projects: 'every project'; impacts: readonly Impact[]; rules: 'every rule'; pages: string[] };
   };
   projects: Record<string, { pages: Partial<Record<A11yPageKey, PageScan>> }>;
   /** One row per (project, page, rule), worst impact first. */
   rows: SummaryRow[];
   /** Per rule, over every project and page. */
   byRule: Array<{ rule: string; impact: Impact; nodes: number; pages: number; projects: string[] }>;
-  /** The gate's findings per project (only GATE_PROJECT is gated). */
+  /** The salesman gate's findings per project (only GATE_PROJECT is gated). */
   gate: Record<string, GateFinding[]>;
+  /** The back-office gate's findings, per project (every project is gated). */
+  backofficeGate: Record<string, GateFinding[]>;
 }
 
 const IMPACT_ORDER: Impact[] = ['critical', 'serious', 'moderate', 'minor', 'unknown'];
@@ -332,6 +384,19 @@ export function gateFindings(scans: PageScan[]): GateFinding[] {
   return out;
 }
 
+/** The back-office gate's findings among `scans` (BACKOFFICE_PAGES, any rule at BACKOFFICE_GATE_IMPACTS). */
+export function backofficeFindings(scans: PageScan[]): GateFinding[] {
+  const out: GateFinding[] = [];
+  for (const s of scans) {
+    if (!A11Y_PAGES[s.key]?.backoffice) continue;
+    for (const v of s.violations) {
+      if (!BACKOFFICE_GATE_IMPACTS.includes(v.impact)) continue;
+      out.push({ page: s.label, route: s.route, rule: v.rule, impact: v.impact, count: v.count, targets: v.targets });
+    }
+  }
+  return out;
+}
+
 export function describeFinding(f: GateFinding): string {
   return `${f.page} (${f.route}): ${f.rule} ${f.impact} ×${f.count} — ${f.targets.join(', ')}`;
 }
@@ -344,18 +409,25 @@ function emptySummary(): SummaryFile {
     updatedAt: new Date().toISOString(),
     axe: { package: '@axe-core/playwright', version: '', tags: WCAG_TAGS },
     policy: {
-      mode: 'report-only',
+      mode: 'report-and-gates',
       gate: {
         project: GATE_PROJECT,
         impact: GATE_IMPACT,
         rules: GATE_RULES,
         pages: GATED_PAGES.map((k) => `${A11Y_PAGES[k].label} (${A11Y_PAGES[k].route})`),
       },
+      backofficeGate: {
+        projects: 'every project',
+        impacts: BACKOFFICE_GATE_IMPACTS,
+        rules: 'every rule',
+        pages: BACKOFFICE_PAGES.map((k) => `${A11Y_PAGES[k].label} (${A11Y_PAGES[k].route})`),
+      },
     },
     projects: {},
     rows: [],
     byRule: [],
     gate: {},
+    backofficeGate: {},
   };
 }
 
@@ -373,6 +445,7 @@ function derive(s: SummaryFile): SummaryFile {
   const rows: SummaryRow[] = [];
   const rules = new Map<string, { rule: string; impact: Impact; nodes: number; pages: Set<string>; projects: Set<string> }>();
   const gate: Record<string, GateFinding[]> = {};
+  const backofficeGate: Record<string, GateFinding[]> = {};
   for (const [project, part] of Object.entries(s.projects).sort(([a], [b]) => a.localeCompare(b))) {
     const scans = Object.values(part.pages).filter((p): p is PageScan => !!p);
     for (const p of scans) {
@@ -388,12 +461,14 @@ function derive(s: SummaryFile): SummaryFile {
       }
     }
     if (project === GATE_PROJECT) gate[project] = gateFindings(scans);
+    backofficeGate[project] = backofficeFindings(scans);
   }
   s.rows = rows.sort((a, b) => byImpactThenCount(a, b) || a.project.localeCompare(b.project) || a.page.localeCompare(b.page));
   s.byRule = [...rules.values()]
     .map((r) => ({ rule: r.rule, impact: r.impact, nodes: r.nodes, pages: r.pages.size, projects: [...r.projects].sort() }))
     .sort((a, b) => rank(a.impact) - rank(b.impact) || b.nodes - a.nodes || a.rule.localeCompare(b.rule));
   s.gate = gate;
+  s.backofficeGate = backofficeGate;
   s.updatedAt = new Date().toISOString();
   return s;
 }
@@ -463,11 +538,13 @@ export function summaryMarkdown(project: string, scans: PageScan[]): string {
     .sort((a, b) => byImpactThenCount(a, b) || a.page.localeCompare(b.page));
   const byImpact = IMPACT_ORDER.map((i) => [i, rows.filter((r) => r.impact === i).reduce((n, r) => n + r.count, 0)] as const).filter(([, n]) => n > 0);
   const findings = project === GATE_PROJECT ? gateFindings(scanned) : [];
+  const backoffice = backofficeFindings(scanned);
   const lines = [
     `# Accessibility report — ${project}`,
     '',
     `axe-core ${scanned[0]?.axeVersion ?? '?'} (@axe-core/playwright), tags ${WCAG_TAGS.join(', ')}. Run ${RUN_ID}.`,
-    `Launch policy: REPORT ONLY. The gate: ${GATE_IMPACT} ${Object.keys(GATE_RULES).join(' / ')} on the salesman's screens, ${GATE_PROJECT} project only.`,
+    `Launch policy: REPORT, AND TWO GATES. The salesman gate: ${GATE_IMPACT} ${Object.keys(GATE_RULES).join(' / ')} on the salesman's screens, ${GATE_PROJECT} project only. ` +
+      `The back-office gate: any ${BACKOFFICE_GATE_IMPACTS.join(' or ')} rule on the Manager's and the Steward's screens, every project.`,
     '',
     `Pages scanned: ${scanned.length} of ${Object.keys(A11Y_PAGES).length}. Nodes in violation: ${
       byImpact.map(([i, n]) => `${i} ${n}`).join(', ') || 'none'
@@ -481,6 +558,8 @@ export function summaryMarkdown(project: string, scans: PageScan[]): string {
       ? `Gate findings: ${findings.length ? `${findings.length} — the gate test fails` : 'none.'}`
       : `Gate: not applied on ${project} (report only).`,
     ...findings.map((f) => `- ${describeFinding(f)}`),
+    `Back-office gate findings: ${backoffice.length ? `${backoffice.length} — the back-office gate test fails` : 'none.'}`,
+    ...backoffice.map((f) => `- ${describeFinding(f)}`),
   ];
   if (missing.length) {
     lines.push('', 'Not scanned:', ...missing.map((k) => `- ${A11Y_PAGES[k].label}${scans.find((s) => s.key === k)?.error ? ` — ${scans.find((s) => s.key === k)!.error}` : ''}`));
