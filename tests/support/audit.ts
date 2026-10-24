@@ -123,3 +123,8 @@ export function purgeAuthEvents(prisma: PrismaClient, args: Prisma.AuthEventDele
 export function purgeJobRunDays(prisma: PrismaClient, args: Prisma.JobRunDayDeleteManyArgs) {
   return withAuditMaintenance(prisma, (tx) => tx.jobRunDay.deleteMany(args));
 }
+
+/** Gap 25: the purge summaries a suite's own synthetic purges wrote. */
+export function purgePurgeSummaries(prisma: PrismaClient, args: Prisma.PurgeSummaryDeleteManyArgs) {
+  return withAuditMaintenance(prisma, (tx) => tx.purgeSummary.deleteMany(args));
+}

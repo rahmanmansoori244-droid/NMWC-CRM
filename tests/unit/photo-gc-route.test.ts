@@ -35,12 +35,31 @@ const h = vi.hoisted(() => ({
   warn: vi.fn(),
 }));
 
+/**
+ * Gap 25: the row is deleted by ONE statement that also writes its PurgeSummary
+ * row (lib/purge-summary.ts photoPurgeSql). The double reads the attachment id
+ * the statement binds, applies the delete through h.del, and answers as the
+ * statement does: one row and one summary, or none of either when the row is
+ * already gone (P2025 here stands for "nothing left to delete").
+ */
+async function purge(sql: { sql: string; values: unknown[] }) {
+  expect(sql.sql).toContain('DELETE FROM "Attachment"');
+  expect(sql.sql).toContain('INSERT INTO "PurgeSummary"');
+  const id = sql.values.find((v) => typeof v === 'string' && v.startsWith('att')) as string;
+  try {
+    await h.del({ where: { id } });
+    return [{ affected: 1, summarised: 1 }];
+  } catch (err) {
+    if ((err as { code?: string }).code === 'P2025') return [{ affected: 0, summarised: 0 }];
+    throw err;
+  }
+}
+
 vi.mock('@/lib/db', () => ({
   prisma: {
-    attachment: { findMany: h.findMany, delete: h.del },
+    attachment: { findMany: h.findMany },
     // Gap 24: the change context each transaction sets first (lib/change-context.ts).
-    $transaction: async (fn: (tx: unknown) => unknown) =>
-      fn({ $executeRaw: async () => 1, attachment: { delete: h.del } }),
+    $transaction: async (fn: (tx: unknown) => unknown) => fn({ $executeRaw: async () => 1, $queryRaw: purge }),
     cronHeartbeat: { upsert: h.upsert },
     cronRun: { create: h.runCreate },
   },

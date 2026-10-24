@@ -159,17 +159,6 @@ const db = {
             (n.readAt === null || n.createdAt > where.OR[1].createdAt.gt)
         ) ?? null
     ),
-    findMany: vi.fn(async ({ where, take }: { where: { readAt: { not: null; lt: Date } }; take: number }) =>
-      h.notes
-        .filter((n) => n.readAt !== null && n.readAt < where.readAt.lt)
-        .slice(0, take)
-        .map((n) => ({ id: n.id }))
-    ),
-    deleteMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) => {
-      const before = h.notes.length;
-      h.notes = h.notes.filter((n) => !where.id.in.includes(n.id));
-      return { count: before - h.notes.length };
-    }),
   },
   customer: { count: vi.fn(async () => h.temixQueue) },
   $executeRaw: vi.fn(async () => 0),
@@ -186,6 +175,20 @@ vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: 
 vi.mock('@/lib/heartbeat', () => ({ withHeartbeat: (_key: string, handler: unknown) => handler }));
 vi.mock('@/lib/alert', () => ({ sendAlert: vi.fn(async () => true) }));
 vi.mock('@/lib/temix', () => ({ TEMIX_QUEUE_WHERE: { temixQueued: true } }));
+// Gap 25: the notification GC is one statement that deletes read rows past 90
+// days and writes their PurgeSummary row (lib/purge-summary.ts). Its SQL is
+// pinned by tests/unit/purge-summary.test.ts; here it runs on the in-memory rows.
+vi.mock('@/lib/purge-summary', () => ({
+  purgeRunId: (job: string, at: Date) => `${job}:${at.toISOString()}`,
+  readNotificationPurgeSql: (now: Date, limit: number) => ({ now, limit }),
+  runPurge: async (_tx: unknown, rule: string, stmt: { now: Date; limit: number }) => {
+    expect(rule).toBe('notification-read-90d');
+    const cutoff = stmt.now.getTime() - 90 * DAY;
+    const doomed = h.notes.filter((n) => n.readAt !== null && n.readAt.getTime() < cutoff).slice(0, stmt.limit);
+    h.notes = h.notes.filter((n) => !doomed.includes(n));
+    return doomed.length;
+  },
+}));
 vi.mock('@/lib/audit', () => ({
   systemAuditEnvelope: (actorId: string) => ({ actorId, ip: null, userAgent: null }),
   writeAudit: vi.fn(async (_tx: unknown, _env: unknown, row: { entityId: string; action: string; after?: unknown }) => {

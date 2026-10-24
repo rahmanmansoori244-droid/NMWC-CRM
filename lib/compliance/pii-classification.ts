@@ -375,6 +375,27 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'JobRunDay.sources': { subject: 'none', note: 'the CronRun scheduler labels seen that day, never a User-Agent' },
   'JobRunDay.recordedAt': { subject: 'none', note: RECORD_META },
 
+  // ---- PurgeSummary (gap 25: one row per batch a retention rule removed) ----
+  'PurgeSummary.id': { subject: 'none', note: 'the strict order of the summaries' },
+  'PurgeSummary.at': { subject: 'none', note: RECORD_META },
+  'PurgeSummary.job': { subject: 'none', note: 'which job ran the rule' },
+  'PurgeSummary.rule': { subject: 'none', note: 'lib/retention-rules.ts rule id' },
+  'PurgeSummary.tableName': { subject: 'none' },
+  'PurgeSummary.action': { subject: 'none', note: 'DELETE or CLEAR_PAYLOAD' },
+  'PurgeSummary.rows': { subject: 'none', note: 'how many rows the batch removed' },
+  'PurgeSummary.dateColumn': { subject: 'none' },
+  'PurgeSummary.oldestAt': { subject: 'none', note: 'the oldest value of the rule date column in the batch' },
+  'PurgeSummary.newestAt': { subject: 'none', note: 'the newest value of the rule date column in the batch' },
+  'PurgeSummary.cutoff': { subject: 'none' },
+  'PurgeSummary.retentionDays': { subject: 'none' },
+  'PurgeSummary.detail': {
+    subject: 'none',
+    note: 'counts by category only (bucket kind, month, notification kind and e-mail outcome, import batch id and row state, job key, photo kind) — never a key, a name or text',
+  },
+  'PurgeSummary.runId': { subject: 'none', note: 'job name and run start' },
+  'PurgeSummary.source': { subject: 'none', note: 'the change-context source (a job name)' },
+  'PurgeSummary.txId': { subject: 'none', note: 'database transaction id (joins AuditLog.txId)' },
+
   // ---- RateLimit -----------------------------------------------------------
   'RateLimit.key': {
     subject: 'employee',

@@ -21,6 +21,8 @@ export const HISTORY_MIGRATIONS = [
   '20261015100100_route_region_fixed',
   // Watch and prove (gap 30): the test-record flag and its owner-only guard.
   '20261024120000_test_records',
+  // Watch and prove (gap 25): every purge writes a summary.
+  '20261024120100_purge_summaries',
 ] as const;
 
 /** INSERT-only tables written by the capture triggers, never by the application. */
@@ -44,14 +46,21 @@ export const CAPTURED_TABLES = ['Customer', 'Branch', 'User', 'Route', 'Region',
  * C, gaps 21 and 23): the runtime role may insert, never update or delete, and a
  * trigger refuses both outside the owner's maintenance window.
  */
-export const APPEND_ONLY_APP_TABLES = ['EditRevision', 'ExportJob', 'JobRunDay', 'AuthEvent'] as const;
+export const APPEND_ONLY_APP_TABLES = [
+  'EditRevision',
+  'ExportJob',
+  'JobRunDay',
+  'AuthEvent',
+  // Watch and prove (gap 25): the summary every retention rule writes as it deletes.
+  'PurgeSummary',
+] as const;
 
 /**
  * The ones with a BIGSERIAL id: the runtime role draws ids from the sequence
  * (nextval on insert) but may not set it (setval would make inserts collide).
  * ExportJob's id is a cuid.
  */
-export const LEDGER_SEQUENCE_TABLES = ['EditRevision', 'JobRunDay', 'AuthEvent'] as const;
+export const LEDGER_SEQUENCE_TABLES = ['EditRevision', 'JobRunDay', 'AuthEvent', 'PurgeSummary'] as const;
 
 /**
  * Gap 19 (lossless paths): a request, once sent, is evidence. Its original
@@ -89,6 +98,8 @@ export const HISTORY_TRIGGERS: readonly string[] = [
   // sign-in events the application inserts carry the same cause and transaction.
   'user_session_revoke_capture',
   'authevent_stamp_context',
+  // Gap 25: a purge summary carries its writer's cause and transaction.
+  'purgesummary_stamp_context',
   // Part C (gap 16): a route never changes region.
   'route_region_fixed',
   ...HISTORY_TABLES.flatMap((t) => [

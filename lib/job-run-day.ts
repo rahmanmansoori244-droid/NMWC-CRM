@@ -17,7 +17,9 @@
  *      their day has its JobRunDay row. A sweep that failed to summarise, or did
  *      not run for weeks, therefore loses nothing: the runs wait until their day
  *      is written. So no day can be pruned in part before it is summarised, and
- *      step 1 needs no lower bound.
+ *      step 1 needs no lower bound. Gap 25: each pruned batch also writes its
+ *      PurgeSummary row (rule cron-run-90d, counts by job) in the same
+ *      statement (lib/purge-summary.ts).
  *
  * Days are Oman calendar days of the run's START (Asia/Muscat, UTC+4). Every
  * time is converted explicitly (CronRun.at holds UTC without a zone), so the
@@ -25,6 +27,7 @@
  */
 import type { PrismaClient } from '@prisma/client';
 import { omanDayStart } from './change-context';
+import { cronRunPurgeSql, runPurge, type PurgeRun } from './purge-summary';
 import { omanDateISO } from './tz';
 
 /** A day is summarised once it has been over for this long. */
@@ -64,19 +67,14 @@ export function summariseJobRunDays(db: Raw, now: Date = new Date()): Promise<nu
 
 /**
  * Delete up to `limit` CronRun rows older than `cutoff` whose Oman day has its
- * JobRunDay row. Returns how many were deleted.
+ * JobRunDay row, and write their PurgeSummary row in the same statement. Returns
+ * how many were deleted. Run it in a transaction under the job's change context.
  */
-export function pruneSummarisedCronRuns(db: Raw, cutoff: Date, limit: number): Promise<number> {
-  return db.$executeRaw`
-    DELETE FROM "CronRun"
-     WHERE "id" IN (
-       SELECT c."id" FROM "CronRun" c
-        WHERE c."at" < (${cutoff.toISOString()}::timestamptz AT TIME ZONE 'UTC')
-          AND EXISTS (
-                SELECT 1 FROM "JobRunDay" j
-                 WHERE j."key" = c."key"
-                   AND j."day" = ((c."at" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Muscat')::date)
-        ORDER BY c."at"
-        LIMIT ${limit}
-     )`;
+export function pruneSummarisedCronRuns(
+  db: Pick<PrismaClient, '$queryRaw'>,
+  cutoff: Date,
+  limit: number,
+  run: PurgeRun = { runId: null, source: 'cron:retention-sweep' }
+): Promise<number> {
+  return runPurge(db, 'cron-run-90d', cronRunPurgeSql(cutoff, limit, run));
 }

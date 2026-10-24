@@ -17,7 +17,9 @@
  *     calendar) → escalate one tier further.
  *  3. TEMIX_UPLOAD_READY debounce: queue non-empty ⇒ each Steward gets at
  *     most ONE unread ping per 24h — never one per approval.
- *  4. Notification GC: read rows older than 90 days, capped batch.
+ *  4. Notification GC: read rows older than 90 days, capped batch, with the
+ *     batch's PurgeSummary row (gap 25, lib/purge-summary.ts; rule
+ *     notification-read-90d in lib/retention-rules.ts).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { Role, type Prisma } from '@prisma/client';
@@ -41,12 +43,13 @@ import { TEMIX_QUEUE_WHERE } from '@/lib/temix';
 import { notifyUsers } from '@/lib/notifications';
 import { sendAlert } from '@/lib/alert';
 import { systemAuditEnvelope, writeAudit } from '@/lib/audit';
+import { purgeRunId, readNotificationPurgeSql, runPurge } from '@/lib/purge-summary';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const BATCH = 200; // photo-gc batching precedent
-const NOTIFICATION_GC_DAYS = 90;
+// The 90 days are lib/retention-rules.ts notification-read-90d.
 const NOTIFICATION_GC_CAP = 500;
 
 type DueEdit = Prisma.CustomerEditGetPayload<{
@@ -337,17 +340,12 @@ async function handle(req: NextRequest) {
   }
 
   // ── 4. Notification GC: read rows older than 90 days, capped. ──
-  const gcCutoff = new Date(now.getTime() - NOTIFICATION_GC_DAYS * 24 * 60 * 60 * 1000);
-  const gcCandidates = await prisma.notification.findMany({
-    where: { readAt: { not: null, lt: gcCutoff } },
-    select: { id: true },
-    take: NOTIFICATION_GC_CAP,
-  });
-  const gcDeleted = gcCandidates.length
-    ? (await prisma.notification.deleteMany({
-        where: { id: { in: gcCandidates.map((n) => n.id) } },
-      })).count
-    : 0;
+  // Gap 25: one statement deletes the batch and writes its summary (counts by
+  // month, kind and e-mail outcome). The delete restates the row predicate, so
+  // a row whose read time moved after it was chosen is left alone.
+  const gcDeleted = await withChangeContext(prisma, { actorId: null, source: src.cron('sla-escalate') }, (tx) =>
+    runPurge(tx, 'notification-read-90d', readNotificationPurgeSql(now, NOTIFICATION_GC_CAP, { runId: purgeRunId('sla-escalate', now) }))
+  );
 
   logger.info({ escalated, level2, temixPinged, gcDeleted, sweepErrors }, 'cron.sla_escalate');
 

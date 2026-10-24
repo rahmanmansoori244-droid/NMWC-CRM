@@ -54,13 +54,23 @@ describe('the statements', () => {
     expect(sql).not.toMatch(/DO UPDATE/);
   });
 
-  it('prune: only runs past the cutoff whose day has its row', async () => {
-    const { db, calls } = capture();
-    await pruneSummarisedCronRuns(db as never, new Date('2026-07-14T05:00:00Z'), 2000);
-    const { sql, values } = calls[0]!;
-    expect(sql).toMatch(/c\."at" < \(\$\?::timestamptz AT TIME ZONE 'UTC'\)/);
-    expect(sql).toMatch(/AND EXISTS \(\s*SELECT 1 FROM "JobRunDay" j\s*WHERE j\."key" = c\."key"\s*AND j\."day" = \(\(c\."at" AT TIME ZONE 'UTC'\) AT TIME ZONE 'Asia\/Muscat'\)::date\)/);
-    expect(values).toEqual(['2026-07-14T05:00:00.000Z', 2000]);
+  it('prune: only runs past the cutoff whose day has its row, with its summary in the same statement', async () => {
+    const seen: Array<{ sql: string; values: unknown[] }> = [];
+    const db = {
+      $queryRaw: async (q: { sql: string; values: unknown[] }) => {
+        seen.push(q);
+        return [{ affected: 3, summarised: 1 }];
+      },
+    };
+    expect(await pruneSummarisedCronRuns(db as never, new Date('2026-07-14T05:00:00Z'), 2000)).toBe(3);
+    const { sql, values } = seen[0]!;
+    expect(sql).toMatch(/c\."at" < \(\?::timestamptz AT TIME ZONE 'UTC'\)/);
+    // The day test, on the chosen row and again on the row deleted (gap 25: restated).
+    expect(sql).toContain(`EXISTS (SELECT 1 FROM "JobRunDay" j WHERE j."key" = c."key" AND j."day" = ((c."at" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Muscat')::date)`);
+    expect(sql).toContain(`EXISTS (SELECT 1 FROM "JobRunDay" j WHERE j."key" = x."key" AND j."day" = ((x."at" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Muscat')::date)`);
+    expect(sql).toContain('INSERT INTO "PurgeSummary"');
+    expect(values.slice(0, 2)).toEqual(['2026-07-14T05:00:00.000Z', 2000]);
+    expect(values).toContain('cron-run-90d');
   });
 });
 
@@ -69,7 +79,7 @@ describe('the retention sweep', () => {
 
   it('summarises the days before it prunes their runs, each step on its own error count', () => {
     const summarise = src.indexOf('swept.jobRunDays = await summariseJobRunDays(prisma)');
-    const prune = src.indexOf('swept.cronRuns = await pruneSummarisedCronRuns(prisma, cutoff(CRON_RUN_DAYS), CRON_RUN_BATCH)');
+    const prune = src.indexOf('pruneSummarisedCronRuns(tx, retentionCutoff(RETENTION_RULES[\'cron-run-90d\'], now), CRON_RUN_BATCH, run)');
     expect(summarise).toBeGreaterThan(-1);
     expect(prune).toBeGreaterThan(summarise);
     // Two try blocks: a failed summary is counted and the prune still only takes summarised days.

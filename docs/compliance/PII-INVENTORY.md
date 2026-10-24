@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**491 stored columns across 34 tables** — Customer contact: 29 · Employee: 95 · Customer entity (personal if a sole establishment): 50 · Not personal data: 317.
+**507 stored columns across 35 tables** — Customer contact: 29 · Employee: 95 · Customer entity (personal if a sole establishment): 50 · Not personal data: 333.
 
 ## Columns holding personal data
 
@@ -322,7 +322,7 @@ Every column the database stores, classified by whose personal data it is. This 
 
 ## Tables with no personal data
 
-`Region`, `Channel`, `SubChannel`, `CronHeartbeat`, `CronRun`, `JobRunDay`, `CodeSequence`
+`Region`, `Channel`, `SubChannel`, `CronHeartbeat`, `CronRun`, `JobRunDay`, `PurgeSummary`, `CodeSequence`
 
 ## Columns classified as not personal data
 
@@ -468,6 +468,22 @@ Every column the database stores, classified by whose personal data it is. This 
 | JobRunDay | `maxDurationMs` | Int | structural / operational value |
 | JobRunDay | `sources` | String[] | the CronRun scheduler labels seen that day, never a User-Agent |
 | JobRunDay | `recordedAt` | DateTime | record timestamp, not an attribute of a person |
+| PurgeSummary | `id` | BigInt | the strict order of the summaries |
+| PurgeSummary | `at` | DateTime | record timestamp, not an attribute of a person |
+| PurgeSummary | `job` | String | which job ran the rule |
+| PurgeSummary | `rule` | String | lib/retention-rules.ts rule id |
+| PurgeSummary | `tableName` | String | structural / operational value |
+| PurgeSummary | `action` | String | DELETE or CLEAR_PAYLOAD |
+| PurgeSummary | `rows` | Int | how many rows the batch removed |
+| PurgeSummary | `dateColumn` | String | structural / operational value |
+| PurgeSummary | `oldestAt` | DateTime | the oldest value of the rule date column in the batch |
+| PurgeSummary | `newestAt` | DateTime | the newest value of the rule date column in the batch |
+| PurgeSummary | `cutoff` | DateTime | structural / operational value |
+| PurgeSummary | `retentionDays` | Int | structural / operational value |
+| PurgeSummary | `detail` | Json | counts by category only (bucket kind, month, notification kind and e-mail outcome, import batch id and row state, job key, photo kind) — never a key, a name or text |
+| PurgeSummary | `runId` | String | job name and run start |
+| PurgeSummary | `source` | String | the change-context source (a job name) |
+| PurgeSummary | `txId` | BigInt | database transaction id (joins AuditLog.txId) |
 | RateLimit | `tokens` | Float | structural / operational value |
 | RateLimit | `lastRefill` | DateTime | record timestamp, not an attribute of a person |
 | RateLimit | `updatedAt` | DateTime | record timestamp, not an attribute of a person |

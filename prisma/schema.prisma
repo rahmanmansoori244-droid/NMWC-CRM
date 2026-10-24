@@ -723,6 +723,42 @@ model JobRunDay {
   @@unique([key, day])
 }
 
+// Gap 25 (data audit 2026-10-10; migration 20261024120100_purge_summaries): one
+// row per batch a retention rule deleted (or, for an import row, emptied),
+// written in the SAME statement as the deletion (lib/purge-summary.ts): which
+// job and rule (lib/retention-rules.ts), which table, how many rows, the oldest
+// and newest value of the rule's date column, the cut-off and a few counts by
+// category (detail: by kind, month, batch or job — never a key, a name or text).
+// So "how many notifications were e-mailed in March" survives their deletion.
+// Append-only like AuditLog; source and txId stamped by the database. Kept for
+// ever.
+model PurgeSummary {
+  id            BigInt    @id @default(autoincrement())
+  at            DateTime  @default(now())
+  // The job that ran the rule: retention-sweep, sla-escalate, photo-gc, password-policy.
+  job           String
+  // lib/retention-rules.ts RetentionRuleId (CHECK PurgeSummary_rule_check).
+  rule          String
+  tableName     String
+  // DELETE or CLEAR_PAYLOAD (CHECK PurgeSummary_action_check).
+  action        String
+  // Always > 0 (CHECK PurgeSummary_rows_check): an empty batch writes no row.
+  rows          Int
+  dateColumn    String
+  oldestAt      DateTime?
+  newestAt      DateTime?
+  cutoff        DateTime?
+  retentionDays Int?
+  detail        Json?
+  // '<job>:<run start ISO>': the summaries of one run.
+  runId         String?
+  source        String?
+  txId          BigInt?
+
+  @@index([at(sort: Desc)])
+  @@index([tableName, at(sort: Desc)])
+}
+
 // ── RATE LIMIT ──────────────────────────────────────
 // QA-015: durable rate limiter that survives across Vercel function instances.
 // Token-bucket: each row holds the bucket's current tokens and the last refill
