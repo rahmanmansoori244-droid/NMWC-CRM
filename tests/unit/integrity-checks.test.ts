@@ -22,6 +22,8 @@ import {
   triggerFindings,
 } from '@/lib/integrity/classify';
 import { EXPECTED_FUNCTIONS, TRIGGER_BINDINGS } from '@/lib/integrity/expected';
+import { CustomerStatus } from '@prisma/client';
+import { customerStatusFollowing, statusEvents } from '@/lib/customer-status-rule';
 import { KNOWN_LEGACY_SPACED_TEMIX_CODES, SAMPLE_LIMIT } from '@/lib/integrity/policy';
 
 describe('status and samples', () => {
@@ -39,15 +41,26 @@ describe('status and samples', () => {
 });
 
 describe('customer-status-follows-shops (the customer-status rule)', () => {
-  it('counts close, reopen and review, and leaves a consistent or held customer alone', () => {
+  it('counts close and reopen; lists review as information; leaves a consistent or held customer alone', () => {
     const r = statusDriftFindings([
+      { id: 'c', status: 'ACTIVE', shops: ['SUSPENDED', 'CLOSED'] }, // review
       { id: 'a', status: 'ACTIVE', shops: ['CLOSED', 'CLOSED'] }, // close
       { id: 'b', status: 'CLOSED', shops: ['ACTIVE', 'CLOSED'] }, // reopen
-      { id: 'c', status: 'ACTIVE', shops: ['SUSPENDED', 'CLOSED'] }, // review
       { id: 'd', status: 'SUSPENDED', shops: ['ACTIVE'] }, // a hold a person set: not drift
       { id: 'e', status: 'ACTIVE', shops: ['ACTIVE'] },
     ]);
-    expect(r).toEqual({ count: 3, sampleIds: ['a', 'b', 'c'], detail: { close: 1, reopen: 1, review: 1 } });
+    expect(r).toEqual({ count: 2, sampleIds: ['a', 'b'], detail: { close: 1, reopen: 1, review: 1, info: ['c'] } });
+  });
+
+  it('the rule itself leaves "review": suspending the only open shop moves nothing, so the check must not fail on it', () => {
+    // An ACTIVE customer, one ACTIVE shop and one CLOSED; the open shop is suspended.
+    const events = statusEvents(CustomerStatus.ACTIVE, CustomerStatus.SUSPENDED);
+    const after = customerStatusFollowing(CustomerStatus.ACTIVE, [CustomerStatus.SUSPENDED, CustomerStatus.CLOSED], events);
+    expect(after).toBe(CustomerStatus.ACTIVE);
+    const r = statusDriftFindings([{ id: 'x', status: after, shops: ['SUSPENDED', 'CLOSED'] }]);
+    expect(r.count).toBe(0);
+    expect(checkStatus('alert', r.count)).toBe('pass');
+    expect(r.detail).toMatchObject({ review: 1, info: ['x'] });
   });
 });
 

@@ -7,7 +7,7 @@ import { TableScroll } from '@/components/nmwc/TableScroll';
 import { omanDateTime } from '@/lib/tz';
 import { CHECKS, CHECK_BY_ID } from '@/lib/integrity/checks';
 import { INTEGRITY_INAPP_ALERTS_ENABLED } from '@/lib/integrity/policy';
-import { CUSTOMER_SAMPLES, SHOP_SAMPLES, loadIntegrityReport, type IntegrityReport, type ResultRow } from '@/lib/integrity/report';
+import { CUSTOMER_SAMPLES, SHOP_SAMPLES, infoIds, loadIntegrityReport, type IntegrityReport, type ResultRow } from '@/lib/integrity/report';
 
 export const metadata = { title: 'Integrity · NMWC' };
 export const dynamic = 'force-dynamic';
@@ -79,13 +79,23 @@ function Badge({ status }: { status: string }) {
   );
 }
 
-function Samples({ r, report }: { r: ResultRow; report: IntegrityReport }) {
-  if (r.sampleIds.length === 0) return null;
+function Samples({
+  r,
+  report,
+  ids = r.sampleIds,
+  label = 'Examples:',
+}: {
+  r: ResultRow;
+  report: IntegrityReport;
+  ids?: string[];
+  label?: string;
+}) {
+  if (ids.length === 0) return null;
   const linkable = CUSTOMER_SAMPLES.has(r.checkId) || SHOP_SAMPLES.has(r.checkId);
   return (
     <p className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs text-slate-600">
-      <span className="text-slate-500">Examples:</span>
-      {r.sampleIds.map((id) => {
+      <span className="text-slate-500">{label}</span>
+      {ids.map((id) => {
         const c = linkable ? report.customerOf.get(id) : undefined;
         return c ? (
           <Link key={id} href={`/customers/${c.id}`} className="font-mono text-brand-700 hover:underline">
@@ -97,7 +107,7 @@ function Samples({ r, report }: { r: ResultRow; report: IntegrityReport }) {
           </span>
         );
       })}
-      {r.count !== null && r.count > r.sampleIds.length && <span>…</span>}
+      {ids === r.sampleIds && r.count !== null && r.count > r.sampleIds.length && <span>…</span>}
     </p>
   );
 }
@@ -151,6 +161,7 @@ function LatestRun({ report }: { report: IntegrityReport }) {
                 </p>
               )}
               {r && <Samples r={r} report={report} />}
+              {r && <Samples r={r} report={report} ids={infoIds(r)} label="Listed as information, not counted:" />}
               {!r && <p className="mt-1 text-xs text-slate-500">Not in the last run.</p>}
             </li>
           );

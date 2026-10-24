@@ -35,13 +35,17 @@ export default async function TemixPage({
   // older batch still awaiting confirmation could no longer be re-downloaded or
   // marked loaded. The history now pages, and the first page also lists every
   // batch awaiting confirmation, however old, so none drops out of reach.
+  //
+  // Gap 30: the tiles count what the queue and the Generate button count, so a
+  // flagged test customer (never sent to Temix, lib/temix.ts) is in none of them:
+  // the page can no longer show "Pending upload: N" with Generate disabled.
   const [pendingUpload, deactivatePending, uploaded, queueTotal, batchTotal, pageBatches, awaiting] = await Promise.all([
     prisma.customer.count({
-      where: { temixSyncState: TemixSyncState.PENDING_UPLOAD, deletedAt: null },
+      where: { temixSyncState: TemixSyncState.PENDING_UPLOAD, deletedAt: null, isTest: false },
     }),
     // Deliberately NO deletedAt filter — deactivation rows are soft-deleted.
-    prisma.customer.count({ where: { temixSyncState: TemixSyncState.DEACTIVATE_PENDING } }),
-    prisma.customer.count({ where: { temixSyncState: TemixSyncState.UPLOADED } }),
+    prisma.customer.count({ where: { temixSyncState: TemixSyncState.DEACTIVATE_PENDING, isTest: false } }),
+    prisma.customer.count({ where: { temixSyncState: TemixSyncState.UPLOADED, isTest: false } }),
     prisma.customer.count({ where: TEMIX_QUEUE_WHERE }),
     prisma.temixSyncBatch.count(),
     prisma.temixSyncBatch.findMany({

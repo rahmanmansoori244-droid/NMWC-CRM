@@ -22,6 +22,8 @@ const h = vi.hoisted(() => ({
   mark: vi.fn(),
   refresh: vi.fn(),
   batches: [] as Batch[],
+  /** Every customer count the page makes, by its where. */
+  counts: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock('@/services/temix', () => ({
@@ -48,7 +50,12 @@ vi.mock('@/lib/db', () => {
   const sorted = () => [...h.batches].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   return {
     prisma: {
-      customer: { count: async () => 0 },
+      customer: {
+        count: async ({ where }: { where: Record<string, unknown> }) => {
+          h.counts.push(where);
+          return 0;
+        },
+      },
       temixSyncBatch: {
         count: async () => h.batches.length,
         findMany: async ({ where, skip = 0, take }: Args) => {
@@ -68,6 +75,7 @@ const REFUSAL = (text: string) => ({ ok: false, code: 'VALIDATION_FAILED', messa
 beforeEach(() => {
   vi.clearAllMocks();
   h.batches = [];
+  h.counts = [];
 });
 afterEach(cleanup);
 
@@ -133,6 +141,19 @@ describe('the batch history keeps every batch reachable', () => {
     const second = render(await TemixPage({ searchParams: Promise.resolve({ page: '2' }) }));
     expect(ids(second.container)).toEqual(['…ch-004', '…ch-003', '…ch-002', '…ch-001', '…ch-000']);
     expect(screen.getByRole('link', { name: '← Newer' }).getAttribute('href')).toBe('/temix');
+  });
+});
+
+describe('gap 30: the tiles count what the queue and the Generate button count', () => {
+  it('every tile leaves the flagged test customers out, as TEMIX_QUEUE_WHERE does', async () => {
+    const { TEMIX_QUEUE_WHERE } = await import('@/lib/temix');
+    render(await TemixPage({ searchParams: Promise.resolve({}) }));
+    expect(h.counts).toHaveLength(4);
+    for (const where of h.counts) {
+      if (where === TEMIX_QUEUE_WHERE) continue;
+      expect(where, JSON.stringify(where)).toMatchObject({ isTest: false });
+    }
+    expect(h.counts).toContain(TEMIX_QUEUE_WHERE);
   });
 });
 

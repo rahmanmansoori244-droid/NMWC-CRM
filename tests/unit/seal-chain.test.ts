@@ -22,8 +22,12 @@ import { createHash } from 'node:crypto';
 import {
   buildSealBody,
   canonicalJson,
+  expectedSealKey,
   horizonDecision,
+  listingFindings,
+  mismatchSignature,
   offsiteRetryable,
+  parseSealObjectKey,
   planRanges,
   sealBodyText,
   sealObjectKey,
@@ -33,8 +37,8 @@ import {
   type StoredSeal,
 } from '@/lib/seal/chain';
 import { EMPTY_DIGEST, SEAL_FORMAT_VERSION, sealedTables } from '@/lib/seal/canon';
-import { writeSeal, type HorizonReader } from '@/lib/seal/seal';
-import { recheckSeals } from '@/lib/seal/verify';
+import { isSealRace, writeSeal, type HorizonReader } from '@/lib/seal/seal';
+import { recheckSeals, rotationCount, rotationSlice } from '@/lib/seal/verify';
 import { ensureOffsite, type SealStore } from '@/lib/seal/store';
 
 const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
@@ -72,6 +76,7 @@ function fakeDb(): Fake & { db: never; tx: Record<string, unknown> } {
       return 1;
     },
     $queryRaw: async (q: { sql: string; values: unknown[] }) => {
+      if (q.sql.includes('FROM "SealRecord" WHERE "seq" = 0')) return f.seals.filter((s) => s.seq === 0).map((s) => ({ hash: s.hash }));
       if (q.sql.includes('FROM "SealRecord"') && q.sql.includes('DESC LIMIT 1')) {
         const s = f.seals.at(-1);
         return s ? [{ ...s, sealedAt: new Date(s.sealedAt) }] : [];
@@ -137,7 +142,120 @@ describe('the body and its hash', () => {
     // An empty range carries the digest of nothing.
     expect(buildSealBody({ ...input, tables: [{ ...input.tables[0]!, n: 0, digest: '' }] }).tables[0]!.digest).toBe(EMPTY_DIGEST);
     expect(EMPTY_DIGEST).toBe(sha(''));
-    expect(sealObjectKey(1, '2026-10-24', 3, a.hash)).toBe(`seals/v1/2026/2026-10-24-000003-${a.hash.slice(0, 16)}.json`);
+    // The off-site key is the chain's (its genesis hash) and the seq: never this seal's own hash or day.
+    expect(sealObjectKey('9'.repeat(64), 3)).toBe(`seals/v1/${'9'.repeat(16)}/00000003.json`);
+    expect(parseSealObjectKey(`seals/v1/${'9'.repeat(16)}/00000003.json`)).toEqual({ chain: '9'.repeat(16), seq: 3 });
+    expect(parseSealObjectKey('seals/v1/2026/2026-10-24-000003-0123456789abcdef.json')).toBeNull();
+    expect(() => sealObjectKey('not a hash', 3)).toThrow();
+  });
+});
+
+describe('the off-site key is fixed by the chain and the seq', () => {
+  it('every seal of a chain is filed under its genesis; a second body for the same seq gets the same key', async () => {
+    const f = fakeDb();
+    add(f, 'AuditLog', 1n);
+    await seal(f, 20);
+    f.horizon = { xmin: 200n, xmax: 200n, currentXid: 200n, oldBackends: 0 };
+    await seal(f, 21);
+    const [g, s1] = f.seals as [StoredSeal, StoredSeal];
+    expect(g.r2Key).toBe(sealObjectKey(g.hash, 0));
+    expect(s1.r2Key).toBe(sealObjectKey(g.hash, 1));
+    // A rewritten seal 1 (another body, another hash) would still be filed at seal 1's key:
+    // under a write-once lock its PUT is refused and the original is read back.
+    const forged = { ...s1, bodyText: s1.bodyText.replace('"n":1', '"n":0'), hash: 'e'.repeat(64) };
+    expect(expectedSealKey(f.seals, forged)).toBe(s1.r2Key);
+  });
+
+  it('a seal is not written when the genesis is gone (the chain cannot be named)', async () => {
+    const f = fakeDb();
+    await seal(f, 20);
+    f.horizon = { xmin: 200n, xmax: 200n, currentXid: 200n, oldBackends: 0 };
+    await seal(f, 21);
+    f.seals.shift();
+    f.horizon = { xmin: 300n, xmax: 300n, currentXid: 300n, oldBackends: 0 };
+    await expect(seal(f, 22)).rejects.toThrow(/genesis seal \(seq 0\) is missing/);
+  });
+});
+
+describe('the listing of seals/', () => {
+  async function chained() {
+    const f = fakeDb();
+    add(f, 'AuditLog', 1n);
+    await seal(f, 20);
+    for (const [i, d] of [21, 22].entries()) {
+      f.horizon = { xmin: 100n * BigInt(i + 2), xmax: 100n * BigInt(i + 2), currentXid: 100n * BigInt(i + 2), oldBackends: 0 };
+      await seal(f, d);
+    }
+    return f;
+  }
+
+  it('one object per seal at its own key, and nothing else: clean', async () => {
+    const f = await chained();
+    expect(listingFindings(f.seals, f.seals.map((s) => s.r2Key))).toEqual([]);
+  });
+
+  it('names a missing copy, a copy after the last seal, another chain’s folder, a stray key, and a row pointing elsewhere', async () => {
+    const f = await chained();
+    const g = f.seals[0]!.hash;
+    const keys = [
+      f.seals[0]!.r2Key,
+      f.seals[2]!.r2Key, // seal 1's is missing
+      sealObjectKey(g, 3), // the database's newest seal was removed, its copy was not
+      sealObjectKey('a'.repeat(64), 1), // a chain rewritten from its genesis
+      'seals/notes.txt',
+    ];
+    const pointed = structuredClone(f.seals);
+    pointed[2]!.r2Key = sealObjectKey('a'.repeat(64), 2);
+    const found = listingFindings(pointed, keys);
+    const byKey = (a: { key: string }, b: { key: string }) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+    expect([...found].sort(byKey)).toEqual(
+      [
+        { kind: 'offsite-missing', seq: 1, key: f.seals[1]!.r2Key },
+        { kind: 'offsite-key-mismatch', seq: 2, key: pointed[2]!.r2Key, why: `its key is ${f.seals[2]!.r2Key}` },
+        { kind: 'offsite-unexpected', seq: 1, key: sealObjectKey('a'.repeat(64), 1), why: 'another chain' },
+        { kind: 'offsite-unexpected', seq: 3, key: sealObjectKey(g, 3), why: 'after the last seal' },
+        { kind: 'offsite-unexpected', seq: null, key: 'seals/notes.txt', why: 'not a seal key' },
+      ].sort(byKey)
+    );
+    // A seal the caller read one by one is not reported missing by the listing again.
+    expect(listingFindings(f.seals, keys.filter((k) => k !== f.seals[1]!.r2Key), new Set([1])).filter((x) => x.kind === 'offsite-missing')).toEqual([]);
+  });
+
+  it('verify-seals sees the listing too', async () => {
+    const f = await chained();
+    const copies = new Map(f.seals.map((s) => [s.r2Key, s.bodyText] as const));
+    const extra = sealObjectKey(f.seals[0]!.hash, 7);
+    const store: SealStore = { get: async (k) => copies.get(k) ?? null, put: async () => undefined, list: async () => [...copies.keys(), extra] };
+    const r = await recheckSeals(f.tx as never, { window: 'all', offsite: store });
+    expect(r.mismatches).toEqual([expect.objectContaining({ kind: 'offsite-unexpected', seq: 7, key: extra })]);
+  });
+});
+
+describe('the signature of a mismatch, from one night to the next', () => {
+  it('a totals finding is the same event whatever the last seal is; another delta is another', () => {
+    const a = mismatchSignature({ kind: 'rows-deleted', seq: 9, table: 'AuditLog', totals: true, delta: 1 });
+    expect(mismatchSignature({ kind: 'rows-deleted', seq: 10, table: 'AuditLog', totals: true, delta: 1 })).toBe(a);
+    expect(mismatchSignature({ kind: 'rows-deleted', seq: 10, table: 'AuditLog', totals: true, delta: 2 })).not.toBe(a);
+    expect(mismatchSignature({ kind: 'rows-deleted', seq: 9, table: 'AuditLog' })).not.toBe(a);
+    expect(a).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('a range finding is its seal’s; an off-site one its key’s', () => {
+    const r = mismatchSignature({ kind: 'rows-changed', seq: 4, table: 'AuditLog' });
+    expect(mismatchSignature({ kind: 'rows-changed', seq: 4, table: 'AuditLog' })).toBe(r);
+    expect(mismatchSignature({ kind: 'rows-changed', seq: 5, table: 'AuditLog' })).not.toBe(r);
+    expect(mismatchSignature({ kind: 'offsite-unexpected', seq: 3, key: 'seals/a' })).not.toBe(mismatchSignature({ kind: 'offsite-unexpected', seq: 3, key: 'seals/b' }));
+  });
+
+  it('the totals carry their delta', async () => {
+    const f = fakeDb();
+    for (const k of [1n, 2n, 3n]) add(f, 'AuditLog', k);
+    await seal(f, 20);
+    f.horizon = { xmin: 200n, xmax: 200n, currentXid: 200n, oldBackends: 0 };
+    await seal(f, 21);
+    f.rows.get('AuditLog')!.delete(2n);
+    const ms = (await recheckSeals(f.tx as never, { window: 'all', offsite: null })).mismatches;
+    expect(ms.find((m) => m.totals)).toMatchObject({ kind: 'rows-deleted', table: 'AuditLog', totals: true, delta: 1 });
   });
 });
 
@@ -309,7 +427,7 @@ describe('verifyChain names the first mismatch', () => {
     const copies = new Map(f.seals.map((s) => [s.r2Key, s.bodyText] as const));
     copies.delete(f.seals[1]!.r2Key);
     copies.set(f.seals[2]!.r2Key, f.seals[2]!.bodyText + ' ');
-    const store: SealStore = { get: async (k) => copies.get(k) ?? null, put: async () => undefined };
+    const store: SealStore = { get: async (k) => copies.get(k) ?? null, put: async () => undefined, list: async () => [...copies.keys()] };
     const found = await kinds(f, store);
     expect(found.map((m) => [m.seq, m.kind])).toEqual([
       [1, 'offsite-missing'],
@@ -339,7 +457,7 @@ describe('the nightly recheck window and the off-site copy', () => {
 
   it('ensureOffsite puts an absent copy, accepts the same one, and reports a different one', async () => {
     const store = new Map<string, string>();
-    const s: SealStore = { get: async (k) => store.get(k) ?? null, put: async (k, b) => void store.set(k, b) };
+    const s: SealStore = { get: async (k) => store.get(k) ?? null, put: async (k, b) => void store.set(k, b), list: async () => [...store.keys()] };
     const one = { r2Key: 'seals/v1/2026/x.json', bodyText: '{"a":1}', hash: sha('{"a":1}') };
     expect(await ensureOffsite(s, one)).toBe('stored');
     expect(await ensureOffsite(s, one)).toBe('present');
@@ -352,5 +470,149 @@ describe('the nightly recheck window and the off-site copy', () => {
     expect(offsiteRetryable({ sealedAt: '2026-10-23T02:30:00.000Z' }, now)).toBe(true);
     expect(offsiteRetryable({ sealedAt: '2026-10-22T02:30:00.000Z' }, now)).toBe(true);
     expect(offsiteRetryable({ sealedAt: '2026-10-22T02:29:00.000Z' }, now)).toBe(false);
+  });
+});
+
+describe('the rows waiting for their seal are watched (pn, pdigest)', () => {
+  /** Genesis on the 20th with rows 1-2; row 3 written before seal 1 (the 21st); seal 1 sees it, seal 2 seals it. */
+  async function waiting() {
+    const f = fakeDb();
+    add(f, 'AuditLog', 1n);
+    add(f, 'AuditLog', 2n);
+    await seal(f, 20);
+    add(f, 'AuditLog', 3n);
+    f.horizon = { xmin: 200n, xmax: 200n, currentXid: 200n, oldBackends: 0 };
+    await seal(f, 21);
+    return f;
+  }
+  const next = async (f: Awaited<ReturnType<typeof waiting>>) => {
+    f.horizon = { xmin: 300n, xmax: 300n, currentXid: 300n, oldBackends: 0 };
+    await seal(f, 22);
+    return (await recheckSeals(f.tx as never, { window: 'all', offsite: null })).mismatches;
+  };
+
+  it('the genesis records none; every later seal records the next range as it sees it', async () => {
+    const f = await waiting();
+    expect(entry(f.seals[0]!, 'AuditLog').pn).toBeUndefined();
+    expect(entry(f.seals[1]!, 'AuditLog')).toMatchObject({ from: '0', to: '2', n: 2, next: '3', pn: 1 });
+    expect(entry(f.seals[1]!, 'CustomerHistory')).toMatchObject({ pn: 0, pdigest: EMPTY_DIGEST });
+    expect(await next(f)).toEqual([]);
+  });
+
+  it('the newest row deleted before it was sealed: rows deleted before they were sealed (the totals could not see it)', async () => {
+    const f = await waiting();
+    f.rows.get('AuditLog')!.delete(3n);
+    const ms = await next(f);
+    expect(ms).toEqual([expect.objectContaining({ kind: 'rows-deleted-before-seal', seq: 2, table: 'AuditLog', detail: '1 seen by seal 1, 0 sealed' })]);
+  });
+
+  it('a waiting row changed before it was sealed: rows changed before they were sealed', async () => {
+    const f = await waiting();
+    f.rows.get('AuditLog')!.set(3n, 'tampered before its seal');
+    expect((await next(f))[0]).toMatchObject({ kind: 'rows-changed-before-seal', seq: 2, table: 'AuditLog' });
+  });
+
+  it('a late commit only adds rows to the range: not a mismatch', async () => {
+    const f = fakeDb();
+    add(f, 'AuditLog', 1n);
+    await seal(f, 20);
+    add(f, 'AuditLog', 4n); // committed before seal 1: seen
+    f.horizon = { xmin: 200n, xmax: 200n, currentXid: 200n, oldBackends: 0 };
+    await seal(f, 21);
+    add(f, 'AuditLog', 3n); // a lower key committed after seal 1: inside its next range
+    const ms = await (async () => {
+      f.horizon = { xmin: 300n, xmax: 300n, currentXid: 300n, oldBackends: 0 };
+      await seal(f, 22);
+      return (await recheckSeals(f.tx as never, { window: 'all', offsite: null })).mismatches;
+    })();
+    expect(entry(f.seals[2]!, 'AuditLog')).toMatchObject({ from: '1', to: '4', n: 2 });
+    expect(ms).toEqual([]);
+  });
+});
+
+describe('the rotation: every older seal is recomputed in turn', () => {
+  it('slices the older seals in order, continuing after the cursor and going round', () => {
+    const older = [0, 1, 2, 3, 4, 5, 6];
+    expect(rotationSlice(older, null, 3)).toEqual([0, 1, 2]);
+    expect(rotationSlice(older, 2, 3)).toEqual([3, 4, 5]);
+    expect(rotationSlice(older, 5, 3)).toEqual([6, 0, 1]);
+    expect(rotationSlice(older, 99, 2)).toEqual([0, 1]);
+    expect(rotationSlice(older, null, 50)).toEqual(older);
+    expect(rotationSlice([], 3, 2)).toEqual([]);
+    expect(rotationCount(0, 28)).toBe(0);
+    expect(rotationCount(10, 28)).toBe(1);
+    expect(rotationCount(365, 28)).toBe(14);
+  });
+
+  it('an edit to a row sealed long before the window is found when its seal comes round', async () => {
+    const f = fakeDb();
+    add(f, 'AuditLog', 1n);
+    for (let d = 1; d <= 12; d++) {
+      f.horizon = { xmin: BigInt(d * 10), xmax: BigInt(d * 10), currentXid: BigInt(d * 10), oldBackends: 0 };
+      add(f, 'AuditLog', BigInt(d + 1));
+      await seal(f, d);
+    }
+    f.rows.get('AuditLog')!.set(1n, 'tampered long ago'); // sealed by seal 1, far outside the last seven
+    const nightly = (cursor: number | null) =>
+      recheckSeals(f.tx as never, { window: 7, offsite: null, rotation: { cursor, nights: 2 } });
+    const first = await nightly(null);
+    expect(first.windowSeqs).toEqual([5, 6, 7, 8, 9, 10, 11]);
+    expect(first.olderSeals).toBe(5);
+    expect(first.rotatedSeqs).toEqual([0, 1, 2]);
+    expect(first.rotationCursor).toBe(2);
+    expect(first.mismatches).toEqual([expect.objectContaining({ kind: 'rows-changed', seq: 1, table: 'AuditLog' })]);
+    const second = await nightly(first.rotationCursor);
+    expect(second.rotatedSeqs).toEqual([3, 4, 0]);
+  });
+
+  it('a slice that runs out of time stops between seals, and the cursor says where it stopped', async () => {
+    const f = fakeDb();
+    add(f, 'AuditLog', 1n);
+    for (let d = 1; d <= 10; d++) {
+      f.horizon = { xmin: BigInt(d * 10), xmax: BigInt(d * 10), currentXid: BigInt(d * 10), oldBackends: 0 };
+      await seal(f, d);
+    }
+    let asked = 0;
+    const r = await recheckSeals(f.tx as never, { window: 2, offsite: null, rotation: { cursor: 3, nights: 1, stop: () => ++asked > 2 } });
+    expect(r.rotatedSeqs).toEqual([4, 5]);
+    expect(r.rotationCursor).toBe(5);
+  });
+});
+
+describe('two runs at once', () => {
+  it('the run that lost the race on UNIQUE(seq) reports the day already sealed, not a failure', async () => {
+    const f = fakeDb();
+    await seal(f, 20);
+    f.horizon = { xmin: 200n, xmax: 200n, currentXid: 200n, oldBackends: 0 };
+    // The other run commits today's seal while this one waits for the lock; this one's
+    // snapshot predates it, so its insert collides.
+    const tx = f.tx as { $executeRaw: (...a: unknown[]) => Promise<number>; $queryRaw: (q: { sql: string }) => Promise<unknown[]> };
+    const insert = tx.$executeRaw;
+    let raced = false;
+    tx.$executeRaw = async (...a: unknown[]) => {
+      const text = Array.isArray(a[0]) ? (a[0] as string[]).join('?') : '';
+      if (!raced && text.includes('INSERT INTO "SealRecord"')) {
+        raced = true;
+        await insert(...a); // the winner's row (same seq and day)
+        const err = Object.assign(new Error('Raw query failed. Code: `23505`. Message: `duplicate key value violates unique constraint "SealRecord_seq_key"`'), {
+          code: 'P2010',
+          meta: { code: '23505' },
+        });
+        throw err;
+      }
+      return insert(...a);
+    };
+    const out = await seal(f, 21);
+    expect(out.status).toBe('already');
+    expect(f.seals).toHaveLength(2);
+  });
+
+  it('tells a lost race from any other failure', () => {
+    expect(isSealRace({ code: 'P2010', meta: { code: '23505' } })).toBe(true);
+    expect(isSealRace(new Error('Raw query failed. Code: `40001`. Message: `could not serialize access`'))).toBe(true);
+    expect(isSealRace(new Error('duplicate key value violates unique constraint "SealRecord_day_key"'))).toBe(true);
+    expect(isSealRace(new Error('seal 4: does not link to the last seal (3)'))).toBe(false);
+    expect(isSealRace({ code: 'P2010', meta: { code: '23514' } })).toBe(false);
+    expect(isSealRace(null)).toBe(false);
   });
 });

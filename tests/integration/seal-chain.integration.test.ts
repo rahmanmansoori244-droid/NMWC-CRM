@@ -17,6 +17,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { writeSeal, type HorizonReader } from '@/lib/seal/seal';
 import { recheckSeals } from '@/lib/seal/verify';
+import { sealObjectKey } from '@/lib/seal/chain';
 import { assertNotProductionEnv } from '../support/accountability-fixture';
 
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 60_000 });
@@ -63,6 +64,9 @@ describe.skipIf(!ENABLED)('gap 28: the seal chain on Postgres', () => {
             expect((await writeSeal(asClient, { now: day1, job: 'integrity-watch', horizon: clear })).status).toBe('genesis');
             expect((await writeSeal(asClient, { now: day2, job: 'integrity-watch', horizon: clear })).status).toBe('sealed');
             expect((await recheckSeals(tx, { window: 'all', offsite: null })).mismatches).toEqual([]);
+            // Each copy's key is the chain's (its genesis hash) and the seq, nothing else.
+            const keyed = await tx.$queryRaw<Array<{ seq: number; hash: string; r2Key: string }>>`SELECT "seq", "hash", "r2Key" FROM "SealRecord" ORDER BY "seq"`;
+            expect(keyed.map((k) => k.r2Key)).toEqual(keyed.map((k) => sealObjectKey(keyed[0]!.hash, k.seq)));
 
             // The database's own guard: a seal that does not link is refused.
             const [last] = await tx.$queryRaw<Array<{ seq: number; hash: string }>>`SELECT "seq", "hash" FROM "SealRecord" ORDER BY "seq" DESC LIMIT 1`;

@@ -91,7 +91,7 @@ describe.skipIf(!ENABLED)('gap 29: the nightly integrity checks on Postgres', ()
   });
 
   it('one run appends its results and alerts the Steward it is given', async () => {
-    const store = { get: async () => null, put: async () => undefined };
+    const store = { get: async () => null, put: async () => undefined, list: async () => [] };
     const alert = vi.fn(async () => true);
     const s = await runIntegrityWatch(prisma, { store, now: runAt, audience: async () => [w.steward], alert, inAppAlerts: true });
     const rows = await prisma.integrityCheckResult.findMany({ where: { runAt } });

@@ -423,10 +423,28 @@ refuses a seal that does not link). Seal k covers what seal k-1 could see, and i
 written only once every transaction open at seal k-1 has ended, so a row with a low
 key committed late cannot land unseen in a sealed range. The genesis covers nothing;
 the next night's seal covers every row that existed then — the past before the
-genesis is not proven. A copy of each body goes to R2 under `seals/`.
-`scripts/ops/verify-seals.ts` recomputes it all and names the first mismatch: body
-edited, chain link broken, rows deleted, rows added into a sealed range, rows changed,
-off-site copy missing or different.
+genesis is not proven. A copy of each body goes to R2 under `seals/`, at a key fixed by
+the chain (its genesis hash) and the seq: `seals/v1/<chain>/<seq>.json`.
+`scripts/ops/verify-seals.ts` recomputes it all, lists `seals/`, and names the first
+mismatch: body edited, chain link broken, rows deleted, rows added into a sealed range,
+rows changed, rows deleted or changed before they were sealed, off-site copy missing or
+different, an off-site object that is no seal of the chain, a seal naming another key.
+
+**The exposure window.** Because of the lag rule, a row is hashed for good only by the
+seal of the night after next — 24 to 48 hours after it is written. In between it is
+watched: every seal after the genesis also records the count and digest of the rows
+waiting for the next seal as it sees them (`pn`, `pdigest`), and the next seal must
+have at least those rows, and exactly those when it has as many (a late commit only
+adds rows). What is NOT covered is a row's first hours, from its write to the first
+seal after it (at most a day): an edit or a deletion in that time — the newest row
+included — leaves no trace in the chain.
+
+**How often each part is rechecked.** Every night: every seal's body and link, the
+whole-chain counts (a deletion anywhere), the provisional counts, the last seven seals'
+ranges and copies, and a listing of `seals/`; and a rotating slice of the older seals'
+ranges, so that each is recomputed at least once in 28 nights while the run's budget
+holds. An edit to an old row (same count) is therefore found within that cycle, or at
+once by `verify-seals --all`.
 
 **The checks (gap 29).** The same job runs twenty named read-only checks
 (`lib/integrity/checks.ts`), among them: every live record has an open history
@@ -448,6 +466,9 @@ do not filter it**: they answer for every record, test ones included.
 
 **What none of this proves.** The owner login can still rewrite ledger rows and the
 seal table in the maintenance window, and the app's R2 token can overwrite the copies,
-until `seals/` is locked (owner); the maintenance window still leaves no trace of its
-own, so a mismatch says that a sealed row changed, not who changed it.
+until `seals/` is locked write-once (owner; with the lock, a rewritten seal's copy is
+refused at its fixed key and the original is read back as different); the maintenance
+window still leaves no trace of its own, so a mismatch says that a sealed row changed,
+not who changed it; and a row changed or deleted before the first seal after its
+write leaves no trace at all.
 

@@ -8,10 +8,17 @@
  *   2. the horizon: every transaction open at the last seal must have ended
  *      ('deferred' otherwise: tried again the next night);
  *   3. per sealed table, the count and digest of the range the last seal saw,
- *      and the highest key visible now;
- *   4. the body, its hash and the row. The database's link guard checks the
+ *      the highest key visible now, and (after the genesis) the count and
+ *      digest of the next seal's range as it is now (`pn`, lib/seal/chain.ts);
+ *   4. the body, its hash and the row, its off-site key fixed by the chain's
+ *      genesis and the seq (sealObjectKey). The database's link guard checks the
  *      hash, the seq and the previous hash again, and UNIQUE(seq) settles two
  *      writers at once.
+ * Two runs at once (a cron delivered twice, a manual call): the transaction's
+ * snapshot is taken by its first statement, before the advisory lock, so the
+ * second run cannot see the seal the first one committed while it waited. Its
+ * insert then hits UNIQUE(seq) or UNIQUE(day); that is read again and reported
+ * 'already', not as a failure.
  * The off-site copy is written after the commit (lib/seal/store.ts), by the
  * caller, so a slow R2 never holds the transaction.
  *
@@ -24,6 +31,7 @@ import { SEAL_FORMAT_VERSION, maxKeySql, rangeDigestSql } from './canon';
 import {
   buildSealBody,
   horizonDecision,
+  nextRange,
   planRanges,
   sealBodyText,
   sealObjectKey,
@@ -91,6 +99,29 @@ export async function lastSeal(db: Raw): Promise<StoredSeal | null> {
   return rows[0] ? toStored(rows[0]) : null;
 }
 
+/** The genesis seal's hash (the chain's name in its off-site keys), or null when there is none. */
+export async function genesisHash(db: Raw): Promise<string | null> {
+  const rows = await (db as Pick<PrismaClient, '$queryRaw'>).$queryRaw<Array<{ hash: string }>>(
+    Prisma.sql`SELECT "hash" FROM "SealRecord" WHERE "seq" = 0`
+  );
+  return rows[0]?.hash ?? null;
+}
+
+/**
+ * Whether a failed seal transaction lost a race with another run: the insert hit
+ * UNIQUE(seq) or UNIQUE(day) (23505), or a serialization failure (40001). Prisma
+ * reports a raw statement's SQLSTATE as P2010 with meta.code, or only in its words.
+ */
+export function isSealRace(err: unknown): boolean {
+  const e = err as { code?: unknown; meta?: { code?: unknown }; message?: unknown } | null;
+  const sqlState = e?.meta?.code;
+  if (sqlState === '23505' || sqlState === '40001') return true;
+  if (e?.code === 'P2002' || e?.code === 'P2034') return true;
+  return /Code: `(23505|40001)`|duplicate key value violates unique constraint "SealRecord_(seq|day|hash)_key"|could not serialize access/.test(
+    String(e?.message ?? '')
+  );
+}
+
 /** Every seal, oldest first (a seal is a few hundred bytes: a year is well under a megabyte). */
 export async function allSeals(db: Raw, range: { fromSeq?: number; toSeq?: number } = {}): Promise<StoredSeal[]> {
   const rows = await (db as Pick<PrismaClient, '$queryRaw'>).$queryRaw<SealRow[]>(
@@ -120,6 +151,20 @@ export type WriteSealOptions = {
 
 /** Write today's seal (see the header). */
 export async function writeSeal(db: Pick<PrismaClient, '$transaction'>, opts: WriteSealOptions): Promise<SealOutcome> {
+  const day = omanDateISO(opts.now ?? new Date());
+  const cause = { actorId: null, source: src.cron(opts.job) };
+  try {
+    return await writeSealOnce(db, opts);
+  } catch (e) {
+    if (!isSealRace(e)) throw e;
+    // Another run sealed the day while this one waited for the lock (see the header).
+    const last = await withChangeContext(db, cause, (tx) => lastSeal(tx), { timeout: 10_000, maxWait: 10_000 });
+    if (last && last.day === day) return { status: 'already', seal: last };
+    throw e;
+  }
+}
+
+async function writeSealOnce(db: Pick<PrismaClient, '$transaction'>, opts: WriteSealOptions): Promise<SealOutcome> {
   const now = opts.now ?? new Date();
   const day = omanDateISO(now);
   const horizon = opts.horizon ?? readHorizon;
@@ -141,13 +186,24 @@ export async function writeSeal(db: Pick<PrismaClient, '$transaction'>, opts: Wr
       if (decision.kind === 'deferred') return { status: 'deferred', reason: decision.reason, lastSeq: last?.seq ?? null } as const;
 
       const version = SEAL_FORMAT_VERSION;
-      const tables: Array<{ t: string; from: bigint; to: bigint; n: number; digest: string; next: bigint }> = [];
+      const seq = last ? last.seq + 1 : 0;
+      // The chain's name in the off-site keys: the genesis's hash (its own, for the genesis).
+      const chain = last ? await genesisHash(tx) : null;
+      if (last && !chain) throw new Error('the genesis seal (seq 0) is missing: the chain cannot be continued');
+      const tables: Array<{ t: string; from: bigint; to: bigint; n: number; digest: string; next: bigint; pn?: number; pdigest?: string }> = [];
       for (const r of planRanges(prevBody, version)) {
         const measured = r.to > r.from ? await measureRange(tx, version, r.t, r.from, r.to) : { n: 0, digest: '' };
         const [m] = await tx.$queryRaw<Array<{ next: string }>>(maxKeySql(version, r.t));
-        tables.push({ ...r, ...measured, next: BigInt(m?.next ?? '0') });
+        const next = BigInt(m?.next ?? '0');
+        // After the genesis: the next seal's range as it is now (lib/seal/chain.ts header).
+        let seen: { pn?: number; pdigest?: string } = {};
+        if (seq > 0) {
+          const p = nextRange({ to: r.to.toString(), next: next.toString() });
+          const ps = p.to > p.from ? await measureRange(tx, version, r.t, p.from, p.to) : { n: 0, digest: '' };
+          seen = { pn: ps.n, pdigest: ps.digest };
+        }
+        tables.push({ ...r, ...measured, next, ...seen });
       }
-      const seq = last ? last.seq + 1 : 0;
       const body = buildSealBody({
         version,
         seq,
@@ -159,7 +215,7 @@ export async function writeSeal(db: Pick<PrismaClient, '$transaction'>, opts: Wr
         tables,
       });
       const { bodyText, hash } = sealBodyText(body);
-      const r2Key = sealObjectKey(version, day, seq, hash);
+      const r2Key = sealObjectKey(chain ?? hash, seq);
       await tx.$executeRaw`
         INSERT INTO "SealRecord" ("seq", "day", "formatVersion", "prevHash", "hash", "bodyText", "r2Key", "snapshotXmax", "sealedAt")
         VALUES (${seq}, ${day}::date, ${version}, ${last?.hash ?? null}::text, ${hash}, ${bodyText}, ${r2Key},

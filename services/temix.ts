@@ -244,8 +244,9 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
     // the WHOLE queue, before the flip. Only those archived rows are held back —
     // left queued, named to the Steward. The live holder's own upload still goes
     // out, and so does everyone else's: refusing the batch would stop them all.
+    // A test customer is not in the queue (TEMIX_QUEUE_WHERE), so it is never held back or named either.
     const deactivating = await tx.customer.findMany({
-      where: { temixSyncState: TemixSyncState.DEACTIVATE_PENDING },
+      where: { temixSyncState: TemixSyncState.DEACTIVATE_PENDING, isTest: false },
       select: { id: true, nmwcCode: true, temixCode: true, deletedAt: true },
       orderBy: { nmwcCode: 'asc' },
     });

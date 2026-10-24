@@ -492,8 +492,8 @@ Every column the database stores, classified by whose personal data it is. This 
 | SealRecord | `formatVersion` | Int | structural / operational value |
 | SealRecord | `prevHash` | String | SHA-256 of the previous seal |
 | SealRecord | `hash` | String | SHA-256 of bodyText |
-| SealRecord | `bodyText` | String | per sealed table: key range, row count and a SHA-256 digest — never a row |
-| SealRecord | `r2Key` | String | where the off-site copy is (seals/…) |
+| SealRecord | `bodyText` | String | per sealed table: key range, row count and a SHA-256 digest, and the count and digest of the rows waiting for the next seal — never a row |
+| SealRecord | `r2Key` | String | where the off-site copy is: seals/v1/<the chain>/<seq>.json |
 | SealRecord | `snapshotXmax` | BigInt | a database transaction id |
 | SealRecord | `sealedAt` | DateTime | record timestamp, not an attribute of a person |
 | SealRecord | `source` | String | the change-context source (the nightly job) |

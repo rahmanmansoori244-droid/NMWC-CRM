@@ -34,6 +34,16 @@ export type IntegrityReport = {
   customerOf: Map<string, { id: string; code: string }>;
 };
 
+/**
+ * The ids a result lists as information, not failure (its detail's `info`: the
+ * migrated Temix codes with a space inside, the active customers whose open shops
+ * are all suspended). At most ten; ids only.
+ */
+export function infoIds(r: Pick<ResultRow, 'detail'>): string[] {
+  const v = r.detail?.info;
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').slice(0, 10) : [];
+}
+
 /** Checks whose samples are customer ids, and those whose samples are shop ids. */
 export const CUSTOMER_SAMPLES = new Set(['customer-status-follows-shops', 'temix-code-shared', 'temix-code-shape']);
 export const SHOP_SAMPLES = new Set(['shop-region-matches-route']);
@@ -95,8 +105,8 @@ export async function loadIntegrityReport(db: Db, now: Date = new Date()): Promi
     lastAt: p._max.at!,
   }));
 
-  // The customers behind the samples the page links.
-  const customerIds = latest.filter((r) => CUSTOMER_SAMPLES.has(r.checkId)).flatMap((r) => r.sampleIds);
+  // The customers behind the samples the page links, and behind the ones listed as information.
+  const customerIds = latest.filter((r) => CUSTOMER_SAMPLES.has(r.checkId)).flatMap((r) => [...r.sampleIds, ...infoIds(r)]);
   const shopIds = latest.filter((r) => SHOP_SAMPLES.has(r.checkId)).flatMap((r) => r.sampleIds);
   const customerOf = new Map<string, { id: string; code: string }>();
   if (customerIds.length) {

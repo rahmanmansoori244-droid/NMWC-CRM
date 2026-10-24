@@ -24,6 +24,16 @@
  * risk, stated: the microseconds between a nextval and the transaction id it
  * runs under being assigned.
  *
+ * The lag means a row is hashed for good only by the seal of the night after
+ * next (24 to 48 hours after it is written). So that the rows waiting for it are
+ * not unwatched in between, every seal after the genesis also records `pn` and
+ * `pdigest`: the count and digest of the range the NEXT seal will cover, as this
+ * seal sees it. Late commits may only ADD rows to that range, so the next seal
+ * must find at least `pn` rows there, and exactly `pdigest` when it finds `pn`
+ * (verifyChain step 3b). What is left unwatched is a row's first hours: from its
+ * write to the first seal after it (at most a day). An edit or deletion before
+ * then leaves no trace (docs/HISTORY.md section 11).
+ *
  * Canonical JSON: keys sorted, no spaces, big integers as decimal strings.
  */
 import { createHash } from 'node:crypto';
@@ -40,6 +50,13 @@ export type SealTableEntry = {
   digest: string;
   /** The highest key visible to this seal: the next seal's `to`. */
   next: string;
+  /**
+   * The rows of the next seal's range (nextRange of this entry) as THIS seal saw
+   * them: their count and digest. Absent on the genesis, which does not hash the
+   * rows that exist before it.
+   */
+  pn?: number;
+  pdigest?: string;
 };
 
 export type SealBody = {
@@ -97,16 +114,54 @@ export function sealBodyText(body: SealBody): { bodyText: string; hash: string }
   return { bodyText, hash: sha256Hex(bodyText) };
 }
 
-/** Where the off-site copy lives: seals/v<version>/<YYYY>/<day>-<seq, 6 digits>-<hash, 16>.json. */
-export function sealObjectKey(version: number, day: string, seq: number, hash: string): string {
-  return `seals/v${version}/${day.slice(0, 4)}/${day}-${String(seq).padStart(6, '0')}-${hash.slice(0, 16)}.json`;
+/** Every off-site copy lives under this prefix, and nothing else does. */
+export const SEAL_KEY_PREFIX = 'seals/';
+/** The key layout (not the body's format version: one layout holds every format). */
+const SEAL_KEY_LAYOUT = 'v1';
+const SEAL_KEY_RE = /^seals\/v1\/([0-9a-f]{16})\/(\d{8})\.json$/;
+
+/**
+ * Where the off-site copy of seal `seq` of a chain lives:
+ * seals/v1/<the genesis seal's hash, 16>/<seq, 8 digits>.json.
+ *
+ * Fixed by the chain and the seq alone, never by the seal's own hash or day: a
+ * second body for the same seq lands on the SAME key, so a write-once lock on
+ * seals/ refuses it and the nightly check reads back the original ('differs'). A
+ * chain started again from a new genesis (a restore without the seal table) gets
+ * its own folder, and the old chain's copies stay where they are.
+ */
+export function sealObjectKey(genesisHash: string, seq: number): string {
+  if (!/^[0-9a-f]{16,64}$/.test(genesisHash)) throw new Error('a seal key needs the genesis seal’s hash');
+  if (!Number.isInteger(seq) || seq < 0 || seq > 99_999_999) throw new Error(`no seal key for seq ${seq}`);
+  return `${SEAL_KEY_PREFIX}${SEAL_KEY_LAYOUT}/${genesisHash.slice(0, 16)}/${String(seq).padStart(8, '0')}.json`;
+}
+
+/** The chain and seq a key names, or null when it is not a seal key of this layout. */
+export function parseSealObjectKey(key: string): { chain: string; seq: number } | null {
+  const m = SEAL_KEY_RE.exec(key);
+  return m ? { chain: m[1]!, seq: Number(m[2]) } : null;
+}
+
+/**
+ * The key a stored seal's copy must have: computed from the chain's genesis, never
+ * read from the seal's own r2Key column (which nothing hashes). Without a genesis
+ * the chain is already broken (verifyChain says so), and the column is all there is.
+ */
+export function expectedSealKey(
+  seals: ReadonlyArray<Pick<StoredSeal, 'seq' | 'hash'>>,
+  seal: Pick<StoredSeal, 'seq' | 'hash' | 'r2Key'>
+): string {
+  const genesis = seal.seq === 0 ? seal : seals.find((s) => s.seq === 0);
+  return genesis && /^[0-9a-f]{64}$/.test(genesis.hash) ? sealObjectKey(genesis.hash, seal.seq) : seal.r2Key;
 }
 
 /**
  * The range a seal covers after `before`: from its `to` up to the highest key it
- * saw. Never backwards: if the highest key went DOWN since (the newest row was
- * deleted in a maintenance window), the range is empty, and the deletion shows in
- * the totals (verifyChain step 5).
+ * saw. Never backwards: if the highest key went DOWN since (the newest rows were
+ * deleted in a maintenance window), the range is empty. Those rows were seen by
+ * the seal before (its `pn` counted them), so the deletion shows as rows deleted
+ * before they were sealed (verifyChain step 3b) — not in the totals of step 5,
+ * which count only what a seal hashed.
  */
 export function nextRange(before: Pick<SealTableEntry, 'to' | 'next'>): { from: bigint; to: bigint } {
   const from = BigInt(before.to);
@@ -161,7 +216,7 @@ export function buildSealBody(input: {
   prevHash: string | null;
   xmax: bigint;
   horizonReset: boolean;
-  tables: Array<{ t: string; from: bigint; to: bigint; n: number; digest: string; next: bigint }>;
+  tables: Array<{ t: string; from: bigint; to: bigint; n: number; digest: string; next: bigint; pn?: number; pdigest?: string }>;
 }): SealBody {
   return {
     v: input.version,
@@ -178,6 +233,7 @@ export function buildSealBody(input: {
       n: t.n,
       digest: t.n === 0 ? EMPTY_DIGEST : t.digest,
       next: t.next.toString(),
+      ...(t.pn === undefined ? {} : { pn: t.pn, pdigest: t.pn === 0 ? EMPTY_DIGEST : (t.pdigest ?? '') }),
     })),
   };
 }
@@ -190,8 +246,12 @@ export type MismatchKind =
   | 'rows-deleted'
   | 'rows-added'
   | 'rows-changed'
+  | 'rows-deleted-before-seal'
+  | 'rows-changed-before-seal'
   | 'offsite-missing'
-  | 'offsite-differs';
+  | 'offsite-differs'
+  | 'offsite-unexpected'
+  | 'offsite-key-mismatch';
 
 export const MISMATCH_LABEL: Record<MismatchKind, string> = {
   'body-edited': 'body edited',
@@ -199,8 +259,12 @@ export const MISMATCH_LABEL: Record<MismatchKind, string> = {
   'rows-deleted': 'rows deleted (count lower)',
   'rows-added': 'rows added into a sealed range',
   'rows-changed': 'rows changed (same count, digest differs)',
+  'rows-deleted-before-seal': 'rows deleted before they were sealed (fewer than the seal before saw)',
+  'rows-changed-before-seal': 'rows changed before they were sealed (as many as the seal before saw, digest differs)',
   'offsite-missing': 'off-site copy missing',
   'offsite-differs': 'off-site copy differs',
+  'offsite-unexpected': 'an off-site object that is no seal of this chain',
+  'offsite-key-mismatch': 'the seal names another off-site key than its own',
 };
 
 export type Mismatch = {
@@ -210,7 +274,25 @@ export type Mismatch = {
   table?: string;
   /** Counts and short hash prefixes only: never row content. */
   detail?: string;
+  /** Step 5's whole-chain count: shown at the last seal, but about no one seal. */
+  totals?: true;
+  /** For the totals: how many rows more or fewer than the seals counted. */
+  delta?: number;
+  /** For an off-site finding: the object's key. */
+  key?: string;
 };
+
+/**
+ * A mismatch's identity from one night to the next: its kind, its table, and
+ * where — the seal it is in, the object key, or for the totals by how many rows.
+ * Never the last seal's seq, which moves every night: a deletion found by the
+ * totals is the same event tomorrow, and a second deletion (a new delta) is a new
+ * one. Sixteen hex digits of a SHA-256: no row, no value.
+ */
+export function mismatchSignature(m: Pick<Mismatch, 'kind' | 'seq' | 'table' | 'totals' | 'delta' | 'key'>): string {
+  const where = m.totals ? `totals:${m.delta ?? ''}` : m.key ? `key:${m.key}` : `seal:${m.seq}`;
+  return sha256Hex(`${m.kind}|${m.table ?? ''}|${where}`).slice(0, 16);
+}
 
 export type ChainCheckInput = {
   seals: StoredSeal[];
@@ -223,6 +305,8 @@ export type ChainCheckInput = {
   countsUpTo?: Map<string, number>;
   /** The off-site copy by seq: its text, null when it is missing; absent = not checked. */
   offsite?: Map<number, string | null>;
+  /** Every key under seals/ in the off-site store; absent = not listed. */
+  listing?: string[];
 };
 
 function parseBody(text: string): SealBody | null {
@@ -282,6 +366,26 @@ export function verifyChain(input: ChainCheckInput): Mismatch[] {
         }
       }
     }
+    // 3b. What it sealed is at least what the seal before saw of the same range,
+    // and the same rows when it is as many: late commits only add.
+    if (body && prev?.body) {
+      for (const e of body.tables) {
+        const before = prev.body.tables.find((x) => x.t === e.t);
+        if (!before || before.pn === undefined) continue;
+        const due = nextRange(before);
+        if (e.from !== due.from.toString() || e.to !== due.to.toString()) continue; // the link check above reports it
+        if (e.n < before.pn) {
+          out.push({ ...at, table: e.t, kind: 'rows-deleted-before-seal', detail: `${before.pn} seen by seal ${prev.seal.seq}, ${e.n} sealed` });
+        } else if (e.n === before.pn && e.digest !== (before.pdigest ?? '')) {
+          out.push({
+            ...at,
+            table: e.t,
+            kind: 'rows-changed-before-seal',
+            detail: `${e.n} rows, digest ${short(before.pdigest)} seen by seal ${prev.seal.seq}, ${short(e.digest)} sealed`,
+          });
+        }
+      }
+    }
     // 3. Its ranges still hold the rows it sealed.
     for (const e of body?.tables ?? []) {
       sums.set(e.t, (sums.get(e.t) ?? 0) + e.n);
@@ -293,24 +397,83 @@ export function verifyChain(input: ChainCheckInput): Mismatch[] {
         out.push({ ...at, table: e.t, kind: 'rows-changed', detail: `${e.n} rows, digest ${short(e.digest)} sealed, ${short(now.digest)} now` });
       }
     }
-    // 4. The off-site copy is the same text.
+    // 4. The off-site copy is the same text, at the key the chain gives it.
     if (input.offsite?.has(s.seq)) {
+      const key = expectedSealKey(seals, s);
       const copy = input.offsite.get(s.seq);
-      if (copy === null || copy === undefined) out.push({ ...at, kind: 'offsite-missing', detail: s.r2Key });
-      else if (copy !== s.bodyText) out.push({ ...at, kind: 'offsite-differs', detail: `copy ${short(sha256Hex(copy))}, seal ${short(s.hash)}` });
+      if (copy === null || copy === undefined) out.push({ ...at, kind: 'offsite-missing', key, detail: key });
+      else if (copy !== s.bodyText) out.push({ ...at, kind: 'offsite-differs', key, detail: `copy ${short(sha256Hex(copy))}, seal ${short(s.hash)}` });
     }
     prev = { seal: s, body };
+  }
+  // 4b. The listing of seals/: one object per seal at its own key, and nothing else.
+  if (input.listing) {
+    const checked = new Set(input.offsite?.keys() ?? []);
+    for (const f of listingFindings(seals, input.listing, checked)) {
+      const s = f.seq === null ? undefined : seals.find((x) => x.seq === f.seq);
+      out.push({ kind: f.kind, seq: f.seq ?? -1, day: s?.day ?? '-', key: f.key, detail: f.why ? `${f.key} (${f.why})` : f.key });
+    }
   }
   // 5. Every covered row is still there, and no row was slipped in below the last range.
   const last = seals.at(-1);
   if (last && input.countsUpTo) {
     for (const [t, now] of input.countsUpTo) {
       const sealed = sums.get(t) ?? 0;
-      if (now < sealed) out.push({ seq: last.seq, day: last.day, table: t, kind: 'rows-deleted', detail: `${sealed} sealed in all, ${now} now` });
-      else if (now > sealed) out.push({ seq: last.seq, day: last.day, table: t, kind: 'rows-added', detail: `${sealed} sealed in all, ${now} now` });
+      const totals = { seq: last.seq, day: last.day, table: t, totals: true as const, delta: Math.abs(now - sealed) };
+      if (now < sealed) out.push({ ...totals, kind: 'rows-deleted', detail: `${sealed} sealed in all, ${now} now` });
+      else if (now > sealed) out.push({ ...totals, kind: 'rows-added', detail: `${sealed} sealed in all, ${now} now` });
     }
   }
   return out.sort((a, b) => a.seq - b.seq);
+}
+
+export type ListingFinding = {
+  kind: 'offsite-missing' | 'offsite-unexpected' | 'offsite-key-mismatch';
+  /** The seal it is about, or the seq an unexpected key names; null when the key names none. */
+  seq: number | null;
+  key: string;
+  why?: string;
+};
+
+/**
+ * What the listing of seals/ says against the stored chain (each seal's own key
+ * is expectedSealKey):
+ *   - a seal whose r2Key column is not its key: the database would point a check
+ *     elsewhere (offsite-key-mismatch);
+ *   - a seal whose key is not listed, unless it is in `checked` (read one by one,
+ *     with the young-copy retry, by the caller): offsite-missing;
+ *   - an object that is no seal's key: one for a seq after the last seal (the
+ *     database's newest seals were removed), one in another chain's folder (the
+ *     chain was started again, or rewritten from its genesis), one for a seq the
+ *     chain has no seal at, or a key of no seal layout at all.
+ * Keys and seqs only.
+ */
+export function listingFindings(
+  seals: ReadonlyArray<Pick<StoredSeal, 'seq' | 'hash' | 'r2Key'>>,
+  keys: readonly string[],
+  checked: ReadonlySet<number> = new Set()
+): ListingFinding[] {
+  const out: ListingFinding[] = [];
+  const listed = new Set(keys);
+  const expected = new Set<string>();
+  const genesis = seals.find((s) => s.seq === 0);
+  const chain = genesis ? genesis.hash.slice(0, 16) : null;
+  const lastSeq = seals.reduce((a, s) => Math.max(a, s.seq), -1);
+  for (const s of [...seals].sort((a, b) => a.seq - b.seq)) {
+    const key = expectedSealKey(seals, s);
+    expected.add(key);
+    if (s.r2Key !== key) out.push({ kind: 'offsite-key-mismatch', seq: s.seq, key: s.r2Key, why: `its key is ${key}` });
+    if (!checked.has(s.seq) && !listed.has(key)) out.push({ kind: 'offsite-missing', seq: s.seq, key });
+  }
+  for (const key of [...listed].sort()) {
+    if (expected.has(key)) continue;
+    const p = parseSealObjectKey(key);
+    if (!p) out.push({ kind: 'offsite-unexpected', seq: null, key, why: 'not a seal key' });
+    else if (chain !== null && p.chain !== chain) out.push({ kind: 'offsite-unexpected', seq: p.seq, key, why: 'another chain' });
+    else if (p.seq > lastSeq) out.push({ kind: 'offsite-unexpected', seq: p.seq, key, why: 'after the last seal' });
+    else out.push({ kind: 'offsite-unexpected', seq: p.seq, key, why: 'no seal has this key' });
+  }
+  return out;
 }
 
 /** Whether a missing off-site copy is young enough to be written again (a failed upload), not a failure. */

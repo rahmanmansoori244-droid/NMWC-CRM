@@ -15,11 +15,14 @@
  *
  * Owner note, not configured here: until the bucket (or a separate one) locks
  * seals/, the application's own R2 token can overwrite these objects, so they
- * are a second copy, not an immutable one.
+ * are a second copy, not an immutable one. The keys are fixed by the chain and
+ * the seq (lib/seal/chain.ts sealObjectKey), so under such a lock a rewritten
+ * seal can never get a copy of its own; and the whole of seals/ is listed, so a
+ * copy the database no longer has a seal for is found.
  *
  * PURE of lib/db: scripts/ops/verify-seals.ts imports it.
  */
-import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand } from '@aws-sdk/client-s3';
 import { r2, R2_BUCKET } from '../r2';
 
 export type SealStore = {
@@ -27,7 +30,12 @@ export type SealStore = {
   get(key: string): Promise<string | null>;
   /** Write it (the caller has checked it is absent). */
   put(key: string, body: string, hash: string): Promise<void>;
+  /** Every key under the prefix (seals/). */
+  list(prefix: string): Promise<string[]>;
 };
+
+/** A listing of more objects than this is refused: seals/ holds one per night. */
+export const SEAL_LIST_MAX_KEYS = 20_000;
 
 /** Whether R2 itself answered that the object is not there (as photo-gc reads it). */
 function notFound(err: unknown): boolean {
@@ -60,6 +68,20 @@ export function r2SealStore(signal?: AbortSignal): SealStore {
         }),
         { abortSignal: signal }
       );
+    },
+    async list(prefix) {
+      const keys: string[] = [];
+      let token: string | undefined;
+      do {
+        const out = await r2().send(
+          new ListObjectsV2Command({ Bucket: R2_BUCKET, Prefix: prefix, ContinuationToken: token, MaxKeys: 1000 }),
+          { abortSignal: signal }
+        );
+        for (const o of out.Contents ?? []) if (o.Key) keys.push(o.Key);
+        if (keys.length > SEAL_LIST_MAX_KEYS) throw new Error(`more than ${SEAL_LIST_MAX_KEYS} objects under ${prefix}`);
+        token = out.IsTruncated ? out.NextContinuationToken : undefined;
+      } while (token);
+      return keys;
     },
   };
 }

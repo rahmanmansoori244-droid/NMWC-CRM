@@ -45,6 +45,16 @@ export const SEAL_TX_TIMEOUT_MS = 15_000;
 export const RUN_DEADLINE_MS = 50_000;
 /** The nightly recheck reads the ranges and copies of this many recent seals. */
 export const SEAL_RECHECK_WINDOW = 7;
+/**
+ * And re-digests a rotating slice of the older seals, so that every sealed range
+ * is recomputed at least once in this many nights (lib/seal/verify.ts), while the
+ * run's budget holds. verify-seals --all checks everything at once.
+ */
+export const SEAL_FULL_RECHECK_NIGHTS = 28;
+/** No older seal of the rotation is started after this, counted from the run's start. */
+export const SEAL_ROTATION_STOP_MS = 38_000;
+/** At most this many open seal findings are carried from one night to the next. */
+export const SEAL_OPEN_LIMIT = 500;
 /** A missing copy of a seal this young is written again (a failed upload), not a failure. */
 export const SEAL_OFFSITE_RETRY_DAYS = 2;
 

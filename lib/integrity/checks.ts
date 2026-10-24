@@ -191,7 +191,8 @@ export const CHECKS: IntegrityCheck[] = [
     group: 'data',
     title: 'Customer status follows its shops',
     why: 'A customer whose every shop is closed but who is still active (or the reverse) is counted, exported and sent to Temix wrongly.',
-    remedy: 'Run scripts/ops/customer-status-drift.ts (it lists close, reopen and review cases) and correct them as it says.',
+    remedy:
+      'Run scripts/ops/customer-status-drift.ts --list, then --apply: it corrects the close and reopen cases, the only ones counted here. An active customer whose open shops are all suspended follows the rule; it is listed as information, for a person to decide.',
     policy: 'alert',
     excludesTest: true,
     run: async (db) => {
@@ -604,7 +605,8 @@ export const CHECKS: IntegrityCheck[] = [
     group: 'mechanism',
     title: 'The seal chain still matches the ledgers',
     why: 'A ledger row changed, deleted or slipped into a sealed range — by the owner login in a maintenance window, or anyone with the trigger off — breaks the chain here.',
-    remedy: 'Run scripts/ops/verify-seals.ts --all to see every mismatch; establish who changed what and why, and record it (OPERATIONS.md section 5e).',
+    remedy:
+      'Run scripts/ops/verify-seals.ts --all to see every mismatch; establish who changed what and why, and record it (OPERATIONS.md section 5e). Alerted once; while it stays it is shown as information.',
     policy: 'alert',
     excludesTest: false,
   },
@@ -613,8 +615,9 @@ export const CHECKS: IntegrityCheck[] = [
     version: 1,
     group: 'mechanism',
     title: 'The off-site copies of the seals are there',
-    why: 'The R2 copy is the seal’s second witness; a copy missing or different from the database’s is the first sign one of them was changed.',
-    remedy: 'A copy up to two days old is written again automatically. Older and missing, or different: run scripts/ops/verify-seals.ts and compare.',
+    why: 'The R2 copy is the seal’s second witness; a copy missing or different from the database’s, or a copy the database has no seal for, is the first sign one of them was changed.',
+    remedy:
+      'A copy up to two days old is written again automatically. Older and missing, different, or an object under seals/ that is no seal of the chain: run scripts/ops/verify-seals.ts and compare (OPERATIONS.md section 5k).',
     policy: 'alert',
     excludesTest: false,
   },

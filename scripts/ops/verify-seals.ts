@@ -6,15 +6,19 @@
  *     --expect-host <host> [--from-seq N] [--to-seq N] [--no-offsite] [--all]
  *
  * For each seal, in order: its hash is the SHA-256 of its body and the body
- * agrees with its columns; it links to the seal before; each table's range is
- * recomputed from the ledger with that seal's own format version; and its R2
- * copy is read back (unless --no-offsite). Then, per table, every row at or
- * below the last sealed key is counted against the sum of the seals' counts.
+ * agrees with its columns; it links to the seal before; it sealed at least the
+ * rows the seal before saw of its range; each table's range is recomputed from
+ * the ledger with that seal's own format version; and its R2 copy is read back
+ * at the key the chain gives it (unless --no-offsite). Then the whole of seals/
+ * is listed — one object per seal, nothing else — and, per table, every row at
+ * or below the last sealed key is counted against the sum of the seals' counts.
  *
  * A mismatch is one of: body edited / chain link broken / rows deleted (count
  * lower) / rows added into a sealed range / rows changed (same count, digest
- * differs) / off-site copy missing / off-site copy differs. Only the first is
- * printed unless --all.
+ * differs) / rows deleted or changed before they were sealed / off-site copy
+ * missing / off-site copy differs / an off-site object that is no seal of this
+ * chain / a seal naming another off-site key. Only the first is printed unless
+ * --all.
  *
  * Read-only: one REPEATABLE READ, READ ONLY transaction. Prints seq, day, table,
  * counts and hash prefixes — never a row's content. Exit 0 when everything

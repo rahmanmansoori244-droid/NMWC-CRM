@@ -36,16 +36,26 @@ export function capSamples(ids: Iterable<unknown>, limit = SAMPLE_LIMIT): string
 
 // ── 2. customer-status-follows-shops ───────────────────────────────────────
 
+/**
+ * Only 'close' and 'reopen' fail: a state the rule (lib/customer-status-rule.ts)
+ * can never leave behind, which scripts/ops/customer-status-drift.ts --apply
+ * corrects. 'review' — an ACTIVE customer with no ACTIVE live shop and some
+ * SUSPENDED — is what the rule itself produces when the last open shop is
+ * suspended (suspending moves nothing), so it is listed as information (`info`,
+ * the first ids, and the count), never counted: the script never moves it either,
+ * and whether it should alert is the owner's question (OPERATIONS.md section 5k).
+ */
 export function statusDriftFindings(rows: Array<{ id: string; status: CustomerStatus | string; shops: Array<CustomerStatus | string> }>) {
-  const detail = { close: 0, reopen: 0, review: 0 };
+  const counts = { close: 0, reopen: 0, review: 0 };
   const ids: string[] = [];
-  for (const r of rows) {
+  const review: string[] = [];
+  for (const r of [...rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
     const d = statusDrift(r.status as CustomerStatus, r.shops as CustomerStatus[]);
     if (!d) continue;
-    detail[d.kind] += 1;
-    ids.push(r.id);
+    counts[d.kind] += 1;
+    (d.kind === 'review' ? review : ids).push(r.id);
   }
-  return { count: ids.length, sampleIds: capSamples(ids), detail };
+  return { count: ids.length, sampleIds: capSamples(ids), detail: { ...counts, info: capSamples(review) } };
 }
 
 // ── 4. temix-code-shape ────────────────────────────────────────────────────

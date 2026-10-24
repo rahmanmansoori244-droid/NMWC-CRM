@@ -12,7 +12,14 @@
  *    /status/integrity.
  *  - The operators' webhook gets counts only, critical when the seal chain or
  *    the protection itself failed.
- *  - A check that throws is an error (the run's heartbeat goes red), not a pass.
+ *  - A check that throws is an error (the run's heartbeat goes red), not a pass,
+ *    and an errored result never moves the next run's window or baseline.
+ *  - A seal finding is alerted once, the night it is new: a deletion the totals
+ *    find stays the same event though the last seal moves every night, a range
+ *    mismatch whose seal is not rechecked tonight is carried (never a pass), and
+ *    one that is resolved and found again is new again.
+ *  - The whole of seals/ is listed: an object no seal of the chain has is a
+ *    finding, critical when new.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Role } from '@prisma/client';
@@ -30,6 +37,10 @@ const h = vi.hoisted(() => ({
   previous: [] as Array<Record<string, unknown>>,
   /** When the rechecked seals were made. */
   sealedAt: '2026-10-20T02:30:00.000Z',
+  /** The seals the recheck read tonight, the rotation it was given, and the slice it did. */
+  windowSeqs: [1, 2, 3] as number[],
+  rotatedSeqs: [] as number[],
+  rotation: null as null | { cursor: number | null; nights: number },
 }));
 
 vi.mock('@/lib/integrity/checks', () => ({
@@ -50,12 +61,19 @@ vi.mock('@/lib/integrity/checks', () => ({
 }));
 vi.mock('@/lib/seal/seal', () => ({ writeSeal: async () => h.seal }));
 vi.mock('@/lib/seal/verify', () => ({
-  recheckSeals: async () => ({
-    seals: [1, 2, 3].map((seq) => ({ seq, r2Key: `seals/${seq}`, bodyText: '{}', hash: 'd'.repeat(64), sealedAt: h.sealedAt })),
-    windowSeqs: [1, 2, 3],
-    rangesRecomputed: 0,
-    mismatches: h.mismatches,
-  }),
+  recheckSeals: async (_db: unknown, opts: { rotation?: { cursor: number | null; nights: number } }) => {
+    h.rotation = opts.rotation ? { cursor: opts.rotation.cursor, nights: opts.rotation.nights } : null;
+    return {
+      // No genesis among them: each copy's key is the one its row names (lib/seal/chain.ts expectedSealKey).
+      seals: [1, 2, 3].map((seq) => ({ seq, day: `2026-10-2${seq}`, r2Key: `seals/${seq}`, bodyText: '{}', hash: 'd'.repeat(64), sealedAt: h.sealedAt })),
+      windowSeqs: h.windowSeqs,
+      rotatedSeqs: h.rotatedSeqs,
+      rotationCursor: h.rotatedSeqs.at(-1) ?? opts.rotation?.cursor ?? null,
+      olderSeals: 0,
+      rangesRecomputed: 0,
+      mismatches: h.mismatches,
+    };
+  },
 }));
 
 import { runIntegrityWatch, integrityAlertAudience } from '@/lib/integrity/run';
@@ -91,10 +109,22 @@ function fakeDb() {
       },
     },
   };
-  return { $transaction: async (fn: (t: unknown) => unknown) => fn(tx), $queryRaw: async () => h.previous } as never;
+  // loadPrevious: the latest result of each check, of the statuses its SQL asks for.
+  const previous = async (q: { sql?: string }) => {
+    const ran = /"status" IN \('pass', 'fail', 'info'\)/.test(q.sql ?? '');
+    const latest = new Map<string, Record<string, unknown>>();
+    for (const r of h.previous) {
+      if (ran && r.status === 'error') continue;
+      const cur = latest.get(r.checkId as string);
+      if (!cur || (r.runAt as Date) > (cur.runAt as Date)) latest.set(r.checkId as string, r);
+    }
+    return [...latest.values()];
+  };
+  return { $transaction: async (fn: (t: unknown) => unknown) => fn(tx), $queryRaw: previous } as never;
 }
 
-const store = { get: async () => '{}', put: async () => undefined };
+const LISTED = ['seals/1', 'seals/2', 'seals/3'];
+const store = { get: async () => '{}', put: async () => undefined, list: async () => LISTED };
 const check = (id: string, count: number, policy = 'alert', title = `Check ${id}`) => ({
   id,
   version: 1,
@@ -110,6 +140,9 @@ beforeEach(() => {
   h.mismatches = [];
   h.previous = [];
   h.sealedAt = '2026-10-20T02:30:00.000Z';
+  h.windowSeqs = [1, 2, 3];
+  h.rotatedSeqs = [];
+  h.rotation = null;
   h.checks = [check('shop-region-matches-route', 2, 'alert', 'Shop region matches its route'), check('exports-since-last-run', 5, 'info', 'Exports since the last run')];
 });
 
@@ -134,6 +167,38 @@ describe('the results', () => {
     const s = await runIntegrityWatch(fakeDb(), { store, now: NOW, alert: vi.fn(async () => true), inAppAlerts: false });
     expect(h.results[0]).toMatchObject({ checkId: 'protection-triggers', status: 'error', count: null });
     expect(s.errors).toBe(1);
+  });
+
+  it('an errored result between two good runs moves neither the window nor the baseline', async () => {
+    const seen = new Map<string, unknown>();
+    const watching = (id: string) => ({
+      id,
+      version: 1,
+      policy: 'alert',
+      title: id,
+      run: async (_db: unknown, ctx: { previous: Map<string, { runAt: Date; detail: unknown }> }) => {
+        seen.set(id, ctx.previous.get(id));
+        return { count: 0, sampleIds: [] };
+      },
+    });
+    h.checks = [watching('history-unattributed-since-last-run'), watching('test-flags-changed')];
+    const good = new Date('2026-10-22T02:30:00.000Z');
+    const errored = new Date('2026-10-23T02:30:00.000Z');
+    h.previous = [
+      { checkId: 'history-unattributed-since-last-run', runAt: good, status: 'pass', count: 0, detail: { since: '2026-10-21T02:30:00.000Z' } },
+      { checkId: 'history-unattributed-since-last-run', runAt: errored, status: 'error', count: null, detail: { error: 'canceling statement due to statement timeout' } },
+      { checkId: 'test-flags-changed', runAt: good, status: 'pass', count: 0, detail: { hashes: { Customer: 'abc' } } },
+      { checkId: 'test-flags-changed', runAt: errored, status: 'error', count: null, detail: { error: 'not started: the run’s check budget was spent' } },
+      { checkId: 'seal-chain-intact', runAt: good, status: 'info', count: 0, detail: { rotationCursor: 41, open: [] } },
+      { checkId: 'seal-chain-intact', runAt: errored, status: 'error', count: null, detail: { error: 'the run’s deadline passed during the recheck' } },
+    ];
+    await runIntegrityWatch(fakeDb(), { store, now: NOW, alert: vi.fn(async () => true), inAppAlerts: false });
+    // "Since the last run" is since the last run that RAN: the errored night's window is checked tonight.
+    expect(seen.get('history-unattributed-since-last-run')).toMatchObject({ runAt: good });
+    // The baseline is the last good one, not an error row without hashes (which would re-baseline as a first run).
+    expect(seen.get('test-flags-changed')).toMatchObject({ runAt: good, detail: { hashes: { Customer: 'abc' } } });
+    // And the seals' rotation goes on from where the last good run stopped.
+    expect(h.rotation).toEqual({ cursor: 41, nights: 28 });
   });
 
   it('a deferred seal fails seal-written; a genesis is information', async () => {
@@ -231,9 +296,99 @@ describe('the operators’ webhook', () => {
   });
 });
 
+describe('seal findings: alerted once per event', () => {
+  const chainResult = () => h.results.find((r) => r.checkId === 'seal-chain-intact')!;
+  /** Tonight's run, with last night's results as the previous ones. */
+  async function night(n: number) {
+    h.previous = h.results.map((r) => ({ ...r }));
+    h.results = [];
+    const alert = vi.fn(async () => true);
+    await runIntegrityWatch(fakeDb(), { store, now: new Date(NOW.getTime() + n * 86_400_000), alert, inAppAlerts: false });
+    return alert;
+  }
+
+  beforeEach(() => {
+    h.checks = [];
+  });
+
+  it('a deletion the totals find is one event, though the last seal it is shown at moves every night', async () => {
+    h.mismatches = [{ kind: 'rows-deleted', seq: 3, day: '2026-10-23', table: 'AuditLog', totals: true, delta: 1 }];
+    await night(0);
+    expect(chainResult()).toMatchObject({ status: 'fail', sampleIds: ['totals:AuditLog'] });
+    h.mismatches = [{ kind: 'rows-deleted', seq: 4, day: '2026-10-24', table: 'AuditLog', totals: true, delta: 1 }];
+    expect(await night(1)).not.toHaveBeenCalled();
+    expect(chainResult()).toMatchObject({ status: 'info', count: 1, detail: { new: 0 } });
+    h.mismatches = [{ kind: 'rows-deleted', seq: 5, day: '2026-10-25', table: 'AuditLog', totals: true, delta: 1 }];
+    expect(await night(2)).not.toHaveBeenCalled();
+    // A second deletion is a new event (two rows short now).
+    h.mismatches = [{ kind: 'rows-deleted', seq: 6, day: '2026-10-26', table: 'AuditLog', totals: true, delta: 2 }];
+    const fourth = await night(3);
+    expect(chainResult()).toMatchObject({ status: 'fail', detail: { new: 1 } });
+    expect(fourth).toHaveBeenCalledWith(expect.objectContaining({ severity: 'critical' }));
+  });
+
+  it('a range mismatch whose seal leaves the window is carried as information, never dropped to a pass', async () => {
+    h.mismatches = [{ kind: 'rows-changed', seq: 1, day: '2026-10-21', table: 'AuditLog' }];
+    await night(0);
+    expect(chainResult()).toMatchObject({ status: 'fail', count: 1 });
+    // Seal 1 is no longer recomputed: tonight's recheck cannot see it.
+    h.windowSeqs = [2, 3];
+    h.mismatches = [];
+    await night(1);
+    expect(chainResult()).toMatchObject({ status: 'info', count: 1, sampleIds: ['1:AuditLog'], detail: { carried: 1 } });
+    await night(2);
+    expect(chainResult()).toMatchObject({ status: 'info', count: 1 });
+    // The rotation recomputes it and finds it again: the same event.
+    h.rotatedSeqs = [1];
+    h.mismatches = [{ kind: 'rows-changed', seq: 1, day: '2026-10-21', table: 'AuditLog' }];
+    await night(3);
+    expect(chainResult()).toMatchObject({ status: 'info', count: 1, detail: { carried: 0 } });
+    // Recomputed and clean (the change was put back): resolved...
+    h.mismatches = [];
+    await night(4);
+    expect(chainResult()).toMatchObject({ status: 'pass', count: 0 });
+    // ...so changed again, it is new again.
+    h.mismatches = [{ kind: 'rows-changed', seq: 1, day: '2026-10-21', table: 'AuditLog' }];
+    await night(5);
+    expect(chainResult()).toMatchObject({ status: 'fail' });
+  });
+
+  it('a deletion the totals reported, found later in its seal’s range by the rotation, is not alerted again', async () => {
+    h.windowSeqs = [5, 6, 7];
+    h.mismatches = [{ kind: 'rows-deleted', seq: 7, day: '2026-10-27', table: 'AuditLog', totals: true, delta: 1 }];
+    await night(0);
+    expect(chainResult()).toMatchObject({ status: 'fail' });
+    h.rotatedSeqs = [1];
+    h.mismatches = [
+      { kind: 'rows-deleted', seq: 1, day: '2026-10-21', table: 'AuditLog' },
+      { kind: 'rows-deleted', seq: 8, day: '2026-10-28', table: 'AuditLog', totals: true, delta: 1 },
+    ];
+    expect(await night(1)).not.toHaveBeenCalled();
+    expect(chainResult()).toMatchObject({ status: 'info', count: 2, detail: { new: 0 } });
+    // A rows-changed in that range is no deletion: new.
+    h.mismatches = [...h.mismatches, { kind: 'rows-changed', seq: 1, day: '2026-10-21', table: 'EditApproval' }];
+    await night(2);
+    expect(chainResult()).toMatchObject({ status: 'fail', detail: { new: 1 } });
+  });
+
+  it('a seal-chain finding carried across an errored night is still known', async () => {
+    h.mismatches = [{ kind: 'body-edited', seq: 2, day: '2026-10-22' }];
+    await night(0);
+    expect(chainResult()).toMatchObject({ status: 'fail' });
+    const good = h.results.map((r) => ({ ...r }));
+    h.previous = [...good, { ...good.find((r) => r.checkId === 'seal-chain-intact')!, runAt: new Date(NOW.getTime() + 86_400_000), status: 'error', detail: { error: 'x' } }];
+    h.results = [];
+    const alert = vi.fn(async () => true);
+    await runIntegrityWatch(fakeDb(), { store, now: new Date(NOW.getTime() + 2 * 86_400_000), alert, inAppAlerts: false });
+    expect(chainResult()).toMatchObject({ status: 'info' });
+    expect(alert).not.toHaveBeenCalled();
+  });
+});
+
 describe('the off-site copies of the last seals', () => {
-  const run = (store: { get: (k: string) => Promise<string | null>; put: (k: string, b: string) => Promise<void> }) =>
-    runIntegrityWatch(fakeDb(), { store, now: NOW, alert: vi.fn(async () => true), inAppAlerts: false });
+  type Store = { get: (k: string) => Promise<string | null>; put: (k: string, b: string) => Promise<void>; list?: (p: string) => Promise<string[]> };
+  const run = (s: Store, alert = vi.fn(async () => true)) =>
+    runIntegrityWatch(fakeDb(), { store: { list: async () => LISTED, ...s }, now: NOW, alert, inAppAlerts: false });
   const copies = () => h.results.find((r) => r.checkId === 'seal-offsite-copies')!;
 
   it('a copy missing for a seal at most two days old is written again: information', async () => {
@@ -245,16 +400,49 @@ describe('the off-site copies of the last seals', () => {
     expect(s.r2Errors).toBe(0);
   });
 
-  it('missing and older, or different: a failure named by seal', async () => {
-    await run({ get: async (k) => (k === 'seals/1' ? null : k === 'seals/3' ? '{"x":1}' : '{}'), put: async () => undefined });
-    expect(copies()).toMatchObject({ status: 'fail', count: 2, sampleIds: ['1', '3'], detail: { missing: 1, differs: 1 } });
+  it('missing and older, or different: a failure named by seal; a copy that differs is critical', async () => {
+    const alert = vi.fn(async () => true);
+    await run({ get: async (k) => (k === 'seals/1' ? null : k === 'seals/3' ? '{"x":1}' : '{}'), put: async () => undefined }, alert);
+    expect(copies()).toMatchObject({ status: 'fail', count: 2, sampleIds: ['1', '3'], detail: { missing: 1, differs: 1, critical: true } });
+    expect(alert).toHaveBeenCalledWith(expect.objectContaining({ severity: 'critical' }));
+  });
+
+  it('the listing: an object no seal of the chain has is a new, critical finding once, then information', async () => {
+    h.checks = [];
+    const extra = 'seals/v1/0123456789abcdef/00000009.json';
+    const alert = vi.fn(async () => true);
+    await run({ get: async () => '{}', put: async () => undefined, list: async () => [...LISTED, extra] }, alert);
+    expect(copies()).toMatchObject({ status: 'fail', count: 1, detail: { listed: true, objects: 4, unexpected: 1, critical: true } });
+    expect(alert).toHaveBeenCalledWith(expect.objectContaining({ severity: 'critical' }));
+    h.previous = h.results.map((r) => ({ ...r }));
+    h.results = [];
+    const again = vi.fn(async () => true);
+    await runIntegrityWatch(fakeDb(), {
+      store: { get: async () => '{}', put: async () => undefined, list: async () => [...LISTED, extra] },
+      now: new Date(NOW.getTime() + 86_400_000),
+      alert: again,
+      inAppAlerts: false,
+    });
+    expect(copies()).toMatchObject({ status: 'info', count: 1, detail: { new: 0, critical: false } });
+    expect(again).not.toHaveBeenCalled();
+  });
+
+  it('a copy missing that is only seen by the listing (an older seal) is a finding too, and warn, not critical', async () => {
+    h.windowSeqs = [2, 3];
+    const alert = vi.fn(async () => true);
+    await run({ get: async () => '{}', put: async () => undefined, list: async () => ['seals/2', 'seals/3'] }, alert);
+    expect(copies()).toMatchObject({ status: 'fail', count: 1, sampleIds: ['1'], detail: { missing: 1, critical: false } });
+    expect(alert).toHaveBeenCalledWith(expect.objectContaining({ severity: 'warn' }));
   });
 
   it('R2 not answering is an R2 error (the run goes red), not a pass and not a failure of the chain', async () => {
-    const s = await run({ get: async () => { throw new Error('R2 timeout'); }, put: async () => undefined });
-    expect(copies()).toMatchObject({ status: 'error', count: null, detail: { unread: 3 } });
+    const fail = async () => {
+      throw new Error('R2 timeout');
+    };
+    const s = await run({ get: fail, put: async () => undefined, list: fail });
+    expect(copies()).toMatchObject({ status: 'error', count: null, detail: { unread: 3, listed: false } });
     expect(h.results.find((r) => r.checkId === 'seal-chain-intact')).toMatchObject({ status: 'pass' });
-    // Tonight's own copy, and the three read back.
-    expect(s.r2Errors).toBe(4);
+    // Tonight's own copy, the three read back, and the listing.
+    expect(s.r2Errors).toBe(5);
   });
 });
