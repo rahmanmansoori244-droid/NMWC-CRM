@@ -65,19 +65,32 @@ jobs:
       # 2026-10-24: next 15.5.26 failed this gate with a CRITICAL advisory
       # (GHSA-2464-fhr4-w9xw, unauthenticated RCE in the Image Optimization API
       # with SVG) and a HIGH one (GHSA-p3m5-59mp-jv5r, Server Actions DoS), both
-      # fixed in 15.5.28. With next on 15.5.28 and `npm audit fix --omit=dev`
-      # (never --force) moving fast-uri, nodemailer and source-map-js to patched
-      # versions inside their ranges, the production tree went from 14 advisories
-      # (1 critical, 7 high, 6 moderate) to 8 (0 critical, 5 high, 3 moderate).
-      # The 8 come from four packages and each needs a major upgrade that is its
-      # own project: next 16 (for the postcss 8.4.31 that next pins), prisma 7
-      # (for deepmerge-ts via @prisma/config), zod 4, and an exceljs change (for
-      # uuid). None of those is a dependency bump, so the gate is set at
-      # `critical`, which is 0 today — a NEW critical advisory against a
-      # production dependency fails the build rather than printing into a log
-      # nobody reads.
+      # fixed in 15.5.28. With next on 15.5.28 (which also takes sharp from
+      # 0.35.4 to 0.35.5) and `npm audit fix --omit=dev` (never --force) moving
+      # fast-uri and source-map-js to patched versions inside their ranges, the
+      # number of VULNERABLE PACKAGES npm audit reports for the production tree
+      # (npm counts packages, a dependent of a vulnerable package included, not
+      # advisories) went from 14 (1 critical, 7 high, 6 moderate) to 11
+      # (0 critical, 5 high, 6 moderate).
       #
-      # The full report still runs, unfiltered, so the 8 stay visible and the
+      # The 11 trace back to five packages that carry advisories of their own;
+      # the other six are flagged only because they depend on one of them.
+      # Four need a major upgrade that is its own project: next 16 (for the
+      # postcss 8.4.31 that next pins; flags next), prisma 7 (for deepmerge-ts;
+      # flags @prisma/config and prisma), zod 4, and an exceljs change (for
+      # uuid; flags exceljs). The fifth is nodemailer (moderate, addressparser;
+      # flags @auth/core and next-auth): it is KEPT on 10.0.14 on purpose. The
+      # advisories are fixed from 10.1.4, and `npm audit fix` picked 10.2.1, a
+      # minor release published on 2026-10-22 (two days old when this was
+      # decided). E-mail is off in production (nothing is sent until
+      # NOTIFY_EMAIL_ENABLED=on), so the upgrade waits for a release with some
+      # time behind it and the advisory stays listed until then.
+      # None of the four is a dependency bump and the fifth waits on purpose, so
+      # the gate is set at `critical`, which is 0 today — a NEW critical
+      # advisory against a production dependency fails the build rather than
+      # printing into a log nobody reads.
+      #
+      # The full report still runs, unfiltered, so the 11 stay visible and the
       # list cannot quietly grow.
       - name: npm audit (production dependencies)
         run: |
