@@ -31,7 +31,7 @@
  */
 import { prisma } from '@/lib/db';
 import { setChangeContext, src, withChangeContext } from '@/lib/change-context';
-import type { ZodIssue } from 'zod';
+import type { ZodIssue } from '@/lib/zod';
 import {
   AttachmentKind,
   EditProcess,
@@ -62,6 +62,7 @@ import { checkLimit, FORM_LIMIT } from '@/lib/rate-limit';
 import { resolveChain, stepDeadline } from '@/lib/approval-chains';
 import {
   submitCreateSchema,
+  submitCreateShape,
   collectMissingForCreate,
   collectAttachmentIds,
   resolveCycleOnSubmit,
@@ -197,7 +198,7 @@ async function submitCreateOnce(
   // request to resume is still refused before the database.
   const editId = parsed.success
     ? parsed.data.editId
-    : submitCreateSchema.shape.editId.safeParse((input as { editId?: unknown } | undefined)?.editId)
+    : submitCreateShape.shape.editId.safeParse((input as { editId?: unknown } | undefined)?.editId)
         .data;
   if (!parsed.success && !editId) {
     throw new ValidationError(zodIssuesToFields(parsed.error.issues));

@@ -2,7 +2,7 @@
 
 import { auth, signIn, signOut } from '@/lib/auth';
 import { AuthError } from 'next-auth';
-import { z } from 'zod';
+import { z } from '@/lib/zod';
 import { redirect } from 'next/navigation';
 import { loginFailureMessage } from '@/lib/login-throttle';
 import { logger } from '@/lib/logger';

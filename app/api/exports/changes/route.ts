@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { z } from 'zod';
+import { enum3, string3, z } from '@/lib/zod';
 import { requireExportUser } from '@/lib/export-scope';
 import { getAuditEnvelope } from '@/lib/audit';
 import { recordExport } from '@/lib/export-record';
@@ -19,14 +19,14 @@ export const maxDuration = 60;
 const schema = z.object({
   // Days and only days ("YYYY-MM-DD", real ones), read as Oman days below: a full
   // timestamp's UTC date can be the Oman day before the one it names.
-  since: z.string().date().optional(),
-  until: z.string().date().optional(),
-  regionIds: z.array(z.string()).optional(),
-  routeIds: z.array(z.string()).optional(),
-  onlyChanged: z.enum(['1', 'true', '0', 'false']).optional(),
-  includePending: z.enum(['1', 'true', '0', 'false']).optional(),
+  since: z.iso.date().optional(),
+  until: z.iso.date().optional(),
+  regionIds: z.array(string3()).optional(),
+  routeIds: z.array(string3()).optional(),
+  onlyChanged: enum3(['1', 'true', '0', 'false']).optional(),
+  includePending: enum3(['1', 'true', '0', 'false']).optional(),
   // Gap 30: the Steward's "Include test records" box (honoured for him only).
-  includeTest: z.enum(['1', '0']).optional(),
+  includeTest: enum3(['1', '0']).optional(),
 });
 
 export async function GET(req: NextRequest) {

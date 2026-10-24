@@ -25,7 +25,18 @@
  * tab still running the old bundle is told to reload instead of being refused
  * field by field.
  */
-import { z } from 'zod';
+import {
+  cuid3,
+  DATETIME_OFFSET3,
+  enum3,
+  int3,
+  legacy,
+  nativeEnum3,
+  number3,
+  object3,
+  string3,
+  z,
+} from '../zod';
 import { CustomerStatus, DayOfWeek, PaymentTerms } from '@prisma/client';
 import { gpsManualReasonSchema } from '../gps-manual';
 import { submissionIdSchema } from '../submission';
@@ -81,44 +92,48 @@ export const TOO_MANY_OVERRIDES_MESSAGE = 'More fields are marked to keep than t
 
 /** A required cuid (channel): null or '' is an attempt to remove it. */
 const requiredId = (clearMsg: string) =>
-  z.string({ invalid_type_error: clearMsg, required_error: clearMsg }).min(1, clearMsg).cuid();
+  string3({ error: legacy({ invalid_type_error: clearMsg, required_error: clearMsg }) })
+    .min(1, clearMsg)
+    .check(cuid3());
 
 /** A clearable cuid (sub-channel): '' and null both clear it. */
-const clearableId = z
-  .string()
+const clearableId = string3()
   .nullable()
   .transform((v) => (v === '' ? null : v))
-  .pipe(z.string().cuid().nullable());
+  .pipe(string3().check(cuid3()).nullable());
 
 /** CR number: clearable (owner decision 2026-09-29), trimmed, blank = clear. */
-const clearableCr = z
-  .string()
-  .max(50)
+const clearableCr = string3()
+  .max(50, { abort: true }) // lib/validation/fields.ts strippedStr: zod 3 stopped here
   .nullable()
   .transform((v) => (v === null ? null : v.trim() || null));
 
 const count = (label: string, max: number) =>
-  z
-    .number({
-      invalid_type_error: `${label} cannot be empty — enter 0.`,
-      required_error: `${label} cannot be empty — enter 0.`,
-    })
-    .int(`${label} must be a whole number.`)
-    .min(0, `${label} cannot be below 0.`)
-    .max(max, `${label} cannot be more than ${max}.`);
+  number3({
+    invalid_type_error: `${label} cannot be empty — enter 0.`,
+    required_error: `${label} cannot be empty — enter 0.`,
+  }).check(
+    int3(`${label} must be a whole number.`),
+    z.gte(0, `${label} cannot be below 0.`),
+    z.lte(max, `${label} cannot be more than ${max}.`)
+  );
 
 /**
  * ISO-8601 with a zone (Z or an offset), or a Date from a server-side caller.
- * Never z.coerce.date: new Date(null) is 1970-01-01.
+ * Never z.coerce.date: new Date(null) is 1970-01-01. The text is held to zod 3's
+ * pattern (DATETIME_OFFSET3: "+0400" is taken, as it was). `abort`: zod 3 did not
+ * transform a refused time, so the branch's GPS rules did not run beside it
+ * (lib/validation/fields.ts strippedStr).
  */
 const capturedAt = z
-  .union([z.date(), z.string().datetime({ offset: true, message: CAPTURED_AT_MESSAGE })], {
-    errorMap: () => ({ message: CAPTURED_AT_MESSAGE }),
-  })
+  .union(
+    [z.date(), string3().regex(DATETIME_OFFSET3, { message: CAPTURED_AT_MESSAGE, abort: true })],
+    { error: () => CAPTURED_AT_MESSAGE }
+  )
   .transform((v) => (typeof v === 'string' ? new Date(v) : v));
 
 /** What the form loaded for a field: the stored value as JSON carries it. */
-export const baseValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+export const baseValueSchema = z.union([string3(), number3(), z.boolean(), z.null()]);
 
 function baseShape<F extends string>(fields: readonly F[]) {
   return Object.fromEntries(fields.map((f) => [f, baseValueSchema.optional()])) as {
@@ -139,9 +154,9 @@ export const customerPatchSchema = z
     ).optional(),
     // Accepted only so that a change can be refused with its own message
     // (services/edits.ts: terms move through Temix or the credit chain).
-    paymentTerms: z
-      .nativeEnum(PaymentTerms, { invalid_type_error: 'Payment terms cannot be removed.' })
-      .optional(),
+    paymentTerms: nativeEnum3(PaymentTerms, {
+      invalid_type_error: 'Payment terms cannot be removed.',
+    }).optional(),
     crNumber: clearableCr.optional(),
     channelId: requiredId('Channel cannot be removed — pick one.').optional(),
     subChannelId: clearableId.optional(),
@@ -155,14 +170,16 @@ export const customerPatchSchema = z
     ).optional(),
     contactRole: clearableText(200).optional(),
     // Never sent by a salesman's form (EL-01: status flips have their own lanes).
-    status: z.nativeEnum(CustomerStatus, { invalid_type_error: 'Status cannot be removed.' }).optional(),
+    status: nativeEnum3(CustomerStatus, {
+      invalid_type_error: 'Status cannot be removed.',
+    }).optional(),
     notes: clearableText(5000).optional(),
   })
   .strict();
 
 export const branchPatchSchema = z
   .object({
-    branchId: z.string().cuid(),
+    branchId: string3().check(cuid3()),
     branchName: requiredText(1, 200, 'Branch name is required.', 'Branch name cannot be removed.').optional(),
     address: requiredText(
       3,
@@ -175,29 +192,29 @@ export const branchPatchSchema = z
     // PROD-005: bound to Oman's actual envelope so a faulty device or a
     // copy/paste error can't land coordinates in the Indian Ocean. Oman spans
     // roughly 16°N–27°N and 51°E–60°E; we add ~1° of slack on each edge.
-    gpsLat: z
-      .number({ invalid_type_error: 'The location cannot be removed.' })
-      .min(16, 'Latitude must be inside Oman (≥16°N).')
-      .max(27, 'Latitude must be inside Oman (≤27°N).')
+    gpsLat: number3({ invalid_type_error: 'The location cannot be removed.' })
+      .check(
+        z.gte(16, 'Latitude must be inside Oman (≥16°N).'),
+        z.lte(27, 'Latitude must be inside Oman (≤27°N).')
+      )
       .optional(),
-    gpsLng: z
-      .number({ invalid_type_error: 'The location cannot be removed.' })
-      .min(51, 'Longitude must be inside Oman (≥51°E).')
-      .max(61, 'Longitude must be inside Oman (≤61°E).')
+    gpsLng: number3({ invalid_type_error: 'The location cannot be removed.' })
+      .check(
+        z.gte(51, 'Longitude must be inside Oman (≥51°E).'),
+        z.lte(61, 'Longitude must be inside Oman (≤61°E).')
+      )
       .optional(),
     // GPS companions: only with the point, no base. null = the point has no
     // reported accuracy (a typed-in one).
-    gpsAccuracy: z.number().min(0).max(10000).nullable().optional(),
+    gpsAccuracy: number3().check(z.gte(0), z.lte(10000)).nullable().optional(),
     gpsCapturedAt: capturedAt.optional(),
     // Item 41: present only when the salesman TYPED the point in. Not a Branch
     // column — services/edits.ts turns it into a marker on the gps entries.
     gpsManualReason: gpsManualReasonSchema.optional(),
 
-    dayOfVisit: z
-      .nativeEnum(DayOfWeek, {
-        invalid_type_error: 'Day of visit cannot be removed once set — pick the right day.',
-      })
-      .optional(),
+    dayOfVisit: nativeEnum3(DayOfWeek, {
+      invalid_type_error: 'Day of visit cannot be removed once set — pick the right day.',
+    }).optional(),
     openingHours: clearableText(100).optional(),
     deliveryWindow: clearableText(100).optional(),
 
@@ -206,14 +223,16 @@ export const branchPatchSchema = z
     emptyBottlesCount: count('Empty bottles', 1000).optional(),
     // F21: the counts were confirmed at the shop. See EQUIPMENT_UNCONFIRM_MESSAGE.
     equipmentConfirmed: z
-      .boolean({ invalid_type_error: 'Say whether the equipment was counted.' })
+      .boolean({ error: legacy({ invalid_type_error: 'Say whether the equipment was counted.' }) })
       .optional(),
 
     // Steward/Manager only for CLOSED/SUSPENDED flips (QA-009, services/edits.ts).
-    status: z.nativeEnum(CustomerStatus, { invalid_type_error: 'Status cannot be removed.' }).optional(),
+    status: nativeEnum3(CustomerStatus, {
+      invalid_type_error: 'Status cannot be removed.',
+    }).optional(),
 
     /** What the form loaded for every key sent above, except branchId, gpsManualReason and the companions. */
-    base: branchBaseSchema,
+    base: object3(branchBaseSchema),
     /**
      * Ruling 1 ("Keep mine"): fields whose base the user moved to the value
      * found live after a STALE_FIELDS answer, knowingly replacing a value changed
@@ -221,7 +240,7 @@ export const branchPatchSchema = z
      * Names not sent in this patch mean nothing.
      */
     overrides: cappedArray(
-      z.array(z.enum(BRANCH_EDIT_FIELDS)),
+      z.array(enum3(BRANCH_EDIT_FIELDS)),
       BRANCH_EDIT_FIELDS.length,
       TOO_MANY_OVERRIDES_MESSAGE
     ).optional(),
@@ -233,13 +252,13 @@ export const branchPatchSchema = z
     const hasLat = b.gpsLat !== undefined;
     const hasLng = b.gpsLng !== undefined;
     if (hasLat !== hasLng) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [hasLat ? 'gpsLng' : 'gpsLat'], message: GPS_PAIR_MESSAGE });
+      ctx.addIssue({ code: 'custom', path: [hasLat ? 'gpsLng' : 'gpsLat'], message: GPS_PAIR_MESSAGE });
       return;
     }
     if (hasLat) {
       if (b.gpsCapturedAt === undefined || b.gpsAccuracy === undefined) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: 'custom',
           path: [b.gpsCapturedAt === undefined ? 'gpsCapturedAt' : 'gpsAccuracy'],
           message: GPS_POINT_NEEDS_COMPANIONS_MESSAGE,
         });
@@ -248,7 +267,7 @@ export const branchPatchSchema = z
     }
     for (const k of ['gpsAccuracy', 'gpsCapturedAt', 'gpsManualReason'] as const) {
       if (b[k] !== undefined) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [k], message: GPS_COMPANIONS_NEED_POINT_MESSAGE });
+        ctx.addIssue({ code: 'custom', path: [k], message: GPS_COMPANIONS_NEED_POINT_MESSAGE });
         return;
       }
     }
@@ -257,22 +276,22 @@ export const branchPatchSchema = z
 export const submitEditSchema = z
   .object({
     v: z.literal(EDIT_PAYLOAD_VERSION),
-    customerId: z.string().cuid(),
-    isDraft: z.boolean().default(false),
+    customerId: string3().check(cuid3()),
+    isDraft: z.boolean().prefault(false),
     /** Item 22: the phone's id for this payload, so a retry is never written twice. */
     submissionId: submissionIdSchema.optional(),
-    customer: customerPatchSchema,
+    customer: object3(customerPatchSchema),
     /** What the form loaded for every key sent in `customer`. */
-    customerBase: customerBaseSchema,
+    customerBase: object3(customerBaseSchema),
     /** Ruling 1: as a branch's `overrides`, for the customer's own fields. */
     customerOverrides: cappedArray(
-      z.array(z.enum(CUSTOMER_EDIT_FIELDS)),
+      z.array(enum3(CUSTOMER_EDIT_FIELDS)),
       CUSTOMER_EDIT_FIELDS.length,
       TOO_MANY_OVERRIDES_MESSAGE
     ).optional(),
     /** Only branches with at least one touched field. */
     branches: cappedArray(
-      z.array(branchPatchSchema),
+      z.array(object3(branchPatchSchema)),
       MAX_BRANCHES_PER_EDIT,
       TOO_MANY_BRANCHES_MESSAGE
     ),
@@ -282,7 +301,7 @@ export const submitEditSchema = z
     const seen = new Set<string>();
     for (const b of input.branches) {
       if (seen.has(b.branchId)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [], message: DUPLICATE_BRANCH_MESSAGE });
+        ctx.addIssue({ code: 'custom', path: [], message: DUPLICATE_BRANCH_MESSAGE });
         return;
       }
       seen.add(b.branchId);

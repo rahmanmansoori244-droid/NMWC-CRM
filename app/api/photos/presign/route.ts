@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { z } from 'zod';
+import { enum3, int3, number3, string3, z } from '@/lib/zod';
 import { checkActor } from '@/lib/session';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
@@ -35,7 +35,7 @@ const presignSchema = z.object({
   // Owner decisions 2026-10-11: the four credit documents and the signed credit
   // application (lib/credit-documents.ts), image-only like the guarantee. In
   // lockstep with the finalize route's kindFromKey (tests/unit/photo-upload-roles.test.ts).
-  kind: z.enum([
+  kind: enum3([
     'SHOP',
     'SIGNBOARD',
     'CR',
@@ -47,8 +47,8 @@ const presignSchema = z.object({
     'TAX_CARD',
     'CREDIT_FORM',
   ]),
-  mimeType: z.string().refine((m) => ALLOWED_MIME.includes(m), 'Invalid mime type'),
-  bytes: z.number().int().min(1).max(MAX_BYTES),
+  mimeType: string3().refine((m) => ALLOWED_MIME.includes(m), 'Invalid mime type'),
+  bytes: number3().check(int3(), z.gte(1), z.lte(MAX_BYTES)),
 });
 
 // Every refusal below carries a `message` beside its machine `error`: the photo

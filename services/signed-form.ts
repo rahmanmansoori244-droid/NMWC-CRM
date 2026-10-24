@@ -25,7 +25,7 @@
  * Finance Manager send-back since), "sent" would be false: the pages of a page
  * opened before that send-back were never claimed, so it is told to reload.
  */
-import { z } from 'zod';
+import { array3, cuid3, string3, z } from '@/lib/zod';
 import { EditProcess, EditState, Role, type Prisma } from '@prisma/client';
 import { revalidatePath } from 'next/cache';
 import { prisma } from '@/lib/db';
@@ -95,12 +95,14 @@ const NOT_AT_SIGNED_FORM_MESSAGE =
   'This request is not waiting for your signed application. Reload the page to see where it is.';
 
 const inputSchema = z.object({
-  editId: z.string().cuid(),
-  attachmentIds: z
-    .array(z.string().cuid())
-    .min(1, 'Add a photo of the signed and stamped application.')
-    .max(MAX_SIGNED_FORM_PAGES, `At most ${MAX_SIGNED_FORM_PAGES} pages.`),
-  decisionToken: z.string().max(300).optional(),
+  editId: string3().check(cuid3()),
+  // zod 3's order: the count first, then each page (array3, lib/zod.ts) — the
+  // refusal below reads the first issue.
+  attachmentIds: array3(string3().check(cuid3()), {
+    min: { value: 1, message: 'Add a photo of the signed and stamped application.' },
+    max: { value: MAX_SIGNED_FORM_PAGES, message: `At most ${MAX_SIGNED_FORM_PAGES} pages.` },
+  }),
+  decisionToken: string3().max(300).optional(),
 });
 
 export async function submitSignedFormAction(input: {

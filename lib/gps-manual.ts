@@ -24,7 +24,7 @@
  * Anything without the marker means "not known to be typed" — older rows were
  * never marked, so absence is not proof of a device fix.
  */
-import { z } from 'zod';
+import { number3, string3, z } from './zod';
 import { isUnmovedCoordinate } from './edit-values';
 import { stripHtml } from './validation/fields';
 
@@ -50,13 +50,11 @@ export type FieldChange = {
  * The reason, as it will be stored — and copied into an audit row that is never
  * erased. HTML stripped before the length check, so '<b></b>' is not 7 characters.
  */
-export const gpsManualReasonSchema = z
-  .string()
-  .max(2000)
+export const gpsManualReasonSchema = string3()
+  .max(2000, { abort: true }) // lib/validation/fields.ts strippedStr: zod 3 stopped here
   .transform(stripHtml)
   .pipe(
-    z
-      .string()
+    string3()
       .min(5, 'Say why GPS did not work (at least 5 characters).')
       .max(500, 'Keep the reason under 500 characters.')
   );
@@ -105,12 +103,14 @@ export function manualGpsMarker(index: number, lat: number, lng: number, reason:
 
 // Read side: fieldChanges is unvalidated JSON, so every read is defensive.
 const entrySchema = z.object({
-  field: z.string(),
-  after: z.unknown(),
+  field: string3(),
+  // zod 3 let an object leave out a key whose schema takes undefined; zod 4
+  // wants it present unless it is optional. An entry without `after` still counts.
+  after: z.unknown().optional(),
   gpsSource: z.literal(GPS_SOURCE_MANUAL),
-  gpsManualReason: z.string(),
+  gpsManualReason: string3(),
 });
-const pointSchema = z.object({ lat: z.number(), lng: z.number() });
+const pointSchema = z.object({ lat: number3(), lng: number3() });
 
 function manualEntries(changes: unknown) {
   if (!Array.isArray(changes)) return [];

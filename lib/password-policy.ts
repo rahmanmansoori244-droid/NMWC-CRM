@@ -9,7 +9,7 @@
  * there, and Next registered every user-admin action of that module in the one
  * page a session with mustChangePassword may still reach.
  */
-import { z } from 'zod';
+import { string3 } from './zod';
 import bcrypt from 'bcryptjs';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
@@ -17,7 +17,7 @@ import { ValidationError } from '@/lib/errors';
 import { RETENTION_RULES } from './retention-rules';
 import { passwordHistoryPurgeSql, runPurge } from './purge-summary';
 
-export const passwordRule = z.string().min(12, 'Password must be at least 12 characters');
+export const passwordRule = string3().min(12, 'Password must be at least 12 characters');
 
 /**
  * B-15: Password reuse prevention.
