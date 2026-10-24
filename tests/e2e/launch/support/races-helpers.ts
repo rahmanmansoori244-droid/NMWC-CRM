@@ -271,7 +271,20 @@ export type PostLog = { name: string; calls: Array<{ sent: number; done: number 
 /**
  * Records the page's POSTs to `path` (a server action posts to the page's own
  * path; a field form to /api/forms/<form>): when each left, when each was
- * answered (finished or failed), in this process's clock.
+ * answered, in this process's clock. Answered = the first of: the answer's
+ * headers arrived (`response`), the body ended (`requestfinished`), or it
+ * failed (`requestfailed`).
+ *
+ * The headers count on their own because a page may leave before the body has
+ * ended, and then Chromium can drop the request without either end event. A
+ * server action's answer carries the action's result first and then the pages
+ * it revalidated; "Nothing to send again — clear this" (ClearReturned.tsx)
+ * loads /rejected afresh (hardReplace) as soon as the result is read, so the
+ * rest of that answer is cut off. Seen 2026-10-24 on races.spec.ts (c), 4 of 7
+ * runs: the race read as never answered. A traced run showed why: the server
+ * had cleared it (edit.returned.clear), the POST had its 200, /rejected loaded
+ * again, and neither end event came. The headers come first, so
+ * expectOverlap's "in flight together" check is, if anything, stricter.
  */
 export function trackPosts(page: Page, name: string, path: string): PostLog {
   const log: PostLog = { name, calls: [] };
@@ -292,6 +305,7 @@ export function trackPosts(page: Page, name: string, path: string): PostLog {
     if (call && call.done === null) call.done = Date.now();
     open.delete(r);
   };
+  page.on('response', (res) => end(res.request()));
   page.on('requestfinished', end);
   page.on('requestfailed', end);
   return log;
