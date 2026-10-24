@@ -28,7 +28,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
+import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals, purgeHistory } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 90_000 });
@@ -195,6 +195,8 @@ describe.skipIf(!ENABLED)('the signed-application step on Postgres (owner decisi
     try {
       const eds = await prisma.customerEdit.findMany({ where: { submittedById: ids.salesman }, select: { id: true } });
       const edIds = eds.map((e) => e.id);
+      // Their dated history goes last (below): the ids are read before the rows go.
+      const attachmentIds = (await prisma.attachment.findMany({ where: { capturedById: { in: people() } }, select: { id: true } })).map((a) => a.id);
       if (edIds.length) {
         await purgeEditApprovals(prisma, { where: { editId: { in: edIds } } });
         await prisma.notification.deleteMany({ where: { editId: { in: edIds } } });
@@ -209,6 +211,17 @@ describe.skipIf(!ENABLED)('the signed-application step on Postgres (owner decisi
       await prisma.user.deleteMany({ where: { id: { in: people() } } });
       await prisma.route.deleteMany({ where: { id: ids.route } });
       await prisma.region.deleteMany({ where: { id: ids.region } });
+      // The submit/decision throttle's buckets (edit:<user id>) of the suite's accounts.
+      await prisma.rateLimit.deleteMany({ where: { OR: people().map((u) => ({ key: { contains: u } })) } });
+      // Last: the dated history the database wrote for these fixtures (their deletes above
+      // included), their revisions, and the sign-in events of the suite's accounts.
+      await purgeHistory(prisma, {
+        userIds: people(),
+        routeIds: [ids.route].filter(Boolean),
+        regionIds: [ids.region].filter(Boolean),
+        attachmentIds,
+        editIds: edIds,
+      });
     } catch (e) {
       console.error('cleanup', e);
     }

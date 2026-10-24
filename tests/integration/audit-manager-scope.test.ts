@@ -21,7 +21,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import type { AuditAction } from '@prisma/client';
-import { purgeAuditLog, purgeCustomerEdits } from '../support/audit';
+import { purgeAuditLog, purgeCustomerEdits, purgeHistory } from '../support/audit';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
@@ -157,6 +157,16 @@ describe.skipIf(!ENABLED)('a Manager’s audit log: his regions’ events and hi
     await prisma.user.deleteMany({ where: { id: { in: people } } });
     await prisma.route.deleteMany({ where: { id: { in: [ids.rtMine, ids.rtOther].filter(Boolean) } } });
     await prisma.region.deleteMany({ where: { id: { in: [ids.regMine, ids.regOther].filter(Boolean) } } });
+    // Last: the dated history the database wrote for these fixtures (their deletes above included).
+    await purgeHistory(prisma, {
+      customerIds: custs,
+      branchIds: [ids.brMine, ids.brOther, ids.brArchived].filter(Boolean),
+      userIds: people,
+      routeIds: [ids.rtMine, ids.rtOther].filter(Boolean),
+      regionIds: [ids.regMine, ids.regOther].filter(Boolean),
+      attachmentIds: [ids.attMine, ids.attOther].filter(Boolean),
+      editIds,
+    });
     await prisma.$disconnect();
   });
 

@@ -45,11 +45,15 @@ describe.skipIf(!ENABLED)('gap 25: every purge leaves its summary', () => {
   let prisma: PrismaClient;
   let w: World;
   const sfx = `zzw${Date.now().toString(36)}`;
-  const runId = `test-purge:${sfx}`;
+  // The production shape ('<job>:<run start ISO>'), and NOT the fixtures' suffix: the
+  // summaries are asserted not to contain it, so the run's own id must not carry it.
+  const runId = `test-purge:${new Date().toISOString()}`;
   const run = { runId };
   const attachmentIds: string[] = [];
   const cause = { actorId: null, source: src.test('purge-summaries') };
   const summaries = (rule: string) => prisma.purgeSummary.findMany({ where: { runId, rule }, orderBy: { id: 'asc' } });
+  // A summary's id is a BIGINT (BigInt in the client), which JSON.stringify refuses: serialize it as text.
+  const asText = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === 'bigint' ? x.toString() : x));
   const purge = (rule: Parameters<typeof runPurge>[1], stmt: Parameters<typeof runPurge>[2]) =>
     withChangeContext(prisma, cause, (tx) => runPurge(tx, rule, stmt));
 
@@ -89,7 +93,7 @@ describe.skipIf(!ENABLED)('gap 25: every purge leaves its summary', () => {
     expect(s).toMatchObject({ job: 'retention-sweep', tableName: 'RateLimit', action: 'DELETE', rows: 1, retentionDays: 1, source: cause.source });
     expect(s!.oldestAt!.toISOString()).toBe(OLD.toISOString());
     expect(s!.detail).toEqual({ byKind: { 'login:user': 1 } });
-    expect(JSON.stringify(s)).not.toContain(sfx);
+    expect(asText(s)).not.toContain(sfx);
     expect(await prisma.rateLimit.count({ where: { key: { startsWith: `login:user:${sfx}` } } })).toBe(1);
   });
 
@@ -183,7 +187,7 @@ describe.skipIf(!ENABLED)('gap 25: every purge leaves its summary', () => {
     expect(await purge('password-history-last-5', passwordHistoryPurgeSql(userId, keep, run))).toBe(2);
     const [s] = await summaries('password-history-last-5');
     expect(s).toMatchObject({ job: 'password-policy', tableName: 'PasswordHistory', rows: 2, detail: null });
-    expect(JSON.stringify(s)).not.toContain(userId);
+    expect(asText(s)).not.toContain(userId);
     expect(await prisma.passwordHistory.count({ where: { userId } })).toBe(5);
   });
 

@@ -35,7 +35,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { EditProcess, PaymentTerms } from '@prisma/client';
-import { purgeCustomerEdits } from '../support/audit';
+import { purgeCustomerEdits, purgeHistory } from '../support/audit';
 import type { MailTransport, OutgoingMail, SendResult } from '@/lib/email/transport';
 import { EMAIL_DELIVERY } from '@/lib/notify-policy';
 
@@ -131,6 +131,13 @@ describe.skipIf(!ENABLED)('F1: the e-mail drain on Postgres', () => {
       await prisma.user.deleteMany({ where: { id: { in: USERS } } });
       await prisma.route.deleteMany({ where: { id: { in: [ids.route, ids.otherRoute] } } });
       await prisma.region.deleteMany({ where: { id: { in: [ids.region, ids.otherRegion] } } });
+      // Last: the dated history the database wrote for these fixtures (their deletes above included).
+      await purgeHistory(prisma, {
+        userIds: USERS,
+        routeIds: [ids.route, ids.otherRoute],
+        regionIds: [ids.region, ids.otherRegion],
+        editIds,
+      });
     } catch (e) {
       console.error('cleanup', e);
     }

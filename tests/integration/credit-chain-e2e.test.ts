@@ -51,7 +51,7 @@
  *     tests/integration/credit-chain-e2e.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals, withAuditMaintenance } from '../support/audit';
+import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals, purgeHistory, withAuditMaintenance } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
 import { guaranteeDigest, parseDecisionToken } from '@/lib/decision-token';
 import { CREDIT_BULK_REFUSED_MESSAGE, TEMIX_CODE_BULK_REFUSED_MESSAGE } from '@/lib/bulk-run';
@@ -169,6 +169,10 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
         await purgeCustomerEdits(prisma, { where: { id: { in: edIds } } });
       }
       const allCust = [...custIds, ...(await prisma.customer.findMany({ where: { legalName: { in: allNames } }, select: { id: true } })).map((c) => c.id)];
+      const people = [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.sd, ids.acc, ids.steward];
+      // Their dated history goes last (below): the ids are read before the rows go.
+      const branchIds = (await prisma.branch.findMany({ where: { customerId: { in: allCust } }, select: { id: true } })).map((b) => b.id);
+      const attachmentIds = (await prisma.attachment.findMany({ where: { capturedById: { in: people } }, select: { id: true } })).map((a) => a.id);
       if (allCust.length) {
         // "Ready for Temix upload" goes to every active Steward and names the
         // customer, which has no foreign key: it would outlive the customer.
@@ -177,12 +181,23 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
         await prisma.customer.deleteMany({ where: { id: { in: allCust } } });
       }
       await prisma.attachment.deleteMany({ where: { capturedById: ids.salesman } });
-      const people = [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.sd, ids.acc, ids.steward];
       await purgeAuditLog(prisma, { where: { actorId: { in: people } } });
       await prisma.notification.deleteMany({ where: { userId: { in: people } } });
       await prisma.user.deleteMany({ where: { id: { in: people } } });
       await prisma.route.deleteMany({ where: { id: ids.route } });
       await prisma.region.deleteMany({ where: { id: ids.region } });
+      // The submit/decision throttle's buckets (edit:<user id>) of the suite's accounts.
+      await prisma.rateLimit.deleteMany({ where: { OR: people.map((u) => ({ key: { contains: u } })) } });
+      // Last: the dated history the database wrote for these fixtures (their deletes above included).
+      await purgeHistory(prisma, {
+        customerIds: allCust,
+        branchIds,
+        userIds: people,
+        routeIds: [ids.route].filter(Boolean),
+        regionIds: [ids.region].filter(Boolean),
+        attachmentIds,
+        editIds: edIds,
+      });
     } catch (e) { console.error('cleanup', e); }
     await prisma.$disconnect();
   });

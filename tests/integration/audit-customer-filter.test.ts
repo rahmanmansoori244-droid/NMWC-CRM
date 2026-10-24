@@ -29,7 +29,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import type { AuditAction, Prisma as PrismaNS } from '@prisma/client';
-import { purgeAuditLog, purgeCustomerEdits } from '../support/audit';
+import { purgeAuditLog, purgeCustomerEdits, purgeHistory } from '../support/audit';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
@@ -165,6 +165,16 @@ describe.skipIf(!ENABLED)('the Steward’s customer filter finds every view of a
     await prisma.user.deleteMany({ where: { id: { in: people } } });
     if (ids.route) await prisma.route.deleteMany({ where: { id: ids.route } });
     if (ids.region) await prisma.region.deleteMany({ where: { id: ids.region } });
+    // Last: the dated history the database wrote for these fixtures (their deletes above included).
+    await purgeHistory(prisma, {
+      customerIds: custs,
+      branchIds: [ids.brC, ids.brD].filter(Boolean),
+      userIds: people,
+      routeIds: [ids.route].filter(Boolean),
+      regionIds: [ids.region].filter(Boolean),
+      attachmentIds: attachments,
+      editIds: [ids.request].filter(Boolean),
+    });
     await prisma.$disconnect();
   });
 

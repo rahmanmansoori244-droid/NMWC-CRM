@@ -61,7 +61,7 @@ describe.skipIf(!ENABLED)('gap 29: the nightly integrity checks on Postgres', ()
     const t = await db.customer.create({ data: { nmwcCode: `${SFX}-X`, legalName: 'ZZ test', paymentTerms: 'CASH', temixCode: `${SFX}T` } });
     w.customers.push(t.id);
     const tb = await db.branch.create({
-      data: { customerId: t.id, branchCode: `${SFX}-X-01`, branchName: 'ZZ', routeId: w.route, regionId: w.regionA, address: 'ZZ', status: 'CLOSED' },
+      data: { customerId: t.id, branchCode: `${SFX}-X-01`, branchName: 'ZZ', routeId: w.route, regionId: w.regionA, address: 'ZZ Way 1, synthetic', status: 'CLOSED' },
     });
     w.branches.push(tb.id);
     await withAuditMaintenance(prisma, (tx) => tx.customer.update({ where: { id: t.id }, data: { isTest: true } }));
