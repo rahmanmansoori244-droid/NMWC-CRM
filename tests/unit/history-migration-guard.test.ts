@@ -142,6 +142,10 @@ const UNWATCHED: Record<(typeof CAPTURED_TABLES)[number], string[]> = {
     'updatedAt',
     'createdById',
     'lastEditedById',
+    // Gap 30: the test flag moves only in the owner's maintenance window (a
+    // trigger refuses every other writer) and the nightly check
+    // test-flags-changed reports any change, so it is not history.
+    'isTest',
   ],
   // lastStatusChangeAt moves only with status, which is watched.
   Branch: [
@@ -163,9 +167,10 @@ const UNWATCHED: Record<(typeof CAPTURED_TABLES)[number], string[]> = {
     'lastLoginAt',
     'sessionsRevokedAt',
     'mustChangePassword',
+    'isTest',
   ],
-  Route: ['id', 'createdAt', 'updatedAt'],
-  Region: ['id', 'createdAt', 'updatedAt'],
+  Route: ['id', 'createdAt', 'updatedAt', 'isTest'],
+  Region: ['id', 'createdAt', 'updatedAt', 'isTest'],
   // Set once at upload and never changed (who and when are copied as values);
   // where the photo was taken is personal and never copied.
   Attachment: [

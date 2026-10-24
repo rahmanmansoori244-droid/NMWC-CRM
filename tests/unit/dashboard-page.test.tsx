@@ -41,7 +41,8 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/dashboard',
   useRouter: () => ({ push: h.push }),
 }));
-vi.mock('@/lib/insights/load', () => ({ loadInsights: h.load }));
+// Gap 30: whether the viewer is a test account (lib/test-records.ts); never a database here.
+vi.mock('@/lib/insights/load', () => ({ loadInsights: h.load, loadViewerIsTest: async () => false }));
 vi.mock('@/lib/reference-data', () => ({
   getAllActiveRegions: async () => [
     { id: 'r-east', name: 'East', code: 'E' },

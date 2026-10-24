@@ -88,6 +88,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'Region.name': { subject: 'none', note: 'geographic area of operations' },
   'Region.code': { subject: 'none' },
   'Region.isActive': { subject: 'none' },
+  'Region.isTest': { subject: 'none', note: 'a test or synthetic record left in production (gap 30); set by the owner only' },
   'Region.createdAt': { subject: 'none', note: RECORD_META },
   'Region.updatedAt': { subject: 'none', note: RECORD_META },
 
@@ -101,6 +102,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   },
   'Route.regionId': { subject: 'none', note: STRUCTURAL },
   'Route.isActive': { subject: 'none' },
+  'Route.isTest': { subject: 'none', note: 'a test or synthetic record left in production (gap 30); set by the owner only' },
   'Route.createdAt': { subject: 'none', note: RECORD_META },
   'Route.updatedAt': { subject: 'none', note: RECORD_META },
 
@@ -120,6 +122,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'User.mustChangePassword': { subject: 'employee', kind: 'credential' },
   'User.supervisorId': { subject: 'employee', note: 'reporting line' },
   'User.ownedRouteId': { subject: 'employee', note: 'the round this person works' },
+  'User.isTest': { subject: 'none', note: 'a test or synthetic record left in production (gap 30); set by the owner only' },
 
   // ---- PasswordHistory -----------------------------------------------------
   'PasswordHistory.id': { subject: 'none', note: STRUCTURAL },
@@ -173,6 +176,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'Customer.version': { subject: 'none', note: 'optimistic-concurrency counter' },
   'Customer.importBatchId': { subject: 'none', note: STRUCTURAL },
   'Customer.importRowId': { subject: 'none', note: STRUCTURAL },
+  'Customer.isTest': { subject: 'none', note: 'a test or synthetic record left in production (gap 30); set by the owner only' },
   'Customer.mergedIntoId': { subject: 'none', note: 'the customer a duplicate merge folded this one into (lossless paths, gap 8); structural' },
   'Customer.crPhotoId': { subject: 'none', note: 'reference to the CR document image in R2' },
   'Customer.creditLimit': { subject: 'business-or-person', kind: 'financial' },
@@ -371,6 +375,46 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'JobRunDay.sources': { subject: 'none', note: 'the CronRun scheduler labels seen that day, never a User-Agent' },
   'JobRunDay.recordedAt': { subject: 'none', note: RECORD_META },
 
+  // ---- IntegrityCheckResult (gap 29: one row per nightly check) ----
+  'IntegrityCheckResult.id': { subject: 'none', note: 'the strict order of the results' },
+  'IntegrityCheckResult.runAt': { subject: 'none', note: 'when the run started (groups a run)' },
+  'IntegrityCheckResult.day': { subject: 'none', note: 'the Oman day of the run' },
+  'IntegrityCheckResult.checkId': { subject: 'none', note: 'lib/integrity/checks.ts check id' },
+  'IntegrityCheckResult.version': { subject: 'none' },
+  'IntegrityCheckResult.status': { subject: 'none', note: 'pass, fail, info or error' },
+  'IntegrityCheckResult.count': { subject: 'none', note: 'how many records broke the rule' },
+  'IntegrityCheckResult.sampleIds': {
+    subject: 'employee',
+    kind: 'identifier',
+    note: 'at most ten ids: may hold user ids, and customer, shop, route or history row ids, trigger names, job keys or code scopes — never a value',
+  },
+  'IntegrityCheckResult.detail': { subject: 'none', note: 'counts by sub-kind and ids as above — never a name, phone, CR number or code' },
+  'IntegrityCheckResult.durationMs': { subject: 'none' },
+  'IntegrityCheckResult.recordedAt': { subject: 'none', note: RECORD_META },
+  'IntegrityCheckResult.source': { subject: 'none', note: 'the change-context source (the nightly job)' },
+  'IntegrityCheckResult.txId': { subject: 'none', note: 'database transaction id' },
+
+  // ---- PurgeSummary (gap 25: one row per batch a retention rule removed) ----
+  'PurgeSummary.id': { subject: 'none', note: 'the strict order of the summaries' },
+  'PurgeSummary.at': { subject: 'none', note: RECORD_META },
+  'PurgeSummary.job': { subject: 'none', note: 'which job ran the rule' },
+  'PurgeSummary.rule': { subject: 'none', note: 'lib/retention-rules.ts rule id' },
+  'PurgeSummary.tableName': { subject: 'none' },
+  'PurgeSummary.action': { subject: 'none', note: 'DELETE or CLEAR_PAYLOAD' },
+  'PurgeSummary.rows': { subject: 'none', note: 'how many rows the batch removed' },
+  'PurgeSummary.dateColumn': { subject: 'none' },
+  'PurgeSummary.oldestAt': { subject: 'none', note: 'the oldest value of the rule date column in the batch' },
+  'PurgeSummary.newestAt': { subject: 'none', note: 'the newest value of the rule date column in the batch' },
+  'PurgeSummary.cutoff': { subject: 'none' },
+  'PurgeSummary.retentionDays': { subject: 'none' },
+  'PurgeSummary.detail': {
+    subject: 'none',
+    note: 'counts by category only (bucket kind, month, notification kind and e-mail outcome, import batch id and row state, job key, photo kind) — never a key, a name or text',
+  },
+  'PurgeSummary.runId': { subject: 'none', note: 'job name and run start' },
+  'PurgeSummary.source': { subject: 'none', note: 'the change-context source (a job name)' },
+  'PurgeSummary.txId': { subject: 'none', note: 'database transaction id (joins AuditLog.txId)' },
+
   // ---- RateLimit -----------------------------------------------------------
   'RateLimit.key': {
     subject: 'employee',
@@ -393,6 +437,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'ExportJob.fileSha256': { subject: 'none', note: 'SHA-256 of the exact bytes sent: identifies the file, not its contents' },
   'ExportJob.filename': { subject: 'none', note: 'the file name the export was sent under (a date, never a customer)' },
   'ExportJob.customerIds': { subject: 'none', note: 'identifiers of the customers the file held; the file itself is never stored' },
+  'ExportJob.seq': { subject: 'none', note: 'strict order: the key the nightly seal ranges are read by (gap 28)' },
   'ExportJob.status': { subject: 'none' },
   'ExportJob.r2Key': { subject: 'none', kind: 'image reference' },
   'ExportJob.rowCount': { subject: 'none' },
@@ -431,6 +476,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
     note: 'what caused the row: a request, import row, script run or job (lib/change-context.ts), never text a person typed',
   },
   'AuditLog.txId': { subject: 'none', note: 'database transaction id: joins the row to the dated history rows of the same change' },
+  'AuditLog.seq': { subject: 'none', note: 'strict order: the key the nightly seal ranges are read by (gap 28)' },
 
   // ---- AuthEvent (gap 23, part C) ------------------------------------------
   // Sign-in failures on names no account has, throttle refusals, failures on a
@@ -623,6 +669,21 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   },
   'EditApproval.scopeRegionIds': { subject: 'none', note: 'the regions the request covered when decided' },
   'EditApproval.submitterRouteId': { subject: 'none', note: 'the submitting salesman’s route when decided' },
+  'EditApproval.seq': { subject: 'none', note: 'strict order: the key the nightly seal ranges are read by (gap 28)' },
+
+  // ---- SealRecord (gap 28: the daily seal of the ledgers; digests and counts only) ----
+  'SealRecord.id': { subject: 'none', note: STRUCTURAL },
+  'SealRecord.seq': { subject: 'none', note: 'the seal number, 0 = genesis' },
+  'SealRecord.day': { subject: 'none', note: 'the Oman day of the run' },
+  'SealRecord.formatVersion': { subject: 'none' },
+  'SealRecord.prevHash': { subject: 'none', note: 'SHA-256 of the previous seal' },
+  'SealRecord.hash': { subject: 'none', note: 'SHA-256 of bodyText' },
+  'SealRecord.bodyText': { subject: 'none', note: 'per sealed table: key range, row count and a SHA-256 digest, and the count and digest of the rows waiting for the next seal — never a row' },
+  'SealRecord.r2Key': { subject: 'none', note: 'where the off-site copy is: seals/v1/<the chain>/<seq>.json' },
+  'SealRecord.snapshotXmax': { subject: 'none', note: 'a database transaction id' },
+  'SealRecord.sealedAt': { subject: 'none', note: RECORD_META },
+  'SealRecord.source': { subject: 'none', note: 'the change-context source (the nightly job)' },
+  'SealRecord.txId': { subject: 'none', note: 'database transaction id' },
 
   // ---- Notification --------------------------------------------------------
   'Notification.id': { subject: 'none', note: STRUCTURAL },

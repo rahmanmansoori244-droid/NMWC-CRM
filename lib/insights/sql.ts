@@ -20,9 +20,16 @@
  * showed as rows of its own on their dashboard. A region-scoped view keeps the
  * regions its role gives it as they are: what a Manager's switched-off region
  * should mean is an owner decision (region on/off rules), not made here.
+ *
+ * Gap 30 (lib/test-records.ts): every view, whatever its kind, leaves the test
+ * records out (a shop of a test customer, on a test route or in a test region; a
+ * request by a test account or about a test customer), unless the scope says
+ * includeTest — a test account's own view. The test is the LAST part of each
+ * fragment, so the role and filter tests read first as before.
  */
 import { Prisma } from '@prisma/client';
 import { countedInRegionsSql, openableInRegionsSql } from '../service-status';
+import { realBranchSql, realDraftSql, realRequestSql } from '../test-records';
 import type { InsightScope } from './scope';
 
 const FALSE = Prisma.sql`FALSE`;
@@ -71,6 +78,7 @@ export function branchInScopeSql(scope: InsightScope, b: string): Prisma.Sql {
   if (scope.kind === 'company') parts.push(activeRegionSql(col(b, 'regionId')));
   if (scope.regionIds) parts.push(Prisma.sql`${col(b, 'regionId')} = ANY(${scope.regionIds}::text[])`);
   if (scope.routeIds) parts.push(Prisma.sql`${col(b, 'routeId')} = ANY(${scope.routeIds}::text[])`);
+  if (!scope.includeTest) parts.push(realBranchSql(alias(b)));
   return parts.length ? Prisma.join(parts, ' AND ') : TRUE;
 }
 
@@ -86,6 +94,7 @@ export function draftInScopeSql(scope: InsightScope, d: string, r: string): Pris
   if (scope.kind === 'company') parts.push(activeRegionSql(col(r, 'regionId')));
   if (scope.regionIds) parts.push(Prisma.sql`${col(r, 'regionId')} = ANY(${scope.regionIds}::text[])`);
   if (scope.routeIds) parts.push(Prisma.sql`${col(d, 'routeId')} = ANY(${scope.routeIds}::text[])`);
+  if (!scope.includeTest) parts.push(realDraftSql(alias(d), alias(r)));
   return parts.length ? Prisma.join(parts, ' AND ') : TRUE;
 }
 
@@ -115,6 +124,7 @@ export function requestInScopeSql(scope: InsightScope): Prisma.Sql {
             AND (NOT e."isReactivation" OR rb."id" = e."branchId")
             AND rb."routeId" = ANY(${scope.routeIds}::text[]) ${onBranch})))`);
   }
+  if (!scope.includeTest) parts.push(realRequestSql('e'));
   return parts.length ? Prisma.join(parts, ' AND ') : TRUE;
 }
 

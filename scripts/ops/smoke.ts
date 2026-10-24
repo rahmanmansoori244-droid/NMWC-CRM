@@ -184,7 +184,7 @@ const checks: Check[] = [
     why: 'these run the SLA engine, the photo GC and the e-mail outbox; a regressed bearer check is invisible in the UI',
     run: async () => {
       // Every route under app/api/cron (tests/unit/smoke-cron-coverage-guard.test.ts).
-      const routes = ['sla-escalate', 'keep-warm', 'photo-gc', 'retention-sweep', 'email-drain'];
+      const routes = ['sla-escalate', 'keep-warm', 'photo-gc', 'retention-sweep', 'email-drain', 'integrity-watch'];
       const got = await Promise.all(
         routes.map(async (r) => `${r}=${(await get(`/api/cron/${r}`)).status}`)
       );

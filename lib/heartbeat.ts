@@ -24,7 +24,8 @@ export type HeartbeatKey =
   | 'photo-gc'
   | 'db-backup'
   | 'retention-sweep'
-  | 'email-drain';
+  | 'email-drain'
+  | 'integrity-watch';
 
 /**
  * Item 11 (re-benchmark, 2026-09-24): "health goes red for minor things".
@@ -92,6 +93,18 @@ export const HEARTBEAT_EXPECTATIONS: Record<HeartbeatKey, HeartbeatExpectation> 
     severity: 'critical',
     everyMinutes: 24 * 60,
     staleAfterMinutes: 40 * 60,
+  },
+  // vercel.json crons: '30 2 * * *' (06:30 Oman: after the Oman day has ended,
+  // before photo-gc and the retention sweep delete anything). Gap 29: the nightly
+  // integrity checks and the ledger seal. Warning, not critical (an owner's open
+  // question): critical would turn /api/health 503 and page when it is stale,
+  // including right after the deploy that adds it. 36 h, so one late night is not
+  // an alarm and a missed one is.
+  'integrity-watch': {
+    label: 'Nightly integrity check and ledger seal',
+    severity: 'warning',
+    everyMinutes: 24 * 60,
+    staleAfterMinutes: 36 * 60,
   },
 };
 

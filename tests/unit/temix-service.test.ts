@@ -33,6 +33,7 @@ type Cust = {
   temixSyncState: TemixSyncState;
   lastTemixUploadAt: Date | null;
   lastTemixUploadBatchId: string | null;
+  isTest: boolean;
 };
 
 const h = vi.hoisted(() => ({
@@ -155,6 +156,8 @@ function cust(over: Partial<Cust> & { nmwcCode: string }): Record<string, unknow
     id: `id-${over.nmwcCode}`,
     temixCode: null,
     deletedAt: null,
+    // Gap 30: a real customer (TEMIX_QUEUE_WHERE leaves test customers out).
+    isTest: false,
     temixSyncState: TemixSyncState.SYNCED,
     lastTemixUploadAt: null,
     lastTemixUploadBatchId: null,
@@ -323,6 +326,18 @@ describe('generateTemixBatchAction — F11: a shared code is held back, not the 
     expect(row('N1').temixSyncState).toBe('SYNCED');
     expect(row('N2').temixSyncState).toBe('DEACTIVATE_PENDING');
     expect(res.ok && (await sheetCodes(res.data.base64))).toEqual(['UPSERT:N3']);
+  });
+
+  it('gap 30: a flagged test customer is not in the queue, so it is never held back or named', async () => {
+    model.state.rows = [
+      cust({ nmwcCode: 'N1', temixCode: 'T1' }), // live, SYNCED, not queued
+      cust({ nmwcCode: 'N2', temixCode: 'T1', deletedAt: at, temixSyncState: TemixSyncState.DEACTIVATE_PENDING, isTest: true }),
+      cust({ nmwcCode: 'N3', temixCode: null, temixSyncState: TemixSyncState.PENDING_UPLOAD }),
+    ];
+    const res = await generateTemixBatchAction();
+    expect(res.ok && res.data.heldBack).toBeUndefined();
+    expect(res.ok && (await sheetCodes(res.data.base64))).toEqual(['UPSERT:N3']);
+    expect(row('N2').temixSyncState).toBe('DEACTIVATE_PENDING');
   });
 
   it('when every queued row is held back, it says which, and nothing is flipped', async () => {

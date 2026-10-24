@@ -45,6 +45,8 @@ const READERS: Record<string, string> = {
   'lib/returned-work.ts': 'an EXISTS on CustomerEdit rows carrying the returned-cleared reason; returns request ids, never a row',
   'services/duplicates.ts': 'CustomerPair rows only (the Mark distinct ledger)',
   'services/imports.ts': 'one Customer CREATE row, to tell a finalize-born customer; returns only whether it exists',
+  // Gap 29: the nightly sign-in-failures check counts LOGIN_FAIL rows; a count, never a row.
+  'lib/integrity/checks.ts': 'a count of LOGIN_FAIL rows on User entities since the last run; returns a number by kind, never a row',
 };
 
 /** The entity type each listed non-page reader is held to, read from its query. */
@@ -52,6 +54,7 @@ const READ_ONLY_ENTITY: Record<string, string> = {
   'lib/returned-work.ts': 'CustomerEdit',
   'services/duplicates.ts': 'CustomerPair',
   'services/imports.ts': 'Customer',
+  'lib/integrity/checks.ts': 'User',
 };
 
 const ROOTS = ['app', 'lib', 'services', 'components'];

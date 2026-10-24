@@ -493,8 +493,8 @@ describe('38 — tables scroll inside themselves', () => {
     for (const t of tables) {
       expect(t.parentTag, `${t.file}:${t.line} — wrap the table in <TableScroll>`).toBe('TableScroll');
     }
-    // The seven that exist today. Without this the loop can pass on nothing.
-    expect(tables).toHaveLength(7);
+    // The nine that exist today (two on /status/integrity, gap 29). Without this the loop can pass on nothing.
+    expect(tables).toHaveLength(9);
   });
 });
 

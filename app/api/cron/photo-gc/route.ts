@@ -7,6 +7,11 @@
  * Triggered by `vercel.json` cron at 03:00 UTC (07:00 Oman) — outside
  * working hours. Authenticates by `Authorization: Bearer ${CRON_SECRET}`
  * which Vercel injects automatically on `crons` invocations.
+ *
+ * Gap 25 (data audit 2026-10-10): each row it deletes writes its PurgeSummary
+ * row in the same statement (lib/purge-summary.ts photoPurgeSql, rule
+ * photo-detached-30d), beside the AttachmentHistory DELETE row the database
+ * writes. The 30 days are lib/retention-rules.ts's.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
@@ -17,11 +22,12 @@ import { logger } from '@/lib/logger';
 // B-16 constant-time bearer comparison — shared with keep-warm + sla-escalate.
 import { cronAuthorized } from '@/lib/cron-auth';
 import { withHeartbeat } from '@/lib/heartbeat';
+import { RETENTION_RULES, retentionCutoff } from '@/lib/retention-rules';
+import { photoPurgeSql, purgeRunId, runPurge } from '@/lib/purge-summary';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const GRACE_DAYS = 30;
 const BATCH_SIZE = 200;
 /**
  * X-OPS-3 (auditor recheck, 2026-09-27): one run pages through EVERY candidate,
@@ -85,7 +91,9 @@ async function handle(req: NextRequest) {
   }
 
   const started = Date.now();
-  const cutoff = new Date(started - GRACE_DAYS * 24 * 60 * 60 * 1000);
+  const startedAt = new Date(started);
+  const cutoff = retentionCutoff(RETENTION_RULES['photo-detached-30d'], startedAt);
+  const run = { runId: purgeRunId('photo-gc', startedAt) };
 
   let deleted = 0;
   let r2Errors = 0;
@@ -166,23 +174,26 @@ async function handle(req: NextRequest) {
       }
       try {
         // Gap 24: the job is the cause of the delete (and of any slot the FK clears).
-        await withChangeContext(prisma, { actorId: null, source: src.cron('photo-gc') }, (tx) =>
-          tx.attachment.delete({ where: { id: c.id } })
+        // Gap 25: one statement deletes the row, still detached past the cut-off,
+        // and writes its summary.
+        const removed = await withChangeContext(prisma, { actorId: null, source: src.cron('photo-gc') }, (tx) =>
+          runPurge(tx, 'photo-detached-30d', photoPurgeSql(c.id, startedAt, run))
         );
-        deleted++;
+        if (removed > 0) {
+          deleted++;
+        } else {
+          // Gone already (a concurrent run got there first), or re-attached since
+          // it was read: done, not a failure.
+          alreadyGone++;
+        }
       } catch (err) {
         const code = (err as { code?: unknown }).code;
-        if (code === 'P2025') {
-          // "Record to delete does not exist": a concurrent run got there first.
-          alreadyGone++;
-        } else {
-          // The row stays soft-deleted, so the next run retries it; this run is a failure.
-          dbErrors++;
-          logger.warn(
-            { id: c.id, code: typeof code === 'string' ? code : undefined, err: (err as Error).message?.slice(0, 80) },
-            'gc.row_delete_failed'
-          );
-        }
+        // The row stays soft-deleted, so the next run retries it; this run is a failure.
+        dbErrors++;
+        logger.warn(
+          { id: c.id, code: typeof code === 'string' ? code : undefined, err: (err as Error).message?.slice(0, 80) },
+          'gc.row_delete_failed'
+        );
       }
     }
     if (behind || page.length < BATCH_SIZE) break;

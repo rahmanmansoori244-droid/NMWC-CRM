@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**487 stored columns across 34 tables** — Customer contact: 29 · Employee: 95 · Customer entity (personal if a sole establishment): 50 · Not personal data: 313.
+**535 stored columns across 37 tables** — Customer contact: 29 · Employee: 96 · Customer entity (personal if a sole establishment): 50 · Not personal data: 360.
 
 ## Columns holding personal data
 
@@ -147,6 +147,12 @@ Every column the database stores, classified by whose personal data it is. This 
 | `excludedAt` | Employee | behaviour |  |
 | `excludedById` | Employee | behaviour |  |
 | `excludedReason` | Employee | free text | why the Steward accepted the row as excluded; may name the customer |
+
+### IntegrityCheckResult
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `sampleIds` | Employee | identifier | at most ten ids: may hold user ids, and customer, shop, route or history row ids, trigger names, job keys or code scopes — never a value |
 
 ### RateLimit
 
@@ -322,7 +328,7 @@ Every column the database stores, classified by whose personal data it is. This 
 
 ## Tables with no personal data
 
-`Region`, `Channel`, `SubChannel`, `CronHeartbeat`, `CronRun`, `JobRunDay`, `CodeSequence`
+`Region`, `Channel`, `SubChannel`, `CronHeartbeat`, `CronRun`, `JobRunDay`, `SealRecord`, `PurgeSummary`, `CodeSequence`
 
 ## Columns classified as not personal data
 
@@ -334,14 +340,17 @@ Every column the database stores, classified by whose personal data it is. This 
 | Region | `name` | String | geographic area of operations |
 | Region | `code` | String | structural / operational value |
 | Region | `isActive` | Boolean | structural / operational value |
+| Region | `isTest` | Boolean | a test or synthetic record left in production (gap 30); set by the owner only |
 | Region | `createdAt` | DateTime | record timestamp, not an attribute of a person |
 | Region | `updatedAt` | DateTime | record timestamp, not an attribute of a person |
 | Route | `id` | String | foreign key / structural value |
 | Route | `name` | String | structural / operational value |
 | Route | `regionId` | String | foreign key / structural value |
 | Route | `isActive` | Boolean | structural / operational value |
+| Route | `isTest` | Boolean | a test or synthetic record left in production (gap 30); set by the owner only |
 | Route | `createdAt` | DateTime | record timestamp, not an attribute of a person |
 | Route | `updatedAt` | DateTime | record timestamp, not an attribute of a person |
+| User | `isTest` | Boolean | a test or synthetic record left in production (gap 30); set by the owner only |
 | PasswordHistory | `id` | String | foreign key / structural value |
 | SavedView | `id` | String | foreign key / structural value |
 | SavedView | `createdAt` | DateTime | record timestamp, not an attribute of a person |
@@ -372,6 +381,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | Customer | `updatedAt` | DateTime | record timestamp, not an attribute of a person |
 | Customer | `deletedAt` | DateTime | soft-delete marker |
 | Customer | `mergedIntoId` | String | the customer a duplicate merge folded this one into (lossless paths, gap 8); structural |
+| Customer | `isTest` | Boolean | a test or synthetic record left in production (gap 30); set by the owner only |
 | Branch | `customerId` | String | foreign key / structural value |
 | Branch | `regionId` | String | foreign key / structural value |
 | Branch | `routeId` | String | foreign key / structural value |
@@ -464,6 +474,46 @@ Every column the database stores, classified by whose personal data it is. This 
 | JobRunDay | `maxDurationMs` | Int | structural / operational value |
 | JobRunDay | `sources` | String[] | the CronRun scheduler labels seen that day, never a User-Agent |
 | JobRunDay | `recordedAt` | DateTime | record timestamp, not an attribute of a person |
+| IntegrityCheckResult | `id` | BigInt | the strict order of the results |
+| IntegrityCheckResult | `runAt` | DateTime | when the run started (groups a run) |
+| IntegrityCheckResult | `day` | DateTime | the Oman day of the run |
+| IntegrityCheckResult | `checkId` | String | lib/integrity/checks.ts check id |
+| IntegrityCheckResult | `version` | Int | structural / operational value |
+| IntegrityCheckResult | `status` | String | pass, fail, info or error |
+| IntegrityCheckResult | `count` | Int | how many records broke the rule |
+| IntegrityCheckResult | `detail` | Json | counts by sub-kind and ids as above — never a name, phone, CR number or code |
+| IntegrityCheckResult | `durationMs` | Int | structural / operational value |
+| IntegrityCheckResult | `recordedAt` | DateTime | record timestamp, not an attribute of a person |
+| IntegrityCheckResult | `source` | String | the change-context source (the nightly job) |
+| IntegrityCheckResult | `txId` | BigInt | database transaction id |
+| SealRecord | `id` | BigInt | foreign key / structural value |
+| SealRecord | `seq` | Int | the seal number, 0 = genesis |
+| SealRecord | `day` | DateTime | the Oman day of the run |
+| SealRecord | `formatVersion` | Int | structural / operational value |
+| SealRecord | `prevHash` | String | SHA-256 of the previous seal |
+| SealRecord | `hash` | String | SHA-256 of bodyText |
+| SealRecord | `bodyText` | String | per sealed table: key range, row count and a SHA-256 digest, and the count and digest of the rows waiting for the next seal — never a row |
+| SealRecord | `r2Key` | String | where the off-site copy is: seals/v1/<the chain>/<seq>.json |
+| SealRecord | `snapshotXmax` | BigInt | a database transaction id |
+| SealRecord | `sealedAt` | DateTime | record timestamp, not an attribute of a person |
+| SealRecord | `source` | String | the change-context source (the nightly job) |
+| SealRecord | `txId` | BigInt | database transaction id |
+| PurgeSummary | `id` | BigInt | the strict order of the summaries |
+| PurgeSummary | `at` | DateTime | record timestamp, not an attribute of a person |
+| PurgeSummary | `job` | String | which job ran the rule |
+| PurgeSummary | `rule` | String | lib/retention-rules.ts rule id |
+| PurgeSummary | `tableName` | String | structural / operational value |
+| PurgeSummary | `action` | String | DELETE or CLEAR_PAYLOAD |
+| PurgeSummary | `rows` | Int | how many rows the batch removed |
+| PurgeSummary | `dateColumn` | String | structural / operational value |
+| PurgeSummary | `oldestAt` | DateTime | the oldest value of the rule date column in the batch |
+| PurgeSummary | `newestAt` | DateTime | the newest value of the rule date column in the batch |
+| PurgeSummary | `cutoff` | DateTime | structural / operational value |
+| PurgeSummary | `retentionDays` | Int | structural / operational value |
+| PurgeSummary | `detail` | Json | counts by category only (bucket kind, month, notification kind and e-mail outcome, import batch id and row state, job key, photo kind) — never a key, a name or text |
+| PurgeSummary | `runId` | String | job name and run start |
+| PurgeSummary | `source` | String | the change-context source (a job name) |
+| PurgeSummary | `txId` | BigInt | database transaction id (joins AuditLog.txId) |
 | RateLimit | `tokens` | Float | structural / operational value |
 | RateLimit | `lastRefill` | DateTime | record timestamp, not an attribute of a person |
 | RateLimit | `updatedAt` | DateTime | record timestamp, not an attribute of a person |
@@ -478,11 +528,13 @@ Every column the database stores, classified by whose personal data it is. This 
 | ExportJob | `fileSha256` | String | SHA-256 of the exact bytes sent: identifies the file, not its contents |
 | ExportJob | `filename` | String | the file name the export was sent under (a date, never a customer) |
 | ExportJob | `customerIds` | String[] | identifiers of the customers the file held; the file itself is never stored |
+| ExportJob | `seq` | BigInt | strict order: the key the nightly seal ranges are read by (gap 28) |
 | AuditLog | `id` | String | foreign key / structural value |
 | AuditLog | `entityType` | String | structural / operational value |
 | AuditLog | `entityId` | String | foreign key / structural value |
 | AuditLog | `source` | String | what caused the row: a request, import row, script run or job (lib/change-context.ts), never text a person typed |
 | AuditLog | `txId` | BigInt | database transaction id: joins the row to the dated history rows of the same change |
+| AuditLog | `seq` | BigInt | strict order: the key the nightly seal ranges are read by (gap 28) |
 | AuthEvent | `id` | BigInt | the strict order of the events |
 | AuthEvent | `kind` | String | LOGIN_FAIL_UNKNOWN, LOGIN_RATE_LIMITED, LOGIN_FAIL_REUSED_NAME or SESSION_REVOKE |
 | AuthEvent | `keyId` | String | which fingerprint key (first 8 hex of its SHA-256): a rotated AUTH_SECRET gives another |
@@ -625,6 +677,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | EditApproval | `authorityBasis` | String | why the decider could decide (lib/permissions.ts AUTHORITY_BASES), a fixed value the database checks |
 | EditApproval | `scopeRegionIds` | String[] | the regions the request covered when decided |
 | EditApproval | `submitterRouteId` | String | the submitting salesman’s route when decided |
+| EditApproval | `seq` | BigInt | strict order: the key the nightly seal ranges are read by (gap 28) |
 | Notification | `id` | String | foreign key / structural value |
 | Notification | `kind` | NotificationKind | structural / operational value |
 | Notification | `editId` | String | foreign key / structural value |

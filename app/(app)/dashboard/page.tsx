@@ -16,7 +16,7 @@ import {
   type InsightScope,
   type RoleScope,
 } from '@/lib/insights/scope';
-import { loadInsights } from '@/lib/insights/load';
+import { loadInsights, loadViewerIsTest } from '@/lib/insights/load';
 import { highlights, highlightsCoverage } from '@/lib/insights/highlights';
 import { insightsDashboardDisabled, WAVE_DEADLINE_MS, withinDeadline } from '@/lib/insights/rollout';
 import type { DashboardQuery } from '@/lib/insights/url';
@@ -98,7 +98,11 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
     }
   }
 
-  const scope = resolveInsightScope(role, roleScope, filters);
+  // Gap 30 (lib/test-records.ts): the test records are left out of every figure,
+  // except on a test account's own dashboard (a production walk sees its records).
+  // Unreadable is read as "not a test account": the figures without them.
+  const testViewer = await loadViewerIsTest(session.user.id);
+  const scope = resolveInsightScope(role, roleScope, filters, { includeTest: testViewer });
   if (scope.kind === 'none') {
     // RBAC-05-012: a Manager with no managed regions sees nothing, not the company.
     return (

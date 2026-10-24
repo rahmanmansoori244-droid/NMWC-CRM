@@ -10,6 +10,7 @@ import { CUSTOMER_MASTER_COLUMNS, customerMasterRows } from '@/lib/customer-mast
 import { getAuditEnvelope } from '@/lib/audit';
 import { recordExport } from '@/lib/export-record';
 import { omanDateISO } from '@/lib/tz';
+import { includeTestRows, viewerIsTest } from '@/lib/test-records';
 
 async function requireExport() {
   const user = await requireActor(); // F15: refuses a session that must change its password
@@ -35,6 +36,11 @@ export type ExportFilters = {
   minCompleteness?: number;
   maxCompleteness?: number;
   updatedSince?: Date;
+  /**
+   * Gap 30 (lib/test-records.ts): the Data Steward asks for the test records too.
+   * Honoured for the Steward only; anyone else's is ignored and recorded as false.
+   */
+  includeTest?: boolean;
 };
 
 /**
@@ -112,6 +118,20 @@ export async function buildCustomerExport(filters: ExportFilters) {
   }
   if (filters.updatedSince) customerWhere.updatedAt = { gte: filters.updatedSince };
 
+  // Gap 30: the test records stay out of the file, unless the exporter is a test
+  // account or the Steward ticked "Include test records". A shop is left out when
+  // its customer, its route or its region is a test record (REAL_BRANCH).
+  const includeTest = includeTestRows({
+    viewerIsTest: await viewerIsTest(prisma, me.id),
+    role: me.role,
+    requested: filters.includeTest === true,
+  });
+  if (!includeTest) {
+    customerWhere.isTest = false;
+    branchWhere.route = { isTest: false };
+    branchWhere.region = { isTest: false };
+  }
+
   // Item 28: the ceiling is what has been MEASURED to build inside the function's
   // 60 s budget on this platform — 60,000 rows in 13 s at 637 MB (2026-09-25),
   // three times the 20,596-row master — not a guess. Beyond it, an export needs a
@@ -151,6 +171,7 @@ export async function buildCustomerExport(filters: ExportFilters) {
     filters: {
       ...filters,
       updatedSince: filters.updatedSince ? filters.updatedSince.toISOString() : undefined,
+      includeTest,
       scope: { role: me.role, allowedRegionIds, allowedRouteIds },
     },
     customerIds,

@@ -150,6 +150,7 @@ enum NotificationKind {
   REQUEST_FYI // F1: a salesman's request, for the region's Accountant to know of (lib/notify-policy.ts)
   REACTIVATION_REQUESTED // F1: a reactivation waiting on a Manager; decided only on /reactivations
   SIGNED_FORM_REQUESTED // Owner decisions 2026-10-11: the salesman must upload the signed credit application
+  INTEGRITY_ALERT // Gap 29: the nightly data check found a problem; to the Data Steward, in-app only (lib/integrity)
 }
 
 // ── ORG HIERARCHY ────────────────────────────────────────
@@ -158,6 +159,12 @@ model Region {
   name      String   @unique
   code      String   @unique
   isActive  Boolean  @default(true)
+  // Gap 30 (data audit 2026-10-10; migration 20261024120000_test_records): a
+  // test or synthetic region left in production. Marked only by the owner (a
+  // trigger refuses any other writer); dashboards, exports, the Temix workbook,
+  // verify-load and the nightly data checks leave flagged rows out by default
+  // (lib/test-records.ts). Nothing is deleted.
+  isTest    Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -173,6 +180,12 @@ model Route {
   code      String   @unique
   regionId  String
   isActive  Boolean  @default(true)
+  // Gap 30 (data audit 2026-10-10; migration 20261024120000_test_records): a
+  // test or synthetic route left in production. Marked only by the owner (a
+  // trigger refuses any other writer); dashboards, exports, the Temix workbook,
+  // verify-load and the nightly data checks leave flagged rows out by default
+  // (lib/test-records.ts). Nothing is deleted.
+  isTest    Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -205,6 +218,12 @@ model User {
   // AUTH-09: forces redirect to /profile/change-password on next login. Cleared
   // by a successful change-password action.
   mustChangePassword Boolean   @default(false)
+  // Gap 30 (data audit 2026-10-10; migration 20261024120000_test_records): a
+  // test or synthetic account left in production. Marked only by the owner (a
+  // trigger refuses any other writer); dashboards, exports, the Temix workbook,
+  // verify-load and the nightly data checks leave flagged rows out by default
+  // (lib/test-records.ts). Nothing is deleted.
+  isTest             Boolean   @default(false)
 
   // Hierarchy
   supervisorId String?
@@ -355,6 +374,13 @@ model Customer {
   // customer page follow it to the survivor. RESTRICT: a survivor cannot be
   // hard-deleted while a merged customer points at it.
   mergedIntoId String?
+
+  // Gap 30 (data audit 2026-10-10; migration 20261024120000_test_records): a
+  // test or synthetic customer left in production. Marked only by the owner (a
+  // trigger refuses any other writer); dashboards, exports, the Temix workbook,
+  // verify-load and the nightly data checks leave flagged rows out by default
+  // (lib/test-records.ts). Nothing is deleted.
+  isTest       Boolean @default(false)
 
   channel    Channel?    @relation(fields: [channelId], references: [id])
   subChannel SubChannel? @relation(fields: [subChannelId], references: [id])
@@ -698,6 +724,99 @@ model JobRunDay {
   @@unique([key, day])
 }
 
+// Gap 29 (data audit 2026-10-10; migration 20261024120400_integrity_results):
+// one row per named check per nightly run of the integrity watch
+// (app/api/cron/integrity-watch, lib/integrity). runAt groups a run. count is
+// how many records broke the rule (null when the check could not run);
+// sampleIds holds at most ten record ids, trigger names, job keys or code scopes
+// — never a name, a phone, a CR number or a code — and detail counts by
+// sub-kind. Append-only like AuditLog, and itself sealed. Kept for ever.
+model IntegrityCheckResult {
+  id         BigInt   @id @default(autoincrement())
+  runAt      DateTime
+  // The Oman day of the run.
+  day        DateTime @db.Date
+  checkId    String
+  version    Int
+  // pass | fail | info | error (CHECK IntegrityCheckResult_status_check).
+  status     String
+  count      Int?
+  sampleIds  String[]
+  detail     Json?
+  durationMs Int
+  recordedAt DateTime @default(now())
+  source     String?
+  txId       BigInt?
+
+  @@unique([runAt, checkId])
+  @@index([checkId, runAt(sort: Desc)])
+  @@index([runAt(sort: Desc)])
+}
+
+// Gap 28 (data audit 2026-10-10; migration 20261024120200_ledger_seals): the
+// daily tamper-evident seal of the append-only ledgers (lib/seal/*,
+// docs/HISTORY.md). Each row is one seal: a SHA-256 over the canonical JSON in
+// bodyText, which lists, per sealed table, the key range it covers, the row
+// count and a digest of every row in the range, and the previous seal's hash —
+// so a changed, deleted or inserted ledger row breaks the chain from that seal
+// on (scripts/ops/verify-seals.ts finds the first mismatch). seq 0 is the
+// genesis. A copy of bodyText goes to R2 under seals/ (r2Key). Append-only like
+// AuditLog, and a database trigger refuses a row that does not link to the last.
+model SealRecord {
+  id            BigInt   @id @default(autoincrement())
+  seq           Int      @unique
+  // The Oman day of the run.
+  day           DateTime @unique @db.Date
+  formatVersion Int
+  prevHash      String?
+  hash          String   @unique
+  // The exact canonical JSON that was hashed.
+  bodyText      String
+  r2Key         String
+  // pg_snapshot_xmax of the sealing transaction: the next seal waits until every
+  // transaction in flight now has ended (lib/seal/seal.ts).
+  snapshotXmax  BigInt
+  sealedAt      DateTime @default(now())
+  source        String?
+  txId          BigInt?
+}
+
+// Gap 25 (data audit 2026-10-10; migration 20261024120100_purge_summaries): one
+// row per batch a retention rule deleted (or, for an import row, emptied),
+// written in the SAME statement as the deletion (lib/purge-summary.ts): which
+// job and rule (lib/retention-rules.ts), which table, how many rows, the oldest
+// and newest value of the rule's date column, the cut-off and a few counts by
+// category (detail: by kind, month, batch or job — never a key, a name or text).
+// So "how many notifications were e-mailed in March" survives their deletion.
+// Append-only like AuditLog; source and txId stamped by the database. Kept for
+// ever.
+model PurgeSummary {
+  id            BigInt    @id @default(autoincrement())
+  at            DateTime  @default(now())
+  // The job that ran the rule: retention-sweep, sla-escalate, photo-gc, password-policy.
+  job           String
+  // lib/retention-rules.ts RetentionRuleId (CHECK PurgeSummary_rule_check).
+  rule          String
+  tableName     String
+  // DELETE or CLEAR_PAYLOAD (CHECK PurgeSummary_action_check).
+  action        String
+  // Always > 0 (CHECK PurgeSummary_rows_check): an empty batch writes no row.
+  rows          Int
+  dateColumn    String
+  oldestAt      DateTime?
+  newestAt      DateTime?
+  cutoff        DateTime?
+  retentionDays Int?
+  detail        Json?
+  // '<job>:<run start ISO>': the summaries of one run.
+  runId         String?
+  source        String?
+  txId          BigInt?
+
+  @@index([at(sort: Desc)])
+  @@index([tableName, at(sort: Desc)])
+}
+
 // ── RATE LIMIT ──────────────────────────────────────
 // QA-015: durable rate limiter that survives across Vercel function instances.
 // Token-bucket: each row holds the bucket's current tokens and the last refill
@@ -736,6 +855,13 @@ model ExportJob {
   filename      String?
   // Which customers the file held (ids, each once).
   customerIds   String[]
+  // Gap 28 (migration 20261024120200_ledger_seals): a strictly increasing key, so
+  // the nightly seal can chain this ledger by range (lib/seal/*). The id is a cuid,
+  // which is not ordered. Rows that existed before the migration were numbered in
+  // their physical order: a stable unique key, not a time order. @ignore keeps it
+  // out of the client (a BigInt must not reach JSON or a route); the seal reads it
+  // through raw SQL only.
+  seq           BigInt   @unique @default(autoincrement()) @ignore
 
   requestedBy User @relation("ExportRequester", fields: [requestedById], references: [id])
 }
@@ -761,6 +887,13 @@ model AuditLog {
   // exports), or before the column existed.
   source     String?
   txId       BigInt?
+  // Gap 28 (migration 20261024120200_ledger_seals): a strictly increasing key, so
+  // the nightly seal can chain this ledger by range (lib/seal/*). The id is a cuid,
+  // which is not ordered. Rows that existed before the migration were numbered in
+  // their physical order: a stable unique key, not a time order. @ignore keeps it
+  // out of the client (a BigInt must not reach JSON or a route); the seal reads it
+  // through raw SQL only.
+  seq        BigInt   @unique @default(autoincrement()) @ignore
 
   actor User @relation(fields: [actorId], references: [id])
 
@@ -1176,6 +1309,13 @@ model EditApproval {
   authorityBasis   String?
   scopeRegionIds   String[]
   submitterRouteId String?
+  // Gap 28 (migration 20261024120200_ledger_seals): a strictly increasing key, so
+  // the nightly seal can chain this ledger by range (lib/seal/*). The id is a cuid,
+  // which is not ordered. Rows that existed before the migration were numbered in
+  // their physical order: a stable unique key, not a time order. @ignore keeps it
+  // out of the client (a BigInt must not reach JSON or a route); the seal reads it
+  // through raw SQL only.
+  seq              BigInt   @unique @default(autoincrement()) @ignore
 
   edit  CustomerEdit @relation(fields: [editId], references: [id], onDelete: Cascade)
   actor User         @relation("StepActor", fields: [actorId], references: [id])

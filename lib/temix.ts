@@ -28,11 +28,15 @@ import { PaymentTerms, TemixSyncState, type Prisma } from '@prisma/client';
  *    by definition soft-deleted. This is the documented exception to the
  *    codebase-wide `deletedAt: null` convention (data-model.md §8) — copying
  *    the usual filter here would silently drop every deactivation forever.
+ *
+ * Gap 30 (lib/test-records.ts): a test customer never reaches the ERP file, on
+ * either lane. Its queue state is left as it is, so nothing about it changes if
+ * the owner ever unflags it.
  */
 export const TEMIX_QUEUE_WHERE: Prisma.CustomerWhereInput = {
   OR: [
-    { temixSyncState: TemixSyncState.PENDING_UPLOAD, deletedAt: null },
-    { temixSyncState: TemixSyncState.DEACTIVATE_PENDING },
+    { temixSyncState: TemixSyncState.PENDING_UPLOAD, deletedAt: null, isTest: false },
+    { temixSyncState: TemixSyncState.DEACTIVATE_PENDING, isTest: false },
   ],
 };
 

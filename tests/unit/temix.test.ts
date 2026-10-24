@@ -112,11 +112,13 @@ describe('TEMIX_QUEUE_WHERE', () => {
     // exception — deactivation rows are soft-deleted by definition).
     const arms = TEMIX_QUEUE_WHERE.OR!;
     expect(arms).toHaveLength(2);
+    // Gap 30: a test customer never reaches the ERP file, on either lane.
     expect(arms[0]).toEqual({
       temixSyncState: TemixSyncState.PENDING_UPLOAD,
       deletedAt: null,
+      isTest: false,
     });
-    expect(arms[1]).toEqual({ temixSyncState: TemixSyncState.DEACTIVATE_PENDING });
+    expect(arms[1]).toEqual({ temixSyncState: TemixSyncState.DEACTIVATE_PENDING, isTest: false });
   });
 });
 

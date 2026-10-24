@@ -76,6 +76,11 @@ export type InsightScope =
       roleRouteIds: string[] | null;
       /** A URL filter narrowed the role scope. */
       filtered: boolean;
+      /**
+       * Gap 30 (lib/test-records.ts): count the test records too. Present (true)
+       * only for a test account's own view; otherwise every figure leaves them out.
+       */
+      includeTest?: true;
     };
 
 function intersect(scope: string[] | null, filter: string[]): string[] {
@@ -94,7 +99,12 @@ function intersect(scope: string[] | null, filter: string[]): string[] {
  * there. Which roles may open the page at all is DASHBOARD_ROLES; this function
  * does not admit anyone.
  */
-export function resolveInsightScope(role: Role, roleScope: RoleScope, filters: InsightFilters): InsightScope {
+export function resolveInsightScope(
+  role: Role,
+  roleScope: RoleScope,
+  filters: InsightFilters,
+  opts: { includeTest?: boolean } = {}
+): InsightScope {
   const list = customerListBranchScope(role, roleScope);
   if (list.forceEmpty) return { kind: 'none' };
   const branchSome = list.branchSome;
@@ -133,6 +143,7 @@ export function resolveInsightScope(role: Role, roleScope: RoleScope, filters: I
     roleRegionIds,
     roleRouteIds,
     filtered: filters.regionIds.length > 0 || filters.routeIds.length > 0,
+    ...(opts.includeTest ? { includeTest: true as const } : {}),
   };
 }
 

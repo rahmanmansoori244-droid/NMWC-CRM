@@ -1,0 +1,21 @@
+-- Gap 29 (data audit 2026-10-10): the notification the nightly integrity check
+-- (app/api/cron/integrity-watch) leaves the Data Steward when a check fails.
+--
+--   INTEGRITY_ALERT  "the nightly data check found N problem(s)", linking to
+--                    /status/integrity. In-app only: the Steward is never
+--                    e-mailed (lib/notify-policy.ts EMAIL_ROLES) and the kind is
+--                    not in EMAIL_KINDS, so the outbox marks it SKIPPED_KIND.
+--
+-- Isolated enum-only migration: Postgres refuses a new enum value in the same
+-- transaction that added it, so nothing else goes here (the precedent is
+-- 20261005100000_notification_kinds_fyi_reactivation).
+--
+-- Safe before the build that writes it: a Prisma client that does not know an
+-- enum value throws when it reads a row holding one, so the build that READS
+-- this value must be production's rollback target before any build WRITES it.
+-- The build that ships this migration reads it (the inbox's label and link) and
+-- writes it only once lib/integrity/policy.ts INTEGRITY_INAPP_ALERTS_ENABLED is
+-- switched on by a one-line follow-up commit, after this deployment has served
+-- production and passed smoke. Before rolling back past this build, delete the
+-- INTEGRITY_ALERT notification rows (docs/OPERATIONS.md section 5k).
+ALTER TYPE "NotificationKind" ADD VALUE IF NOT EXISTS 'INTEGRITY_ALERT';

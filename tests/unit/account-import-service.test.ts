@@ -223,6 +223,19 @@ function makeClient(isTx: boolean): any {
       h.contexts.push(String(values[1]));
       return 1;
     },
+    // Gap 25: the password-history prune is one statement that also writes its
+    // PurgeSummary row (lib/purge-summary.ts passwordHistoryPurgeSql): the user
+    // and the ids kept are its two bound values.
+    $queryRaw: async (sql: { sql: string; values: unknown[] }) => {
+      if (!sql.sql.includes('DELETE FROM "PasswordHistory"')) throw new Error('unexpected raw query');
+      gate('passwordHistory', 'deleteMany', sql, true);
+      const [userId, keepIds] = sql.values as [string, string[]];
+      const keep = new Set<string>(keepIds);
+      const before = st().history.length;
+      st().history = st().history.filter((r) => r.userId !== userId || keep.has(r.id));
+      const affected = before - st().history.length;
+      return [{ affected, summarised: affected > 0 ? 1 : 0 }];
+    },
     user: {
       // The e-mail clash check: another account (NOT this username) holding the
       // address in any letter case.

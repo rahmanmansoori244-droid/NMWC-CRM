@@ -14,6 +14,8 @@ import bcrypt from 'bcryptjs';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { ValidationError } from '@/lib/errors';
+import { RETENTION_RULES } from './retention-rules';
+import { passwordHistoryPurgeSql, runPurge } from './purge-summary';
 
 export const passwordRule = z.string().min(12, 'Password must be at least 12 characters');
 
@@ -66,6 +68,11 @@ export async function assertPasswordNotReused(
  * B-15: Push the user's previous hash onto PasswordHistory and prune so
  * only the most recent 5 rows remain. Runs inside the same transaction
  * as the User.update so a partial failure doesn't desync.
+ *
+ * Gap 25 (data audit 2026-10-10): the prune is one statement that also writes
+ * its PurgeSummary row (rule password-history-last-5, lib/purge-summary.ts):
+ * how many hashes and their date range, never the person or a hash. The
+ * caller's change context names the cause.
  */
 export async function rotatePasswordHistory(
   tx: Prisma.TransactionClient,
@@ -80,15 +87,18 @@ export async function rotatePasswordHistory(
   const keepers = await tx.passwordHistory.findMany({
     where: { userId },
     orderBy: { createdAt: 'desc' },
-    take: 5,
+    take: RETENTION_RULES['password-history-last-5'].keep,
     select: { id: true },
   });
-  if (keepers.length === 5) {
-    await tx.passwordHistory.deleteMany({
-      where: {
+  if (keepers.length === RETENTION_RULES['password-history-last-5'].keep) {
+    await runPurge(
+      tx,
+      'password-history-last-5',
+      passwordHistoryPurgeSql(
         userId,
-        id: { notIn: keepers.map((k) => k.id) },
-      },
-    });
+        keepers.map((k) => k.id),
+        { runId: null }
+      )
+    );
   }
 }

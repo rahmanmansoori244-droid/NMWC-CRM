@@ -25,6 +25,8 @@ const schema = z.object({
   routeIds: z.array(z.string()).optional(),
   onlyChanged: z.enum(['1', 'true', '0', 'false']).optional(),
   includePending: z.enum(['1', 'true', '0', 'false']).optional(),
+  // Gap 30: the Steward's "Include test records" box (honoured for him only).
+  includeTest: z.enum(['1', '0']).optional(),
 });
 
 export async function GET(req: NextRequest) {
@@ -53,6 +55,7 @@ export async function GET(req: NextRequest) {
     until: sp.get('until') || undefined,
     onlyChanged: sp.get('onlyChanged') || undefined,
     includePending: sp.get('includePending') || undefined,
+    includeTest: sp.get('includeTest') || undefined,
   });
   if (!parsed.success) {
     return NextResponse.json({ error: 'Invalid filter parameters' }, { status: 400 });
@@ -70,6 +73,7 @@ export async function GET(req: NextRequest) {
         routeIds: f.routeIds,
         onlyChanged: truthy(f.onlyChanged),
         includePending: f.includePending == null ? true : truthy(f.includePending),
+        includeTest: f.includeTest === '1',
       }
     );
     // DG-06/07: no longer best-effort (same convention as the master export).
@@ -88,6 +92,7 @@ export async function GET(req: NextRequest) {
         routeIds: f.routeIds ?? [],
         onlyChanged: truthy(f.onlyChanged),
         includePending: f.includePending == null ? true : truthy(f.includePending),
+        includeTest: out.includeTest,
         scope: { role: me.role },
       },
       customerIds: out.customerIds,

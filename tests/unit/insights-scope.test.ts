@@ -24,6 +24,12 @@ import {
 } from '@/lib/insights/scope';
 import { branchInScopeSql, draftInScopeSql, requestInScopeSql, __gates } from '@/lib/insights/sql';
 import { DASHBOARD_ROLES, isDashboardRole } from '@/lib/insights/policy';
+import { realBranchSql, realDraftSql, realRequestSql } from '@/lib/test-records';
+
+// Gap 30: every fragment ends with the test-record exclusion (lib/test-records.ts).
+const REAL_B = ' AND ' + realBranchSql('b').sql;
+const REAL_D = ' AND ' + realDraftSql('d', 'r').sql;
+const REAL_E = ' AND ' + realRequestSql('e').sql;
 
 const none = { regionIds: [] as string[], routeIds: [] as string[], rejected: false };
 const empty: RoleScope = { ownedRouteId: null, teamRouteIds: [], managedRegionIds: [] };
@@ -192,14 +198,14 @@ describe('the SQL twins', () => {
     expect(branchInScopeSql({ kind: 'none' }, 'b').sql).toBe('FALSE');
     expect(requestInScopeSql({ kind: 'none' }).sql).toBe('FALSE');
     const org = scoped(resolveInsightScope(Role.STEWARD, empty, none));
-    expect(branchInScopeSql(org, 'b').sql).toBe('b."regionId" IN (SELECT ar."id" FROM "Region" ar WHERE ar."isActive")');
-    expect(draftInScopeSql(org, 'd', 'r').sql).toBe('r."regionId" IN (SELECT ar."id" FROM "Region" ar WHERE ar."isActive")');
+    expect(branchInScopeSql(org, 'b').sql).toBe('b."regionId" IN (SELECT ar."id" FROM "Region" ar WHERE ar."isActive")' + REAL_B);
+    expect(draftInScopeSql(org, 'd', 'r').sql).toBe('r."regionId" IN (SELECT ar."id" FROM "Region" ar WHERE ar."isActive")' + REAL_D);
     expect(requestInScopeSql(org).sql).toContain('ar."isActive"');
     expect(requestInScopeSql(org).values).toEqual([]);
     // A filtered organisation view keeps the active-region test beside the filter.
     const picked = scoped(resolveInsightScope(Role.VIEWER, empty, { ...none, regionIds: ['r1'] }));
     expect(branchInScopeSql(picked, 'b').text).toBe(
-      'b."regionId" IN (SELECT ar."id" FROM "Region" ar WHERE ar."isActive") AND b."regionId" = ANY($1::text[])'
+      'b."regionId" IN (SELECT ar."id" FROM "Region" ar WHERE ar."isActive") AND b."regionId" = ANY($1::text[])' + REAL_B
     );
   });
 
@@ -210,17 +216,38 @@ describe('the SQL twins', () => {
     expect(requestInScopeSql(own).sql).not.toContain('isActive');
   });
 
+  it('gap 30: the test records are left out of every view, except a test account’s own', () => {
+    const org = scoped(resolveInsightScope(Role.STEWARD, empty, none));
+    const own = scoped(resolveInsightScope(Role.MANAGER, { ...empty, managedRegionIds: ['r1'] }, none));
+    for (const s of [org, own, mgr]) {
+      expect(s.includeTest).toBeUndefined();
+      expect(branchInScopeSql(s, 'b').sql.endsWith(REAL_B)).toBe(true);
+      expect(draftInScopeSql(s, 'd', 'r').sql.endsWith(REAL_D)).toBe(true);
+      expect(requestInScopeSql(s).sql.endsWith(REAL_E)).toBe(true);
+    }
+    const tester = scoped(resolveInsightScope(Role.MANAGER, { ...empty, managedRegionIds: ['r1'] }, none, { includeTest: true }));
+    expect(tester.includeTest).toBe(true);
+    expect(branchInScopeSql(tester, 'b').sql).not.toContain('isTest');
+    expect(draftInScopeSql(tester, 'd', 'r').sql).not.toContain('isTest');
+    expect(requestInScopeSql(tester).sql).not.toContain('isTest');
+    // The same row the region and route tests read: the shop's own customer, route and region.
+    expect(realBranchSql('b').sql).toContain('zt_c."id" = b."customerId"');
+    expect(realBranchSql('b').sql).toContain('zt_r."id" = b."routeId"');
+    expect(realBranchSql('b').sql).toContain('zt_g."id" = b."regionId"');
+    expect(() => realBranchSql('b; DROP TABLE x')).toThrow('bad SQL alias');
+  });
+
   it('region and route are tested on the same row, and ids are bound, never spliced', () => {
     const q = branchInScopeSql(mgr, 'b');
-    expect(q.text).toBe('b."regionId" = ANY($1::text[]) AND b."routeId" = ANY($2::text[])');
+    expect(q.text).toBe('b."regionId" = ANY($1::text[]) AND b."routeId" = ANY($2::text[])' + REAL_B);
     expect(q.values).toEqual([['r1', 'r2'], ['x']]);
     const d = draftInScopeSql(mgr, 'd', 'r');
-    expect(d.text).toBe('r."regionId" = ANY($1::text[]) AND d."routeId" = ANY($2::text[])');
+    expect(d.text).toBe('r."regionId" = ANY($1::text[]) AND d."routeId" = ANY($2::text[])' + REAL_D);
   });
 
   it('a request is counted by countedInRegionsSql itself, then narrowed by the route', () => {
     const regionsOnly = scoped(resolveInsightScope(Role.MANAGER, { ...empty, managedRegionIds: ['r1'] }, none));
-    expect(requestInScopeSql(regionsOnly).sql).toBe(__gates.countedInRegionsSql(['r1']).sql);
+    expect(requestInScopeSql(regionsOnly).sql).toBe(__gates.countedInRegionsSql(['r1']).sql + REAL_E);
     const narrowed = requestInScopeSql(mgr).sql;
     expect(narrowed.startsWith(__gates.countedInRegionsSql(['r1', 'r2']).sql + ' AND (')).toBe(true);
   });

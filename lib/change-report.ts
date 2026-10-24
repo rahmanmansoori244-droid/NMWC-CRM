@@ -39,6 +39,7 @@ import { keysetPages } from './keyset';
 // "2026-09-13 14:05", Oman wall clock; the master export's omanISO stamps carry the
 // same Oman day, so both files put a row on one day. Plain arithmetic, no Intl call per cell.
 import { omanDateISO, omanStamp } from './tz';
+import { includeTestRows, viewerIsTest } from './test-records';
 
 export type ChangeReportFilters = {
   /** Window start (inclusive). Defaults to the beginning of time. */
@@ -51,6 +52,11 @@ export type ChangeReportFilters = {
   onlyChanged?: boolean;
   /** Also mark SUBMITTED (undecided) proposals in orange (default: true). */
   includePending?: boolean;
+  /**
+   * Gap 30 (lib/test-records.ts): the Data Steward asks for the test records too.
+   * Honoured for the Steward only; the report says what it applied (includeTest).
+   */
+  includeTest?: boolean;
 };
 
 /**
@@ -212,13 +218,24 @@ export async function buildChangeReport(
   { pageSize = REPORT_PAGE_SIZE }: { pageSize?: number } = {}
 ) {
   const scope = await resolveExportScope(me);
-  const branchWhere = scopedBranchWhere(scope, filters);
+  // Gap 30: a shop of a test customer, on a test route or in a test region is
+  // left out, unless the exporter is a test account or the Steward asked.
+  const includeTest = includeTestRows({
+    viewerIsTest: await viewerIsTest(prisma, me.id),
+    role: me.role,
+    requested: filters.includeTest === true,
+  });
+  const scopedWhere = scopedBranchWhere(scope, filters);
+  const branchWhere: Prisma.BranchWhereInput = includeTest
+    ? scopedWhere
+    : { AND: [scopedWhere, { route: { isTest: false }, region: { isTest: false } }] };
+  const liveCustomer: Prisma.CustomerWhereInput = includeTest ? { deletedAt: null } : { deletedAt: null, isTest: false };
   const since = filters.since ?? new Date(0);
   const until = filters.until ?? new Date();
   const includePending = filters.includePending !== false;
 
   const total = await prisma.branch.count({
-    where: { ...branchWhere, customer: { deletedAt: null } },
+    where: { ...branchWhere, customer: liveCustomer },
   });
   if (total > CHANGE_REPORT_ROW_CEILING) {
     throw new ForbiddenError(
@@ -277,7 +294,7 @@ export async function buildChangeReport(
     prisma.branch.findMany({
       where: {
         AND: [branchWhere, ...(last ? [{ branchCode: { gt: last.branchCode } }] : [])],
-        customer: { deletedAt: null },
+        customer: liveCustomer,
       },
       orderBy: { branchCode: 'asc' },
       take: pageSize,
@@ -745,5 +762,7 @@ export async function buildChangeReport(
     rowCount: writtenRows,
     changedRows,
     changeCount: changeRows.length,
+    // Gap 30: whether the test records were included, for the export's record.
+    includeTest,
   };
 }

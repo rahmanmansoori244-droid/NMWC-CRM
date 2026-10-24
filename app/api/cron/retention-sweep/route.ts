@@ -26,6 +26,12 @@
  * It only ever ADDS to one: each day of scheduled-job runs is written to
  * JobRunDay before that day's runs may be pruned (gap 21, lib/job-run-day.ts).
  *
+ * Gap 25 (data audit 2026-10-10): and every batch it deletes or empties leaves a
+ * PurgeSummary row, written by the same statement (lib/purge-summary.ts): what,
+ * how many, the date range, the cut-off and the rule. The periods are read from
+ * lib/retention-rules.ts, unchanged. Each statement runs in its own transaction
+ * under the job's change context, so the summary names its cause.
+ *
  * Daily via vercel.json crons. Reports through the same heartbeat machinery as
  * the other jobs so a silently dead sweep alarms on /api/health.
  */
@@ -34,19 +40,28 @@ import { prisma } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import { cronAuthorized } from '@/lib/cron-auth';
 import { withHeartbeat } from '@/lib/heartbeat';
-import { IMPORT_PAYLOAD_DAYS as IMPORT_PAYLOAD_DAYS_SHARED } from '@/lib/import-row-fix';
+import { src, withChangeContext } from '@/lib/change-context';
 import { pruneSummarisedCronRuns, summariseJobRunDays } from '@/lib/job-run-day';
+import { RETENTION_RULES, retentionCutoff } from '@/lib/retention-rules';
+import {
+  importPayloadPurgeSql,
+  purgeRunId,
+  rateLimitPurgeSql,
+  runPurge,
+  unreadNotificationPurgeSql,
+  type PurgeRun,
+} from '@/lib/purge-summary';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/** Token-bucket state is meaningless once the bucket has refilled — hours, not days. */
-const RATE_LIMIT_DAYS = 1;
-/** An import batch stays resumable and reconcilable for a quarter; then the raw payload goes. */
-// Shared with the Steward's in-app fix, which refuses a row past it.
-const IMPORT_PAYLOAD_DAYS = IMPORT_PAYLOAD_DAYS_SHARED;
-/** Unread notifications: the read ones are already swept at 90 days by the SLA job. */
-const UNREAD_NOTIFICATION_DAYS = 180;
+// The periods (lib/retention-rules.ts, held to the schedule by
+// tests/unit/retention-rules-doc.test.ts):
+//   rate-limit-1d            token-bucket state is meaningless once refilled
+//   import-payload-90d       a batch stays resumable and reconcilable for a quarter
+//                            (the Steward's in-app fix refuses a row past the same 90 days)
+//   notification-unread-180d the read ones are swept at 90 days by the SLA job
+//   cron-run-90d             three 30-day service-level windows
 /** Bound the work per run so the job stays well inside the function timeout. */
 const BATCH = 500;
 /**
@@ -61,12 +76,10 @@ const IMPORT_BUDGET_MS = 30_000;
 /** Scheduled-run history: the service-level report reads 30 days; keep three windows. */
 // Not exported: a route file may export only what Next allows, and only
 // `next build` checks that (CLAUDE.md).
-const CRON_RUN_DAYS = 90;
 const CRON_RUN_BATCH = 2000;
 
-function cutoff(days: number): Date {
-  return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-}
+/** The job's change context: the summaries and any history the purge causes name it. */
+const CAUSE = { actorId: null, source: src.cron('retention-sweep') } as const;
 
 async function handle(req: NextRequest) {
   if (!cronAuthorized(req.headers.get('authorization'))) {
@@ -75,20 +88,18 @@ async function handle(req: NextRequest) {
 
   let errors = 0;
   const swept: Record<string, number> = {};
+  const now = new Date();
+  // The summaries of this run share one run id.
+  const run: PurgeRun = { runId: purgeRunId('retention-sweep', now) };
 
   // 1. Spent rate-limit buckets (usernames and IP addresses).
   try {
     // Bounded: an unbounded delete over an unindexed predicate is how a daily
     // job discovers the 60 s function limit on the one night it matters.
-    const count = await prisma.$executeRaw`
-      DELETE FROM "RateLimit"
-       WHERE "key" IN (
-         SELECT "key" FROM "RateLimit"
-          WHERE "updatedAt" < ${cutoff(RATE_LIMIT_DAYS)}
-          ORDER BY "updatedAt"
-          LIMIT ${BATCH}
-       )`;
-    swept.rateLimit = count;
+    // Gap 25: the batch and its summary (counts by bucket kind, never the key).
+    swept.rateLimit = await withChangeContext(prisma, CAUSE, (tx) =>
+      runPurge(tx, 'rate-limit-1d', rateLimitPurgeSql(now, BATCH, run))
+    );
   } catch (err) {
     errors += 1;
     logger.error({ err: (err as Error).message }, 'retention.rate_limit_failed');
@@ -127,27 +138,15 @@ async function handle(req: NextRequest) {
     let cleared = 0;
     let last = 0;
     do {
-      last = await prisma.$executeRaw`
-        UPDATE "ImportRow"
-           SET "raw" = '{}'::jsonb, "parsed" = NULL, "issues" = NULL, "corrections" = NULL
-         WHERE "id" IN (
-           SELECT r."id"
-             FROM "ImportRow" r
-             JOIN "ImportBatch" b ON b."id" = r."batchId"
-            WHERE r."createdAt" < ${cutoff(IMPORT_PAYLOAD_DAYS)}
-            AND b."status" <> 'PROMOTING'
-            AND (
-                  r."state" IN ('PROMOTED', 'REJECTED')
-               -- An excluded held-back row is read by nothing (promote reads CLEAN
-               -- rows; a fix refuses excluded ones), so it is finished too. A
-               -- wrong file excluded whole never leaves READY, and kept its data
-               -- for ever.
-               OR (r."state" = 'QUARANTINED' AND r."excludedAt" < ${cutoff(IMPORT_PAYLOAD_DAYS)})
-            )
-            AND (r."raw" <> '{}'::jsonb OR r."parsed" IS NOT NULL OR r."issues" IS NOT NULL OR r."corrections" IS NOT NULL)
-          ORDER BY r."createdAt"
-          LIMIT ${IMPORT_BATCH}
-       )`;
+      // An excluded held-back row is read by nothing (promote reads CLEAN rows;
+      // a fix refuses excluded ones), so it is finished too: a wrong file
+      // excluded whole never leaves READY, and kept its data for ever. The
+      // statement (lib/purge-summary.ts importPayloadPurgeSql) restates the
+      // predicate on the row it empties, and summarises each 2,000-row batch by
+      // import batch and row state.
+      last = await withChangeContext(prisma, CAUSE, (tx) =>
+        runPurge(tx, 'import-payload-90d', importPayloadPurgeSql(now, IMPORT_BATCH, run))
+      );
       cleared += last;
     } while (last === IMPORT_BATCH && Date.now() - started < IMPORT_BUDGET_MS);
     swept.importRowPayloads = cleared;
@@ -162,16 +161,11 @@ async function handle(req: NextRequest) {
   // 3. Notifications nobody ever opened. The SLA sweep handles read ones at 90
   //    days; these would otherwise keep customer names indefinitely.
   try {
-    const count = await prisma.$executeRaw`
-      DELETE FROM "Notification"
-       WHERE "id" IN (
-         SELECT "id" FROM "Notification"
-          WHERE "readAt" IS NULL
-            AND "createdAt" < ${cutoff(UNREAD_NOTIFICATION_DAYS)}
-          ORDER BY "createdAt"
-          LIMIT ${BATCH}
-       )`;
-    swept.unreadNotifications = count;
+    // Gap 25: the summary counts them by month, kind and e-mail outcome, so the
+    // e-mail delivery figures outlive the rows.
+    swept.unreadNotifications = await withChangeContext(prisma, CAUSE, (tx) =>
+      runPurge(tx, 'notification-unread-180d', unreadNotificationPurgeSql(now, BATCH, run))
+    );
   } catch (err) {
     errors += 1;
     logger.error({ err: (err as Error).message }, 'retention.notifications_failed');
@@ -191,7 +185,9 @@ async function handle(req: NextRequest) {
     logger.error({ err: (err as Error).message }, 'retention.job_run_days_failed');
   }
   try {
-    swept.cronRuns = await pruneSummarisedCronRuns(prisma, cutoff(CRON_RUN_DAYS), CRON_RUN_BATCH);
+    swept.cronRuns = await withChangeContext(prisma, CAUSE, (tx) =>
+      pruneSummarisedCronRuns(tx, retentionCutoff(RETENTION_RULES['cron-run-90d'], now), CRON_RUN_BATCH, run)
+    );
   } catch (err) {
     errors += 1;
     logger.error({ err: (err as Error).message }, 'retention.cron_runs_failed');

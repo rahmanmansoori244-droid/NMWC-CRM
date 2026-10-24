@@ -109,6 +109,8 @@ const customer = (id: string, nmwcCode: string, temixCode: string | null, b: Row
   legalName: `Shop ${id}`,
   primaryPhoneNorm: null,
   deletedAt: null,
+  // Gap 30: a real customer (the list leaves the test customers out).
+  isTest: false,
   branches: [b],
   ...extra,
 });

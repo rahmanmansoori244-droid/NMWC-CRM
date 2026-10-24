@@ -23,6 +23,8 @@ const filterSchema = z.object({
   // A day and only a day ("YYYY-MM-DD", a real one): a full timestamp's UTC
   // date can be the Oman day before the one it names.
   updatedSince: z.string().date().transform((d) => startOfOmanDay(new Date(d))).optional(),
+  // Gap 30: the Steward's "Include test records" box (honoured for him only).
+  includeTest: z.enum(['1', '0']).transform((v) => v === '1').optional(),
 });
 
 export async function GET(req: NextRequest) {
@@ -49,6 +51,7 @@ export async function GET(req: NextRequest) {
       minCompleteness: req.nextUrl.searchParams.get('minCompleteness') ?? undefined,
       maxCompleteness: req.nextUrl.searchParams.get('maxCompleteness') ?? undefined,
       updatedSince: req.nextUrl.searchParams.get('updatedSince') ?? undefined,
+      includeTest: req.nextUrl.searchParams.get('includeTest') ?? undefined,
     });
   } catch {
     return NextResponse.json({ error: 'Invalid filter parameters' }, { status: 400 });

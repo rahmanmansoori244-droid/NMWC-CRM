@@ -58,7 +58,7 @@ export default async function ExportPage() {
                 : 'You have no managed regions yet, so there is nothing for you to export. Ask a Steward.'}
             </p>
           )}
-          <ExportFiltersForm regions={regions} routes={routes} />
+          <ExportFiltersForm regions={regions} routes={routes} canIncludeTest={session.user.role === 'STEWARD'} />
         </section>
         <aside className="rounded-lg bg-amber-50 p-5 text-sm text-amber-900 ring-1 ring-amber-200">
           <h2 className="mb-2 font-semibold">Workbook shape</h2>
