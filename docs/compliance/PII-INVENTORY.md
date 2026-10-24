@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**507 stored columns across 35 tables** — Customer contact: 29 · Employee: 95 · Customer entity (personal if a sole establishment): 50 · Not personal data: 333.
+**522 stored columns across 36 tables** — Customer contact: 29 · Employee: 95 · Customer entity (personal if a sole establishment): 50 · Not personal data: 348.
 
 ## Columns holding personal data
 
@@ -322,7 +322,7 @@ Every column the database stores, classified by whose personal data it is. This 
 
 ## Tables with no personal data
 
-`Region`, `Channel`, `SubChannel`, `CronHeartbeat`, `CronRun`, `JobRunDay`, `PurgeSummary`, `CodeSequence`
+`Region`, `Channel`, `SubChannel`, `CronHeartbeat`, `CronRun`, `JobRunDay`, `SealRecord`, `PurgeSummary`, `CodeSequence`
 
 ## Columns classified as not personal data
 
@@ -468,6 +468,18 @@ Every column the database stores, classified by whose personal data it is. This 
 | JobRunDay | `maxDurationMs` | Int | structural / operational value |
 | JobRunDay | `sources` | String[] | the CronRun scheduler labels seen that day, never a User-Agent |
 | JobRunDay | `recordedAt` | DateTime | record timestamp, not an attribute of a person |
+| SealRecord | `id` | BigInt | foreign key / structural value |
+| SealRecord | `seq` | Int | the seal number, 0 = genesis |
+| SealRecord | `day` | DateTime | the Oman day of the run |
+| SealRecord | `formatVersion` | Int | structural / operational value |
+| SealRecord | `prevHash` | String | SHA-256 of the previous seal |
+| SealRecord | `hash` | String | SHA-256 of bodyText |
+| SealRecord | `bodyText` | String | per sealed table: key range, row count and a SHA-256 digest — never a row |
+| SealRecord | `r2Key` | String | where the off-site copy is (seals/…) |
+| SealRecord | `snapshotXmax` | BigInt | a database transaction id |
+| SealRecord | `sealedAt` | DateTime | record timestamp, not an attribute of a person |
+| SealRecord | `source` | String | the change-context source (the nightly job) |
+| SealRecord | `txId` | BigInt | database transaction id |
 | PurgeSummary | `id` | BigInt | the strict order of the summaries |
 | PurgeSummary | `at` | DateTime | record timestamp, not an attribute of a person |
 | PurgeSummary | `job` | String | which job ran the rule |
@@ -498,11 +510,13 @@ Every column the database stores, classified by whose personal data it is. This 
 | ExportJob | `fileSha256` | String | SHA-256 of the exact bytes sent: identifies the file, not its contents |
 | ExportJob | `filename` | String | the file name the export was sent under (a date, never a customer) |
 | ExportJob | `customerIds` | String[] | identifiers of the customers the file held; the file itself is never stored |
+| ExportJob | `seq` | BigInt | strict order: the key the nightly seal ranges are read by (gap 28) |
 | AuditLog | `id` | String | foreign key / structural value |
 | AuditLog | `entityType` | String | structural / operational value |
 | AuditLog | `entityId` | String | foreign key / structural value |
 | AuditLog | `source` | String | what caused the row: a request, import row, script run or job (lib/change-context.ts), never text a person typed |
 | AuditLog | `txId` | BigInt | database transaction id: joins the row to the dated history rows of the same change |
+| AuditLog | `seq` | BigInt | strict order: the key the nightly seal ranges are read by (gap 28) |
 | AuthEvent | `id` | BigInt | the strict order of the events |
 | AuthEvent | `kind` | String | LOGIN_FAIL_UNKNOWN, LOGIN_RATE_LIMITED, LOGIN_FAIL_REUSED_NAME or SESSION_REVOKE |
 | AuthEvent | `keyId` | String | which fingerprint key (first 8 hex of its SHA-256): a rotated AUTH_SECRET gives another |
@@ -645,6 +659,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | EditApproval | `authorityBasis` | String | why the decider could decide (lib/permissions.ts AUTHORITY_BASES), a fixed value the database checks |
 | EditApproval | `scopeRegionIds` | String[] | the regions the request covered when decided |
 | EditApproval | `submitterRouteId` | String | the submitting salesman’s route when decided |
+| EditApproval | `seq` | BigInt | strict order: the key the nightly seal ranges are read by (gap 28) |
 | Notification | `id` | String | foreign key / structural value |
 | Notification | `kind` | NotificationKind | structural / operational value |
 | Notification | `editId` | String | foreign key / structural value |

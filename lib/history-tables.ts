@@ -23,6 +23,8 @@ export const HISTORY_MIGRATIONS = [
   '20261024120000_test_records',
   // Watch and prove (gap 25): every purge writes a summary.
   '20261024120100_purge_summaries',
+  // Watch and prove (gap 28): the ledgers' keys and the daily seal.
+  '20261024120200_ledger_seals',
 ] as const;
 
 /** INSERT-only tables written by the capture triggers, never by the application. */
@@ -53,6 +55,8 @@ export const APPEND_ONLY_APP_TABLES = [
   'AuthEvent',
   // Watch and prove (gap 25): the summary every retention rule writes as it deletes.
   'PurgeSummary',
+  // Watch and prove (gap 28): the daily seal of the ledgers.
+  'SealRecord',
 ] as const;
 
 /**
@@ -60,7 +64,27 @@ export const APPEND_ONLY_APP_TABLES = [
  * (nextval on insert) but may not set it (setval would make inserts collide).
  * ExportJob's id is a cuid.
  */
-export const LEDGER_SEQUENCE_TABLES = ['EditRevision', 'JobRunDay', 'AuthEvent', 'PurgeSummary'] as const;
+export const LEDGER_SEQUENCE_TABLES = ['EditRevision', 'JobRunDay', 'AuthEvent', 'PurgeSummary', 'SealRecord'] as const;
+
+/**
+ * Gap 28 (20261024120200_ledger_seals): the sequences behind the seq key of the
+ * three ledgers whose id is a cuid. The runtime role draws from them on every
+ * insert (USAGE) and may never set them (setval would move a sealed range).
+ */
+export const LEDGER_SEQ_SEQUENCES = ['AuditLog_seq_seq', 'EditApproval_seq_seq', 'ExportJob_seq_seq'] as const;
+
+/**
+ * The four triggers that made AuditLog and EditApproval append-only, from the
+ * migrations before the history (20260914150000 and 20260914160000). Not created
+ * by the history migrations, so not in HISTORY_TRIGGERS; the nightly integrity
+ * check (lib/integrity) expects them with the rest (PROTECTION_TRIGGERS).
+ */
+export const LEDGER_TRIGGERS = [
+  'auditlog_append_only',
+  'auditlog_no_truncate',
+  'editapproval_append_only',
+  'editapproval_no_truncate',
+] as const;
 
 /**
  * Gap 19 (lossless paths): a request, once sent, is evidence. Its original
@@ -100,6 +124,9 @@ export const HISTORY_TRIGGERS: readonly string[] = [
   'authevent_stamp_context',
   // Gap 25: a purge summary carries its writer's cause and transaction.
   'purgesummary_stamp_context',
+  // Gap 28: a seal carries its writer's cause, and links to the last one.
+  'sealrecord_stamp_context',
+  'sealrecord_link_guard',
   // Part C (gap 16): a route never changes region.
   'route_region_fixed',
   ...HISTORY_TABLES.flatMap((t) => [
@@ -149,6 +176,7 @@ export const HISTORY_FUNCTIONS = [
   'nmwc_customer_route_intervals',
   'nmwc_history_unattributed',
   'nmwc_is_test_guard',
+  'nmwc_seal_link_guard',
 ] as const;
 
 /** The SECURITY DEFINER capture functions: EXECUTE revoked from PUBLIC. */
@@ -171,7 +199,11 @@ export const GUARD_FUNCTIONS = [
   'nmwc_customeredit_evidence_guard',
   'nmwc_route_region_fixed',
   'nmwc_is_test_guard',
+  'nmwc_seal_link_guard',
 ] as const;
+
+/** Every trigger that protects the ledgers and the history, checked nightly (lib/integrity). */
+export const PROTECTION_TRIGGERS: readonly string[] = [...HISTORY_TRIGGERS, ...LEDGER_TRIGGERS];
 
 /** The sequence behind each table's BIGSERIAL id (Prisma's naming). */
 export const historySequence = (t: HistoryTable | string) => `${t}_id_seq`;

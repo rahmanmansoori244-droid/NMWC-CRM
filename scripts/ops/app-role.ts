@@ -42,6 +42,7 @@ import {
   HISTORY_DEFINER_FUNCTIONS,
   HISTORY_TABLES,
   LEDGER_SEQUENCE_TABLES,
+  LEDGER_SEQ_SEQUENCES,
   historySequence,
 } from '../../lib/history-tables';
 
@@ -232,6 +233,20 @@ async function appendOnlyTablesPresent(client: PrismaClient): Promise<string[]> 
   return rows.map((r) => r.relname);
 }
 
+/**
+ * Gap 28: the seq-key sequences of AuditLog, EditApproval and ExportJob, as this
+ * database has them (none before migration 20261024120200_ledger_seals).
+ */
+async function ledgerKeySequencesPresent(client: PrismaClient): Promise<string[]> {
+  const rows = await client.$queryRawUnsafe<{ relname: string }[]>(
+    `SELECT c.relname FROM pg_class c
+      WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'S'
+        AND c.relname IN (${LEDGER_SEQ_SEQUENCES.map((t) => `'${t}'`).join(', ')})
+      ORDER BY c.relname`
+  );
+  return rows.map((r) => r.relname);
+}
+
 /** The history's trigger functions EXECUTE is revoked on, as this database has them. */
 async function historyFunctionsPresent(client: PrismaClient): Promise<string[]> {
   const names = [...HISTORY_DEFINER_FUNCTIONS, ...GUARD_FUNCTIONS];
@@ -291,6 +306,9 @@ async function grant() {
     // BIGSERIAL ids' sequences stay usable (nextval on insert) but not settable.
     const ledgers = await appendOnlyTablesPresent(owner);
     const ledgerSequences = LEDGER_SEQUENCE_TABLES.filter((t) => (ledgers as string[]).includes(t));
+    // Gap 28: the seq keys the seal ranges are read by. nextval on every ledger
+    // insert, so USAGE is needed; setval would move a sealed range, so no UPDATE.
+    const keySequences = await ledgerKeySequencesPresent(owner);
     const stmts = [
       `GRANT CONNECT ON DATABASE "${db}" TO "${ROLE}"`,
       `GRANT USAGE ON SCHEMA public TO "${ROLE}"`,
@@ -320,6 +338,8 @@ async function grant() {
       // the insert-only ledgers the application writes (see above)
       ...ledgers.map((t) => `REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON "${t}" FROM "${ROLE}"`),
       ...ledgerSequences.map((t) => `REVOKE UPDATE ON SEQUENCE "${historySequence(t)}" FROM "${ROLE}"`),
+      ...keySequences.map((q) => `GRANT USAGE, SELECT ON SEQUENCE "${q}" TO "${ROLE}"`),
+      ...keySequences.map((q) => `REVOKE UPDATE ON SEQUENCE "${q}" FROM "${ROLE}"`),
       // tables and sequences created by FUTURE migrations (run by the owner) inherit the grants
       // No DELETE here on purpose: a table added by a future migration must not
       // become deletable by the runtime credential without somebody deciding so.

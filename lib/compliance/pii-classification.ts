@@ -418,6 +418,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'ExportJob.fileSha256': { subject: 'none', note: 'SHA-256 of the exact bytes sent: identifies the file, not its contents' },
   'ExportJob.filename': { subject: 'none', note: 'the file name the export was sent under (a date, never a customer)' },
   'ExportJob.customerIds': { subject: 'none', note: 'identifiers of the customers the file held; the file itself is never stored' },
+  'ExportJob.seq': { subject: 'none', note: 'strict order: the key the nightly seal ranges are read by (gap 28)' },
   'ExportJob.status': { subject: 'none' },
   'ExportJob.r2Key': { subject: 'none', kind: 'image reference' },
   'ExportJob.rowCount': { subject: 'none' },
@@ -456,6 +457,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
     note: 'what caused the row: a request, import row, script run or job (lib/change-context.ts), never text a person typed',
   },
   'AuditLog.txId': { subject: 'none', note: 'database transaction id: joins the row to the dated history rows of the same change' },
+  'AuditLog.seq': { subject: 'none', note: 'strict order: the key the nightly seal ranges are read by (gap 28)' },
 
   // ---- AuthEvent (gap 23, part C) ------------------------------------------
   // Sign-in failures on names no account has, throttle refusals, failures on a
@@ -648,6 +650,21 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   },
   'EditApproval.scopeRegionIds': { subject: 'none', note: 'the regions the request covered when decided' },
   'EditApproval.submitterRouteId': { subject: 'none', note: 'the submitting salesman’s route when decided' },
+  'EditApproval.seq': { subject: 'none', note: 'strict order: the key the nightly seal ranges are read by (gap 28)' },
+
+  // ---- SealRecord (gap 28: the daily seal of the ledgers; digests and counts only) ----
+  'SealRecord.id': { subject: 'none', note: STRUCTURAL },
+  'SealRecord.seq': { subject: 'none', note: 'the seal number, 0 = genesis' },
+  'SealRecord.day': { subject: 'none', note: 'the Oman day of the run' },
+  'SealRecord.formatVersion': { subject: 'none' },
+  'SealRecord.prevHash': { subject: 'none', note: 'SHA-256 of the previous seal' },
+  'SealRecord.hash': { subject: 'none', note: 'SHA-256 of bodyText' },
+  'SealRecord.bodyText': { subject: 'none', note: 'per sealed table: key range, row count and a SHA-256 digest — never a row' },
+  'SealRecord.r2Key': { subject: 'none', note: 'where the off-site copy is (seals/…)' },
+  'SealRecord.snapshotXmax': { subject: 'none', note: 'a database transaction id' },
+  'SealRecord.sealedAt': { subject: 'none', note: RECORD_META },
+  'SealRecord.source': { subject: 'none', note: 'the change-context source (the nightly job)' },
+  'SealRecord.txId': { subject: 'none', note: 'database transaction id' },
 
   // ---- Notification --------------------------------------------------------
   'Notification.id': { subject: 'none', note: STRUCTURAL },
