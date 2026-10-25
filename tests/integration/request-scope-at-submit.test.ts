@@ -86,6 +86,10 @@ describe.skipIf(!ENABLED)('gap 18: where a request was raised', () => {
 
   it('an update submit records his route and his shop’s region, as the history has them then', async () => {
     await prisma.rateLimit.deleteMany({ where: { key: { contains: w.salesman } } });
+    // The completeness gate (owner decision 4, 2026-10-07) checks the shop being
+    // changed: it needs its GPS and its shop photo, as a real shop on a route has.
+    // The world's shop is created bare, so give it both before the salesman sends.
+    await prisma.branch.update({ where: { id: w.branch }, data: { gpsLat: 23.6, gpsLng: 58.4, shopPhotoId: await photo() } });
     as(w.salesman, 'SALESMAN');
     const res = await edits.submitEditAction(
       await editPayload(prisma, { customerId: w.customer, branches: [{ branchId: w.branch, openingHours: '08:00-20:00 (synthetic)' }] })

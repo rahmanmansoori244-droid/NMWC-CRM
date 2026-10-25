@@ -35,7 +35,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import ExcelJS from 'exceljs';
-import { purgeAuditLog } from '../support/audit';
+import { purgeAuditLog, purgeHistory } from '../support/audit';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
@@ -172,12 +172,25 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
         await prisma.importBatch.deleteMany({ where: { id } });
       }
       await prisma.rateLimit.deleteMany({ where: { key: { contains: stewardId } } });
+      const userIds = (
+        await prisma.user.findMany({
+          where: { username: { in: [owner, emailHolder, viewer, gone, ...newcomers] } },
+          select: { id: true },
+        })
+      ).map((u) => u.id);
       await prisma.user.deleteMany({
         where: { username: { in: [owner, emailHolder, viewer, gone, ...newcomers] } },
       });
       await prisma.user.deleteMany({ where: { id: stewardId } });
       await prisma.route.deleteMany({ where: { id: routeId } });
       await prisma.region.deleteMany({ where: { id: regionId } });
+      // Last: the deletes above wrote DELETE tombstones; the suite's own dated
+      // history (and its accounts' session cut-offs) goes with them.
+      await purgeHistory(prisma, {
+        userIds: [...userIds, stewardId],
+        routeIds: routeId ? [routeId] : [],
+        regionIds: regionId ? [regionId] : [],
+      });
     } catch (e) {
       console.error('cleanup', e);
     }
@@ -234,7 +247,20 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
         entityId: ownerRow.id,
         reason: `route ${routeCode} reassigned to ${fresh} via import`,
         before: { ownedRouteCode: routeCode },
-        after: { ownedRouteCode: null, batchId: res.batchId },
+        // Gap 37: the displaced owner's open work is recorded on the row; this
+        // owner has none, so every list is empty and every count is 0.
+        after: {
+          ownedRouteCode: null,
+          batchId: res.batchId,
+          openWork: {
+            counts: { drafts: 0, inReview: 0, sentBack: 0, withdrawn: 0 },
+            drafts: [],
+            inReview: [],
+            sentBack: [],
+            withdrawn: [],
+            unattachedPhotos: 0,
+          },
+        },
       },
     ]);
   });
@@ -409,7 +435,7 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
     const fixed = await upload([
       salesman(joiner, { full_name: 'ZZ Joiner Corrected', password: '', change_name: 'yes' }),
     ]);
-    expect(fixed.clean).toBe(1);
+    expect(fixed.clean, JSON.stringify(fixed.messages)).toBe(1);
     expect((await prisma.user.findUniqueOrThrow({ where: { username: joiner } })).fullName).toBe(
       'ZZ Joiner Corrected'
     );

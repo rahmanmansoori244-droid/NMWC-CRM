@@ -24,7 +24,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { src, withChangeContext } from '@/lib/change-context';
-import { purgeAuditLog, purgeCustomerEdits } from '../support/audit';
+import { purgeAuditLog, purgeCustomerEdits, purgeHistory } from '../support/audit';
 
 vi.setConfig({ testTimeout: 90_000, hookTimeout: 90_000 });
 
@@ -96,6 +96,7 @@ describe.skipIf(!ENABLED)('gap 37: open requests when a customer is archived', (
     try {
       const custs = await prisma.customer.findMany({ where: { nmwcCode: { startsWith: P } }, select: { id: true } });
       const ids = custs.map((c) => c.id);
+      const branchIds = (await prisma.branch.findMany({ where: { customerId: { in: ids } }, select: { id: true } })).map((b) => b.id);
       if (editIds.length) await purgeCustomerEdits(prisma, { where: { id: { in: editIds } } });
       await purgeAuditLog(prisma, { where: { OR: [{ actorId: { in: [steward, salesman] } }, { entityId: { in: [...ids, ...editIds] } }] } });
       await prisma.branch.deleteMany({ where: { customerId: { in: ids } } });
@@ -103,6 +104,15 @@ describe.skipIf(!ENABLED)('gap 37: open requests when a customer is archived', (
       await prisma.route.deleteMany({ where: { id: routeId } });
       await prisma.region.deleteMany({ where: { id: regionId } });
       await prisma.user.deleteMany({ where: { id: { in: [steward, salesman] } } });
+      // Last: the deletes above wrote DELETE tombstones; the suite's own history goes with them.
+      await purgeHistory(prisma, {
+        customerIds: ids,
+        branchIds,
+        userIds: [steward, salesman],
+        routeIds: [routeId],
+        regionIds: [regionId],
+        editIds,
+      });
     } catch (e) {
       console.error('cleanup', e);
     }
