@@ -49,4 +49,10 @@ describe('jsxElements', () => {
     const els = jsxElements('const x = <TableScroll><div><table /></div></TableScroll>;\nconst y = <><table /></>;');
     expect(els.filter((e) => e.tag === 'table').map((e) => e.parentTag)).toEqual(['div', '<>']);
   });
+
+  it('lists every enclosing element, nearest first', () => {
+    const els = jsxElements('const x = <TableScroll><table><thead><tr><th><span /></th></tr></thead></table></TableScroll>;');
+    expect(els.find((e) => e.tag === 'span')!.ancestorTags).toEqual(['th', 'tr', 'thead', 'table', 'TableScroll']);
+    expect(els.find((e) => e.tag === 'TableScroll')!.ancestorTags).toEqual([]);
+  });
 });

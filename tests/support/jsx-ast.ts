@@ -17,6 +17,8 @@ export type JsxEl = {
   attrs: Record<string, JsxAttr>;
   /** Tag of the nearest enclosing JSX element, '<>' for a fragment, null at the top. */
   parentTag: string | null;
+  /** Tags of every enclosing JSX element, nearest first ('<>' for a fragment). */
+  ancestorTags: string[];
   line: number;
 };
 
@@ -24,12 +26,13 @@ export function jsxElements(src: string, fileName = 'file.tsx'): JsxEl[] {
   const sf = ts.createSourceFile(fileName, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const out: JsxEl[] = [];
 
-  const parentTag = (node: ts.Node): string | null => {
+  const ancestorTags = (node: ts.Node): string[] => {
+    const tags: string[] = [];
     for (let p = node.parent; p; p = p.parent) {
-      if (ts.isJsxElement(p)) return p.openingElement.tagName.getText(sf);
-      if (ts.isJsxFragment(p)) return '<>';
+      if (ts.isJsxElement(p)) tags.push(p.openingElement.tagName.getText(sf));
+      else if (ts.isJsxFragment(p)) tags.push('<>');
     }
-    return null;
+    return tags;
   };
 
   const read = (tagName: ts.JsxTagNameExpression, attributes: ts.JsxAttributes, at: ts.Node) => {
@@ -44,10 +47,12 @@ export function jsxElements(src: string, fileName = 'file.tsx'): JsxEl[] {
         attrs[name] = { kind: 'string', value: init.expression.text };
       else attrs[name] = { kind: 'expression', text: init.getText(sf) };
     }
+    const ancestors = ancestorTags(at);
     out.push({
       tag: tagName.getText(sf),
       attrs,
-      parentTag: parentTag(at),
+      parentTag: ancestors[0] ?? null,
+      ancestorTags: ancestors,
       line: sf.getLineAndCharacterOfPosition(at.getStart(sf)).line + 1,
     });
   };

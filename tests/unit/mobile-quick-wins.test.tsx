@@ -475,6 +475,18 @@ describe('38 — tables scroll inside themselves', () => {
     expect(region.className).not.toContain('overflow-hidden');
     expect(region.className).toContain('[contain:inline-size]');
     expect(region.className).toContain('w-full');
+    expect(region.className.split(/\s+/)).toContain('relative');
+  });
+
+  it("a caller's position class loses to relative", () => {
+    render(
+      <TableScroll label="Batches" className="static rounded-lg">
+        <table />
+      </TableScroll>
+    );
+    const tokens = screen.getByRole('region', { name: 'Batches' }).className.split(/\s+/);
+    expect(tokens).toContain('relative');
+    expect(tokens).not.toContain('static');
   });
 
   it('its classes compile to the CSS that does the work', async () => {
@@ -484,6 +496,34 @@ describe('38 — tables scroll inside themselves', () => {
     // whole page pans — the part overflow-x-auto alone does not fix.
     expect(out).toContain('contain: inline-size');
     expect(out).toContain('width: 100%');
+    // The containing block of anything absolutely positioned in the table (below).
+    expect(out).toContain('position: relative');
+  });
+
+  it('anything absolutely positioned in a table is placed against its TableScroll box, not the page', () => {
+    // APP regression 2026-10-25 (launch e2e after the a11y merge): the sr-only
+    // "Actions" header cells are position:absolute. With no positioned ancestor
+    // they were placed against the page at the table's far edge, outside the
+    // scroll box, so /users and /import scrolled sideways again (435 px at 375).
+    // TableScroll's `relative` makes its box their containing block; `fixed`
+    // would escape any box, so none is allowed in a table.
+    const classOf = (el: JsxEl) => {
+      const a = el.attrs.className;
+      return a?.kind === 'string' ? a.value : a?.kind === 'expression' ? a.text : '';
+    };
+    const token = (name: string) => new RegExp(`(^|[\\s'"\`:{])${name}(?=$|[\\s'"\`}])`);
+    const positioned = UI_ELEMENTS.filter(
+      (el) => el.ancestorTags.includes('table') && ['sr-only', 'absolute', 'fixed'].some((c) => token(c).test(classOf(el)))
+    );
+    for (const el of positioned) {
+      const where = `${el.file}:${el.line}`;
+      expect(classOf(el), `${where} — position: fixed escapes the table's box`).not.toMatch(token('fixed'));
+      expect(el.ancestorTags, `${where} — positioned inside a table that is not in a TableScroll`).toContain('TableScroll');
+    }
+    expect(TABLE_SCROLL_CLASSES.split(/\s+/)).toContain('relative');
+    // The three sr-only "Actions" header cells today (/users, /import, /routes).
+    // Without this the loop can pass on nothing.
+    expect(positioned.filter((el) => el.ancestorTags[0] === 'th')).toHaveLength(3);
   });
 
   it('every <table> in the app sits directly inside a TableScroll', () => {

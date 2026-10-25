@@ -14,6 +14,16 @@
  *                            the part `overflow-x-auto` alone does not do
  *   w-full                   without it a flex-row parent collapses the
  *                            size-contained box to zero width
+ *   relative                 the box is the containing block of anything
+ *                            absolutely positioned in the table. A header cell's
+ *                            `sr-only` label ("Actions" on /users, /import,
+ *                            /routes) is `position: absolute`; with no positioned
+ *                            ancestor it was placed against the page, outside this
+ *                            box, at the table's far edge — so the box did not
+ *                            clip it and the PAGE scrolled sideways again
+ *                            (launch e2e 2026-10-25: /users and /import 435 px
+ *                            wider at 375, 221-403 px at 768). `contain:
+ *                            inline-size` does not make a containing block.
  *
  * Deliberately NOT fixed by adding `min-w-0` to the layout column instead: measured,
  * that turned the panning pages into clipped ones and hid values on the approval
@@ -29,9 +39,11 @@ import { cn } from '@/lib/utils';
  * Callers pass the card styling (rounded, ring, shadow). Any overflow-* they pass
  * is DROPPED rather than merged: tailwind-merge treats `overflow-hidden` and
  * `overflow-x-auto` as different groups and keeps both, which is how every card
- * here clipped its table in the first place.
+ * here clipped its table in the first place. A position class they pass
+ * (`static`, `sticky`…) loses to `relative`: tailwind-merge keeps the last of a
+ * group, and these classes come last.
  */
-export const TABLE_SCROLL_CLASSES = 'w-full overflow-x-auto [contain:inline-size]';
+export const TABLE_SCROLL_CLASSES = 'relative w-full overflow-x-auto [contain:inline-size]';
 
 const withoutOverflow = (className?: string) =>
   className
