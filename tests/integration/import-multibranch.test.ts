@@ -18,9 +18,12 @@
  *     only on the branch it changes, while a stale score on a branch it does not
  *     change is fixed without touching either (lib/rescore.ts, raw SQL);
  *   - F16 (owner decision 1): a row that moves the customer to another channel
- *     clears a sub-channel of the old one and says so on the lead row; a
- *     sub-channel of the new channel, or any sub-channel when the channel does
- *     not change, is kept.
+ *     clears a sub-channel of the old one and says so on the lead row; any
+ *     sub-channel is kept when the channel does not change. Since gap 31 the
+ *     database refuses a sub-channel of another channel outright
+ *     (Customer_subChannelId_channelId_fkey), so a mismatch on file can no
+ *     longer be set up here: the refusal is asserted, and the import's handling
+ *     of an old mismatched row is proven in tests/unit/channel-pair.test.ts.
  *
  *   RUN_IMPORT_TESTS=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/import-multibranch.test.ts
@@ -375,17 +378,45 @@ describe.skipIf(!ENABLED)('F21 / F16: what the promote writes on a multi-branch 
     expect(notes[1]).toEqual([]);
   });
 
-  it('F16: the same channel keeps its sub-channel, and a sub-channel of the new channel is kept', async () => {
+  it('F16: the same channel keeps its sub-channel, and a sub-channel of another channel cannot be put on file', async () => {
     await prisma.customer.update({ where: { nmwcCode: code }, data: { subChannelId: general.subId } });
     const same = await load(two({ channel: 'GENERAL_TRADE' }));
     expect(await customerOf()).toMatchObject({ channelId: general.id, subChannelId: general.subId });
     expect(await laneNotes(same)).toEqual([[], []]);
 
-    // A mismatch already on file (the old import left it): the channel then
-    // moves to the channel that sub-channel belongs to.
-    await prisma.customer.update({ where: { nmwcCode: code }, data: { subChannelId: horeca.subId } });
+    // This step used to write a mismatch by hand (a sub-channel of HORECA on a
+    // GENERAL_TRADE customer, "as an old import left it") and then load HORECA,
+    // the channel that sub-channel belongs to. Gap 31 (migration
+    // 20261025090000_db_rules_not_valid) has the database refuse that pair:
+    // Customer_subChannelId_channelId_fkey, NOT VALID, so only rows older than the
+    // rule escape it, and production held none (db-rules report, 2026-10-25). The
+    // state can no longer be built, so the refusal is asserted here instead; what
+    // the import does with such an old row stays proven on a fake
+    // (tests/unit/channel-pair.test.ts, "a sub-channel that belongs to the new
+    // channel is kept"). The import itself never writes a sub-channel id: the
+    // sheet has no sub-channel column, and the full lane only clears one.
+    const refused = await prisma.customer
+      .update({ where: { nmwcCode: code }, data: { subChannelId: horeca.subId } })
+      .then(
+        () => null,
+        (e: unknown) => e as { code?: string; message?: string }
+      );
+    expect(refused?.code, 'the database refuses a sub-channel of another channel').toBe('P2003');
+    expect(refused?.message).toContain('Customer_subChannelId_channelId_fkey');
+    expect(await customerOf()).toMatchObject({ channelId: general.id, subChannelId: general.subId });
+
+    // A load moving the customer back to HORECA clears GENERAL_TRADE's
+    // sub-channel in the same write, so the pair the import leaves passes the rule.
     const back = await load(two({ channel: 'HORECA' }));
-    expect(await customerOf()).toMatchObject({ channelId: horeca.id, subChannelId: horeca.subId });
-    expect(await laneNotes(back)).toEqual([[], []]);
+    expect(await customerOf()).toMatchObject({ channelId: horeca.id, subChannelId: null });
+    const notes = await laneNotes(back);
+    expect(notes[0]).toEqual([
+      {
+        field: '_subchannel',
+        message:
+          "the channel in this row (HORECA) replaces the customer's channel, so its sub-channel, which belongs to the old channel, was cleared — pick a sub-channel of the new channel on the customer page",
+      },
+    ]);
+    expect(notes[1]).toEqual([]);
   });
 });
