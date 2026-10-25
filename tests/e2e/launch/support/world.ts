@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { DayOfWeek, PaymentTerms, Prisma, Role } from '@prisma/client';
 import { normalizeCR } from '../../../../lib/cr';
+import { normalizePhone } from '../../../../lib/phone';
 import { scoreBranch, scoreCustomer, type BranchForScore, type CustomerForScore } from '../../../../lib/completeness';
 import { cleanupRegistry, residue } from './cleanup';
 import { assertNotProduction, db, getDb, REGISTRY_DIR, RUN_ID, safeError, hasR2 } from './env';
@@ -547,7 +548,11 @@ class WorldImpl implements World {
         channelId: ch?.id ?? null,
         subChannelId,
         primaryPhone: phone,
-        primaryPhoneNorm: phone,
+        // Normalised as the app stores it (lib/phone.ts): the same value for the
+        // world's +968 numbers, NULL for a number no form or import accepts (the
+        // 15-digit phone an old import kept) — which the gap-31 rule
+        // Customer_primaryPhoneNorm_shape refuses in this column.
+        primaryPhoneNorm: normalizePhone(phone),
         contactPerson: s.contact ?? null,
         notes: s.notes ?? null,
         completenessScore: scoreCustomer(forScore, scoreRows),
