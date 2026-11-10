@@ -1531,6 +1531,11 @@ test.describe('approvals: the whole approval loop on a 360 px phone', { tag: ['@
   test('a request with a 15-digit phone and a long address: Before/After on screen, the sticky bar tappable, modals fit, reject with a quick reason', async ({ browser }) => {
     const page = await pageAs(browser, w, 'M1', 'phone360');
     await page.goto(`/approvals/${longOne}`);
+    // React 19 reveals a streamed Suspense boundary on its own throttle, so the
+    // load event can come while the skeleton still shows and the request sits in a
+    // hidden segment (getByText counts it, boundingBox() is null). Measure the
+    // revealed page, not the skeleton.
+    await expect(page.getByText('Before', { exact: true }).first()).toBeVisible();
     await expectNoSideScroll(page);
     const width = page.viewportSize()!.width;
     for (const label of ['Before', 'After']) {
