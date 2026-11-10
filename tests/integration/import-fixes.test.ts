@@ -21,7 +21,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { randomUUID } from 'node:crypto';
 import ExcelJS from 'exceljs';
 import { purgeAuditLog } from '../support/audit';
-import { promoteFully } from '../support/promote';
+import { overwriteOn, promoteFully } from '../support/promote';
 import { OPEN_PROBLEM_ROW, WORK_BATCH_ROWS } from '@/lib/import-rows-view';
 
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
@@ -319,6 +319,12 @@ describe.skipIf(!ENABLED)('fixing import rows in the app (item 20)', () => {
     const [t1, t2] = await rowsOf(b);
     expect(await fixes.correctImportRowAction(fd({ rowId: t1.id, cells: JSON.stringify({ day_of_visit: 'MON' }) }))).toMatchObject({ ok: true });
     expect(await fixes.correctImportRowAction(fd({ rowId: t2.id, cells: JSON.stringify({ day_of_visit: 'TUE' }) }))).toMatchObject({ ok: true });
+    // Code review 2026-11-10, finding 1: a fixed row UPDATES a shop that exists
+    // from the cells it gave — here a new address and visit day over the ones on
+    // record — only with the batch's overwrite option on. (By default it fills
+    // blanks and says what it kept: import-crm-fill-only.test.ts. Creating the
+    // missing shop needs no option.)
+    await overwriteOn(b);
     await promoteFully(imports, b);
 
     const after = await prisma.customer.findUniqueOrThrow({ where: { id: cust.id }, include: { branches: { orderBy: { branchCode: 'asc' } } } });
@@ -493,12 +499,15 @@ describe.skipIf(!ENABLED)('fixing import rows in the app (item 20)', () => {
     ]);
     await promoteFully(imports, b1);
     const b2 = await upload([{ cust_code: V, cust_name: 'ZZ Victor', branch_code: `${V}-02`, address: 'Way 17, Muscat', customer_status: 'CLOSED' }]);
+    // Finding 1: a sheet closes a shop that exists only with the overwrite option on.
+    await overwriteOn(b2);
     await promoteFully(imports, b2);
     const v = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: V }, include: { branches: { orderBy: { branchCode: 'asc' } } } });
     expect(v.branches.map((x) => x.status)).toEqual(['ACTIVE', 'CLOSED']);
     expect(v.status).toBe('ACTIVE');
     // Closing the last active one does close the customer.
     const b3 = await upload([{ cust_code: V, cust_name: 'ZZ Victor', branch_code: `${V}-01`, address: 'Way 16, Muscat', customer_status: 'CLOSED' }]);
+    await overwriteOn(b3);
     await promoteFully(imports, b3);
     expect((await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: V } })).status).toBe('CLOSED');
   });
@@ -715,6 +724,8 @@ describe.skipIf(!ENABLED)('fixing import rows in the app (item 20)', () => {
     ]);
     const [e1] = await rowsOf(b);
     expect(await fixes.correctImportRowAction(fd({ rowId: e1.id, cells: JSON.stringify({ day_of_visit: 'MON' }) }))).toMatchObject({ ok: true });
+    // Finding 1: the fixed row replaces the shop's visit day on record (SUN) only with the option on.
+    await overwriteOn(b);
     await promoteFully(imports, b);
     expect((await rowsOf(b)).map((r) => r.state)).toEqual(['PROMOTED', 'PROMOTED']);
     const after = await prisma.customer.findUniqueOrThrow({ where: { id: cust.id }, include: { branches: { orderBy: { branchCode: 'asc' } } } });
@@ -733,6 +744,9 @@ describe.skipIf(!ENABLED)('fixing import rows in the app (item 20)', () => {
       { cust_code: F, cust_name: 'ZZ Foxtrot', branch_code: `${F}-01`, address: 'Way 43, Muscat', customer_status: 'CLOSED' },
       { cust_code: F, cust_name: 'ZZ Foxtrot', branch_code: `${F}-02`, address: 'Way 44, Muscat', customer_status: '' },
     ]);
+    // Finding 1: "on update" a sheet closes a shop that exists only with the
+    // overwrite option on. "On create" (customer G, below) needs none.
+    await overwriteOn(b2);
     await promoteFully(imports, b2);
     const f = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: F }, include: { branches: { orderBy: { branchCode: 'asc' } } } });
     expect(f.branches.map((x) => x.status)).toEqual(['CLOSED', 'ACTIVE']);
@@ -848,6 +862,8 @@ describe.skipIf(!ENABLED)('fixing import rows in the app (item 20)', () => {
     ]);
     const [, l2] = await rowsOf(b);
     expect(await fixes.correctImportRowAction(fd({ rowId: l2.id, cells: JSON.stringify({ day_of_visit: 'TUE' }) }))).toMatchObject({ ok: true });
+    // Finding 1: the plain row closes the shop that exists only with the overwrite option on.
+    await overwriteOn(b);
     await promoteFully(imports, b);
     const after = await prisma.customer.findUniqueOrThrow({ where: { id: cust.id }, include: { branches: { orderBy: { branchCode: 'asc' } } } });
     expect(after.branches.map((x) => [x.branchCode, x.status])).toEqual([

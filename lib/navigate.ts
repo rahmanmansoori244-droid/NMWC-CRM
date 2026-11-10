@@ -9,8 +9,16 @@
  * stale cache behind; replacing the entry keeps Back from returning to the
  * filled form (UXI-005). Dynamic pages are no-store, so there is no bfcache.
  *
+ * Code review 2026-11-10, finding 4: the forms now ask before the page is left
+ * with unsent work on it (lib/leave-guard.ts). This load is the app's own, after
+ * the work arrived or was given up on purpose: it says so first, so the browser
+ * does not ask "Leave site?" over "It arrived".
+ *
  * One module, so tests can observe it: jsdom cannot spy on location.replace.
  */
+import { allowLeave } from './leave-guard';
+
 export function hardReplace(url: string): void {
+  allowLeave();
   window.location.replace(url);
 }

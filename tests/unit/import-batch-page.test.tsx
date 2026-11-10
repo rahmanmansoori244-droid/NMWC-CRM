@@ -37,6 +37,10 @@ const h = vi.hoisted(() => ({
   /** Customers linked to Temix (a stored Temix code). */
   linked: [] as string[],
   kind: 'CUSTOMER' as 'CUSTOMER' | 'ACCOUNT',
+  /** Code review 2026-11-10, finding 1: fields laid over the batch (status, the overwrite option). */
+  batch: {} as Record<string, unknown>,
+  /** The props the page hands the Promote button, when it renders one. */
+  promote: null as Record<string, unknown> | null,
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: h.user }) }));
@@ -49,7 +53,12 @@ vi.mock('next/navigation', () => ({
   },
   useRouter: () => ({ refresh: () => {}, push: () => {} }),
 }));
-vi.mock('@/app/(app)/import/[batchId]/PromoteButton', () => ({ PromoteButton: () => null }));
+vi.mock('@/app/(app)/import/[batchId]/PromoteButton', () => ({
+  PromoteButton: (props: Record<string, unknown>) => {
+    h.promote = props;
+    return null;
+  },
+}));
 vi.mock('@/services/import-fixes', () => ({
   recheckImportRowAction: vi.fn(),
   correctImportRowAction: vi.fn(),
@@ -94,6 +103,9 @@ vi.mock('@/lib/db', () => {
           promoteLeaseUntil: null,
           uploadedAt: new Date('2026-09-23T10:00:00Z'),
           uploadedBy: { fullName: 'S' },
+          overwriteCrmFields: false,
+          overwriteCrmFieldsAt: null,
+          ...h.batch,
         }),
       },
       importRow: {
@@ -104,6 +116,11 @@ vi.mock('@/lib/db', () => {
         },
         count: async ({ where }: { where: Record<string, unknown> }) => h.rows.filter((r) => matches(r, where)).length,
         findMany: h.findMany,
+        // The batch's first row as uploaded: its keys are the sheet's headings.
+        findFirst: async () => {
+          const first = [...h.rows].sort((a, b) => a.rowNumber - b.rowNumber)[0];
+          return first ? { raw: first.raw } : null;
+        },
       },
     },
   };
@@ -125,6 +142,8 @@ beforeEach(() => {
   h.newer = [];
   h.linked = [];
   h.kind = 'CUSTOMER';
+  h.batch = {};
+  h.promote = null;
   h.findMany.mockReset();
   h.findMany.mockImplementation(async ({ where, skip, take }: { where: Record<string, unknown>; skip: number; take: number }) => {
     const st = where.state as string | { in: string[] } | undefined;
@@ -440,5 +459,90 @@ describe('/import/[batchId]', () => {
     h.user = { id: 'm', role: 'MANAGER', username: 'm' };
     await expect(open()).rejects.toThrow('REDIRECT /home');
     h.user = { id: 's', role: 'STEWARD', username: 's' };
+  });
+});
+
+// Code review 2026-11-10, finding 1: the sheet's unread headings, and the
+// batch's "Overwrite CRM fields from this sheet" option, are on the batch page.
+describe('/import/[batchId]: what the sheet had that the import did not read, and the overwrite option', () => {
+  const row = (raw: Record<string, unknown>, rowNumber = 2): Row => ({
+    id: `h${rowNumber}`,
+    rowNumber,
+    state: 'CLEAN',
+    raw,
+    parsed: { custCode: 'C1', custName: 'Shop' },
+    issues: null,
+  });
+
+  it('lists the headings the import did not read, in order, and none of the ones it read under another spelling', async () => {
+    h.rows = [row({ 'Cust Code': 'C1', cust_name: 'Shop', 'Temix code': 'C1', status: 'ACTIVE', Limit: 5, 'CUST BRANCH': '01' })];
+    await open({ show: 'all' });
+    expect(
+      screen.getByText(
+        'Not read: 2 columns in this sheet are not used by the import and were ignored — Limit, status. If one of them should have been read, check its spelling against the template.'
+      )
+    ).toBeTruthy();
+  });
+
+  it('says nothing when every heading was read, or when the rows were emptied by the 90-day sweep', async () => {
+    h.rows = [row({ cust_code: 'C1', cust_name: 'Shop', TEMIX_CODE: 'C1' })];
+    await open({ show: 'all' });
+    expect(screen.queryByText(/^Not read:/)).toBeNull();
+    cleanup();
+    h.rows = [row({})];
+    await open({ show: 'all' });
+    expect(screen.queryByText(/^Not read:/)).toBeNull();
+  });
+
+  it('an account master has no such list', async () => {
+    h.kind = 'ACCOUNT';
+    const issue = { sheet: 'Users', row: 7, message: 'salesman needs route_code' };
+    h.rows = [{ id: 'a1', rowNumber: 7, state: 'QUARANTINED', raw: issue, parsed: null, issues: [issue] }];
+    await open();
+    expect(screen.queryByText(/^Not read:/)).toBeNull();
+  });
+
+  it('with the option ON, a red banner says what Promote will replace, and when it was switched on', async () => {
+    h.rows = [row({ cust_code: 'C1', cust_name: 'Shop' })];
+    h.batch = { status: 'READY', overwriteCrmFields: true, overwriteCrmFieldsAt: new Date('2026-11-10T06:30:00Z') };
+    await open({ show: 'all' });
+    const banner = screen.getByRole('status');
+    expect(banner.textContent).toMatch(
+      /^Overwrite CRM fields from this sheet is ON for this batch \(switched on .*2026.*\)\. Promote will replace the name, phone, CR number, contact person, channel, address, visit day and open\/closed status of customers and shops already in the CRM wherever this sheet gives a value\.$/
+    );
+    expect(banner.className).toContain('text-red-800');
+    expect(screen.queryByText(/and is off again/)).toBeNull();
+  });
+
+  it('after it has been used and switched off again, a quiet line keeps the record; a batch that never had it shows neither', async () => {
+    h.rows = [row({ cust_code: 'C1', cust_name: 'Shop' })];
+    h.batch = { overwriteCrmFields: false, overwriteCrmFieldsAt: new Date('2026-11-10T06:30:00Z') };
+    await open({ show: 'all' });
+    expect(
+      screen.getByText(
+        /Overwrite CRM fields from this sheet was switched on for this batch on .*2026.* and is off again\. Rows promoted while it was on replaced CRM values \(each change is in the audit log\); rows promoted from now on fill blanks only unless it is switched on again\./
+      )
+    ).toBeTruthy();
+    expect(screen.queryByText(/is ON for this batch/)).toBeNull();
+    cleanup();
+    h.batch = {};
+    await open({ show: 'all' });
+    expect(screen.queryByText(/Overwrite CRM fields from this sheet/)).toBeNull();
+  });
+
+  it('the Promote button is told the option may change only while the batch is ready and nobody is promoting it', async () => {
+    h.rows = [row({ cust_code: 'C1', cust_name: 'Shop' })];
+    h.batch = { status: 'READY' };
+    await open({ show: 'all' });
+    expect(h.promote).toMatchObject({ batchId: 'b1', resume: false, canSetOverwrite: true });
+    cleanup();
+    h.batch = { status: 'PROMOTING', promoteLeaseUntil: new Date(Date.now() + 60_000) };
+    await open({ show: 'all' });
+    expect(h.promote).toMatchObject({ resume: true, leaseHeld: true, canSetOverwrite: false });
+    cleanup();
+    // Interrupted (no live lease): it must be resumed under the option it started with.
+    h.batch = { status: 'PROMOTING', promoteLeaseUntil: null };
+    await open({ show: 'all' });
+    expect(h.promote).toMatchObject({ resume: true, canSetOverwrite: false });
   });
 });

@@ -17,11 +17,16 @@ const h = vi.hoisted(() => ({
   withdraw: vi.fn(),
   edit: null as unknown,
   withdrawProps: [] as Array<Record<string, unknown>>,
+  findUniqueArgs: [] as Array<{ include?: Record<string, unknown> }>,
   formProps: [] as Array<Record<string, unknown>>,
   signedFormProps: [] as Array<Record<string, unknown>>,
-  /** The decision-bound documents and the latest decision row, as the page reads them. */
+  /**
+   * The decision-bound documents, and the request's decisions as the page reads
+   * them — with the request, through its one trail (finding 18: it used to read
+   * only "the latest decision row", in a query of its own).
+   */
   bound: [] as Array<{ id: string; kind: string }>,
-  latest: null as unknown,
+  steps: [] as Array<Record<string, unknown>>,
 }));
 const nav = vi.hoisted(() => ({ hardReplace: vi.fn() }));
 vi.mock('@/lib/navigate', () => nav);
@@ -30,6 +35,7 @@ vi.mock('@/components/nmwc/PhotoCaptureSlot', () => ({ PhotoCaptureSlot: () => <
 
 import { CreateCustomerForm, type CreateFormInitial } from '@/app/(app)/customers/new/CreateCustomerForm';
 import { WithdrawRequest } from '@/app/(app)/customers/new/WithdrawRequest';
+import { onRequestClosed } from '@/lib/device-drafts';
 
 const initial = (state: CreateFormInitial['state']): CreateFormInitial => ({
   editId: 'e1',
@@ -193,16 +199,43 @@ describe('Withdraw', () => {
     expect(await screen.findByText('This request is in review, so it cannot be withdrawn now.')).toBeTruthy();
     expect(nav.hardReplace).not.toHaveBeenCalled();
   });
+
+  // Code review 2026-11-10, finding 4: the forms on the page keep a copy of the
+  // request on the phone. A withdrawn request has no use for it.
+  it('a withdraw that went through tells the forms on the page, before Work loads; a refused one does not', async () => {
+    const order: string[] = [];
+    const heard = vi.fn(() => order.push('closed'));
+    const other = vi.fn();
+    const off = [onRequestClosed('e1', heard), onRequestClosed('e2', other)];
+    nav.hardReplace.mockImplementation(() => order.push('work'));
+    try {
+      h.withdraw.mockResolvedValueOnce({ ok: false, code: 'EDIT_LOCKED', message: 'In review.' });
+      render(<WithdrawRequest editId="e1" isDraft />);
+      fireEvent.click(screen.getByRole('button', { name: 'Discard this draft' }));
+      confirm();
+      expect(await screen.findByText('In review.')).toBeTruthy();
+      expect(heard).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Discard this draft' }));
+      confirm();
+      await waitFor(() => expect(nav.hardReplace).toHaveBeenCalledWith('/work'));
+      expect(order).toEqual(['closed', 'work']);
+      expect(other, 'another request is not told').not.toHaveBeenCalled();
+    } finally {
+      off.forEach((f) => f());
+    }
+  });
 });
 
 describe('the page offers Withdraw on his draft or sent-back request only', () => {
   beforeEach(() => {
     vi.resetModules();
     h.withdrawProps = [];
+    h.findUniqueArgs = [];
     h.formProps = [];
     h.signedFormProps = [];
     h.bound = [];
-    h.latest = null;
+    h.steps = [];
     vi.doMock('@/lib/auth', () => ({ auth: async () => ({ user: { id: 'u1', role: 'SALESMAN', username: 'mct01' } }) }));
     vi.doMock('next/navigation', () => ({
       notFound: () => {
@@ -220,12 +253,18 @@ describe('the page offers Withdraw on his draft or sent-back request only', () =
             ownedRoute: { id: 'r1', code: 'MCT-01', isActive: true, region: { name: 'Muscat' } },
           }),
         },
-        customerEdit: { findUnique: async () => h.edit },
+        customerEdit: {
+          // The decisions come back with the row, as `include: { steps }` returns them.
+          findUnique: async (args: { include?: Record<string, unknown> }) => {
+            h.findUniqueArgs.push(args);
+            return h.edit ? { ...(h.edit as object), steps: h.steps } : null;
+          },
+        },
         attachment: {
           findMany: async (args: { where: { kind?: unknown } }) =>
             typeof args.where.kind === 'object' ? h.bound : [],
         },
-        editApproval: { findFirst: async () => h.latest },
+        // No editApproval here: a second read of the decisions would throw.
         channel: { findMany: async () => [] },
       },
     }));
@@ -339,16 +378,145 @@ describe('the page offers Withdraw on his draft or sent-back request only', () =
     expect(screen.queryByText(/This request was started on route/)).toBeNull();
     expect(h.formProps[1]).toMatchObject({ startedOnOtherRoute: false });
   });
+
+  // Code review 2026-11-10, finding 18: the salesman read only the LAST approver's
+  // words (the request's one reason line) and cannot open the approver's page.
+  // This page now says who sent it back, at which step and when, and lists the
+  // round's earlier reasons — all read from the request's decisions.
+  describe('finding 18: why it came back, from the decisions', () => {
+    const at = (min: number) => new Date(Date.UTC(2026, 10, 9, 6, min, 0)); // 10:mm in Oman
+    const d = (stepIndex: number, role: string, what: string, min: number, reason: string | null, by: string, cycle = 1) => ({
+      id: `d-${stepIndex}-${what}-${min}`,
+      cycle,
+      stepIndex,
+      role,
+      decision: what,
+      reason,
+      at: at(min),
+      actor: { fullName: by },
+    });
+    const request = (state: string, over: Record<string, unknown> = {}) => ({
+      id: 'e1',
+      process: 'CREATE',
+      target: 'CUSTOMER',
+      state,
+      cycle: 1,
+      submittedById: 'u1',
+      customerId: null,
+      decisionReason: null,
+      decisionCategory: null,
+      reviewedAt: null,
+      reviewedBy: null,
+      pendingRole: null,
+      requestedCreditLimit: null,
+      requestedPaymentTermDays: null,
+      fieldChanges: [],
+      customerDraft: null,
+      branchDrafts: [],
+      ...over,
+    });
+    const RELAY = [
+      d(0, 'SUPERVISOR', 'APPROVED', 10, null, 'Manager Muna'),
+      d(1, 'ACCOUNTANT', 'REJECTED', 20, 'CR number does not match the photo', 'Accountant Aisha'),
+      d(0, 'SUPERVISOR', 'REJECTED', 30, 'Please re-verify and resubmit', 'Manager Muna'),
+    ];
+    const open = async () => {
+      const { default: Page } = await import('@/app/(app)/customers/new/page');
+      render(await Page({ searchParams: Promise.resolve({ edit: 'e1' }) }));
+    };
+    const panel = () => screen.queryByText('Returned for correction:')?.closest('div') ?? null;
+
+    it('reads the decisions with the request, in one query, oldest first', async () => {
+      h.edit = request('NEEDS_CORRECTION');
+      await open();
+      expect(h.findUniqueArgs).toHaveLength(1);
+      expect(h.findUniqueArgs[0]!.include!.steps).toMatchObject({ orderBy: [{ at: 'asc' }, { id: 'asc' }] });
+    });
+
+    it.each(['NEEDS_CORRECTION', 'DRAFT'] as const)(
+      '%s after a relayed send-back: the latest reason, who sent it back at which step and when, then the earlier one',
+      async (state) => {
+        h.edit = request(state, { decisionReason: 'Please re-verify and resubmit', reviewedAt: at(30), reviewedBy: { fullName: 'Manager Muna' } });
+        h.steps = RELAY;
+        await open();
+        const box = panel()!;
+        // The label and the reason share one parent, as they did on the form's banner.
+        const label = screen.getByText('Returned for correction:');
+        expect(label.tagName).toBe('STRONG');
+        expect(label.parentElement!.textContent).toBe('Returned for correction: Please re-verify and resubmit');
+        expect(within(box).getByText('Sent back by Manager Muna at the Supervisor step, 09/11/2026, 10:30:00.')).toBeTruthy();
+        expect(within(box).getByText('Earlier in this round:')).toBeTruthy();
+        expect(within(box).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+          'Accountant step — Accountant Aisha, 09/11/2026, 10:20:00: CR number does not match the photo',
+        ]);
+        // Above the form, and the form's own one-line banner is never fed.
+        expect((h.formProps[0]!.initial as { decisionReason: unknown }).decisionReason).toBeNull();
+      }
+    );
+
+    it('one send-back in the round: no "Earlier" list', async () => {
+      h.edit = request('NEEDS_CORRECTION', { decisionReason: 'Phone number format is incorrect' });
+      h.steps = [d(0, 'SUPERVISOR', 'REJECTED', 30, 'Phone number format is incorrect', 'Manager Muna')];
+      await open();
+      expect(panel()!.textContent).toContain('Returned for correction: Phone number format is incorrect');
+      expect(screen.queryByText('Earlier in this round:')).toBeNull();
+      expect(screen.queryAllByRole('listitem')).toEqual([]);
+    });
+
+    it('a second round shows this round’s reasons only', async () => {
+      h.edit = request('NEEDS_CORRECTION', { cycle: 2, decisionReason: 'Second-round reason' });
+      h.steps = [...RELAY, d(0, 'SUPERVISOR', 'REJECTED', 50, 'Second-round reason', 'Manager Muna', 2)];
+      await open();
+      expect(panel()!.textContent).toContain('Returned for correction: Second-round reason');
+      expect(screen.queryByText('Earlier in this round:')).toBeNull();
+      expect(panel()!.textContent).not.toContain('CR number does not match the photo');
+    });
+
+    it('a request sent back before decisions were recorded: the reason and who, from the request itself', async () => {
+      h.edit = request('NEEDS_CORRECTION', {
+        decisionReason: 'The CR photo is unreadable.',
+        reviewedAt: at(30),
+        reviewedBy: { fullName: 'Manager Muna' },
+      });
+      await open();
+      expect(panel()!.textContent).toContain('Returned for correction: The CR photo is unreadable.');
+      expect(within(panel()!).getByText('Sent back by Manager Muna, 09/11/2026, 10:30:00.')).toBeTruthy();
+      // And with no reviewer on it, only when.
+      cleanup();
+      h.edit = request('DRAFT', { decisionReason: 'The CR photo is unreadable.', reviewedAt: at(30) });
+      await open();
+      expect(within(panel()!).getByText('Sent back 09/11/2026, 10:30:00.')).toBeTruthy();
+    });
+
+    it('nothing is shown on a fresh draft, a request in review, or one he withdrew — whatever decisionReason holds', async () => {
+      for (const row of [
+        request('DRAFT'),
+        // In review again: a step-back's reason an older build left on the row is not current.
+        request('SUBMITTED', { cycle: 2, decisionReason: 'An old reason from round 1.' }),
+        request('REJECTED', { decisionReason: 'Withdrawn by the salesman who sent it.', decisionCategory: 'withdrawn' }),
+      ]) {
+        cleanup();
+        h.formProps = [];
+        h.edit = row;
+        h.steps = (row.state === 'DRAFT' ? [] : RELAY) as never;
+        await open();
+        expect(panel(), String(row.state)).toBeNull();
+        expect(screen.queryByText(/Sent back by/)).toBeNull();
+        expect((h.formProps[0]!.initial as { decisionReason: unknown }).decisionReason).toBeNull();
+      }
+    });
+  });
 });
 
 describe('owner decisions 2026-10-11: his credit request at the signed-application step', () => {
   beforeEach(() => {
     vi.resetModules();
     h.withdrawProps = [];
+    h.findUniqueArgs = [];
     h.formProps = [];
     h.signedFormProps = [];
     h.bound = [];
-    h.latest = null;
+    h.steps = [];
     vi.doMock('@/lib/auth', () => ({ auth: async () => ({ user: { id: 'u1', role: 'SALESMAN', username: 'mct01' } }) }));
     vi.doMock('next/navigation', () => ({
       notFound: () => {
@@ -366,12 +534,18 @@ describe('owner decisions 2026-10-11: his credit request at the signed-applicati
             ownedRoute: { id: 'r1', code: 'MCT-01', isActive: true, region: { name: 'Muscat' } },
           }),
         },
-        customerEdit: { findUnique: async () => h.edit },
+        customerEdit: {
+          // The decisions come back with the row, as `include: { steps }` returns them.
+          findUnique: async (args: { include?: Record<string, unknown> }) => {
+            h.findUniqueArgs.push(args);
+            return h.edit ? { ...(h.edit as object), steps: h.steps } : null;
+          },
+        },
         attachment: {
           findMany: async (args: { where: { kind?: unknown } }) =>
             typeof args.where.kind === 'object' ? h.bound : [],
         },
-        editApproval: { findFirst: async () => h.latest },
+        // No editApproval here: a second read of the decisions would throw.
         channel: { findMany: async () => [] },
       },
     }));
@@ -408,6 +582,17 @@ describe('owner decisions 2026-10-11: his credit request at the signed-applicati
   });
 
   const STAGE = new Date('2026-10-11T06:00:00.000Z');
+  /** One EditApproval row of the request, as the page's trail selects it. */
+  const decision = (stepIndex: number, role: string, what: string, min: number, reason: string | null, cycle = 2) => ({
+    id: `d-${stepIndex}-${what}-${min}`,
+    cycle,
+    stepIndex,
+    role,
+    decision: what,
+    reason,
+    at: new Date(Date.UTC(2026, 9, 11, 5, min, 0)),
+    actor: { fullName: `${role} person` },
+  });
   const atStep = async (stepIndex: number, over: Record<string, unknown> = {}) => {
     const { resolveChain } = await import('@/lib/approval-chains');
     return {
@@ -439,7 +624,13 @@ describe('owner decisions 2026-10-11: his credit request at the signed-applicati
       { id: 'kept-1', kind: 'CREDIT_FORM' },
     ];
     // The Finance Manager's send-back of this round: the latest decision, of the step after his.
-    h.latest = { decision: 'REJECTED', stepIndex: 3, reason: 'The stamp is not readable.' };
+    h.steps = [
+      decision(1, 'SALES_DIRECTOR', 'APPROVED', 10, null),
+      decision(2, 'SALESMAN', 'FORM_UPLOADED', 20, null),
+      decision(3, 'FINANCE_MANAGER', 'REJECTED', 30, 'The stamp is not readable.'),
+      // A later decision of ANOTHER round is not this round's latest.
+      decision(0, 'SUPERVISOR', 'REJECTED', 40, 'from round 1', 1),
+    ];
     const { default: Page } = await import('@/app/(app)/customers/new/page');
     render(await Page({ searchParams: Promise.resolve({ edit: 'e1' }) }));
     expect(h.signedFormProps).toHaveLength(1);
@@ -459,6 +650,28 @@ describe('owner decisions 2026-10-11: his credit request at the signed-applicati
     });
     expect(h.withdrawProps).toEqual([{ editId: 'e1', isDraft: false, atSignedForm: true }]);
     expect((h.formProps[0]!.initial as { pendingRole: string }).pendingRole).toBe('Signed application');
+    // Code review 2026-11-10, finding 4: the pages he adds are kept on the phone
+    // under his own user id, and the request's form leaves that copy alone.
+    expect(p.sessionUserId).toBe('u1');
+    expect(h.formProps[0]).toMatchObject({ sessionUserId: 'u1', signedFormOpen: true });
+  });
+
+  it('finding 4: the form is told which save of the request it shows — the id of its last save, else its last-updated time', async () => {
+    const { default: Page } = await import('@/app/(app)/customers/new/page');
+    const versionOf = async (over: Record<string, unknown>) => {
+      h.formProps = [];
+      h.edit = await atStep(1, over);
+      cleanup();
+      render(await Page({ searchParams: Promise.resolve({ edit: 'e1' }) }));
+      return (h.formProps[0]!.initial as CreateFormInitial).version;
+    };
+    const sid = '3f1c1d2e-7a4b-4c5d-9e8f-0a1b2c3d4e5f';
+    const updatedAt = new Date('2026-11-10T06:00:00.000Z');
+    expect(await versionOf({ submissionId: sid, updatedAt })).toBe(sid);
+    expect(await versionOf({ submissionId: null, updatedAt })).toBe(`at:${updatedAt.getTime()}`);
+    expect(await versionOf({})).toBeNull();
+    // At another step the signed-application copy is not kept open.
+    expect(h.formProps[0]).toMatchObject({ signedFormOpen: false });
   });
 
   it("part B: the e-mail and each credit document's pages on file reach the form; a guarantee too; the signed pages are not a form document", async () => {
@@ -483,10 +696,49 @@ describe('owner decisions 2026-10-11: his credit request at the signed-applicati
   it('a reason is shown only when the latest decision of this round is the Finance Manager’s send-back', async () => {
     h.edit = await atStep(2);
     // The Sales Director's approval was the latest: no send-back to show (decisionReason is stale).
-    h.latest = { decision: 'APPROVED', stepIndex: 1, reason: null };
+    h.steps = [
+      decision(1, 'SALES_DIRECTOR', 'REJECTED', 5, 'An old reason from this round.'),
+      decision(0, 'SUPERVISOR', 'APPROVED', 10, null),
+      decision(1, 'SALES_DIRECTOR', 'APPROVED', 20, null),
+    ];
     const { default: Page } = await import('@/app/(app)/customers/new/page');
     render(await Page({ searchParams: Promise.resolve({ edit: 'e1' }) }));
     expect(h.signedFormProps[0]).toMatchObject({ sentBackReason: null });
+  });
+
+  it('finding 18: a Finance Manager relaying the GM — his reason on the card, the GM’s listed above it', async () => {
+    h.edit = await atStep(2);
+    h.steps = [
+      decision(2, 'SALESMAN', 'FORM_UPLOADED', 10, null),
+      decision(3, 'FINANCE_MANAGER', 'APPROVED', 20, null),
+      decision(4, 'GM', 'REJECTED', 30, 'Limit too high for a new shop.'),
+      decision(3, 'FINANCE_MANAGER', 'REJECTED', 40, 'Have the customer sign for OMR 300.'),
+    ];
+    const { default: Page } = await import('@/app/(app)/customers/new/page');
+    render(await Page({ searchParams: Promise.resolve({ edit: 'e1' }) }));
+    expect(h.signedFormProps[0]).toMatchObject({ sentBackReason: 'Have the customer sign for OMR 300.' });
+    expect(screen.getByText('Before that, in this round:')).toBeTruthy();
+    expect(screen.getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      'GM step — GM person, 11/10/2026, 09:30:00: Limit too high for a new shop.',
+    ]);
+    // It is not "returned for correction": only the signed form is redone.
+    expect(screen.queryByText('Returned for correction:')).toBeNull();
+  });
+
+  it('finding 18: his own send-back alone, or none: no "Before that" list', async () => {
+    h.edit = await atStep(2);
+    h.steps = [decision(3, 'FINANCE_MANAGER', 'REJECTED', 30, 'The stamp is not readable.')];
+    const { default: Page } = await import('@/app/(app)/customers/new/page');
+    render(await Page({ searchParams: Promise.resolve({ edit: 'e1' }) }));
+    expect(h.signedFormProps[0]).toMatchObject({ sentBackReason: 'The stamp is not readable.' });
+    expect(screen.queryByText('Before that, in this round:')).toBeNull();
+    cleanup();
+    h.signedFormProps = [];
+    // First time at the step: the Sales Director's approval is the latest decision.
+    h.steps = [decision(4, 'GM', 'REJECTED', 5, 'from an earlier pass'), decision(1, 'SALES_DIRECTOR', 'APPROVED', 30, null)];
+    render(await Page({ searchParams: Promise.resolve({ edit: 'e1' }) }));
+    expect(h.signedFormProps[0]).toMatchObject({ sentBackReason: null });
+    expect(screen.queryByText('Before that, in this round:')).toBeNull();
   });
 
   it('at another step in review: no upload, no Withdraw', async () => {

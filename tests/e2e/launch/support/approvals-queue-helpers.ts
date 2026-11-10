@@ -245,7 +245,8 @@ export async function seedCreateRequest(
 /**
  * A close-shop ("Mark closed") or reactivation request, as markBranchClosedCore /
  * requestReactivationCore write it: target BRANCH, the status flip as its only
- * change, the salesman's reason in decisionReason, pendingRole SUPERVISOR (close)
+ * change, the salesman's reason in requestReason (and, while the rollback bridge
+ * is on, copied to decisionReason — finding 18), pendingRole SUPERVISOR (close)
  * or MANAGER (reactivation) on the SLA clock, and the evidence photo — when R2 is
  * configured — on the branch as an extra photo, captured by the salesman.
  */
@@ -293,6 +294,7 @@ export async function seedBranchRequest(
         submittedById: w.user(o.submitter).id,
         submittedAt,
         isReactivation: !close,
+        requestReason: reason,
         decisionReason: reason,
         pendingRole: role,
         stageEnteredAt,

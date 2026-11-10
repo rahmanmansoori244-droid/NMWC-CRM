@@ -1,8 +1,14 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { Suspense, lazy, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { promoteCustomerBatchAction } from '@/services/imports';
+
+// Code review 2026-11-10, finding 1: the "Before you promote" dialog. Loaded when
+// it is first opened: a resumed or finished batch never needs it.
+const PromoteReviewDialog = lazy(() =>
+  import('./PromoteReviewDialog').then((m) => ({ default: m.PromoteReviewDialog }))
+);
 
 /**
  * RK-3: a full customer master is far too large to promote in one request (the
@@ -21,14 +27,19 @@ export function PromoteButton({
   remainingCount,
   resume = false,
   leaseHeld = false,
+  canSetOverwrite = false,
 }: {
   batchId: string;
   remainingCount: number;
   resume?: boolean;
   leaseHeld?: boolean;
+  /** The batch's overwrite option may be changed now: ready to promote, nobody promoting it. */
+  canSetOverwrite?: boolean;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
+  // A fresh promote is reviewed first (PromoteReviewDialog); a resume goes straight on.
+  const [reviewing, setReviewing] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [tone, setTone] = useState<'ok' | 'warn'>('ok');
   const [live, setLive] = useState<{ promoted: number; failed: number; left: number } | null>(null);
@@ -39,14 +50,21 @@ export function PromoteButton({
   }
 
   function onClick() {
-    if (
-      !resume &&
-      !confirm(
-        `Promote ${remainingCount} clean rows to live customer master? This creates customer + branch records.`
-      )
-    )
+    // Code review 2026-11-10, finding 1: a fresh promote used to ask one native
+    // question — "This creates customer + branch records" — which said nothing of
+    // what the sheet would do to customers already in the CRM. It now opens the
+    // review: what is created, refreshed, kept (or, with the batch's option on,
+    // replaced), and which credit cells are not applied. Resume and Finish carry
+    // on a load the Steward already reviewed.
+    if (!resume) {
+      setReviewing(true);
       return;
+    }
+    run();
+  }
 
+  function run() {
+    setReviewing(false);
     start(async () => {
       // A fresh run starts from a clean slate — otherwise a resumed promote shows
       // the previous run's totals and its stale warning for the whole first pass.
@@ -54,6 +72,10 @@ export function PromoteButton({
       setLive(null);
       let promoted = 0;
       let failed = 0;
+      // Finding 1: rows that kept a CRM value the sheet differed from, and rows
+      // whose credit cells were not applied — each carries a note on the batch page.
+      let kept = 0;
+      let creditNotApplied = 0;
       // Proves to the server that this run still owns the batch, so it can continue
       // straight into its next slice instead of waiting out its own lease.
       let token = '';
@@ -76,6 +98,8 @@ export function PromoteButton({
           }
           promoted += res.data.promoted;
           failed += res.data.failed;
+          kept += res.data.notes?.kept ?? 0;
+          creditNotApplied += res.data.notes?.creditNotApplied ?? 0;
           token = res.data.leaseToken ?? '';
           setLive({ promoted, failed, left: res.data.remaining });
 
@@ -83,8 +107,16 @@ export function PromoteButton({
             // "in this run" because a RESUMED batch promoted the rest of its rows in
             // an earlier run — the batch total is on the page, not in this counter.
             // `failed` counts CUSTOMERS while `promoted` counts ROWS, so name both.
+            const noted = [
+              ...(kept ? [`${kept.toLocaleString('en-US')} row(s) kept the CRM value where the sheet differed`] : []),
+              ...(creditNotApplied
+                ? [`${creditNotApplied.toLocaleString('en-US')} row(s) carried credit cells that were not applied`]
+                : []),
+            ];
             say(
-              `✓ Done — ${promoted.toLocaleString('en-US')} rows promoted in this run${failed ? ` · ${failed} customer(s) failed` : ''}.`
+              `✓ Done — ${promoted.toLocaleString('en-US')} rows promoted in this run${failed ? ` · ${failed} customer(s) failed` : ''}.${
+                noted.length > 0 ? ` ${noted.join('; ')} — see "Loaded with a warning".` : ''
+              }`
             );
             router.refresh();
             return;
@@ -162,6 +194,17 @@ export function PromoteButton({
       >
         {label}
       </button>
+      {reviewing && (
+        <Suspense fallback={null}>
+          <PromoteReviewDialog
+            batchId={batchId}
+            remainingCount={remainingCount}
+            canSetOverwrite={canSetOverwrite}
+            onCancel={() => setReviewing(false)}
+            onPromote={run}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

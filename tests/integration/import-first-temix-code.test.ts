@@ -34,7 +34,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { randomUUID } from 'node:crypto';
 import ExcelJS from 'exceljs';
 import { purgeAuditLog, purgeCustomerEdits } from '../support/audit';
-import { promoteFully } from '../support/promote';
+import { overwriteOn, promoteFully } from '../support/promote';
 
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 
@@ -259,6 +259,11 @@ describe.skipIf(!ENABLED)('owner decision 2026-10-08: the first Temix code of a 
     expect(staged.map((r) => r.state)).toEqual(['CLEAN', 'CLEAN', 'CLEAN']);
     expect((staged[0]!.parsed as { temixCode: string }).temixCode).toBe(TEMIX_A);
 
+    // Code review 2026-11-10, finding 1: "the full lane wrote the sheet" is how
+    // this case tells S's lane from A's, and the full lane replaces a name or an
+    // address on record only with the batch's overwrite option on. A's lane
+    // writes its first Temix code and nothing else with the option on or off.
+    await overwriteOn(batchId);
     const totals = await promoteFully(imports, batchId);
     expect(totals).toMatchObject({ promoted: 2, failed: 1 });
     const rows = await prisma.importRow.findMany({ where: { batchId }, orderBy: { rowNumber: 'asc' } });
@@ -329,6 +334,8 @@ describe.skipIf(!ENABLED)('owner decision 2026-10-08: the first Temix code of a 
         temix_code: `TXQ${tag}`,
       },
     ]);
+    // Finding 1: as above — the sheet's name and address land only with the option on.
+    await overwriteOn(batchId);
     expect(await promoteFully(imports, batchId)).toMatchObject({ promoted: 2, failed: 0 });
     for (const [c, name, address] of [
       [M, 'ZZ Sheet M', 'Way 4, Sheet'],

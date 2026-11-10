@@ -119,6 +119,16 @@ describe('a row, in words', () => {
     ]);
   });
 
+  // Code review 2026-11-10, finding 1 (services/imports.ts writeLaneNotes).
+  it('a CRM value the import kept, and a credit cell it did not apply, each have their own label', () => {
+    expect(
+      issueLines([
+        { field: '_kept', message: 'customer: the name in this row differs from the record and was kept — an import fills blank CRM fields only' },
+        { field: '_credit', message: "the credit_limit in this row was not applied — the row's payment_terms is not CREDIT" },
+      ]).map((l) => l.label)
+    ).toEqual(['CRM value kept', 'Credit not applied']);
+  });
+
   it('account-master issues name the sheet and row; anything else is shown, not dropped', () => {
     expect(issueLines([{ sheet: 'Users', row: 5, message: 'new user needs a password' }])).toEqual([
       { label: 'Users sheet, row 5', message: 'new user needs a password' },

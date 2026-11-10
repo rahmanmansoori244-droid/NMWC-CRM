@@ -81,6 +81,7 @@ import {
   IN_PLACE_MS,
   MAX_IMPORT_BYTES,
   TEMIX_QUEUE_WHERE,
+  CUSTOMER_HEADERS,
   XLSX_MIME,
   accountWorkbook,
   customerWorkbook,
@@ -105,7 +106,10 @@ import {
 
 // ── shared page helpers ──────────────────────────────────────────────────────
 
-/** Native confirm() / alert() are accepted (Promote, route toggles, merges, mark distinct). */
+/**
+ * Native confirm() / alert() are accepted (route toggles, merges, mark distinct). Promote no longer asks
+ * one: a fresh promote opens the "Before you promote" review (promoteThroughReview, below).
+ */
 function acceptDialogs(page: Page): void {
   page.on('dialog', (d) => void d.accept().catch(() => undefined));
 }
@@ -180,6 +184,48 @@ function workItem(page: Page, batchId: string): Locator {
   return page.locator(`a[href="/import/${batchId}"]`);
 }
 
+/** The name of the batch's one option, as the review, the banner and the audit row word it. */
+const OVERWRITE_OPTION = 'Overwrite CRM fields from this sheet';
+
+/**
+ * Starts a FRESH promote of `n` clean rows through the "Before you promote" review (code review
+ * 2026-11-10, finding 1): the header button opens the review instead of a native confirm(); the review
+ * counts what this sheet would do against the CRM as it is; "Promote n clean rows now" starts the load.
+ * (Resume and Finish go straight on, as before.)
+ *
+ * `overwrite`: a reason — switches the batch's "Overwrite CRM fields from this sheet" option on in the
+ * review first. Without it a customer or shop that already exists keeps its CRM values and its
+ * open/closed status, whatever the sheet says.
+ *
+ * Returns the review, already closed by the click, so a caller that needs a line of it reads the line
+ * with `review` BEFORE promoting: pass `before`.
+ */
+async function promoteThroughReview(
+  page: Page,
+  n: number,
+  opts: { overwrite?: string; before?: (review: Locator) => Promise<void> } = {}
+): Promise<void> {
+  await page.getByRole('button', { name: `Promote ${n} clean rows`, exact: true }).click();
+  const review = page.getByRole('dialog', { name: 'Before you promote' });
+  await expect(review).toBeVisible();
+  // The check has answered: its first line counts this batch's clean rows.
+  await expect(review.getByText(new RegExp(`^Checked ${n} clean rows? for \\d+ customers? against the CRM as it is now\\.$`))).toBeVisible({
+    timeout: 90_000,
+  });
+  const go = review.getByRole('button', { name: `Promote ${n} clean rows now`, exact: true });
+  await expect(go).toBeEnabled();
+  if (opts.overwrite) {
+    await expect(review.getByText(`${OVERWRITE_OPTION}: off`)).toBeVisible();
+    await review.getByLabel('Why is this sheet correcting CRM fields? (10+ characters)').fill(opts.overwrite);
+    await review.getByRole('button', { name: 'Switch on overwrite', exact: true }).click();
+    await expect(review.getByText(`${OVERWRITE_OPTION}: ON`)).toBeVisible({ timeout: 90_000 });
+    await expect(go).toBeEnabled({ timeout: 90_000 });
+  }
+  if (opts.before) await opts.before(review);
+  await go.click();
+  await expect(review).toHaveCount(0);
+}
+
 /**
  * Clicks a download control on /export and returns the file — or fails at once
  * with the words the page showed instead (a refusal is shown in the form's
@@ -231,7 +277,8 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
   let accountCreated = false;
 
   // Customer batches and their customer codes.
-  const code = { NEWA: '', NEWB: '', SHARE: '', BADPT: '', BADDAY: '', NEWC: '', NEWD: '', NEWE: '', NEWF: '' };
+  // NEWG: the headings test (code review 2026-11-10, finding 1); staged, never promoted.
+  const code = { NEWA: '', NEWB: '', SHARE: '', BADPT: '', BADDAY: '', NEWC: '', NEWD: '', NEWE: '', NEWF: '', NEWG: '' };
   const phones: string[] = [];
   let b1 = ''; // stage → promote → fix
   let b1Promoted = false;
@@ -651,7 +698,13 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     const page = await openAs(browser, stw, `/import/${b1}`);
     const running = seeText(page, 'Promoting…');
     const done = seeText(page, '✓ Done — 3 rows promoted in this run.');
-    await page.getByRole('button', { name: 'Promote 3 clean rows' }).click();
+    // Finding 1: three new customers — the review says so, and has nothing to keep or replace.
+    await promoteThroughReview(page, 3, {
+      before: async (review) => {
+        await expect(review.getByText('New: 2 customer(s) and 3 shop(s) will be created (0 of the shops on customers already in the CRM).')).toBeVisible();
+        await expect(review.getByText(/^CRM fields (kept|REPLACED)/)).toHaveCount(0);
+      },
+    });
     await running;
     await done;
     b1Promoted = true;
@@ -798,7 +851,7 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     const live = await liveCustomerPromotes();
     notRunHere(live > 0, `another customer import holds a live promote lease (${live})`);
     const done = seeText(page, '✓ Done — 2 rows promoted in this run.');
-    await page.getByRole('button', { name: 'Promote 2 clean rows' }).click();
+    await promoteThroughReview(page, 2);
     await done;
     await page.reload();
     await expect(pageSubtitle(page)).toHaveText(/· PROMOTED$/);
@@ -848,7 +901,14 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     notRunHere(live > 0, `another customer import holds a live promote lease (${live})`);
     await page.goto(`/import/${b2}`);
     const done = seeText(page, '✓ Done — 1 rows promoted in this run · 1 customer(s) failed.');
-    await page.getByRole('button', { name: 'Promote 2 clean rows' }).click();
+    // Finding 1: the review already says the archived customer's row is expected to be rejected.
+    await promoteThroughReview(page, 2, {
+      before: async (review) => {
+        await expect(
+          review.getByText('Expected to be rejected at Promote: 1 row(s) of 1 customer(s) (the customer is archived in the CRM: 1). Each row will say why.')
+        ).toBeVisible();
+      },
+    });
     await done;
     const newc = await db.customer.findUnique({ where: { nmwcCode: code.NEWC }, select: { id: true } });
     if (newc) w.adopt.customer(newc.id);
@@ -940,13 +1000,35 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
       notRunHere(live > 0, `another customer import holds a live promote lease (${live})`);
       await page.goto(`/import/${id}`);
       const done = seeText(page, '✓ Done — 1 rows promoted in this run.');
-      await page.getByRole('button', { name: 'Promote 1 clean rows' }).click();
+      // Code review 2026-11-10, finding 1: a sheet opens or closes a shop that already exists only
+      // with the batch's overwrite option on — by default the status on record is the CRM's, and is
+      // kept (the test after the next one). So each of these two loads switches it on, with a reason,
+      // and the review says which way the shop will go before anything is promoted.
+      await promoteThroughReview(page, 1, {
+        overwrite: `E2E ${w.sfx}: this file sets the shop ${status}`,
+        before: async (review) => {
+          await expect(
+            review.getByText(
+              status === 'CLOSED'
+                ? /0 closed shop\(s\) will be reopened and 1 open shop\(s\) closed\.$/
+                : /1 closed shop\(s\) will be reopened and 0 open shop\(s\) closed\.$/
+            )
+          ).toBeVisible();
+        },
+      });
       await done;
       const now = await db.customer.findUniqueOrThrow({
         where: { id: stc.id },
         select: { status: true, branches: { select: { status: true } } },
       });
       expect(now, `after the ${status} file`).toEqual({ status, branches: [{ status }] });
+      // One deliberate load: the option is off again once the batch has finished, and the switch is audited.
+      expect(await db.importBatch.findUniqueOrThrow({ where: { id }, select: { status: true, overwriteCrmFields: true } })).toEqual({
+        status: 'PROMOTED',
+        overwriteCrmFields: false,
+      });
+      const switched = (await auditFor({ entityId: id, action: 'UPDATE' })).filter((a) => a.entityType === 'ImportBatch');
+      expect(switched.map((a) => a.reason)).toEqual([`${OVERWRITE_OPTION} switched ON: E2E ${w.sfx}: this file sets the shop ${status}`]);
     }
     // Each move of the customer is audited on the customer, from the status before the load.
     const close = await auditFor({ entityId: stc.id, action: 'CLOSE' });
@@ -1029,6 +1111,167 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     expect(await db.importBatch.count({ where: { filename: { in: names } } }), 'no batch for a refused file').toBe(0);
     await resetStewardLimits(stw);
   });
+
+  // ── Code review 2026-11-10, finding 1 ──────────────────────────────────────
+  // A re-load replaced what salesmen had collected: for a customer with no Temix code on record, and for
+  // every customer when the sheet had no column spelt exactly temix_code, the sheet's name, phone, address,
+  // visit day and status were written over the record, and the credit columns dropped, with nothing said.
+
+  test('headings: a differently spelt heading is read, an unread one is listed, and a sheet with no temix_code column is refused for a Temix-linked customer', async ({ browser }) => {
+    test.setTimeout(300_000);
+    const hold = w.customer('HOLD'); // a fixture customer: it has a Temix code on record
+    expect((await db.customer.findUniqueOrThrow({ where: { id: hold.id }, select: { temixCode: true } })).temixCode, 'the fixture is linked to Temix').toBeTruthy();
+    await resetStewardLimits(stw);
+    const page = await openAs(browser, stw, '/import');
+
+    // 1. "Temix code" is the temix_code column; "Helper column" is not a column the import reads.
+    const headers = [...CUSTOMER_HEADERS.filter((h) => h !== 'temix_code'), 'Temix code', 'Helper column'];
+    const temix = `T${w.SFX}G`;
+    const read = await upload(page, 'Customer master', {
+      name: `${w.sfx}-customers-headings.xlsx`,
+      buffer: await customerWorkbook([{ ...row(code.NEWG, w.name('Imported NEWG'), { phone: phones[8] }), 'Temix code': temix.toLowerCase(), 'Helper column': 'x' }], headers),
+    });
+    await expect(read).toHaveText(/^Uploaded — 1 clean · 0 quarantined/);
+    const NOT_READ =
+      'Not read: 1 column in this sheet is not used by the import and was ignored — Helper column. If it should have been read, check its spelling against the template.';
+    await expect(page.getByTestId('upload-not-read')).toHaveText(NOT_READ);
+    const id = await batchIdOf(read);
+    w.adopt.importBatch(id);
+    const [staged] = await db.importRow.findMany({ where: { batchId: id }, select: { state: true, parsed: true } });
+    expect(staged!.state).toBe('CLEAN');
+    expect(staged!.parsed).toMatchObject({ custCode: code.NEWG, temixCode: temix });
+    // The batch page keeps the list.
+    await page.goto(`/import/${id}`);
+    await expect(page.getByText(NOT_READ)).toBeVisible();
+    // Left staged, never promoted: the batch is removed with the world.
+
+    // 2. No temix_code column at all, and the sheet names a customer linked to Temix: refused, nothing staged.
+    await resetStewardLimits(stw);
+    const refusedName = `${w.sfx}-customers-no-temix-column.xlsx`;
+    const refused = await upload(page, 'Customer master', {
+      name: refusedName,
+      buffer: await customerWorkbook(
+        [row(hold.code, hold.legalName, { branch_code: hold.branch.code, payment_terms: null, day_of_visit: null })],
+        CUSTOMER_HEADERS.filter((h) => h !== 'temix_code')
+      ),
+    });
+    await expect(refused).toHaveAttribute('role', 'alert');
+    await expect(refused).toHaveText(
+      `This sheet has no temix_code column, and 1 of its customers already has a Temix code in the CRM (for example ${hold.code}). Nothing was uploaded. Without that column the import cannot tell which rows are a Temix refresh, and their credit limit and credit days would be ignored. Add a column headed temix_code holding each customer's Temix code (it is on the customer page; leave the cell blank for a customer not yet in Temix) and upload again. A Temix extract is not loaded through this screen.`
+    );
+    expect(await db.importBatch.count({ where: { filename: refusedName } }), 'no batch for the refused sheet').toBe(0);
+    await resetStewardLimits(stw);
+  });
+
+  /** NEWB's one shop, re-loaded with another address, another visit day and CLOSED. */
+  const reloadOfNewb = () =>
+    row(code.NEWB, w.name('Imported NEWB'), {
+      phone: phones[1],
+      address: 'Way 9, An Older Address, Muscat',
+      day_of_visit: OMAN_TODAY === 'MON' ? 'TUE' : 'MON',
+      customer_status: 'CLOSED',
+    });
+  const newbShop = () =>
+    db.branch.findUniqueOrThrow({
+      where: { branchCode: `${code.NEWB}-01` },
+      select: { id: true, address: true, dayOfVisit: true, status: true, version: true, customer: { select: { id: true, status: true } } },
+    });
+
+  test('a re-load of a customer already in the CRM keeps its CRM values: the review says so, the shop is unchanged, and the row reads "CRM value kept"', async ({ browser }) => {
+    test.skip(!b1Promoted, 'needs the customers promoted earlier');
+    test.setTimeout(300_000);
+    const before = await newbShop();
+    expect(before).toMatchObject({ address: ADDRESS, dayOfVisit: OMAN_TODAY, status: 'ACTIVE' });
+    await resetStewardLimits(stw);
+    const page = await openAs(browser, stw, '/import');
+    const msg = await upload(page, 'Customer master', { name: `${w.sfx}-customers-reload.xlsx`, buffer: await customerWorkbook([reloadOfNewb()]) });
+    await expect(msg).toHaveText(/^Uploaded — 1 clean · 0 quarantined/);
+    const id = await batchIdOf(msg);
+    w.adopt.importBatch(id);
+    const live = await liveCustomerPromotes();
+    notRunHere(live > 0, `another customer import holds a live promote lease (${live})`);
+    await page.goto(`/import/${id}`);
+    const done = seeText(page, '✓ Done — 1 rows promoted in this run. 1 row(s) kept the CRM value where the sheet differed — see "Loaded with a warning".');
+    await promoteThroughReview(page, 1, {
+      before: async (review) => {
+        await expect(
+          review.getByText(
+            'CRM fields kept: on 0 customer(s) and 1 shop(s) the sheet differs from the record. Their values stay as they are on record (address 1, status 1, visit day 1). The sheet would have reopened 0 closed shop(s) and closed 1 open shop(s); they stay as they are.'
+          )
+        ).toBeVisible();
+        await expect(review.getByText(`${OVERWRITE_OPTION}: off`)).toBeVisible();
+      },
+    });
+    await done;
+
+    // Nothing of the shop or its customer changed, and nothing was audited for it.
+    expect(await newbShop()).toEqual(before);
+    expect((await auditFor({ entityId: before.id })).filter((a) => a.reason?.startsWith(`import ${id} `))).toEqual([]);
+    expect(await db.importBatch.findUniqueOrThrow({ where: { id }, select: { status: true, overwriteCrmFields: true, overwriteCrmFieldsAt: true } })).toEqual({
+      status: 'PROMOTED',
+      overwriteCrmFields: false,
+      overwriteCrmFieldsAt: null,
+    });
+    // The row says what was kept — fields, not values — under "Loaded with a warning".
+    await page.goto(`/import/${id}?show=warnings`);
+    await expect(batchRow(page, '#2')).toContainText(
+      `CRM value kept: shop ${code.NEWB}-01: the address, visit day and status in this row differ from the record and were kept — an import fills blank CRM fields only, and does not open or close a shop`
+    );
+    await expect(page.getByText(`${OVERWRITE_OPTION} is ON`)).toHaveCount(0);
+  });
+
+  test('the same sheet with "Overwrite CRM fields from this sheet" switched on replaces them: banner, review, the shop, the audit rows, and the option off again', async ({ browser }) => {
+    test.skip(!b1Promoted, 'needs the customers promoted earlier');
+    test.setTimeout(300_000);
+    const before = await newbShop();
+    const sheet = reloadOfNewb();
+    await resetStewardLimits(stw);
+    const page = await openAs(browser, stw, '/import');
+    const msg = await upload(page, 'Customer master', { name: `${w.sfx}-customers-overwrite.xlsx`, buffer: await customerWorkbook([sheet]) });
+    await expect(msg).toHaveText(/^Uploaded — 1 clean · 0 quarantined/);
+    const id = await batchIdOf(msg);
+    w.adopt.importBatch(id);
+    const live = await liveCustomerPromotes();
+    notRunHere(live > 0, `another customer import holds a live promote lease (${live})`);
+    await page.goto(`/import/${id}`);
+    const reason = `E2E ${w.sfx}: a deliberate bulk correction of this shop`;
+    const done = seeText(page, '✓ Done — 1 rows promoted in this run.');
+    await promoteThroughReview(page, 1, {
+      overwrite: reason,
+      before: async (review) => {
+        // The same counts, now replaced — in red — and the page behind carries the banner.
+        await expect(
+          review.getByText(
+            "CRM fields REPLACED: on 0 customer(s) and 1 shop(s) the values on record will be replaced by this sheet's (address 1, status 1, visit day 1). 0 closed shop(s) will be reopened and 1 open shop(s) closed."
+          )
+        ).toBeVisible();
+        await expect(review.getByText(/^CRM fields kept/)).toHaveCount(0);
+        await expect(page.getByText(`${OVERWRITE_OPTION} is ON for this batch`)).toBeVisible();
+        expect(await db.importBatch.findUniqueOrThrow({ where: { id }, select: { overwriteCrmFields: true } })).toEqual({ overwriteCrmFields: true });
+      },
+    });
+    await done;
+
+    const after = await newbShop();
+    expect(after).toMatchObject({ address: sheet.address, dayOfVisit: sheet.day_of_visit, status: 'CLOSED', version: before.version + 1 });
+    // Its last open shop closed: the customer follows (owner decision 7).
+    expect(after.customer.status).toBe('CLOSED');
+    // The switch, and every value it replaced, are in the audit log.
+    const switched = (await auditFor({ entityId: id, action: 'UPDATE' })).filter((a) => a.entityType === 'ImportBatch');
+    expect(switched.map((a) => [a.actorId, a.reason])).toEqual([[stw.id, `${OVERWRITE_OPTION} switched ON: ${reason}`]]);
+    const [shopRow] = (await auditFor({ entityId: before.id, action: 'UPDATE' })).filter((a) => a.reason?.startsWith(`import ${id} `));
+    expect(shopRow!.before).toMatchObject({ address: before.address, dayOfVisit: before.dayOfVisit, status: 'ACTIVE' });
+    expect(shopRow!.after).toMatchObject({ address: sheet.address, status: 'CLOSED', lane: 'full', overwriteCrmFields: true });
+    // One deliberate load: off again, and the batch page keeps the record that it was used.
+    const batch = await db.importBatch.findUniqueOrThrow({ where: { id }, select: { status: true, overwriteCrmFields: true, overwriteCrmFieldsAt: true } });
+    expect(batch).toMatchObject({ status: 'PROMOTED', overwriteCrmFields: false });
+    expect(batch.overwriteCrmFieldsAt).not.toBeNull();
+    await page.reload();
+    await expect(page.getByText(`${OVERWRITE_OPTION} is ON for this batch`)).toHaveCount(0);
+    await expect(page.getByText(/Overwrite CRM fields from this sheet was switched on for this batch on .+ and is off again\./)).toBeVisible();
+    // A row that replaced a value carries no warning: it loaded as it always did.
+    await expect(page.getByRole('link', { name: /^Loaded with a warning\s*0$/ })).toBeVisible();
+  });
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1108,7 +1351,7 @@ test.describe('back office: only one customer promote runs at a time', { tag: ['
       await expect(page.getByText('Another promote is running — wait for it to finish.')).toBeVisible();
 
       await page.goto(`/import/${second}`);
-      await page.getByRole('button', { name: 'Promote 1 clean rows' }).click();
+      await promoteThroughReview(page, 1);
       await expect(
         page.getByText(
           `Another customer import ("${files[0]}") is being promoted right now. Only one may run at a time — wait for it to finish, then resume this one.`
@@ -1612,7 +1855,7 @@ test.describe('back office: Temix upload batches', { tag: ['@exclusive'] }, () =
     world.adopt.importBatch(id);
     await page.goto(`/import/${id}`);
     const done = seeText(page, /✓ Done — \d+ rows promoted in this run/);
-    await page.getByRole('button', { name: 'Promote 2 clean rows' }).click();
+    await promoteThroughReview(page, 2);
     await done;
     refreshed = true;
 
@@ -2490,6 +2733,8 @@ test.describe('back office: dashboards and service status', { tag: ['@desktop'] 
         reviewedAt: new Date(now - hour),
         fieldChanges: [{ field: `branch.${w.branch('CLOS').id}.status`, before: 'ACTIVE', after: 'CLOSED' }],
         attachmentChanges: [],
+        // As the submit writes it (finding 18): his reason in its own column, and the rollback bridge's copy.
+        requestReason: 'The shop closed for good',
         decisionReason: 'The shop closed for good',
       },
     });

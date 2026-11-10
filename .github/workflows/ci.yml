@@ -266,6 +266,13 @@ jobs:
           # Gap 18: where a request was raised, against the dated history
           # (request-scope-at-submit).
           RUN_REQUEST_SCOPE: '1'
+          # Code review 2026-11-10, finding 18: a request's own reason and each
+          # decision's reason kept apart, through the real services
+          # (request-reasons), and the migration's back-fill against rows shaped
+          # as the older builds left them, in a scratch database it creates and
+          # drops on this job's own Postgres (request-reason-migration).
+          RUN_REQUEST_REASONS: '1'
+          RUN_REQUEST_REASON_MIGRATION: '1'
           # Owner decisions 2026-10-25: one live customer per Temix code, kept by
           # the database and named on refusal; shared CR numbers flagged
           # (temix-code-unique).

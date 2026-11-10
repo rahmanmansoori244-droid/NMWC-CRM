@@ -324,6 +324,10 @@ describe('a confirm that lands', () => {
       escalationLevel: 0,
       slaBreachedAt: null,
       lastEscalatedAt: null,
+      // Finding 18: his upload answers a Finance Manager's send-back, so the
+      // reason of that send-back leaves the row (it stays on the decision row).
+      decisionReason: null,
+      decisionCategory: null,
     });
 
     // His pages claimed by this request; the pages of an earlier upload he dropped, released.

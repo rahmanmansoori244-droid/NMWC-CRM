@@ -38,7 +38,7 @@ import ExcelJS from 'exceljs';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
 import { editPayload } from '../support/edit-payload';
-import { promoteFully } from '../support/promote';
+import { overwriteOn, promoteFully } from '../support/promote';
 
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 120_000 });
 const ENABLED = process.env.RUN_CUSTOMER_STATUS === '1' && !!process.env.DATABASE_URL;
@@ -348,6 +348,11 @@ describe.skipIf(!ENABLED)('owner decision 7: a customer’s status follows its s
     batchIds.push(batchId);
     const [row] = await prisma.importRow.findMany({ where: { batchId }, orderBy: { rowNumber: 'asc' } });
     expect(await fixes.correctImportRowAction(form({ rowId: row!.id, cells: JSON.stringify({ day_of_visit: 'MON' }) }))).toMatchObject({ ok: true });
+    // Code review 2026-11-10, finding 1: a sheet closes a shop that already exists
+    // only with the batch's "Overwrite CRM fields from this sheet" option on (by
+    // default the status on record is the CRM's, and is kept). What this case
+    // proves — that the customer then follows its shop — is unchanged.
+    await overwriteOn(batchId);
     await promoteFully(imports, batchId);
     const after = await prisma.customer.findUniqueOrThrow({ where: { id: cust.id }, include: { branches: true } });
     expect(after.branches.map((b) => [b.status, b.dayOfVisit])).toEqual([['CLOSED', 'MON']]);
@@ -421,6 +426,8 @@ describe.skipIf(!ENABLED)('owner decision 7: a customer’s status follows its s
     expect(res.ok, JSON.stringify(res)).toBe(true);
     const batchId = (res as { ok: true; data: { batchId: string } }).data.batchId;
     batchIds.push(batchId);
+    // Finding 1: as above — the sheet closes shops that exist only with the option on.
+    await overwriteOn(batchId);
     await promoteFully(imports, batchId);
     const after = await prisma.customer.findUniqueOrThrow({ where: { id: c.id }, include: { branches: true } });
     expect(after.branches.map((b) => b.status)).toEqual(['CLOSED', 'CLOSED']);

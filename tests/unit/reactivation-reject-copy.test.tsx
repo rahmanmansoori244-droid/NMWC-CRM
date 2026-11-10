@@ -50,12 +50,17 @@ vi.mock('@/services/reactivations', () => ({
 
 afterEach(cleanup);
 
-function reactivation(id: string, attachmentChanges: unknown[]) {
+function reactivation(id: string, attachmentChanges: unknown[], over: Record<string, unknown> = {}) {
   return {
     id,
+    // What the queue's own query selects: a pending reactivation.
+    target: 'BRANCH',
+    state: 'SUBMITTED',
+    isReactivation: true,
     branchId: B1,
     submittedById: SALES,
     decisionReason: 'Open again.',
+    ...over,
     attachmentChanges,
     submittedBy: { fullName: 'Salesman One' },
     customer: { id: 'c1', legalName: `Shop ${id}`, nmwcCode: 'NMWC-1' },
@@ -98,5 +103,32 @@ describe('every reactivation refusal names the button that rejects one', () => {
     ]) {
       expect(m, m).toMatch(names);
     }
+  });
+});
+
+// Code review 2026-11-10, finding 18: the Manager reads the salesman's own reason
+// from the column that is only his (requestReason); a request the build before
+// this one sent has it in decisionReason, and is read the same way.
+describe('finding 18: the reason on a reactivation card is the salesman’s own', () => {
+  const EVIDENCE = [{ kind: 'FREE', attachmentId: 'p', action: 'EVIDENCE' }];
+  const reasonOf = (li: HTMLElement) => within(li).getByText('Reason:').parentElement!.textContent;
+
+  it('from requestReason; from decisionReason for a request an older build sent; a dash when there is none', async () => {
+    h.items = [
+      // This build's row: both columns (the second is the rollback bridge's copy).
+      reactivation('new', EVIDENCE, { requestReason: 'Reopened under a new owner.', decisionReason: 'Reopened under a new owner.' }),
+      // His column is the one read, whatever sits beside it.
+      reactivation('own', EVIDENCE, { requestReason: 'His own words.', decisionReason: 'something a later writer left' }),
+      reactivation('old', EVIDENCE),
+      reactivation('none', EVIDENCE, { requestReason: null, decisionReason: null }),
+    ];
+    h.rows = [{ id: 'p', deletedAt: null, capturedById: SALES, branchId: B1, branchExtraId: B1 }];
+    const { default: Page } = await import('@/app/(app)/reactivations/page');
+    render(await Page());
+    const [fresh, own, old, none] = screen.getAllByRole('listitem');
+    expect(reasonOf(fresh!)).toBe('Reason: Reopened under a new owner.');
+    expect(reasonOf(own!)).toBe('Reason: His own words.');
+    expect(reasonOf(old!)).toBe('Reason: Open again.');
+    expect(reasonOf(none!)).toBe('Reason: —');
   });
 });

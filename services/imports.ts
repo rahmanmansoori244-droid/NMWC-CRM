@@ -1,7 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { setChangeContext, src, withChangeContext, type ImportLane } from '@/lib/change-context';
+import { setChangeContext, src, withChangeContext } from '@/lib/change-context';
 import { dbErrorCode, isTransientDbError, uniqueTargetFields } from '@/lib/db-errors';
 import {
   Role,
@@ -22,7 +22,7 @@ import {
 import { revalidatePath, revalidateTag } from 'next/cache';
 import { duplicateHeadingIssue, parseWorkbook } from '@/lib/excel';
 import { normalizeCR } from '@/lib/cr';
-import { APP_CUSTOMER_CODE, formatCustomerCode, formatBranchCode } from '@/lib/codes';
+import { formatCustomerCode, formatBranchCode } from '@/lib/codes';
 import { checkLimit } from '@/lib/rate-limit';
 import { MAX_IMPORT_BYTES, importFileTooLarge } from '@/lib/import-file-size';
 import { rescoreCustomerTx } from '@/lib/rescore';
@@ -73,9 +73,24 @@ import { assertPasswordNotReused, rotatePasswordHistory } from '@/lib/password-p
 import {
   checkCustomerRow,
   fileCollisions,
+  rowCustCode,
   type SheetRow,
 } from '@/lib/import-row-check';
-import { fixTarget, masterCollisionMaps, newerUploadsCarrying } from '@/lib/import-master-lookup';
+import {
+  fixTarget,
+  linkedCustomerCodes,
+  masterCollisionMaps,
+  newerUploadsCarrying,
+} from '@/lib/import-master-lookup';
+import { headingClashIssue, missingTemixColumnIssue, reportHeadings } from '@/lib/import-headings';
+import { branchCrmRule, customerCrmRule, keptNote, type CrmOutcome } from '@/lib/import-crm-rule';
+import {
+  creditReason,
+  decideLane,
+  differingBranchCells,
+  rowCreditNote,
+  type LaneBranch,
+} from '@/lib/import-plan';
 import { lockCustomerRowByCode } from '@/lib/locks';
 import { branchStatusEvents, followBranchStatus, liveBranchStatuses } from '@/lib/customer-status';
 import { archivedUncodedDeactivationWhere } from '@/lib/temix';
@@ -1289,15 +1304,21 @@ async function uploadAccountMasterCore(
 // promotes a batch when ready. v1.1 will add an inline review screen; for
 // now, we expose a "promote" action that creates customers in bulk.
 
+/** `notRead`: the sheet's headings the import does not read, in sheet order. */
+export type CustomerUploadResult = {
+  batchId: string;
+  clean: number;
+  quarantined: number;
+  notRead: string[];
+};
+
 export async function uploadCustomerMasterAction(
   formData: FormData
-): SafeAction<{ batchId: string; clean: number; quarantined: number }> {
+): SafeAction<CustomerUploadResult> {
   return runAction(() => uploadCustomerMasterCore(formData));
 }
 
-async function uploadCustomerMasterCore(
-  formData: FormData
-): Promise<{ batchId: string; clean: number; quarantined: number }> {
+async function uploadCustomerMasterCore(formData: FormData): Promise<CustomerUploadResult> {
   const me = await requireSteward();
   // F-07: rate-limit imports per Steward. Two Stewards racing the same file
   // (or a single Steward double-tapping the upload button) was previously
@@ -1327,6 +1348,26 @@ async function uploadCustomerMasterCore(
   // N05: a repeated heading refuses the file only on the sheet this upload reads.
   const repeated = duplicateHeadingIssue(sheet);
   if (repeated) throw new ValidationError({ file: `Could not read .xlsx: ${repeated}` });
+  // Code review 2026-11-10, finding 1. Headings are matched whatever their
+  // capitals, spaces or underscores (lib/import-headings.ts), so one column under
+  // two spellings — `Temix code` beside `temix_code` — is the repeated heading
+  // above in another form: the import could not say which cell it read.
+  const headings = reportHeadings(sheet.headers);
+  const clash = headingClashIssue(sheet.name, headings);
+  if (clash) throw new ValidationError({ file: `Could not read .xlsx: ${clash}` });
+  // And a sheet with NO temix_code column is refused when it names customers
+  // that have a Temix code on record — before anything is staged. Whether a row
+  // is a Temix refresh is decided by that cell alone, so without the column every
+  // such customer would be re-loaded as a plain sheet and the credit limit and
+  // credit days in it ignored, with nothing said. A sheet of customers the CRM
+  // does not know by a Temix code (new ones, the seeded ones) is not affected.
+  if (!headings.hasTemixCode) {
+    const codes = [...new Set(sheet.rows.map((r) => rowCustCode(r as SheetRow)).filter(Boolean))];
+    const linked = await linkedCustomerCodes(codes);
+    if (linked.length > 0) {
+      throw new ValidationError({ file: missingTemixColumnIssue(linked.length, linked.slice(0, 3)) });
+    }
+  }
 
   const batch = await prisma.importBatch.create({
     data: {
@@ -1386,7 +1427,9 @@ async function uploadCustomerMasterCore(
     data: { status: 'READY', cleanRows: clean, quarantinedRows: quarantined },
   });
   revalidatePath('/import');
-  return { batchId: batch.id, clean, quarantined };
+  // Every heading the import did not read, for the Steward to see at once: a
+  // column he believes was loaded and was not is the start of this finding.
+  return { batchId: batch.id, clean, quarantined, notRead: headings.unrecognised };
 }
 
 /**
@@ -1408,6 +1451,13 @@ export type PromoteSliceResult = {
    * carrying on regardless. Absent once `done`.
    */
   leaseToken?: string;
+  /**
+   * Code review 2026-11-10, finding 1: how many of this slice's promoted rows
+   * kept a CRM value where the sheet differed (each carries a note), replaced
+   * one (the batch's overwrite option was on; each is in the audit log), or
+   * carried a credit cell that was not applied (each carries a note).
+   */
+  notes?: { kept: number; replaced: number; creditNotApplied: number };
 };
 
 /**
@@ -1437,63 +1487,9 @@ const PROMOTE_LEASE_MS = 90_000;
  */
 const PROMOTE_HANDOFF_GRACE_MS = 20_000;
 
-type LaneBranch = {
-  sheetCode: string | null;
-  branchCode: string;
-  branchName: string;
-  regionId: string;
-  routeId: string;
-  address: string;
-  dayOfVisit: string | null;
-  status: string | null;
-  nameGiven: boolean;
-  routeResolved: boolean;
-  sheetAddress: string | null;
-  fixedInApp: boolean;
-};
-
-/**
- * What a row would change on the stored branch: the cells it gives (a blank
- * cell gives nothing, item 20) that the branch does not already hold. The
- * refresh lane names them when it does not apply them; the full lane leaves a
- * branch they are empty for unwritten, so its version and updatedAt stay as
- * they were (F21, auditor recheck 2026-09-27).
- *
- * The region is not a cell: the row's region is its resolved route's region
- * now. The B-19 trigger refuses a Branch write whose region is not its route's,
- * but nothing fires when the ACCOUNT import moves a route to another region, so
- * the branches on that route keep the old one until something writes their
- * route again. The full lane passes the stored region, so a branch whose
- * region is not its route's is written, which puts it back in line — as the
- * unconditional upsert did on every re-import before F21 skipped unchanged
- * branches (post-merge review of phase 2, finding 6). The ~3,300 pilot-seeded
- * customers carry no Temix code and always take that lane. The refresh lane
- * passes none: a plain row there changes no branch, and its note lists only
- * what the row itself states.
- */
-function differingBranchCells(
-  r: LaneBranch,
-  stored: {
-    branchName: string;
-    routeId: string;
-    /** The full lane's owner read only; see above. */
-    regionId?: string;
-    address: string;
-    dayOfVisit: string | null;
-    status: string;
-  }
-): string[] {
-  const differs: string[] = [];
-  if (r.nameGiven && r.branchName !== stored.branchName) differs.push('branch name');
-  if (r.sheetAddress && r.sheetAddress !== stored.address) differs.push('address');
-  if (r.routeResolved && r.routeId !== stored.routeId) differs.push('route');
-  if (r.routeResolved && stored.regionId !== undefined && r.regionId !== stored.regionId) {
-    differs.push('region');
-  }
-  if (r.dayOfVisit && r.dayOfVisit !== stored.dayOfVisit) differs.push('visit day');
-  if (r.status && r.status !== stored.status) differs.push('status');
-  return differs;
-}
+// LaneBranch (a sheet row's shop) and differingBranchCells (what a row would
+// change on a stored shop) are in lib/import-plan.ts, shared with the "Before you
+// promote" summary (code review 2026-11-10, finding 1).
 
 /**
  * The branch half of a Temix refresh group — owner decision 2026-09-25,
@@ -1524,8 +1520,19 @@ function differingBranchCells(
  * is queued for the next batch, as an approved edit or a merge queues it. And
  * the customer's updatedAt moves, because the master export's "updated since"
  * filter reads the CUSTOMER's updatedAt (services/exports.ts), not the branch's.
+ *
+ * Code review 2026-11-10, finding 1: a fixed row's update of a shop that exists
+ * goes through the CRM field rule (lib/import-crm-rule.ts) like the full lane's.
+ * By default it fills the shop's blank name, address or visit day, never
+ * replaces one on record and never changes the shop's status; with the batch's
+ * overwrite option on it writes the cells the row gave, as before. `crm` says,
+ * per row, what was kept, filled or replaced (null when the rule did not run).
  */
-type LaneOutcome = { notes: Array<string | null>; written: boolean[] };
+type LaneOutcome = {
+  notes: Array<string | null>;
+  written: boolean[];
+  crm: Array<CrmOutcome | null>;
+};
 /** What the branch-only lane did to a branch, for its audit row (gap 4). */
 type LaneBranchChange =
   | { kind: 'CREATE'; values: Record<string, unknown> }
@@ -1538,18 +1545,22 @@ async function refreshLaneBranches(
     custCode: string;
     resolved: LaneBranch[];
     me: string;
+    // The batch's "Overwrite CRM fields from this sheet" option.
+    overwriteCrm: boolean;
     // Gap 24: names the row (resolved[k]) as the cause just before its branch is written.
     beforeWrite: (k: number) => Promise<void>;
     // Gap 4: the audit row of a branch it created or changed, under row k's name.
     afterWrite: (k: number, branchId: string, change: LaneBranchChange) => Promise<void>;
   }
 ): Promise<LaneOutcome> {
-  const { customerId, resolved, me, beforeWrite, afterWrite } = args;
+  const { customerId, resolved, me, overwriteCrm, beforeWrite, afterWrite } = args;
   const notes: Array<string | null> = [];
   const written: boolean[] = [];
-  const skip = (note: string | null) => {
+  const crm: Array<CrmOutcome | null> = [];
+  const skip = (note: string | null, outcome: CrmOutcome | null = null) => {
     notes.push(note);
     written.push(false);
+    crm.push(outcome);
   };
   for (const [k, r] of resolved.entries()) {
     if (!r.sheetCode) {
@@ -1628,6 +1639,7 @@ async function refreshLaneBranches(
       });
       notes.push(null);
       written.push(true);
+      crm.push(null);
       continue;
     }
     if (found.customerId !== customerId) {
@@ -1660,26 +1672,37 @@ async function refreshLaneBranches(
       );
       continue;
     }
+    // Code review 2026-11-10, finding 1: what the row may write on a shop that
+    // exists (lib/import-crm-rule.ts). `w` is the row without the CRM-owned
+    // values it must not replace; with the batch's option on it is the row.
+    const rule = branchCrmRule(overwriteCrm, r, found);
+    const w = rule.row;
+    const outcome: CrmOutcome = { kept: rule.kept, filled: rule.filled, replaced: rule.replaced };
+    if (differingBranchCells(w, { ...found, regionId: undefined }).length === 0) {
+      // Everything that differed was a CRM value on record, and it was kept.
+      skip(null, outcome);
+      continue;
+    }
     await beforeWrite(k);
     const laneWrite: Record<string, unknown> = {
-      branchName: r.nameGiven ? r.branchName : undefined,
-      regionId: r.routeResolved ? r.regionId : undefined,
-      routeId: r.routeResolved ? r.routeId : undefined,
-      address: r.sheetAddress ?? undefined,
-      dayOfVisit: (r.dayOfVisit as DayOfWeek | null) ?? undefined,
-      status: (r.status as CustomerStatus | null) ?? undefined,
+      branchName: w.nameGiven ? w.branchName : undefined,
+      regionId: w.routeResolved ? w.regionId : undefined,
+      routeId: w.routeResolved ? w.routeId : undefined,
+      address: w.sheetAddress ?? undefined,
+      dayOfVisit: (w.dayOfVisit as DayOfWeek | null) ?? undefined,
+      status: (w.status as CustomerStatus | null) ?? undefined,
     };
     const laneFields = differingCells(laneWrite, found);
     await tx.branch.update({
       where: { id: found.id },
       data: {
-        branchName: r.nameGiven ? r.branchName : undefined,
-        regionId: r.routeResolved ? r.regionId : undefined,
-        routeId: r.routeResolved ? r.routeId : undefined,
-        address: r.sheetAddress ?? undefined,
-        dayOfVisit: (r.dayOfVisit as DayOfWeek | null) ?? undefined,
-        status: (r.status as CustomerStatus | null) ?? undefined,
-        lastStatusChangeAt: r.status && r.status !== found.status ? new Date() : undefined,
+        branchName: w.nameGiven ? w.branchName : undefined,
+        regionId: w.routeResolved ? w.regionId : undefined,
+        routeId: w.routeResolved ? w.routeId : undefined,
+        address: w.sheetAddress ?? undefined,
+        dayOfVisit: (w.dayOfVisit as DayOfWeek | null) ?? undefined,
+        status: (w.status as CustomerStatus | null) ?? undefined,
+        lastStatusChangeAt: w.status && w.status !== found.status ? new Date() : undefined,
         lastEditedById: me,
         // B-05 / F21: a writer that read this branch before the import committed
         // (applyEditChanges' versioned updateMany) fails instead of writing over it.
@@ -1691,6 +1714,7 @@ async function refreshLaneBranches(
     }
     notes.push(null);
     written.push(true);
+    crm.push(outcome);
   }
   if (written.some(Boolean)) {
     await tx.customer.updateMany({
@@ -1706,7 +1730,7 @@ async function refreshLaneBranches(
     // customer reads as last edited by.
     await tx.customer.update({ where: { id: customerId }, data: { updatedAt: new Date() } });
   }
-  return { notes, written };
+  return { notes, written, crm };
 }
 
 /**
@@ -1719,12 +1743,23 @@ async function refreshLaneBranches(
  * written — on a row left as it was they would say something false.
  * Advisory: the caller ignores a failure here, as it does for the ordinary
  * lane's '_resolve' warnings.
+ *
+ * Code review 2026-11-10, finding 1 — two more, each its own key so the batch
+ * page can label it (lib/import-rows-view.ts), after the ones above:
+ *   '_kept'   a CRM value in the row differed from the record and was kept;
+ *   '_credit' the row's credit_limit / payment_term_days were not applied, and why.
+ * They name fields, never values. A value the row REPLACED (the batch's
+ * overwrite option was on) gets no note: with the option on a row loads exactly
+ * as it did before this change, and each replaced value is in that customer's or
+ * shop's audit row, before and after, marked overwriteCrmFields.
  */
 type RowNote = {
   note: string | null;
   written: boolean;
   extra?: string | null;
   subChannel?: string | null;
+  kept?: string[];
+  credit?: string | null;
 };
 
 async function writeLaneNotes(
@@ -1739,6 +1774,8 @@ async function writeLaneNotes(
       ...(n?.extra ? [{ field: '_lane', message: n.extra }] : []),
       ...(n?.subChannel ? [{ field: '_subchannel', message: n.subChannel }] : []),
       ...(n?.written && !n.note ? resolveErrors.map((m) => ({ field: '_resolve', message: m })) : []),
+      ...(n?.kept ?? []).map((m) => ({ field: '_kept', message: m })),
+      ...(n?.credit ? [{ field: '_credit', message: n.credit }] : []),
     ];
     if (issues.length === 0) continue;
     await prisma.importRow.update({
@@ -1775,11 +1812,21 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
       status: true,
       promoteLeaseBy: true,
       promoteLeaseUntil: true,
+      overwriteCrmFields: true,
     },
   });
   if (!preflight) throw new ValidationError({ batchId: 'not found' });
   if (preflight.kind !== 'CUSTOMER')
     throw new ValidationError({ batchId: 'not a customer import' });
+  // Code review 2026-11-10, finding 1: the batch's "Overwrite CRM fields from
+  // this sheet" option, as read here. Off (the default), a customer or shop that
+  // already exists keeps its CRM-owned values: the import only fills blanks and
+  // never changes an open/closed status. The claim below takes the batch only
+  // with the option as it was read, so a switch between this read and the claim
+  // cannot be missed; and the option cannot change while the batch is PROMOTING
+  // (services/import-fixes.ts setOverwriteCore), so every slice of one run reads
+  // the same answer.
+  const overwriteCrm = preflight.overwriteCrmFields === true;
 
   // RK-3: the lease serializes ONE batch, but the QA P-01 branch-steal guard is a
   // read-then-upsert whose safety argument rests on promote being serialized across
@@ -1834,6 +1881,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
       status: preflight.status,
       promoteLeaseBy: preflight.promoteLeaseBy,
       promoteLeaseUntil: preflight.promoteLeaseUntil,
+      overwriteCrmFields: overwriteCrm,
       OR: [
         { status: 'READY' },
         // Nothing writes FAILED any more; accepting it lets a batch left behind by
@@ -2101,6 +2149,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     // message in `issues`, and the action returns a `{ promoted, failed }`
     // tuple that the UI surfaces in the toast — no more silent swallow.
     let promoted = 0;
+    // Code review 2026-11-10, finding 1: promoted rows of this slice carrying a note.
+    const sliceNotes = { kept: 0, replaced: 0, creditNotApplied: 0 };
     // Rows left CLEAN because the DATABASE failed, not the data — retried next slice.
     let deferred = 0;
     // RK-3: yield the slice once the budget is spent. The check is at the TOP of the
@@ -2301,6 +2351,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         // Per row: what happened to its branch, when that is worth telling the
         // Steward. Written after the transaction commits.
         let rowNotes: RowNote[] = [];
+        // Finding 1: the rows of this group that replaced a CRM value on record
+        // (only with the batch's overwrite option on). Counted, not noted.
+        let replacedRows = new Set<number>();
         // F16: the full lane cleared the customer's sub-channel (logged once
         // the group has committed, never for a rolled-back one).
         let clearedSubChannelOf: string | null = null;
@@ -2333,6 +2386,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
           { actorId: me.id, source: openingSource },
           async (tx) => {
             rowNotes = g.rowIds.map(() => ({ note: null, written: false }));
+            replacedRows = new Set<number>();
             clearedSubChannelOf = null;
             firstTemixCodeOf = null;
             // N03: the customer's row lock FIRST, then the read, on every lane —
@@ -2405,9 +2459,23 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // refresh lane's credit figures from an old sheet (post-merge review).
             // The plain rows take the lane their first row decides, exactly as a
             // group with no fixed row does.
-            const linked = !!existing && !existing.deletedAt && !!existing.temixCode;
-            const isFixed = g.parsed.map((p) => linked && p.fixedInApp === true);
-            const plainIdx = g.parsed.map((_, i) => i).filter((i) => !isFixed[i]);
+            // Code review 2026-11-10, finding 1: the lane booleans are decided in
+            // lib/import-plan.ts decideLane — the same rule, moved there unchanged
+            // so the "Before you promote" summary runs it too.
+            const lane = decideLane({
+              custCode,
+              existing: existing
+                ? {
+                    archived: !!existing.deletedAt,
+                    temixCode: existing.temixCode,
+                    recordedCode,
+                    temixSyncState: existing.temixSyncState,
+                    lastTemixUploadAt: existing.lastTemixUploadAt,
+                  }
+                : null,
+              rows: g.parsed,
+            });
+            const { linked, isFixed, plainIdx } = lane;
             // Every customer-level decision below reads the first PLAIN row (the
             // first row, when every row is fixed — then nothing about the
             // customer is written, and the Temix-code guards still apply).
@@ -2511,20 +2579,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             //
             // No seeded customer carries a temixCode, so neither clause changes
             // anything about the go-live load itself.
-            const isRefresh =
-              !!existing &&
-              !existing.deletedAt &&
-              !!lead.temixCode &&
-              !!recordedCode &&
-              recordedCode === lead.temixCode;
-
-            if (
-              existing &&
-              !existing.deletedAt &&
-              lead.temixCode &&
-              recordedCode &&
-              recordedCode !== lead.temixCode
-            ) {
+            //
+            // (`isRefresh` is lane.isRefresh, above: existing and live, the lead
+            // row's temix_code not blank, a code on record, and the two equal.)
+            if (lane.crosswalkChange) {
               throw new Error(
                 'CROSSWALK:this customer is already crosswalked to a different Temix code — changing it is a deliberate re-crosswalk, not an import; steward review'
               );
@@ -2558,19 +2616,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // has already refused one that any customer holds as its Temix code,
             // or that an archived one is deactivated under.
             let firstTemixCode = false;
-            if (
-              !isRefresh &&
-              existing &&
-              !existing.deletedAt &&
-              !existing.temixCode &&
-              lead.temixCode &&
-              plainIdx.length > 0 &&
-              g.parsed.every((p) => p.fixedInApp !== true) &&
-              APP_CUSTOMER_CODE.test(custCode) &&
-              (existing.lastTemixUploadAt != null ||
-                existing.temixSyncState === 'UPLOADED' ||
-                existing.temixSyncState === 'SYNCED')
-            ) {
+            // lane.backupCandidate: every condition above that the rows and the
+            // customer's own record decide (lib/import-plan.ts decideLane).
+            if (lane.backupCandidate && existing && lead.temixCode) {
               // Gap 4: an import now writes a CREATE row for each customer it
               // creates too; those carry an 'import …' reason and are not a finalize.
               const createdByFinalize = await tx.auditLog.findFirst({
@@ -2602,8 +2650,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // The plain rows' lane: the refresh lane when their first row carries
             // the customer's own Temix code (or its first one, above), else the
             // full lane. With no plain row, nothing about the customer is written.
-            const refreshLane = (isRefresh || firstTemixCode) && plainIdx.length > 0;
-            const fullLane = plainIdx.length > 0 && !isRefresh && !firstTemixCode;
+            const { refreshLane, fullLane, laneOf } = lane.lanes(firstTemixCode);
             const fullIdx = fullLane ? plainIdx : [];
             const fullBranches = fullIdx.map((i) => resolvedBranches[i]);
             const fullParsed = fullIdx.map((i) => g.parsed[i]);
@@ -2618,13 +2665,21 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // say anything: ACTIVE if any row does. A blank cell says nothing — it
             // used to be the first row's, so [blank, CLOSED] kept the status and
             // [CLOSED, blank] closed it (post-merge review).
-            const statedStatus: CustomerStatus | null = fullParsed.some(
+            const sheetStatus: CustomerStatus | null = fullParsed.some(
               (p) => p.customerStatus === 'ACTIVE'
             )
               ? 'ACTIVE'
               : ((fullParsed.find((p) => p.customerStatus)?.customerStatus as
                   | CustomerStatus
                   | undefined) ?? null);
+            // Code review 2026-11-10, finding 1: the open/closed status of a
+            // customer that already exists is the CRM's — it is closed by an
+            // approved request and reopened by a reactivation — and a sheet says
+            // nothing about it unless the batch's overwrite option is on. A NEW
+            // customer still takes the file's status. Everything below that reads
+            // `statedStatus` therefore does nothing for an existing customer by
+            // default; a shop this load CREATES still moves it (owner decision 7).
+            const statedStatus: CustomerStatus | null = existing && !overwriteCrm ? null : sheetStatus;
 
             // Item 20 (owner decision 2026-09-25): a row with no branch_code is
             // numbered by its position among this customer's clean rows in THIS
@@ -2650,9 +2705,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // attach and Remove do (lib/locks.ts), or the two orders deadlock on
             // the same branch (pre-merge review) — every lane now holds it from
             // the top of this transaction (N03).
-            const laneOf = (i: number): ImportLane =>
-              isFixed[i] ? 'fixed' : firstTemixCode ? 'backup' : isRefresh ? 'refresh' : 'full';
-            const leadIdx = plainIdx.length > 0 ? plainIdx[0] : 0;
+            const leadIdx = lane.leadIdx;
             // What withChangeContext named on opening: the lead row costs nothing more
             // when it is that row on that lane.
             let namedSource = openingSource;
@@ -2671,6 +2724,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               importRowId: g.rowIds[i]!,
               rowNumber: rowNo(i),
               lane: laneOf(i),
+              // Finding 1: every audit row of a batch promoted with the option on says so.
+              ...(overwriteCrm ? { overwriteCrmFields: true as const } : {}),
             });
             /** One AuditLog row per created or changed customer or shop, under its row's name. */
             const auditEntity = async (
@@ -2698,6 +2753,24 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // whether it wrote any of the customer's shops.
             let customerUnchanged = false;
             let fullBranchWritten = false;
+            // Finding 1: what the CRM field rule did with the customer's own
+            // fields (full lane) and with each full-lane row's shop.
+            let customerCrm: CrmOutcome | null = null;
+            const fullCrm: Array<CrmOutcome | undefined> = [];
+            let laneCrm: Array<CrmOutcome | null> = [];
+            const addCrmNotes = (
+              i: number,
+              who: 'customer' | { shop: string },
+              c: CrmOutcome | null
+            ) => {
+              if (!c) return;
+              if (c.replaced.length > 0) replacedRows.add(i);
+              const kept = keptNote(who, c.kept);
+              if (!kept) return;
+              // The customer's note reads first on the lead row, its shop's after.
+              const have = rowNotes[i]?.kept ?? [];
+              rowNotes[i] = { ...rowNotes[i]!, kept: who === 'customer' ? [kept, ...have] : [...have, kept] };
+            };
             if (refreshLane) {
               // ── Temix REFRESH row (existing live customer + temix_code) ──
               // Narrow, Temix-OWNED update only: crosswalk code + payment terms +
@@ -2868,6 +2941,25 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               // the lead row says so. Known costs (docs/OPERATIONS.md): -10
               // completeness, no Temix requeue on this lane, and under the FULL
               // gate a pending edit then fails approval asking for a sub-channel.
+              // Code review 2026-11-10, finding 1 — the CRM field rule
+              // (lib/import-crm-rule.ts). For a customer that exists, the name,
+              // phone, contact person, CR number and channel the row gives are
+              // written only where the record is blank; a value on record is
+              // kept, and the lead row says so. With the batch's overwrite option
+              // on, the row's values are written as they always were. A new
+              // customer is not narrowed: `crmCustomer.sheet` is then the row.
+              const crmCustomer = customerCrmRule(
+                overwriteCrm,
+                {
+                  custName: lead.custName,
+                  phone: lead.phone ?? null,
+                  contactPerson: lead.contactPerson ?? null,
+                  crNumber: lead.crNumber ?? null,
+                  channelId: groupChannelId,
+                },
+                existing
+              );
+              customerCrm = { kept: crmCustomer.kept, filled: crmCustomer.filled, replaced: crmCustomer.replaced };
               const clearSub =
                 !!existing &&
                 subChannelClearedByChannelChange(
@@ -2876,7 +2968,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                     subChannelId: existing.subChannelId,
                     subChannelChannelId: existing.subChannel?.channelId ?? null,
                   },
-                  groupChannelId
+                  crmCustomer.sheet.channelId
                 );
               if (clearSub) {
                 clearedSubChannelOf = existing!.id;
@@ -2894,15 +2986,22 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 // contact cell must NOT null the stored value. `undefined` = "leave
                 // unchanged". cust_name is mandatory (a blank row is quarantined),
                 // so legalName is always a real value here.
-                legalName: lead.custName,
+                //
+                // Finding 1: read from `crmCustomer.sheet` — the row, less every
+                // CRM-owned value it must not replace on a customer that exists
+                // (so legalName is undefined, "leave unchanged", when the name on
+                // record is kept).
+                legalName: crmCustomer.sheet.custName,
                 // SEC-03/09 (2): paymentTerms is deliberately NOT written here — see
                 // the update below.
-                primaryPhone: lead.phone ?? undefined,
-                primaryPhoneNorm: lead.phone ?? undefined,
-                contactPerson: lead.contactPerson ?? undefined,
-                crNumber: lead.crNumber ?? undefined,
-                crNumberNorm: lead.crNumber ? normalizeCR(lead.crNumber) : undefined,
-                channelId: groupChannelId ?? undefined,
+                primaryPhone: crmCustomer.sheet.phone ?? undefined,
+                primaryPhoneNorm: crmCustomer.sheet.phone ?? undefined,
+                contactPerson: crmCustomer.sheet.contactPerson ?? undefined,
+                crNumber: crmCustomer.sheet.crNumber ?? undefined,
+                crNumberNorm: crmCustomer.sheet.crNumber
+                  ? normalizeCR(crmCustomer.sheet.crNumber)
+                  : undefined,
+                channelId: crmCustomer.sheet.channelId ?? undefined,
                 subChannelId: clearSub ? null : undefined,
                 // A status other than ACTIVE is settled after the branches are
                 // written, from every live branch (below).
@@ -3027,7 +3126,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               }
             }
             if (fullLane) {
-              for (const [k, r] of fullBranches.entries()) {
+              for (const [k, sheetRow] of fullBranches.entries()) {
                 // QA P-01 fix (branch-steal guard): branchCode is globally unique
                 // and the upsert's update path includes customerId — without this
                 // check, a sheet row claiming a code owned by ANOTHER customer
@@ -3037,7 +3136,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 // serialized by the atomic READY→PROMOTING claim, so the TOCTOU
                 // window is not reachable through this action.)
                 const branchOwner = await tx.branch.findUnique({
-                  where: { branchCode: r.branchCode },
+                  where: { branchCode: sheetRow.branchCode },
                   select: {
                     customerId: true,
                     customer: { select: { nmwcCode: true } },
@@ -3054,24 +3153,38 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 });
                 if (branchOwner && branchOwner.customerId !== customerId) {
                   throw new Error(
-                    `CROSSWALK:branch_code ${r.branchCode} already belongs to ${branchOwner.customer.nmwcCode} — steward review`
+                    `CROSSWALK:branch_code ${sheetRow.branchCode} already belongs to ${branchOwner.customer.nmwcCode} — steward review`
                   );
                 }
                 // If composition changed the sheet's code, also check the RAW code:
                 // a sheet code that exists under ANOTHER customer means the row
                 // referenced someone else's branch (a data error) — flag it for
                 // steward review instead of silently minting a re-prefixed code.
-                if (r.sheetCode && r.sheetCode !== r.branchCode) {
+                if (sheetRow.sheetCode && sheetRow.sheetCode !== sheetRow.branchCode) {
                   const rawOwner = await tx.branch.findUnique({
-                    where: { branchCode: r.sheetCode },
+                    where: { branchCode: sheetRow.sheetCode },
                     select: { customerId: true, customer: { select: { nmwcCode: true } } },
                   });
                   if (rawOwner && rawOwner.customerId !== customerId) {
                     throw new Error(
-                      `CROSSWALK:branch_code ${r.sheetCode} already belongs to ${rawOwner.customer.nmwcCode} — steward review`
+                      `CROSSWALK:branch_code ${sheetRow.sheetCode} already belongs to ${rawOwner.customer.nmwcCode} — steward review`
                     );
                   }
                 }
+                // Code review 2026-11-10, finding 1 — the CRM field rule
+                // (lib/import-crm-rule.ts), before anything is compared or
+                // written. `sheetRow` is what the sheet gives this shop; `r` is
+                // what the import may write on it. For a shop that exists, `r`
+                // has lost every CRM-owned value that differs from one on record
+                // — shop name, address, visit day — and always its status, so
+                // the import fills blanks, moves the shop to the sheet's route
+                // (Temix's) and neither closes an open shop nor reopens one an
+                // approved request closed. With the batch's overwrite option on,
+                // and for a shop that does not exist yet, `r` is `sheetRow`.
+                // Everything below reads `r`, exactly as it did.
+                const crm = branchCrmRule(overwriteCrm, sheetRow, branchOwner);
+                const r = crm.row;
+                fullCrm[k] = crm;
                 // F21 (auditor recheck 2026-09-27): a branch this row would not
                 // change is not written. The upsert rewrote every branch of the
                 // file whether or not a cell differed, so Prisma moved updatedAt
@@ -3171,6 +3284,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               // Merged, not replaced: the lead row may already carry the
               // sub-channel note (F16), which this used to wipe.
               for (const i of fullIdx) rowNotes[i] = { ...rowNotes[i], note: null, written: true };
+              // Finding 1: each full-lane row says what the rule kept or replaced on its shop.
+              fullIdx.forEach((i, k) =>
+                addCrmNotes(i, { shop: fullBranches[k]!.branchCode }, fullCrm[k] ?? null)
+              );
               // The customer's own writes below are the lead row's again.
               await nameRow(leadIdx);
             }
@@ -3180,6 +3297,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 custCode,
                 resolved: laneIdx.map((i) => resolvedBranches[i]),
                 me: me.id,
+                overwriteCrm,
                 beforeWrite: (k) => nameRow(laneIdx[k]),
                 afterWrite: (k, branchId, change) =>
                   auditEntity(laneIdx[k]!, { type: 'Branch', id: branchId }, change),
@@ -3188,7 +3306,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               await nameRow(leadIdx);
               laneIdx.forEach((i, k) => {
                 rowNotes[i] = { note: out.notes[k] ?? null, written: out.written[k] ?? false };
+                // Finding 1: a fixed row says what the rule kept or replaced on its shop.
+                addCrmNotes(i, { shop: resolvedBranches[i]!.branchCode }, out.crm[k] ?? null);
               });
+              laneCrm = out.crm;
             }
             // Item 20 (owner decision): the customer's status follows ALL its
             // live branches. Settled once every branch of this group is written —
@@ -3227,6 +3348,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // is passed on, so whichever of them moved it, the move is one audit row
             // from the real prior status (fixer review: the block above wrote the
             // file's status unaudited, and a CLOSE row then began at the file's).
+            // Finding 1: whether the customer's status moved at all in this group.
+            let statusMoved: Awaited<ReturnType<typeof followBranchStatus>> = null;
             if (
               existing &&
               (resolvedBranches.some((r) => r.status !== null) ||
@@ -3234,7 +3357,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 existing.status !== 'ACTIVE')
             ) {
               const statusBefore = new Map(existing.branches.map((b) => [b.id, b.status] as const));
-              await followBranchStatus(
+              statusMoved = await followBranchStatus(
                 tx,
                 env,
                 customerId,
@@ -3242,6 +3365,58 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 { actorId: me.id, via: `import ${batchId}`, statusBefore: existing.status }
               );
             }
+            // Code review 2026-11-10, finding 1 — the customer's own note, on the
+            // lead row: the CRM values the row gave that were kept (or, with the
+            // option on, replaced). The customer's status is among them when the
+            // file states one that is not the status on record, the status did
+            // not move, and no shop row already says its own status was kept —
+            // a sheet's ACTIVE no longer lifts a hold or reopens a closed
+            // customer. (A shop this load CREATED open still reopens it, owner
+            // decision 7: the status then moved, and nothing was "kept".)
+            if (existing && fullLane && customerCrm) {
+              const shopSaid = (key: 'kept' | 'replaced') =>
+                [...fullCrm, ...laneCrm].some((c) => !!c && c[key].includes('status'));
+              const statusDiffers = sheetStatus !== null && sheetStatus !== existing.status;
+              addCrmNotes(leadIdx, 'customer', {
+                filled: customerCrm.filled,
+                kept:
+                  !overwriteCrm && statusDiffers && !statusMoved && !shopSaid('kept')
+                    ? [...customerCrm.kept, 'status']
+                    : customerCrm.kept,
+                replaced:
+                  overwriteCrm && statusDiffers && !!statusMoved && !shopSaid('replaced')
+                    ? [...customerCrm.replaced, 'status']
+                    : customerCrm.replaced,
+              });
+            }
+            // And the credit cells that were not applied, row by row, with the
+            // reason (lib/import-plan.ts): the full lane never writes credit on a
+            // customer that exists, the refresh lane drops it for a CASH
+            // customer, a first Temix code writes the code only — and until now
+            // none of them said so.
+            const groupCredit = creditReason({
+              lane: laneOf(leadIdx),
+              existing: existing
+                ? {
+                    recordedCode,
+                    paymentTerms: existing.paymentTerms,
+                    creditLimit: existing.creditLimit,
+                    paymentTermDays: existing.paymentTermDays,
+                  }
+                : null,
+              lead,
+            });
+            g.parsed.forEach((p, i) => {
+              const credit = rowCreditNote({
+                row: p,
+                lead,
+                isLead: i === leadIdx,
+                fixed: isFixed[i] === true,
+                leadRowNumber: rowNo(leadIdx),
+                groupReason: groupCredit,
+              });
+              if (credit) rowNotes[i] = { ...rowNotes[i]!, credit };
+            });
             // What a fixed row asked for and did not get: branch only writes none
             // of the customer's own fields — but an empty phone, below — and the
             // row read PROMOTED with nothing said: a released phone looked loaded
@@ -3355,7 +3530,15 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         }
         // A full-lane row carries a note only when its customer's sub-channel
         // was cleared (F16, on the lead row).
-        const noted = refreshedRow || rowNotes.some((n) => !!n?.extra || !!n?.subChannel);
+        // Finding 1: or a CRM value kept or replaced, or a credit cell not applied.
+        const noted =
+          refreshedRow ||
+          rowNotes.some(
+            (n) => !!n?.extra || !!n?.subChannel || (n?.kept?.length ?? 0) > 0 || !!n?.credit
+          );
+        sliceNotes.kept += rowNotes.filter((n) => (n?.kept?.length ?? 0) > 0).length;
+        sliceNotes.replaced += replacedRows.size;
+        sliceNotes.creditNotApplied += rowNotes.filter((n) => !!n?.credit).length;
         if (noted) {
           // The branch outcome of each row: a branch left as it was, and why, or
           // what a fixed row did not write. It used to be invisible — the row
@@ -3523,6 +3706,11 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         // carrying the token), while an abandoned run frees it in seconds.
         promoteLeaseBy: done ? null : leaseToken,
         promoteLeaseUntil: done ? null : new Date(Date.now() + PROMOTE_HANDOFF_GRACE_MS),
+        // Finding 1: the overwrite option is for ONE deliberate load. It switches
+        // itself off when the batch finishes, so rows fixed on this batch later
+        // fill blanks only unless the Steward switches it on again;
+        // overwriteCrmFieldsAt stays as the record that it was used.
+        ...(done ? { overwriteCrmFields: false } : {}),
       },
     });
     if (finalize.count === 0) {
@@ -3552,6 +3740,11 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         remaining,
         final: done,
         failureCustCodes: failures.map((f) => f.custCode).slice(0, 100),
+        // Finding 1: the option this slice ran under, and its rows carrying a note.
+        overwriteCrmFields: overwriteCrm,
+        rowsKept: sliceNotes.kept,
+        rowsReplaced: sliceNotes.replaced,
+        rowsCreditNotApplied: sliceNotes.creditNotApplied,
       } as unknown as Prisma.InputJsonValue,
       // One audit row per slice: a resumed load leaves a complete, ordered trail
       // instead of a single summary that hides how the batch actually landed.
@@ -3610,6 +3803,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
       deferred,
       remaining,
       done,
+      notes: sliceNotes,
       // Only hand the token back while the run should continue, and only if we still
       // hold the batch — a lost lease must stop the run, not let it fight the new owner.
       ...(done || finalize.count === 0 ? {} : { leaseToken }),

@@ -7,7 +7,7 @@
  * moved to the state a test needs; a reactivation row on a world branch;
  * buckets of world users.
  */
-import { expect, type CDPSession, type Locator, type Page } from '@playwright/test';
+import { expect, type CDPSession, type Dialog, type Locator, type Page } from '@playwright/test';
 import type { DayOfWeek, PaymentTerms, Prisma, Role } from '@prisma/client';
 import { resolveChain, stepDeadline } from '../../../../lib/approval-chains';
 import { db } from './env';
@@ -27,6 +27,7 @@ export {
   UNCONFIRMED_MESSAGE,
 } from '../../../../lib/submission';
 export { CR_DOCUMENT_LOCKED_MESSAGE } from '../../../../lib/permissions';
+export { LEAVE_FORM_QUESTION } from '../../../../lib/leave-guard';
 
 // PhotoCaptureSlot's words, defined once for every spec (photo-slot-words.ts).
 export {
@@ -513,6 +514,7 @@ export async function seedReactivationRow(world: World, o: { branch: string; sub
   const id = newId();
   world.adopt.edit(id);
   const now = new Date();
+  const reason = o.reason ?? world.name('Shop has reopened');
   await db.customerEdit.create({
     data: {
       id,
@@ -523,7 +525,9 @@ export async function seedReactivationRow(world: World, o: { branch: string; sub
       submittedById: world.user(o.submitter).id,
       submittedAt: now,
       isReactivation: true,
-      decisionReason: o.reason ?? world.name('Shop has reopened'),
+      // As the submit writes it (finding 18): his reason in its own column, and the rollback bridge's copy.
+      requestReason: reason,
+      decisionReason: reason,
       pendingRole: 'MANAGER',
       stageEnteredAt: now,
       slaDueAt: stepDeadline(now, 24 * 30),
@@ -614,4 +618,50 @@ export async function fillCreateForm(
     await expect(retakeOf(slot), `${label} photo is in`).toBeVisible({ timeout: 120_000 });
   }
   await expect(page.getByRole('button', { name: 'Submit for approval ▶' })).toBeEnabled({ timeout: 30_000 });
+}
+
+/* ── The copies a form keeps on the phone (code review 2026-11-10, findings 4 and 5) ── */
+
+/** A form copy in the page's localStorage, parsed; null when there is none (lib/device-drafts.ts names the keys). */
+export async function deviceCopy(page: Page, key: string): Promise<Record<string, unknown> | null> {
+  const raw = await page.evaluate((k) => window.localStorage.getItem(k), key);
+  return raw === null ? null : (JSON.parse(raw) as Record<string, unknown>);
+}
+
+/** The keys of the copies under a prefix (`nmwc:create:<userId>:`), sorted. */
+export async function deviceCopyKeys(page: Page, prefix: string): Promise<string[]> {
+  return page.evaluate((p) => Object.keys(window.localStorage).filter((k) => k.startsWith(p)).sort(), prefix);
+}
+
+/**
+ * Makes a copy read as last changed `ms` ago (its age is the phone's own clock).
+ * Only while the form that wrote it is NOT on screen: a form on screen knows
+ * when its copy really changed, and writes that back with its next write.
+ */
+export async function ageDeviceCopy(page: Page, key: string, ms: number): Promise<void> {
+  const aged = await page.evaluate(
+    ([k, by]) => {
+      const raw = window.localStorage.getItem(k);
+      if (raw === null) return false;
+      window.localStorage.setItem(k, JSON.stringify({ ...JSON.parse(raw), savedAt: Date.now() - by }));
+      return true;
+    },
+    [key, ms] as const
+  );
+  expect(aged, `a copy under ${key} to age`).toBe(true);
+}
+
+/**
+ * Reloads a page whose form has unsent work on it — the tab coming back from
+ * the camera, a pull down at the top of the page. The browser may ask "Leave
+ * site?" (lib/leave-guard.ts); he says leave.
+ */
+export async function reloadLeaving(page: Page): Promise<void> {
+  const leave = (d: Dialog) => void d.accept().catch(() => undefined);
+  page.on('dialog', leave);
+  try {
+    await page.reload();
+  } finally {
+    page.off('dialog', leave);
+  }
 }

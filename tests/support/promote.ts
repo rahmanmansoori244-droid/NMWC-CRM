@@ -8,6 +8,32 @@
  */
 type Imports = typeof import('@/services/imports');
 
+/**
+ * Code review 2026-11-10, finding 1: switch on a batch's "Overwrite CRM fields
+ * from this sheet" option, through the real action, as the Data Steward does
+ * before a deliberate bulk correction.
+ *
+ * A customer import now only FILLS blank CRM-owned fields of a customer or shop
+ * that already exists, and never changes its open/closed status. Suites written
+ * when a non-blank cell of a re-import always replaced the value on record call
+ * this before the loads that rely on that, and keep their assertions; what a load
+ * does without it is proven in tests/integration/import-crm-fill-only.test.ts.
+ * The option switches itself off when the batch finishes, so a batch promoted
+ * again after a fix needs it again.
+ */
+export async function overwriteOn(
+  batchId: string,
+  reason = 'test: this load deliberately replaces CRM fields from the sheet'
+): Promise<void> {
+  const fixes = await import('@/services/import-fixes');
+  const fd = new FormData();
+  fd.set('batchId', batchId);
+  fd.set('on', 'on');
+  fd.set('reason', reason);
+  const res = await fixes.setImportOverwriteAction(fd);
+  if (!res.ok) throw new Error(`could not switch the overwrite option on: ${JSON.stringify(res)}`);
+}
+
 export type PromotedTotals = {
   promoted: number;
   failed: number;

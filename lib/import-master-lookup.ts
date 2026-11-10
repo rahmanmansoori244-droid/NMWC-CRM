@@ -50,6 +50,30 @@ export async function masterCollisionMaps(
 }
 
 /**
+ * Of these customer codes, the ones that are live customers with a Temix code
+ * on record — "linked to Temix". The upload asks before it stages a sheet that
+ * has no temix_code column (code review 2026-11-10, finding 1): for such a
+ * customer the row could not be told from a plain re-load, and its credit cells
+ * would be ignored. Matched exactly, as the promote's lock finds a customer.
+ */
+export async function linkedCustomerCodes(codes: string[]): Promise<string[]> {
+  const out: string[] = [];
+  const CHUNK = 5000;
+  for (let i = 0; i < codes.length; i += CHUNK) {
+    const found = await prisma.customer.findMany({
+      where: {
+        nmwcCode: { in: codes.slice(i, i + CHUNK) },
+        deletedAt: null,
+        AND: [{ temixCode: { not: null } }, { temixCode: { not: '' } }],
+      },
+      select: { nmwcCode: true },
+    });
+    out.push(...found.map((c) => c.nmwcCode));
+  }
+  return out.sort();
+}
+
+/**
  * A row whose fix a newer upload may rule out: `key` names it in the answer.
  * `fixed`: the row is (or is being) fixed in the app itself, so for a
  * customer linked to Temix it loads branch only; a row a fix only brought back

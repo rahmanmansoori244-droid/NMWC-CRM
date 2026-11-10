@@ -25,6 +25,7 @@ import { lockCustomersAndTemixCodeHolders } from '@/lib/locks';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { followBranchStatus, NO_STATUS_EVENTS, statusEvents } from '@/lib/customer-status';
 import { notifyUsers, settleRequestAlerts } from '@/lib/notifications';
+import { mergeClosedReason } from '@/lib/request-reasons';
 import {
   pairCandidates,
   parseDismissals,
@@ -341,7 +342,9 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
           pendingRole: null,
           reviewedById: session.id,
           reviewedAt: mergedAt,
-          decisionReason: `Auto-closed: customer ${loser.nmwcCode} merged into ${winner.nmwcCode}.`,
+          // A closure note, never a requester's reason: a pending close or
+          // reactivation request keeps his in requestReason (finding 18).
+          decisionReason: mergeClosedReason(loser.nmwcCode, winner.nmwcCode),
           slaDueAt: null,
           slaBreachedAt: null,
           lastEscalatedAt: null,
@@ -364,7 +367,7 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
           action: 'REJECT',
           entityType: 'CustomerEdit',
           entityId: e.id,
-          reason: `Auto-closed: customer ${loser.nmwcCode} merged into ${winner.nmwcCode}.`,
+          reason: mergeClosedReason(loser.nmwcCode, winner.nmwcCode),
           after: {
             state: EditState.REJECTED,
             closedBy: 'merge',

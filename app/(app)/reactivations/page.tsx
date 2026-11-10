@@ -8,6 +8,7 @@ import { NoRegionNotice } from '@/components/nmwc/NoRegionNotice';
 import { ReactivationDecisionForm } from './ReactivationDecisionForm';
 import { loadScope } from '@/lib/access';
 import { EVIDENCE_SELECT, evidenceIds, standsAsEvidence } from '@/lib/status-evidence';
+import { requestReasonOf } from '@/lib/request-reasons';
 
 export const metadata = { title: 'Reactivations · NMWC' };
 
@@ -101,7 +102,9 @@ export default async function ReactivationsPage() {
                   <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-[1fr_auto] md:items-center">
                     <div>
                       <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 ring-1 ring-amber-200">
-                        <strong>Reason:</strong> {e.decisionReason ?? '—'}
+                        {/* Finding 18: the salesman's own reason, from the column that
+                            is only his (a request an older build sent: lib/request-reasons.ts). */}
+                        <strong>Reason:</strong> {requestReasonOf(e) ?? '—'}
                       </p>
                       {/* final-hunt #12: the reviewer must see the FRESH evidence the
                           salesman captured for THIS reactivation (edit.attachmentChanges),

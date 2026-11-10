@@ -45,13 +45,55 @@ describe('services/imports.ts: branch writes, scores and row notes', () => {
   });
 
   it('the full lane writes a branch only when the row changes it', () => {
-    const loop = src.slice(
-      src.indexOf('for (const [k, r] of fullBranches.entries())'),
-      src.indexOf('tx.branch.upsert(')
-    );
+    // The loop's row is `sheetRow` since the code review of 2026-11-10 (finding
+    // 1): what the sheet gives. `r`, which the skip and the write still read, is
+    // what the CRM field rule lets the import write (below).
+    const start = src.indexOf('for (const [k, sheetRow] of fullBranches.entries())');
+    expect(start).toBeGreaterThan(-1);
+    const loop = src.slice(start, src.indexOf('tx.branch.upsert('));
     expect(loop).toMatch(
       /if \(branchOwner && differingBranchCells\(r, branchOwner\)\.length === 0\) continue;/
     );
+  });
+
+  // Code review 2026-11-10, finding 1: a re-import replaced CRM-owned values on
+  // every customer with no Temix code on record. The rule that stops it is only
+  // as good as the places that call it, so they are pinned.
+  it('every write of a customer or shop that exists goes through the CRM field rule first', () => {
+    // Full lane, shops: the rule narrows the row BEFORE the skip and the upsert,
+    // and the upsert's update reads the narrowed row.
+    const start = src.indexOf('for (const [k, sheetRow] of fullBranches.entries())');
+    const upsert = src.indexOf('tx.branch.upsert(');
+    const loop = src.slice(start, upsert);
+    const rule = loop.indexOf('const crm = branchCrmRule(overwriteCrm, sheetRow, branchOwner);');
+    expect(rule).toBeGreaterThan(-1);
+    expect(loop.indexOf('const r = crm.row;')).toBeGreaterThan(rule);
+    expect(loop.indexOf('differingBranchCells(r, branchOwner)')).toBeGreaterThan(loop.indexOf('const r = crm.row;'));
+    const update = callAt(upsert);
+    expect(update.slice(update.indexOf('update:'), update.indexOf('create:'))).not.toMatch(/sheetRow\./);
+
+    // Full lane, the customer: the write is built from the narrowed sheet, never from the row.
+    expect(src).toMatch(/const crmCustomer = customerCrmRule\(\s*overwriteCrm,/);
+    const write = /const customerWrite: Record<string, unknown> = \{[\s\S]*?\n\s*\};/.exec(src)![0];
+    expect(write).toMatch(/legalName: crmCustomer\.sheet\.custName,/);
+    expect(write).not.toMatch(/\blead\.(custName|phone|contactPerson|crNumber)\b/);
+    expect(write).not.toMatch(/\bgroupChannelId\b/);
+
+    // Fixed rows (the branch-only lane): the update reads the narrowed row.
+    const lane = src.slice(src.indexOf('async function refreshLaneBranches('), src.indexOf('async function writeLaneNotes('));
+    expect(lane).toMatch(/const rule = branchCrmRule\(overwriteCrm, r, found\);\s*const w = rule\.row;/);
+    const laneUpdate = lane.slice(lane.indexOf('tx.branch.update('));
+    expect(laneUpdate.slice(0, laneUpdate.indexOf('version: { increment: 1 }'))).not.toMatch(/\br\.(nameGiven|sheetAddress|dayOfVisit|status)\b/);
+
+    // The status a sheet states is not read for a customer that exists, unless the option is on.
+    expect(src).toMatch(
+      /const statedStatus: CustomerStatus \| null = existing && !overwriteCrm \? null : sheetStatus;/
+    );
+    // The option is the batch's, read in the preflight and held by the claim.
+    expect(src).toMatch(/const overwriteCrm = preflight\.overwriteCrmFields === true;/);
+    expect(callsOf('prisma.importBatch.updateMany')[0]).toMatch(/overwriteCrmFields: overwriteCrm,/);
+    // The lane is decided in lib/import-plan.ts, which the summary also runs.
+    expect(src).toMatch(/const lane = decideLane\(\{/);
   });
 
   it('the promote rescores through lib/rescore.ts, and writes no score of its own', () => {

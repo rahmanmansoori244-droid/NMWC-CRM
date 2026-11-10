@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**537 stored columns across 37 tables** — Customer contact: 29 · Employee: 96 · Customer entity (personal if a sole establishment): 50 · Not personal data: 362.
+**540 stored columns across 37 tables** — Customer contact: 30 · Employee: 97 · Customer entity (personal if a sole establishment): 50 · Not personal data: 363.
 
 ## Columns holding personal data
 
@@ -104,7 +104,8 @@ Every column the database stores, classified by whose personal data it is. This 
 | `submittedAt` | Employee | behaviour |  |
 | `reviewedById` | Employee | behaviour |  |
 | `reviewedAt` | Employee | behaviour |  |
-| `decisionReason` | Customer contact | free text | approver’s words; may describe the customer or the submitting employee |
+| `decisionReason` | Customer contact | free text | the latest send-back reason while a request stands sent back (an approver’s words, also on his decision row), or the note on a request closed without a decision; on close and reactivation requests sent before 20261110110000, the salesman’s own reason. May describe the customer or the submitting employee |
+| `requestReason` | Customer contact | free text | the requester’s own words on a close or reactivation request (finding 18): why the shop should close or reopen; frozen once sent, and copied to the request’s CREATE audit row. May describe the customer |
 | `fieldChanges` | Customer contact | snapshot | before/after values of the customer and branch fields above, and for a field kept over a value changed after the form opened, that newer value (overrodeLive, F06) — a second copy of the same personal data; plus, for a GPS point typed in by hand, the salesman’s own free-text reason (item 41), which the UPDATE APPROVE audit row also copies |
 | `paymentTermsAtSubmit` | Customer entity (personal if a sole establishment) | financial |  |
 | `approvalChain` | Employee | snapshot | the roles and step order frozen at submit time |
@@ -133,6 +134,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | `uploadedById` | Employee | behaviour |  |
 | `uploadedAt` | Employee | behaviour |  |
 | `promoteLeaseBy` | Employee | identifier | which Steward holds the promote lease |
+| `overwriteCrmFieldsAt` | Employee | behaviour |  |
 
 ### ImportRow
 
@@ -444,6 +446,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | ImportBatch | `promoteLeaseUntil` | DateTime | record timestamp, not an attribute of a person |
 | ImportBatch | `fileSha256` | String | SHA-256 of the uploaded workbook as a whole (gap 7): identifies the file, not its contents — no value can be read back from it |
 | ImportBatch | `fileBytes` | Int | size of the uploaded workbook |
+| ImportBatch | `overwriteCrmFields` | Boolean | per-batch option: the sheet may replace CRM-owned fields (code review 2026-11-10, finding 1) |
 | ImportRow | `id` | String | foreign key / structural value |
 | ImportRow | `batchId` | String | foreign key / structural value |
 | ImportRow | `rowNumber` | Int | structural / operational value |

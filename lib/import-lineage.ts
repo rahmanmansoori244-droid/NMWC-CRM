@@ -36,6 +36,12 @@ export type ImportLineage = {
   importRowId: string;
   rowNumber: number | string;
   lane: ImportLane;
+  /**
+   * Code review 2026-11-10, finding 1: the batch was promoted with "Overwrite CRM
+   * fields from this sheet" on. Present (true) only then, so the audit rows of an
+   * ordinary load are as they were.
+   */
+  overwriteCrmFields?: true;
 };
 
 const isDecimal = (v: unknown): v is Prisma.Decimal => Prisma.Decimal.isDecimal(v);
@@ -114,7 +120,13 @@ export function createAudit(values: Readonly<Record<string, unknown>>, lineage: 
 }
 
 function lineageJson(l: ImportLineage): Prisma.InputJsonObject {
-  return { batchId: l.batchId, importRowId: l.importRowId, rowNumber: l.rowNumber, lane: l.lane };
+  return {
+    batchId: l.batchId,
+    importRowId: l.importRowId,
+    rowNumber: l.rowNumber,
+    lane: l.lane,
+    ...(l.overwriteCrmFields === true ? { overwriteCrmFields: true } : {}),
+  };
 }
 
 /**

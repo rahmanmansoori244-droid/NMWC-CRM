@@ -17,6 +17,11 @@ vi.mock('next/navigation', () => ({ useRouter: () => router }));
 // here is simply "already attached". Its two buttons stand for an upload that
 // starts and one that ends — the onBusyChange contract, which
 // photo-slot-busy.test.tsx pins on the real slot.
+//
+// Code review 2026-11-10, finding 4: a photo taken on the new-customer form is
+// unsent work now, kept in the phone copy. The two tests about a visit with
+// nothing on the form switch the "already attached" photo off.
+const slotMock = vi.hoisted(() => ({ attached: true }));
 vi.mock('@/components/nmwc/PhotoCaptureSlot', () => ({
   PhotoCaptureSlot: ({
     kind,
@@ -30,7 +35,7 @@ vi.mock('@/components/nmwc/PhotoCaptureSlot', () => ({
     disabled?: boolean;
   }) => {
     useEffect(() => {
-      onChange?.({ attachmentId: 'att-evidence' });
+      if (slotMock.attached) onChange?.({ attachmentId: 'att-evidence' });
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
     return (
       <span data-slot={kind} data-locked={disabled ? 'yes' : 'no'}>
@@ -77,6 +82,7 @@ const noAnswer = async (): Promise<Response> => {
 beforeEach(() => {
   sent = [];
   replies = [];
+  slotMock.attached = true;
   for (const f of Object.values(router)) f.mockReset();
   nav.hardReplace.mockReset();
   window.localStorage.clear();
@@ -228,8 +234,11 @@ describe('the customer update form', () => {
 
   it('Try again after an unanswered Save draft repeats the SAVE, with its id — and the phone copy stays', async () => {
     renderForm();
-    // Let the mount-time autosave write first: were the save to delete the copy
-    // after it, nothing would write it back and the check below would see that.
+    // Code review 2026-11-10, finding 5: nothing is written for a form merely
+    // opened, so he types a note. Let the autosave write it first: were the save
+    // to delete the copy after it, nothing would write it back and the check
+    // below would see that.
+    fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'Closed Fridays' } });
     await act(async () => {
       await new Promise((r) => setTimeout(r, 600));
     });
@@ -255,15 +264,29 @@ describe('the customer update form', () => {
   });
 
   it('a draft typed before a photo bumped updatedAt is restored — the server values it started from are unchanged', () => {
+    // Finding 5: a copy is kept for seven days, so the photo was taken just now
+    // and the draft typed a minute before it — not in September.
+    const photographed = { ...customer, updatedAt: new Date() };
     window.localStorage.setItem(
       draftKey,
       JSON.stringify({
         contactPerson: 'Said (typed offline)',
-        savedAt: customer.updatedAt.getTime() - 60_000, // older than the photo's bump
-        base: enrichmentBase(customer),
+        savedAt: photographed.updatedAt.getTime() - 60_000, // older than the photo's bump
+        base: enrichmentBase(photographed),
       })
     );
-    renderForm();
+    render(
+      <EnrichmentForm
+        customer={photographed}
+        channels={[]}
+        lockName
+        lockCr={false}
+        userRole="MANAGER"
+        canSubmit
+        sessionUserId="u1"
+        gate="CORE"
+      />
+    );
     expect(screen.getByDisplayValue('Said (typed offline)')).toBeTruthy();
     expect(screen.getByText('Restored a local draft from your last visit.')).toBeTruthy();
   });
@@ -284,8 +307,10 @@ describe('the customer update form', () => {
 
   it('a first-time submit is said beside the button before it moves on, by a document load (no stale cache, forward or Back)', async () => {
     renderForm();
-    // Let the mount-time autosave write the phone copy first — else the "cleared"
-    // check below passes whether or not the submit clears it (post-merge review).
+    // Let the autosave write the phone copy first — else the "cleared" check
+    // below passes whether or not the submit clears it (post-merge review).
+    // Finding 5: only a changed form has a copy, so he types a note.
+    fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'Closed Fridays' } });
     await act(async () => {
       await new Promise((r) => setTimeout(r, 600));
     });
@@ -541,6 +566,8 @@ describe('the customer update form', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       renderForm();
+      // Finding 5: a form merely opened has no copy; a typed note makes one.
+      fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'Closed Fridays' } });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(600);
       });
@@ -704,7 +731,8 @@ describe('the customer update form', () => {
         notes: '',
         // Written before a route handover: b-gone is no longer this salesman's.
         branchStates: { b1, 'b-gone': { ...b1, address: 'Another route now' } },
-        savedAt: 1,
+        // Recent: a copy is kept for seven days (finding 5).
+        savedAt: Date.now() - 60_000,
         base: enrichmentBase(customer),
       })
     );
@@ -1101,7 +1129,10 @@ describe('the customer update form', () => {
     const onFile: Loaded = { ...customer, channelId: 'ch1' };
     const visit = renderAs('SALESMAN', counted(onFile));
     expect(screen.getByText('✓ Equipment counted')).toBeTruthy();
-    // He leaves without touching anything; the mount-time autosave wrote the copy.
+    // He types a note and leaves without touching "Counted"; the autosave wrote
+    // the copy, "Counted" carried along in it. (Finding 5: a form he did not
+    // change at all leaves no copy any more.)
+    fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'Closed Fridays' } });
     await autosaved();
     expect(JSON.parse(window.localStorage.getItem(draftKey)!).branchStates.b1).toMatchObject({
       confirmed: true,
@@ -1329,6 +1360,8 @@ describe('the new-customer form', () => {
     replies.push(answer({ ok: true, data: null }));
     renderCreate();
     await waitFor(() => expect(screen.getByText(/^Restored the details you typed on this phone\. Branch details/)).toBeTruthy());
+    // Held until he says it is this shop (code review 2026-11-10, review of finding 4).
+    fireEvent.click(screen.getByRole('button', { name: /^Continue / }));
     expect(screen.getByDisplayValue('Blue Sea Cafe')).toBeTruthy();
   });
 
@@ -1337,6 +1370,8 @@ describe('the new-customer form', () => {
     replies.push(noAnswer);
     renderCreate();
     await waitFor(() => expect(screen.getByText(/Your last send got no answer and may have arrived/)).toBeTruthy());
+    // Held until he says it is this shop (code review 2026-11-10, review of finding 4).
+    fireEvent.click(screen.getByRole('button', { name: /^Continue / }));
     expect(screen.getByDisplayValue('Blue Sea Cafe')).toBeTruthy();
   });
 
@@ -1347,6 +1382,8 @@ describe('the new-customer form', () => {
     replies.push(noAnswer);
     renderCreate();
     await waitFor(() => expect(screen.getByText(/Your last send got no answer and may have arrived/)).toBeTruthy());
+    // Held until he says it is this shop (code review 2026-11-10, review of finding 4).
+    fireEvent.click(screen.getByRole('button', { name: /^Continue / }));
     goOffline();
     fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(OFFLINE_AFTER_EARLIER_MESSAGE));
@@ -1382,6 +1419,7 @@ describe('the new-customer form', () => {
   // Item 22 review: the autosave wrote an empty copy on every visit, and the
   // next one said "Restored the details you typed" over a blank form.
   it('a visit that typed nothing leaves no copy, and the next visit claims no restore', async () => {
+    slotMock.attached = false; // nothing typed, and no photo taken either (finding 4)
     const first = renderCreate();
     await act(async () => {
       await new Promise((r) => setTimeout(r, 600));
@@ -1396,6 +1434,7 @@ describe('the new-customer form', () => {
   });
 
   it('clearing every field removes the copy — the old text does not come back', async () => {
+    slotMock.attached = false; // text only: a photo on the form would be unsent work too (finding 4)
     const first = renderCreate();
     fireEvent.change(screen.getByLabelText(/Legal name/), { target: { value: 'Blue Sea Cafe' } });
     await act(async () => {

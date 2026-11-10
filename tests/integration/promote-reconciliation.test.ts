@@ -24,7 +24,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vites
 import { purgeAuditLog } from '../support/audit';
 import ExcelJS from 'exceljs';
 // RK-3: promote is sliced, so "load this batch" means driving it to completion.
-import { promoteFully } from '../support/promote';
+import { overwriteOn, promoteFully } from '../support/promote';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
@@ -513,7 +513,15 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     );
     const up = await imports.uploadCustomerMasterAction(fd);
     expect(up.ok).toBe(true);
-    await promoteFully(imports, (up as { ok: true; data: { batchId: string } }).data.batchId);
+    // Code review 2026-11-10, finding 1: a go-live master load that is meant to
+    // put the master's names over the seeded ones is a deliberate bulk correction,
+    // and is promoted with the batch's overwrite option on. (Without it this load
+    // still takes the full lane and still creates the branch; it keeps the name on
+    // record and says so on the row —
+    // tests/integration/import-crm-fill-only.test.ts.)
+    const goliveBatch = (up as { ok: true; data: { batchId: string } }).data.batchId;
+    await overwriteOn(goliveBatch);
+    await promoteFully(imports, goliveBatch);
 
     const after = await prisma.customer.findUniqueOrThrow({
       where: { nmwcCode: code },

@@ -112,9 +112,11 @@ export const UNCONFIRMED_MESSAGE =
 
 /**
  * Turned away before it was read: the session ended, or a forced password
- * change. Not "sign in again here" — leaving this page loses what only lives on
- * it (the new-customer form keeps its typed text on the phone, but not its
- * branches, points or photos). A sign-in in another tab refreshes the cookie.
+ * change. Not "sign in again here" — leaving this page cuts off a photo still
+ * uploading, and loses the form where the phone could not keep its copy (since
+ * code review 2026-11-10, finding 4, the new-customer form keeps its shops,
+ * points and photo ids on the phone too, not only its typed text). A sign-in in
+ * another tab refreshes the cookie.
  */
 export const SIGNED_OUT_MESSAGE =
   'You need to sign in again, so this was not sent. Keep this page open, sign in in another tab, then come back and tap Try again.';

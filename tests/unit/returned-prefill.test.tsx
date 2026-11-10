@@ -256,8 +256,18 @@ describe('the edit form, opened on a sent-back update', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(600);
     });
+    // Code review 2026-11-10, finding 5: an untouched form keeps no copy, so the
+    // old one is gone rather than rewritten…
+    expect(window.localStorage.getItem(DRAFT_KEY)).toBeNull();
+    // …and the copy of the edit he then makes is a plain one: not tagged with
+    // what he sent, and without the contact role he was told not to send.
+    fireEvent.change(screen.getByLabelText('Opening hours'), { target: { value: '08:00 – 22:00' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
     const copy = JSON.parse(window.localStorage.getItem(DRAFT_KEY)!);
     expect(copy.returnedId).toBeUndefined();
     expect(copy.contactRole).toBe('Owner');
+    expect(copy.branchStates.b1.openingHours).toBe('08:00 – 22:00');
   });
 });

@@ -104,6 +104,26 @@ describe('the per-entity import audit row', () => {
     });
   });
 
+  // Code review 2026-11-10, finding 1: a batch promoted with "Overwrite CRM
+  // fields from this sheet" on marks every audit row it writes; an ordinary
+  // load's rows are exactly as they were (the two cases above have no such key).
+  it('a row of a batch promoted with the overwrite option on says so; one without it carries no such key', () => {
+    const on = { ...lineage, overwriteCrmFields: true as const };
+    expect(changeAudit(['address'], { address: 'Way 1' }, { address: 'Way 2' }, on).after).toEqual({
+      address: 'Way 2',
+      batchId: 'b1',
+      importRowId: 'row-1',
+      rowNumber: 14,
+      lane: 'full',
+      overwriteCrmFields: true,
+    });
+    expect(createAudit({ nmwcCode: 'C1' }, on)).toMatchObject({ nmwcCode: 'C1', overwriteCrmFields: true });
+    expect(changeAudit(['address'], { address: 'Way 1' }, { address: 'Way 2' }, lineage).after).not.toHaveProperty(
+      'overwriteCrmFields'
+    );
+    expect(createAudit({ nmwcCode: 'C1' }, lineage)).not.toHaveProperty('overwriteCrmFields');
+  });
+
   it('CREATE: every value it was created with, JSON-safe, and the lineage', () => {
     const at = new Date('2026-10-12T05:00:00.000Z');
     expect(

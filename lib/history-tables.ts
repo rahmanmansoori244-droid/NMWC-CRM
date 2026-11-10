@@ -29,6 +29,9 @@ export const HISTORY_MIGRATIONS = [
   '20261024120400_integrity_results',
   // Gap 18: where a request was raised, frozen by the evidence guard (redefined there).
   '20261025090100_request_scope_at_submit',
+  // Code review 2026-11-10, finding 18: the requester's own reason, frozen by the
+  // evidence guard (redefined there, one line added).
+  '20261110110000_request_reason',
 ] as const;
 
 /** INSERT-only tables written by the capture triggers, never by the application. */

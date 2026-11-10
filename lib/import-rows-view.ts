@@ -72,7 +72,9 @@ export function parsePage(value: string | undefined): number {
  * but a route or region was substituted, its branch was left as it was, a
  * customer-level cell of a row fixed in the app was not written, or — on the
  * customer's first row, with its branch written — the row's channel change
- * cleared the customer's sub-channel (F16).
+ * cleared the customer's sub-channel (F16). Since the code review of 2026-11-10
+ * (finding 1) also a row whose CRM value differed from the record and was kept,
+ * and a row whose credit cells were not applied.
  */
 export function rowViewWhere(batchId: string, view: RowView): Prisma.ImportRowWhereInput {
   switch (view) {
@@ -141,6 +143,9 @@ const FIELD_LABEL: Record<string, string> = {
   // F16: not a '_lane' note — that row's branch WAS written; only the
   // sub-channel needs picking again (services/imports.ts writeLaneNotes).
   _subchannel: 'Sub-channel cleared',
+  // Code review 2026-11-10, finding 1 (services/imports.ts writeLaneNotes).
+  _kept: 'CRM value kept',
+  _credit: 'Credit not applied',
   cust_code: 'Customer code',
   cust_name: 'Name',
   phone: 'Phone',

@@ -102,6 +102,12 @@ export default async function ImportPage() {
                   Legacy uppercase headings (e.g. <code>SALES REGION</code>, <code>CUST NAME</code>)
                   are also accepted.
                 </p>
+                {/* Code review 2026-11-10, finding 1. */}
+                <p className="mt-2 text-[11px] text-slate-500">
+                  Headings are matched whatever their capitals, spaces or underscores. Columns the
+                  import does not read are listed after the upload. For customers already in the
+                  CRM the import fills blank CRM fields only. Never load a Temix extract here.
+                </p>
               </div>
             </details>
             {/* Launch fix: the generated template (app/(app)/import/template/route.ts). */}

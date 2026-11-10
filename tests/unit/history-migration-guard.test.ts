@@ -241,6 +241,8 @@ const FROZEN = [
   // Gap 18: where the request was raised (20261025090100_request_scope_at_submit).
   'routeIdAtSubmit',
   'regionIdsAtSubmit',
+  // Code review 2026-11-10, finding 18: the requester's own reason (20261110110000_request_reason).
+  'requestReason',
 ];
 /** What still moves after a request is sent: its state, decision, SLA clock and customer. */
 const MOVABLE = [

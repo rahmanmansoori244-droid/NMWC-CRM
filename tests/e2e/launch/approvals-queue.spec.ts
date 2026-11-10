@@ -193,6 +193,8 @@ async function stateOf(id: string) {
       reviewedById: true,
       decisionReason: true,
       decisionCategory: true,
+      // Code review 2026-11-10, finding 18: the requester's own reason.
+      requestReason: true,
       escalationLevel: true,
       slaBreachedAt: true,
       lastEscalatedAt: true,
@@ -1025,10 +1027,19 @@ test.describe('approvals: a close-shop request from the phone to the decision', 
 
     const edit = await db.customerEdit.findFirstOrThrow({
       where: { branchId: c1.branch.id, target: 'BRANCH', state: 'SUBMITTED' },
-      select: { id: true, fieldChanges: true, attachmentChanges: true, pendingRole: true, decisionReason: true, isReactivation: true },
+      select: {
+        id: true,
+        fieldChanges: true,
+        attachmentChanges: true,
+        pendingRole: true,
+        decisionReason: true,
+        requestReason: true,
+        isReactivation: true,
+      },
     });
     w.adopt.edit(edit.id);
-    expect(edit).toMatchObject({ pendingRole: 'SUPERVISOR', decisionReason: why, isReactivation: false });
+    // Finding 18: his reason in its own column; decisionReason is the copy the build before this one reads.
+    expect(edit).toMatchObject({ pendingRole: 'SUPERVISOR', decisionReason: why, requestReason: why, isReactivation: false });
     expect(edit.fieldChanges).toEqual([{ field: `branch.${c1.branch.id}.status`, before: 'ACTIVE', after: 'CLOSED' }]);
     const evidence = (edit.attachmentChanges as Array<{ attachmentId: string; action: string }>)[0]!;
     expect(evidence.action).toBe('EVIDENCE');
@@ -1053,6 +1064,8 @@ test.describe('approvals: a close-shop request from the phone to the decision', 
     await expect(row).toContainText('Review');
 
     await m1.goto(`/approvals/${edit.id}`);
+    // Finding 18: the approver of a PENDING close reads why the salesman asked.
+    await expect(m1.getByText("Salesman's reason:", { exact: true }).locator('xpath=..')).toContainText(`“${why}”`);
     await expect(m1.getByRole('heading', { level: 2, name: 'Evidence sent with this request' })).toBeVisible();
     await imagesLoaded(m1.locator(`img[src="/api/photos/${evidence.attachmentId}"]`));
     const clickedAt = Date.now();
@@ -1271,7 +1284,16 @@ test.describe('approvals: a reactivation from the phone to the Manager’s decis
     await expect(m2.getByText(cl2.legalName)).toHaveCount(0);
 
     // Wave 1: final, the salesman's own reason kept, the Manager's on the audit row and in his notification.
-    expect(await stateOf(keptClosed)).toMatchObject({ state: 'REJECTED', decisionReason: salesmanReason, reviewedById: w.user('M2').id });
+    expect(await stateOf(keptClosed)).toMatchObject({
+      state: 'REJECTED',
+      decisionReason: salesmanReason,
+      // Finding 18: in its own column, which the Manager's decision never writes.
+      requestReason: salesmanReason,
+      reviewedById: w.user('M2').id,
+    });
+    expect((await db.editApproval.findMany({ where: { editId: keptClosed }, select: { decision: true, reason: true } }))).toEqual([
+      { decision: 'REJECTED', reason: managerReason },
+    ]);
     const reject = await auditFor({ entityId: keptClosed, action: 'REJECT' });
     expect(reject.map((r) => r.reason)).toEqual([managerReason]);
     await expect
@@ -1555,6 +1577,11 @@ test.describe('approvals: the whole approval loop on a 360 px phone', { tag: ['@
     await card.getByRole('button', { name: 'Cancel' }).click();
 
     await page.goto('/dashboard');
+    // The figures stream in after the "Loading…" skeleton: measure the tiles only once
+    // they are on screen (a streamed tile is first attached hidden, and its box is null).
+    for (const label of ['New customers', 'Customers updated', 'Pending approval']) {
+      await expect(kpiTile(page, label)).toBeVisible();
+    }
     const a = await kpiTile(page, 'New customers').boundingBox();
     const b = await kpiTile(page, 'Customers updated').boundingBox();
     const c = await kpiTile(page, 'Pending approval').boundingBox();

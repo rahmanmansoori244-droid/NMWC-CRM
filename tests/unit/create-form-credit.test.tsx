@@ -156,6 +156,8 @@ describe("the customer's e-mail", () => {
     });
     cleanup();
     render(<CreateCustomerForm channels={channels} initial={null} sessionUserId="u1" />);
+    // Held until he says it is this shop (code review 2026-11-10, review of finding 4).
+    fireEvent.click(await screen.findByRole('button', { name: /^Continue / }));
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'E-mail *' })).toHaveValue('accounts@bluesea.om'));
   });
 });

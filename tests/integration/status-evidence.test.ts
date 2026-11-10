@@ -155,12 +155,20 @@ describe.skipIf(!ENABLED)('status evidence at decision time (F10, X-STATUS-1, F1
     });
   }
 
+  const reasonsOf = (id: string) =>
+    prisma.customerEdit.findUniqueOrThrow({ where: { id }, select: { requestReason: true, decisionReason: true } });
+
   async function sendClose(attachmentId: string): Promise<string> {
     as(ids.sales, 'SALESMAN');
     const res = (await reacts.markBranchClosedAction(
       form({ branchId: ids.b1, reason: 'Shop shut permanently — seen today.', attachmentId })
     )) as Result;
     expect(res.ok, JSON.stringify(res)).toBe(true);
+    // Finding 18: his reason in its own column, with the rollback bridge's copy beside it.
+    expect(await reasonsOf(res.data!.editId)).toEqual({
+      requestReason: 'Shop shut permanently — seen today.',
+      decisionReason: 'Shop shut permanently — seen today.',
+    });
     return res.data!.editId;
   }
 
@@ -171,6 +179,10 @@ describe.skipIf(!ENABLED)('status evidence at decision time (F10, X-STATUS-1, F1
       form({ branchId: ids.b1, reason: 'Open again under the same owner.', attachmentId })
     )) as Result;
     expect(res.ok, JSON.stringify(res)).toBe(true);
+    expect(await reasonsOf(res.data!.editId)).toEqual({
+      requestReason: 'Open again under the same owner.',
+      decisionReason: 'Open again under the same owner.',
+    });
     return res.data!.editId;
   }
 

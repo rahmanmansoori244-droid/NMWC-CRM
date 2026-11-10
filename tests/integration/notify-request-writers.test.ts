@@ -388,6 +388,8 @@ describe.skipIf(!ENABLED)('F1: a salesman request notifies his hierarchy, in its
     expect((await prisma.branch.findUniqueOrThrow({ where: { id: ids.branch } })).status).toBe('ACTIVE');
     // His reason for asking is still the request's.
     expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } })).decisionReason).toBe('Open again, same owner.');
+    // Finding 18: in the column that is only his — the one above is the rollback bridge's copy.
+    expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } })).requestReason).toBe('Open again, same owner.');
   });
 
   it('"Keep closed": final, off his Needs correction lists, both reasons kept, and he is told why', async () => {
@@ -400,6 +402,11 @@ describe.skipIf(!ENABLED)('F1: a salesman request notifies his hierarchy, in its
 
     const row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } });
     expect(row).toMatchObject({ state: 'REJECTED', reviewedById: ids.mgrB, decisionReason: 'Open again, same owner.' });
+    // Finding 18: his reason in its own column, and the Manager's on his decision row.
+    expect(row.requestReason).toBe('Open again, same owner.');
+    expect(await prisma.editApproval.findMany({ where: { editId }, select: { decision: true, reason: true, actorId: true } })).toEqual([
+      { decision: 'REJECTED', reason: why, actorId: ids.mgrB },
+    ]);
     expect(await needsCorrection()).toBe(before);
     const audit = await prisma.auditLog.findFirstOrThrow({ where: { entityId: editId, action: 'REJECT' }, select: { reason: true } });
     expect(audit.reason).toBe(why);
@@ -435,6 +442,8 @@ describe.skipIf(!ENABLED)('F1: a salesman request notifies his hierarchy, in its
 
     const row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } });
     expect(row).toMatchObject({ state: 'REJECTED', reviewedById: ids.mgrB, decisionReason: 'Shop shut, seen today.' });
+    // Finding 18: his reason in its own column (the reviewer's is on the decision row below).
+    expect(row.requestReason).toBe('Shop shut, seen today.');
     expect(await needsCorrection()).toBe(before);
     const step = await prisma.editApproval.findFirstOrThrow({ where: { editId }, select: { decision: true, reason: true } });
     expect(step).toEqual({ decision: 'REJECTED', reason: why });
