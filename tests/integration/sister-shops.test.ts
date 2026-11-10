@@ -28,6 +28,7 @@ import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals, purgeHistory } f
 import { freshDecisionToken } from '../support/decision-token';
 import { rescoreCustomerTx } from '@/lib/rescore';
 import { scoreBranch } from '@/lib/completeness';
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 const ENABLED = process.env.RUN_SISTER_SHOPS === '1' && !!process.env.DATABASE_URL;
@@ -72,7 +73,7 @@ describe.skipIf(!ENABLED)('finding 27: approving a change to one shop leaves its
 
   beforeAll(async () => {
     for (const url of [process.env.DATABASE_URL, process.env.DIRECT_URL]) {
-      if ((url ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+      if (pointsAtProduction(url ?? '')) throw new Error('ABORT: production');
     }
     ({ prisma } = await import('@/lib/db'));
     edits = await import('@/services/edits');

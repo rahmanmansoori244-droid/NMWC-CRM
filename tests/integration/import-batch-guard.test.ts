@@ -20,6 +20,7 @@ import ExcelJS from 'exceljs';
 import { purgeAuditLog } from '../support/audit';
 import { promoteFully } from '../support/promote';
 import { WORK_BATCH_ROWS } from '@/lib/import-rows-view';
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 
@@ -82,8 +83,8 @@ describe.skipIf(!ENABLED)('finding 6: an old staged customer batch is not loaded
   const nameOf = async (code: string) => (await prisma.customer.findUnique({ where: { nmwcCode: code } }))?.legalName ?? null;
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DIRECT_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     imports = await import('@/services/imports');
     fixes = await import('@/services/import-fixes');

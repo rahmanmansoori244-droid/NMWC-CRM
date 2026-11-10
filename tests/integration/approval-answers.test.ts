@@ -29,6 +29,7 @@ import { randomUUID } from 'node:crypto';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals, purgeHistory } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
 import { ALREADY_DECIDED_CODE } from '@/lib/already-decided';
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 const ENABLED = process.env.RUN_APPROVAL_ANSWERS === '1' && !!process.env.DATABASE_URL;
@@ -89,7 +90,7 @@ describe.skipIf(!ENABLED)('finding 21: a decision already made is answered as on
 
   beforeAll(async () => {
     for (const url of [process.env.DATABASE_URL, process.env.DIRECT_URL]) {
-      if ((url ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+      if (pointsAtProduction(url ?? '')) throw new Error('ABORT: production');
     }
     ({ prisma } = await import('@/lib/db'));
     creates = await import('@/services/creates');

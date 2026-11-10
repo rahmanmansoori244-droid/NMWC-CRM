@@ -15,6 +15,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import bcrypt from 'bcryptjs';
 import { purgeAuditLog } from '../support/audit';
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
@@ -49,8 +50,8 @@ describe.skipIf(!ENABLED)('finding 22: a password change whose answer was lost, 
   };
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DIRECT_URL ?? '')) throw new Error('ABORT: production');
     savedBackend = process.env.RATE_LIMIT_BACKEND;
     delete process.env.RATE_LIMIT_BACKEND; // the durable limiter, as in production
     ({ prisma } = await import('@/lib/db'));

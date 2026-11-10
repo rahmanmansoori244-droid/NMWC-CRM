@@ -15,6 +15,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog } from '../support/audit';
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
@@ -41,8 +42,8 @@ describe.skipIf(!ENABLED)('finding 9: a switch sets the wanted state, once', () 
   const userHistory = (userId: string) => prisma.userHistory.count({ where: { userId, changeKind: 'UPDATE' } });
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DIRECT_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     users = await import('@/services/users');
     routes = await import('@/services/routes');
