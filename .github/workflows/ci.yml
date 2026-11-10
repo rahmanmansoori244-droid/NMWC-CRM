@@ -247,6 +247,10 @@ jobs:
           # Code review 2026-11-10, finding 9: Disable / Enable set the wanted
           # state; a second click writes no audit or history row (active-switch).
           RUN_ACTIVE_SWITCH: '1'
+          # Finding 22: a password change whose answer was lost is answered as
+          # done, writing nothing again; the form's guess limit on Postgres
+          # (password-change-retry).
+          RUN_PASSWORD_CHANGE_RETRY: '1'
 
   # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
   # person typing `npm run test:e2e`. It shows: login.spec.ts asserted

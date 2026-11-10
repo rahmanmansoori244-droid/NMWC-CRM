@@ -34,6 +34,8 @@ const h = vi.hoisted(() => ({
   audits: [] as Array<{ tx: boolean; reason?: string }>,
   signIn: vi.fn(),
   signOut: vi.fn(),
+  /** bcrypt comparisons made (finding 22: candidates tested per attempt). */
+  compares: 0,
 }));
 
 vi.mock('@/lib/auth', () => ({
@@ -53,7 +55,10 @@ vi.mock('next/cache', () => ({
   unstable_cache: (fn: unknown) => fn,
 }));
 vi.mock('bcryptjs', () => {
-  const compare = async (plain: string, hash: string) => hash === `hash:${plain}`;
+  const compare = async (plain: string, hash: string) => {
+    h.compares += 1;
+    return hash === `hash:${plain}`;
+  };
   const hash = async (plain: string) => `hash:${plain}`;
   return { default: { compare, hash }, compare, hash };
 });
@@ -477,5 +482,108 @@ describe('every route handler that acts for a user refuses a flagged session wit
     const { POST } = await import('@/app/api/forms/[form]/route');
     const res = await POST(req('/api/forms/customer-edit', { method: 'POST', body: {} }), params({ form: 'customer-edit' }));
     expect(res.status).toBe(401);
+  });
+});
+
+// Code review 2026-11-10, finding 22: the change was saved but its answer was
+// lost on a weak signal. Every retry compared the OLD password (typed again as
+// "current") with the NEW stored hash and said "Current password incorrect".
+describe('finding 22: a password change whose answer was lost', () => {
+  let n = 0;
+  /** A fresh account per case: the in-memory limiter keeps its buckets for the whole file. */
+  const fresh = (stored: string, mustChangePassword: boolean) => {
+    n += 1;
+    const id = `u-lost-${n}-${Date.now().toString(36)}`;
+    h.session = { user: { id, role: 'SALESMAN', username: `c${n}`, mustChangePassword } };
+    h.users.set(id, { id, username: `c${n}`, passwordHash: `hash:${stored}`, mustChangePassword });
+    return id;
+  };
+  const attempt = async (current: string, next: string) => {
+    const { changeOwnPasswordAction } = await import('@/services/password');
+    const fd = new FormData();
+    fd.set('currentPassword', current);
+    fd.set('newPassword', next);
+    fd.set('confirmNewPassword', next);
+    return changeOwnPasswordAction(fd);
+  };
+
+  it('the retry with the old password as "current" is answered as changed, the session renewed, and nothing written again', async () => {
+    // The first try committed: the new hash is stored and the flag is clear.
+    fresh('A-new-password-2026', false);
+    expect(await attempt('Initial-Shared-1', 'A-new-password-2026')).toEqual({ ok: true, data: { renewed: true } });
+    expect(h.signIn).toHaveBeenCalledWith('credentials', expect.objectContaining({ password: 'A-new-password-2026', redirect: false }));
+    expect(h.userUpdates).toEqual([]);
+    expect(h.audits).toEqual([]);
+    expect(h.calls).not.toContain('$transaction');
+    expect(h.calls.filter((c) => c.startsWith('passwordHistory.'))).toEqual([]);
+  });
+
+  it('a renewal that cannot be made still answers changed, and says to sign in again', async () => {
+    fresh('A-new-password-2026', false);
+    h.signIn.mockRejectedValue(new Error('throttled'));
+    expect(await attempt('Initial-Shared-1', 'A-new-password-2026')).toEqual({ ok: true, data: { renewed: false } });
+    expect(h.signOut).toHaveBeenCalledWith({ redirect: false });
+    expect(h.userUpdates).toEqual([]);
+  });
+
+  it('not while a forced change is pending: a password an administrator set is never taken as already chosen', async () => {
+    fresh('A-new-password-2026', true);
+    expect(await attempt('something-else-1', 'A-new-password-2026')).toMatchObject({
+      ok: false,
+      code: 'VALIDATION_FAILED',
+      fields: { currentPassword: 'Current password incorrect.' },
+    });
+    expect(h.signIn).not.toHaveBeenCalled();
+  });
+
+  it('a wrong current password with a different new one is still "Current password incorrect"', async () => {
+    fresh('Stored-password-2026', false);
+    expect(await attempt('wrong-one-123', 'A-new-password-2026')).toMatchObject({
+      ok: false,
+      fields: { currentPassword: 'Current password incorrect.' },
+    });
+    expect(h.signIn).not.toHaveBeenCalled();
+    expect(h.userUpdates).toEqual([]);
+  });
+
+  it('guesses are limited: after five wrong attempts the sixth is refused before anything is read, with the wait', async () => {
+    fresh('Stored-password-2026', false);
+    for (let i = 0; i < 5; i += 1) {
+      expect(await attempt(`guess-${i}-xxxxxxx`, `guess-${i}-yyyyyyyy`)).toMatchObject({ ok: false, code: 'VALIDATION_FAILED' });
+    }
+    h.calls = [];
+    const refused = await attempt('Stored-password-2026', 'A-new-password-2026');
+    expect(refused).toMatchObject({ ok: false, code: 'RATE_LIMITED' });
+    if (!refused.ok) expect(refused.message).toMatch(/^Too many attempts\. Try again in \d+s\.$/);
+    expect(h.calls).toEqual([]);
+  });
+
+  it('a right current password gives its token back: a reused new password costs nothing towards the limit', async () => {
+    fresh('Stored-password-2026', false);
+    for (let i = 0; i < 8; i += 1) {
+      // Same as current: refused after the current password was found right.
+      expect(await attempt('Stored-password-2026', 'Stored-password-2026')).toMatchObject({
+        ok: false,
+        fields: { newPassword: 'New password must differ from current.' },
+      });
+    }
+    expect(await attempt('Stored-password-2026', 'A-new-password-2026')).toEqual({ ok: true, data: { renewed: true } });
+  });
+
+  it('the guard is not weaker than before: over ten minutes, at most 2 x (5 + 5 a minute) candidates are ever compared', async () => {
+    fresh('Stored-password-2026', false);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const T0 = Date.UTC(2020, 0, 1);
+    try {
+      h.compares = 0;
+      for (let sec = 0; sec <= 600; sec += 1) {
+        vi.setSystemTime(new Date(T0 + sec * 1000));
+        await attempt(`guess-${sec}-aaaaaaa`, `guess-${sec}-bbbbbbbbbbbb`);
+      }
+      // Before finding 22 this form had no limit at all: 601 attempts, 601 compares.
+      expect(h.compares).toBeLessThanOrEqual(2 * (5 + 50));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

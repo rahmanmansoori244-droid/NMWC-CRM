@@ -17,6 +17,12 @@ const OWN_PATH = '/profile/change-password';
 // services/password.ts refuses the same mismatch with the same words.
 const MISMATCH = 'The two new passwords do not match.';
 
+// Code review 2026-11-10, finding 22: when the answer is lost (no signal, or the
+// database dropped mid-save), the new password may already be active. Typing
+// the same passwords again is answered "changed" (services/password.ts);
+// and if the page keeps failing, the new password is the one to sign in with.
+export const LOST_ANSWER_HINT = 'If this keeps failing, sign in with your new password.';
+
 // Shown as text, a phone keyboard treats the password as prose: it capitalises
 // the first letter, autocorrects words, and a cloud spell-checker is sent it.
 // Masked, browsers do none of that, so these matter only once Show is on.
@@ -72,6 +78,8 @@ export function ChangePasswordForm() {
             const res = await changeOwnPasswordAction(fd);
             if (!res.ok) {
               if (res.fields) setErrors(res.fields);
+              // The database may have saved the change before the connection dropped.
+              else if (res.code === 'DB_INTERRUPTED') setErrors({ _form: `${res.message} ${LOST_ANSWER_HINT}` });
               else setErrors({ _form: res.message });
               return;
             }
@@ -87,7 +95,9 @@ export function ChangePasswordForm() {
             setDone(renewed ? 'home' : 'signIn');
             setTimeout(() => hardReplace(renewed ? '/' : '/login'), renewed ? 1500 : 4000);
           } catch (err) {
-            setErrors({ _form: err instanceof Error ? err.message : 'Failed.' });
+            // No answer at all (a network error): the change may have been saved.
+            const said = err instanceof Error && err.message ? err.message : 'The connection failed.';
+            setErrors({ _form: `${said} Your new password may already be active: type the same passwords again and press Change password. ${LOST_ANSWER_HINT}` });
           }
         });
       }}

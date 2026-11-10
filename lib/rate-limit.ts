@@ -45,7 +45,9 @@ export async function checkLimit(
     // non-critical limits (form rate, photo serve) fall through to the
     // in-memory limiter so legitimate users keep working.
     const isSecurityCritical =
-      key.startsWith('login:') || key.startsWith('passwordreset:');
+      key.startsWith('login:') ||
+      key.startsWith('passwordreset:') ||
+      key.startsWith(PASSWORD_CHANGE_KEY_PREFIX);
     if (isSecurityCritical) {
       return { ok: false, retryAfterSec: 30 };
     }
@@ -233,6 +235,23 @@ export const LOGIN_USER_REFILL_PER_MIN = 5;
  */
 export const LOGIN_NETWORK_CAPACITY = 30;
 export const LOGIN_NETWORK_REFILL_PER_MIN = 5;
+
+/**
+ * The change-password form's guesses at the CURRENT password (services/password.ts,
+ * code review 2026-11-10, finding 22). Charged on every attempt and given back
+ * when the change goes through, so it counts failed attempts only: at most
+ * PASSWORD_CHANGE_CAPACITY + PASSWORD_CHANGE_REFILL_PER_MIN a minute, per account.
+ * Before it the form had no limit at all; it needs one now because a refused
+ * attempt also compares the NEW password with the stored one (a reply lost after
+ * the change was saved), so each attempt can test two candidates. Fails closed.
+ */
+export const PASSWORD_CHANGE_CAPACITY = 5;
+export const PASSWORD_CHANGE_REFILL_PER_MIN = 5;
+export const PASSWORD_CHANGE_KEY_PREFIX = 'pwchange:user:';
+export const PASSWORD_CHANGE_LIMIT: RateLimitConfig = {
+  capacity: PASSWORD_CHANGE_CAPACITY,
+  refillPerSec: PASSWORD_CHANGE_REFILL_PER_MIN / 60,
+};
 
 /** The per-account sign-in bucket. */
 export const LOGIN_LIMIT: RateLimitConfig = {
