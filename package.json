@@ -44,8 +44,8 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1045.0",
     "@aws-sdk/s3-request-presigner": "^3.1045.0",
-    "@prisma/adapter-pg": "7.10.0",
-    "@prisma/client": "7.10.0",
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
     "@sentry/nextjs": "^10.52.0",
     "bcryptjs": "^3.0.3",
     "clsx": "^2.1.1",
@@ -56,11 +56,11 @@
     "next-auth": "5.0.0-beta.32",
     "nodemailer": "^10.0.14",
     "pino": "^9.5.0",
-    "prisma": "7.10.0",
+    "prisma": "7.10.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwind-merge": "^2.5.0",
-    "zod": "4.6.5"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@aws/lambda-invoke-store": "^0.3.0",
