@@ -26,8 +26,12 @@
 #   - A run by hand (`workflow_dispatch`) only warns, and always prints the age, so
 #     the runbooks' "run the backup by hand and check the newest record is today"
 #     step can be done right after a restore without a red run.
-#   - No value (no manifest, an empty database): a scheduled run fails — it cannot
-#     show the database is live; a hand run warns.
+#   - No value (the newest-record query failed and the manifest has none, or an
+#     empty database): a scheduled run fails — it cannot show the database is
+#     live; a hand run warns. The value comes from its own small query
+#     (scripts/ops/backup-newest-write.sql), with the manifest as the fallback,
+#     so a failed manifest — row counts — does not by itself fail a backup that
+#     was taken (second round of the review).
 #
 # Exit 0 fine (or warned), 1 failed. Prints GitHub annotations; never a URL.
 # tests/unit/backup-freshness.test.ts runs it.
@@ -50,7 +54,7 @@ fail_or_warn() {
 }
 
 if ! [[ $SECONDS_SINCE =~ ^-?[0-9]+$ ]]; then
-  fail_or_warn "The backup could not tell how old the newest record in this database is (no manifest, or no audit row and no scheduled-job heartbeat at all), so it cannot show that this is the database the app uses. The dump was uploaded. Check that the GitHub DIRECT_URL secret names the host on the first line of config/production-hosts.txt (docs/OPERATIONS.md, Runbook A)."
+  fail_or_warn "The backup could not tell how old the newest record in this database is (the newest-record query failed and the manifest has no value, or the database has no audit row and no scheduled-job heartbeat at all), so it cannot show that this is the database the app uses. The dump was uploaded. Check that the GitHub DIRECT_URL secret names the host on the first line of config/production-hosts.txt (docs/OPERATIONS.md, Runbook A)."
 fi
 
 # A clock a little ahead of the database's: as fresh as it gets.

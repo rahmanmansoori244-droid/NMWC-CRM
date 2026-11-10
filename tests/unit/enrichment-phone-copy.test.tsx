@@ -607,7 +607,7 @@ describe('opened on a sent-back update (what he sent, filled in)', () => {
 });
 
 describe('finding 19 (code review 2026-11-10): a rough GPS point on the edit form, and the way back', () => {
-  it('a rougher reading is asked about first; taken anyway, it comes back from the phone copy, held at submit — and "Keep the saved location" undoes it', async () => {
+  it('a rougher reading is asked about first; taken anyway, it comes back from the phone copy, held at submit — and "Go back to the saved location" undoes it', async () => {
     const visit = form();
     fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
     await act(async () => {
@@ -628,7 +628,7 @@ describe('finding 19 (code review 2026-11-10): a rough GPS point on the edit for
     expect(screen.getByText('24.000000, 59.000000')).toBeTruthy();
     expect(screen.getByText(gpsAccuracyAdvice(150, true)!)).toBeTruthy();
     expect(submitBtn().getAttribute('title')).toContain('Branch 1 GPS within 100 m');
-    fireEvent.click(screen.getByRole('button', { name: 'Keep the saved location (±5 m)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Go back to the saved location (±5 m)' }));
     expect(screen.getByText('23.500000, 58.300000')).toBeTruthy();
     expect(submitBtn().getAttribute('title') ?? '').not.toContain('GPS within');
 
