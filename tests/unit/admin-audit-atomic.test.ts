@@ -48,7 +48,24 @@ const h = vi.hoisted(() => ({
    * table holds `isActive` (the other click's result).
    */
   raceSwitch: null as null | { id: string; isActive: boolean },
+  /**
+   * Third round (finding 25): one name the reserved-name check lets through, so a
+   * test can reach freeRetiredUsername's own check, which no path reaches today
+   * (the joiner's reserved name is refused first). Null: the real check, unchanged.
+   */
+  reservedLetThrough: null as null | string,
 }));
+
+vi.mock('@/lib/demo-accounts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/demo-accounts')>();
+  return {
+    ...actual,
+    reservedUsernameRefusal: (name: string) =>
+      h.reservedLetThrough !== null && name.trim().toLowerCase() === h.reservedLetThrough
+        ? null
+        : actual.reservedUsernameRefusal(name),
+  };
+});
 
 vi.mock('@/lib/auth', () => ({ auth: async () => h.session }));
 vi.mock('next/headers', () => ({
@@ -228,6 +245,7 @@ beforeEach(() => {
   h.raceRouteId = null;
   h.clashMeta = undefined;
   h.tags = [];
+  h.reservedLetThrough = null;
   h.session = { user: { id: STEWARD, role: 'STEWARD', username: 'steward.one', mustChangePassword: false } };
   h.tables = {
     user: new Map([
@@ -728,6 +746,43 @@ describe('finding 25: a reserved username is refused at creation', () => {
       form({ username: '  Supervisor.Sur ', fullName: 'New Person', role: 'SUPERVISOR', password: 'A-long-password-1' })
     );
     expect(res).toMatchObject({ ok: false, fields: { username: RESERVED_USERNAME_MESSAGE } });
+  });
+
+  // Third round: the refusal inside freeRetiredUsername (services/users.ts), which
+  // keeps a leaver's retired sign-in name off the reserved list. A leaver named
+  // after route SALESMAN.X retires as salesman.x.left.<day>, a reserved name. No
+  // path reaches it today (the joiner's own salesman.x is refused first), so the
+  // joiner's name is let through here to prove it refuses cleanly if that changes.
+  it('a leaver whose retired name would be reserved: refused under Route, and nothing is written', async () => {
+    const ROUTE_X = 'ckroutesalesmanx00000001';
+    const LEAVER = 'ckleaversalesmanx0000001';
+    h.tables.route.set(ROUTE_X, { id: ROUTE_X, code: 'SALESMAN.X', name: 'Old demo route', regionId: REGION, isActive: true });
+    h.tables.user.set(LEAVER, {
+      id: LEAVER,
+      username: 'salesman.x',
+      fullName: 'Leaver',
+      role: 'SALESMAN',
+      isActive: false,
+      supervisorId: null,
+      ownedRouteId: ROUTE_X,
+    });
+    h.reservedLetThrough = 'salesman.x';
+    const before = snapshot();
+    const res = await createUserAction(
+      form({ username: 'salesman.x', fullName: 'Joiner', role: 'SALESMAN', password: 'A-long-password-1', ownedRouteId: ROUTE_X })
+    );
+    expect(res).toMatchObject({
+      ok: false,
+      code: 'VALIDATION_FAILED',
+      fields: {
+        ownedRouteId: expect.stringMatching(
+          /^salesman\.x's sign-in name cannot be retired as salesman\.x\.left\.\d{8}: that name is reserved for the old demo accounts\. Nothing was saved\.$/
+        ),
+      },
+    });
+    // No user.update, no new account, no audit row.
+    expect(snapshot()).toEqual(before);
+    expect(h.autocommit).toEqual([]);
   });
 
   it('a name that only looks like one is created: data.steward', async () => {
