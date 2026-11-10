@@ -43,6 +43,9 @@ export function PromoteButton({
   const [msg, setMsg] = useState<string | null>(null);
   const [tone, setTone] = useState<'ok' | 'warn'>('ok');
   const [live, setLive] = useState<{ promoted: number; failed: number; left: number } | null>(null);
+  // Code review 2026-11-10, finding 28: rows this run loaded without changing
+  // their shop, which the Steward acknowledges before the result is shown.
+  const [unchangedShops, setUnchangedShops] = useState<{ rows: number; done: string } | null>(null);
 
   function say(text: string, t: 'ok' | 'warn' = 'ok') {
     setMsg(text);
@@ -70,12 +73,14 @@ export function PromoteButton({
       // the previous run's totals and its stale warning for the whole first pass.
       setMsg(null);
       setLive(null);
+      setUnchangedShops(null);
       let promoted = 0;
       let failed = 0;
       // Finding 1: rows that kept a CRM value the sheet differed from, and rows
       // whose credit cells were not applied — each carries a note on the batch page.
       let kept = 0;
       let creditNotApplied = 0;
+      let shopNotChanged = 0;
       // Proves to the server that this run still owns the batch, so it can continue
       // straight into its next slice instead of waiting out its own lease.
       let token = '';
@@ -100,6 +105,7 @@ export function PromoteButton({
           failed += res.data.failed;
           kept += res.data.notes?.kept ?? 0;
           creditNotApplied += res.data.notes?.creditNotApplied ?? 0;
+          shopNotChanged += res.data.notes?.shopNotChanged ?? 0;
           token = res.data.leaseToken ?? '';
           setLive({ promoted, failed, left: res.data.remaining });
 
@@ -112,12 +118,21 @@ export function PromoteButton({
               ...(creditNotApplied
                 ? [`${creditNotApplied.toLocaleString('en-US')} row(s) carried credit cells that were not applied`]
                 : []),
+              ...(shopNotChanged
+                ? [`${shopNotChanged.toLocaleString('en-US')} row(s) were loaded with their shop NOT changed`]
+                : []),
             ];
-            say(
+            const doneText =
               `✓ Done — ${promoted.toLocaleString('en-US')} rows promoted in this run${failed ? ` · ${failed} customer(s) failed` : ''}.${
                 noted.length > 0 ? ` ${noted.join('; ')} — see "Loaded with a warning".` : ''
-              }`
-            );
+              }`;
+            if (shopNotChanged > 0) {
+              // Finding 28: acknowledged first (below); the result follows.
+              setUnchangedShops({ rows: shopNotChanged, done: doneText });
+              router.refresh();
+              return;
+            }
+            say(doneText);
             router.refresh();
             return;
           }
@@ -180,6 +195,32 @@ export function PromoteButton({
         >
           {msg}
         </span>
+      )}
+      {unchangedShops && (
+        <div
+          role="alert"
+          data-testid="shops-not-changed"
+          className="max-w-md rounded-md bg-amber-50 p-3 text-xs text-amber-900 ring-1 ring-inset ring-amber-300"
+        >
+          <p className="font-semibold">
+            {unchangedShops.rows.toLocaleString('en-US')} row(s) were loaded, but their shop was NOT changed.
+          </p>
+          <p className="mt-1">
+            Their rows carry the customer&rsquo;s Temix code, and such a row never changes an existing shop: a route in
+            those rows was NOT applied, and the shop stays on its current route. Each row says what was not applied,
+            under &ldquo;Loaded with a warning&rdquo;.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              say(unchangedShops.done);
+              setUnchangedShops(null);
+            }}
+            className="mt-2 rounded-md border border-amber-400 bg-white px-3 py-1 font-semibold text-amber-900 hover:bg-amber-100"
+          >
+            I have read this
+          </button>
+        </div>
       )}
       {!pending && leaseHeld && (
         <span className="text-xs font-medium text-slate-500">

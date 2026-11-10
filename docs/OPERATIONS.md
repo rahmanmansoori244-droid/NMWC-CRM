@@ -833,7 +833,7 @@ Routes never move to another region, are never renamed, split or merged. A route
 
 To serve an area from another region:
 1. Create the new route in the other region (`/routes`, or a `Routes` row with a new code).
-2. Move the customers' shops to it — today by the customer-master import or the edit flow; later by the daily Temix file (item D), where route moves are made.
+2. Move the customers' shops to it. No screen changes a shop's route, and the edit flow has no route field (code review 2026-11-10, finding 28). Today a shop's route changes only through a customer-import row for that shop that does not carry the customer's Temix code (`temix_code` left blank — that row takes the full lane, §7 "Re-import the master after a bulk fix"), or through a held-back or rejected row of that shop fixed on its batch page. Route moves are made in Temix (owner decision 2026-10-11).
 3. Give the new route its salesman on `/users` (§ "Move a route to another salesman").
 4. Switch the old route off when no shop is left on it.
 
@@ -912,7 +912,12 @@ not built yet (item D).
      figures) are refreshed, and the row **never creates or changes a branch**: a file cannot be
      told apart from an inbound Temix refresh or an old copy of the master, and branches are the
      CRM's. Such rows are listed under **Loaded with a warning** ("Branch not updated") when their
-     branch is missing or differs; change an existing branch on the customer's page. The refresh
+     branch is missing or differs. Since code review 2026-11-10 (finding 28) the note reads
+     "loaded, shop NOT changed" and, when the row's route differs, says the route was NOT applied and
+     what can change a route today (`lib/import-plan.ts` `ROUTE_CHANGE_TODAY`); name, address, visit
+     day and status can be changed by an edit on the customer page — a route cannot. "Before you
+     promote" counts these rows and Promote waits for the Steward to tick that he understands; at the
+     end of the load their count is shown again and must be acknowledged before the result. The refresh
      also flips the customer from UPLOADED to **SYNCED**, as though Temix had confirmed the last
      batch — do not re-import the full master while a Temix batch is waiting for its
      acknowledgement. A row with a *different* non-blank `temix_code` is rejected. The credit
@@ -1215,7 +1220,7 @@ What users report in their first days, and the control in the app that answers e
 | "Too many attempts from your network. Try again in …s" | About five FAILED sign-ins (a wrong password or username) within a minute from that network, by anyone on it. Successful sign-ins do not count, so there is no need to stagger people who type correctly. Wait the seconds shown, and have whoever is failing check the username and the password, or switch to mobile data. Several people pressing **Sign in** in the same second can also hit it briefly — wait and try again. |
 | A customer's visit day is wrong | A Manager (customers in his regions) or the Steward opens the customer → **Enrich** → **Day of visit** → submit. From those two roles it is a direct write, with no approval step, and it is audited. A day can be changed but not cleared — pick the right one. While a request is waiting on the customer the form will not submit; decide that one first (two rows down). |
 | A salesman needs another route, or has left | Collect the route and the right owner and hand them to the Steward, who moves it on `/users` (**Disable** the leaver, then **Create user** or **Edit**: §7, "Move a route to another salesman"). That moves the whole route; it never moves a single customer. |
-| One customer is on the wrong route | Collect the customer and branch codes and the right route and hand them to the Steward. There is no screen for it: a branch moves only through a customer-master re-import with the right `route_code` (§7, "Re-import the master after a bulk fix"), and for a customer already linked to the ERP a re-import cannot move an existing branch (AUDITOR-BRIEF §18, item 20) — the Steward records those for the owner. |
+| One customer is on the wrong route | Collect the customer and branch codes and the right route and hand them to the Steward. There is no screen for it. Today a shop's route changes only through a customer-import row for that shop that does not carry the customer's Temix code (`temix_code` left blank), or through a held-back or rejected row of that shop fixed on its batch page (§7, "Re-import the master after a bulk fix"); a row that carries the customer's Temix code never changes an existing shop, and says so ("loaded, shop NOT changed"). Route moves are made in Temix (owner decision 2026-10-11) — the Steward records those for the owner. |
 | "A submitted edit is already pending review for this customer.", "This customer already has a pending change awaiting review", or on the edit page "A submission is already pending review (by …)". When the waiting request is the user's own, the message starts "Your changes sent…" or "Your … sent …" instead. | Only one request can be open on a customer. The Manager decides the waiting one — **Approvals**, or **Reactivations** for a reopen request — and the salesman then submits again. |
 | An error page showing a **Reference** | Ask for the Reference exactly as shown and the time it happened, then look it up as §5g describes. |
 | Who can reset or disable whom | **Manager**: Salesman and Supervisor accounts in his own regions. **Steward**: every account except his own, and only the Steward has **Edit** (role, route, supervisor, regions, phone, e-mail). Nobody can disable the only active Manager until another Manager account is active. Nobody changes their own password from `/users`; that is `/profile`. |

@@ -238,3 +238,53 @@ describe('a resumed promote goes straight on', () => {
     expect(h.summarise).not.toHaveBeenCalled();
   });
 });
+
+// Code review 2026-11-10, finding 28.
+describe('rows loaded with their shop NOT changed are acknowledged', () => {
+  const withUnchanged = () => {
+    const r = review(false);
+    return {
+      ...r,
+      data: {
+        ...r.data,
+        summary: { crm: { linkedShops: 2, linkedNotAdded: 1, linkedRouteNotMoved: 1 } },
+      },
+    };
+  };
+
+  it('before: Promote waits for a tick naming the count, and the route that will not be applied', async () => {
+    h.summarise.mockResolvedValue(withUnchanged());
+    const dialog = await openReview();
+    await within(dialog).findByText(KEPT);
+    const go = within(dialog).getByRole('button', { name: 'Promote 3 clean rows now' }) as HTMLButtonElement;
+    expect(go.disabled).toBe(true);
+    const tick = within(dialog).getByRole('checkbox', { name: /I understand that 3 row\(s\) will be loaded with their shop NOT changed/ });
+    expect(tick.closest('label')!.textContent).toContain('1 of them carry a different route, and that route will NOT be applied');
+    fireEvent.click(tick);
+    expect(go.disabled).toBe(false);
+  });
+
+  it('none such: no tick is asked for', async () => {
+    const dialog = await openReview();
+    await within(dialog).findByText(KEPT);
+    expect(within(dialog).queryByRole('checkbox')).toBeNull();
+  });
+
+  it('after: the run ends on the count, which the Steward acknowledges before the result is shown', async () => {
+    h.promote.mockResolvedValue(done({ kept: 0, replaced: 0, creditNotApplied: 0, shopNotChanged: 2 } as never));
+    const dialog = await openReview();
+    await within(dialog).findByText(KEPT);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Promote 3 clean rows now' }));
+    const note = await screen.findByTestId('shops-not-changed');
+    expect(note.textContent).toContain('2 row(s) were loaded, but their shop was NOT changed.');
+    expect(note.textContent).toContain('a route in those rows was NOT applied');
+    expect(screen.queryByText(/✓ Done/)).toBeNull();
+    fireEvent.click(within(note).getByRole('button', { name: 'I have read this' }));
+    expect(
+      await screen.findByText(
+        '✓ Done — 3 rows promoted in this run. 2 row(s) were loaded with their shop NOT changed — see "Loaded with a warning".'
+      )
+    ).toBeTruthy();
+    expect(screen.queryByTestId('shops-not-changed')).toBeNull();
+  });
+});

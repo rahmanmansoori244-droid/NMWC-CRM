@@ -94,6 +94,7 @@ import {
   decideLane,
   differingBranchCells,
   rowCreditNote,
+  shopNotChangedNote,
   type LaneBranch,
 } from '@/lib/import-plan';
 import { lockCustomerRowByCode } from '@/lib/locks';
@@ -1546,7 +1547,7 @@ export type PromoteSliceResult = {
    * one (the batch's overwrite option was on; each is in the audit log), or
    * carried a credit cell that was not applied (each carries a note).
    */
-  notes?: { kept: number; replaced: number; creditNotApplied: number };
+  notes?: { kept: number; replaced: number; creditNotApplied: number; shopNotChanged?: number };
 };
 
 /**
@@ -1756,9 +1757,10 @@ async function refreshLaneBranches(
       continue;
     }
     if (!r.fixedInApp) {
-      skip(
-        `branch ${r.branchCode}: ${differs.join(', ')} in this row differ from the master and were not applied — a re-import does not change an existing branch of a customer linked to Temix; change it on the customer page`
-      );
+      // Code review 2026-11-10, finding 28: the note said "change it on the
+      // customer page", and no screen can change a route. It now says the route
+      // was NOT changed and what can change one today (lib/import-plan.ts).
+      skip(shopNotChangedNote(r.branchCode, differs));
       continue;
     }
     // Code review 2026-11-10, finding 1: what the row may write on a shop that
@@ -2239,7 +2241,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     // tuple that the UI surfaces in the toast — no more silent swallow.
     let promoted = 0;
     // Code review 2026-11-10, finding 1: promoted rows of this slice carrying a note.
-    const sliceNotes = { kept: 0, replaced: 0, creditNotApplied: 0 };
+    const sliceNotes = { kept: 0, replaced: 0, creditNotApplied: 0, shopNotChanged: 0 };
     // Rows left CLEAN because the DATABASE failed, not the data — retried next slice.
     let deferred = 0;
     // RK-3: yield the slice once the budget is spent. The check is at the TOP of the
@@ -3642,6 +3644,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         sliceNotes.kept += rowNotes.filter((n) => (n?.kept?.length ?? 0) > 0).length;
         sliceNotes.replaced += replacedRows.size;
         sliceNotes.creditNotApplied += rowNotes.filter((n) => !!n?.credit).length;
+        // Finding 28: rows loaded with their shop left as it was (a '_lane' note).
+        sliceNotes.shopNotChanged += rowNotes.filter((n) => !!n?.note && !n.written).length;
         if (noted) {
           // The branch outcome of each row: a branch left as it was, and why, or
           // what a fixed row did not write. It used to be invisible — the row
@@ -3828,6 +3832,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         rowsKept: sliceNotes.kept,
         rowsReplaced: sliceNotes.replaced,
         rowsCreditNotApplied: sliceNotes.creditNotApplied,
+        rowsShopNotChanged: sliceNotes.shopNotChanged,
       } as unknown as Prisma.InputJsonValue,
       // One audit row per slice: a resumed load leaves a complete, ordered trail
       // instead of a single summary that hides how the batch actually landed.

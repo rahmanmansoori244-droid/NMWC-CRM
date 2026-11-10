@@ -10,6 +10,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   REJECT_REASONS,
+  ROUTE_CHANGE_TODAY,
+  shopNotChangedNote,
   SUMMARY_ADDRESS_MIN,
   addGroup,
   creditReason,
@@ -589,7 +591,7 @@ describe('addGroup and summaryLines — the counts and the words', () => {
       },
       {
         tone: 'warn',
-        text: "Linked to Temix: 1 shop(s) of 1 customer(s) differ from the record and are not changed by a row that carries the customer's Temix code (1 of them a different route).",
+        text: "Loaded, shop NOT changed: 1 shop(s) of 1 customer(s) differ from the record and are not changed by a row that carries the customer's Temix code (1 of them a different route, and that route is NOT applied). Today a shop's route changes only through a customer-import row for that shop that does not carry the customer's Temix code (temix_code left blank), or through a held-back or rejected row of that shop fixed on its batch page; no screen in the CRM changes it.",
       },
       {
         tone: 'warn',
@@ -613,7 +615,7 @@ describe('addGroup and summaryLines — the counts and the words', () => {
     });
     expect(lines.some((l) => l.text.startsWith('CRM fields kept'))).toBe(false);
     // The refresh lane is the same with the option on: it never writes a CRM field.
-    expect(lines.some((l) => l.text.startsWith('Linked to Temix: 1 shop(s) of 1 customer(s)'))).toBe(true);
+    expect(lines.some((l) => l.text.startsWith('Loaded, shop NOT changed: 1 shop(s) of 1 customer(s)'))).toBe(true);
   });
 
   it('an empty batch, and one with nothing to say, read as two plain lines', () => {
@@ -635,7 +637,7 @@ describe('addGroup and summaryLines — the counts and the words', () => {
       plan([prow({ temixCode: 'T1', branchCode: '05' })], customer({ temixCode: 'T1', recordedCode: 'T1' }), { 'C1-01': pshop() })
     );
     expect(summaryLines(s, false)[1]!.text).toBe(
-      "Linked to Temix: 0 shop(s) of 1 customer(s) differ from the record and are not changed by a row that carries the customer's Temix code (0 of them a different route); 1 shop(s) in the sheet are not in the CRM and are not added."
+      "Loaded, shop NOT changed: 0 shop(s) of 1 customer(s) differ from the record and are not changed by a row that carries the customer's Temix code (0 of them a different route, and that route is NOT applied); 1 shop(s) in the sheet are not in the CRM and are not added."
     );
   });
 });
@@ -660,5 +662,26 @@ describe('planGroup — a new customer under another live customer\'s Temix code
     const p = withHeld(null, ['OTHER']);
     expect(p.rejected).toBeNull();
     expect(p.newCustomer).toBe(true);
+  });
+});
+
+
+// Code review 2026-11-10, finding 28.
+describe('shopNotChangedNote — a shop the import loaded without changing', () => {
+  it('says the route was NOT changed and what changes a route today, before the other fields', () => {
+    expect(shopNotChangedNote('C1-01', ['route', 'address', 'visit day'])).toBe(
+      "branch C1-01: loaded, shop NOT changed — a row that carries the customer's Temix code never changes an existing shop. The route in this row was NOT applied: the shop stays on its current route. " +
+        ROUTE_CHANGE_TODAY +
+        ' The address, visit day in this row differ from the CRM and were not applied either; they can be changed by an edit on the customer page.'
+    );
+  });
+  it('without a route, only the fields — and never the words "on the customer page" about a route', () => {
+    expect(shopNotChangedNote('C1-01', ['address'])).toBe(
+      "branch C1-01: loaded, shop NOT changed — a row that carries the customer's Temix code never changes an existing shop. The address in this row differs from the CRM and was not applied; it can be changed by an edit on the customer page."
+    );
+    expect(shopNotChangedNote('C1-01', ['route'])).not.toMatch(/customer page/);
+  });
+  it('promises nothing that is not built', () => {
+    expect(ROUTE_CHANGE_TODAY).not.toMatch(/will|later|soon|daily|Temix file/i);
   });
 });

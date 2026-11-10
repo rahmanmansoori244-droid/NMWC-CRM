@@ -56,6 +56,9 @@ export function PromoteReviewDialog({
   const [reason, setReason] = useState('');
   const [optionError, setOptionError] = useState<string | null>(null);
   const [switching, startSwitch] = useTransition();
+  // Code review 2026-11-10, finding 28: rows that will load without changing their shop.
+  const [ackShops, setAckShops] = useState(false);
+  const ackId = useId();
 
   const check = useCallback(async () => {
     setChecking(true);
@@ -101,7 +104,11 @@ export function PromoteReviewDialog({
   const count = remainingCount.toLocaleString('en-US');
   // Promote waits for the check: it is enabled once the summary is on screen, or
   // the check has failed and its message is — never while the answer is unknown.
-  const canPromote = !checking && !switching && (review !== null || failed !== null);
+  const crm = review?.summary?.crm;
+  const notChanged = crm ? crm.linkedShops + crm.linkedNotAdded : 0;
+  const routeNotChanged = crm ? crm.linkedRouteNotMoved : 0;
+  const canPromote =
+    !checking && !switching && (review !== null || failed !== null) && (notChanged === 0 || ackShops);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/50 sm:items-center sm:p-4">
@@ -133,6 +140,27 @@ export function PromoteReviewDialog({
             </ul>
           )}
         </div>
+
+        {review && notChanged > 0 && (
+          <div className="mt-4 rounded-md bg-amber-50 p-3 text-sm text-amber-900 ring-1 ring-inset ring-amber-200">
+            <label htmlFor={ackId} className="flex items-start gap-2">
+              <input
+                id={ackId}
+                type="checkbox"
+                checked={ackShops}
+                onChange={(e) => setAckShops(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                I understand that {notChanged.toLocaleString('en-US')} row(s) will be loaded with their shop NOT changed
+                {routeNotChanged > 0
+                  ? ` — ${routeNotChanged.toLocaleString('en-US')} of them carry a different route, and that route will NOT be applied`
+                  : ''}
+                . Each such row is listed under &ldquo;Loaded with a warning&rdquo;.
+              </span>
+            </label>
+          </div>
+        )}
 
         {review && (
           <section className="mt-4 rounded-md bg-slate-50 p-3 text-sm ring-1 ring-inset ring-slate-200">

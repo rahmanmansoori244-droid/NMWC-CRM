@@ -657,7 +657,8 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     expect(rows[0].issues).toEqual([
       {
         field: '_lane',
-        message: `branch ${code}-01: address, visit day in this row differ from the master and were not applied — a re-import does not change an existing branch of a customer linked to Temix; change it on the customer page`,
+        // Finding 28 (code review 2026-11-10): the note's new words.
+        message: `branch ${code}-01: loaded, shop NOT changed — a row that carries the customer's Temix code never changes an existing shop. The address, visit day in this row differ from the CRM and were not applied; they can be changed by an edit on the customer page.`,
       },
     ]);
     expect(rows[1].issues).toBeNull();

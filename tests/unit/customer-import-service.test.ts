@@ -1947,7 +1947,8 @@ describe('finding 1 — the batch’s overwrite option', () => {
         {
           field: '_lane',
           message:
-            'branch ARC1-02: address in this row differ from the master and were not applied — a re-import does not change an existing branch of a customer linked to Temix; change it on the customer page',
+            // Finding 28 (code review 2026-11-10): the note's new words.
+            "branch ARC1-02: loaded, shop NOT changed — a row that carries the customer's Temix code never changes an existing shop. The address in this row differs from the CRM and was not applied; it can be changed by an edit on the customer page.",
         },
       ]);
     } finally {
@@ -2075,6 +2076,8 @@ describe('finding 1 — parity: the plan the summary is built from is what the p
       kept: expect.any(Number),
       replaced: expect.any(Number),
       creditNotApplied: plan.rejected ? 0 : plan.credit.length,
+      // Finding 28: the rows loaded with their shop left as it was, as the summary counts them.
+      shopNotChanged: plan.rejected ? 0 : plan.linkedShops + plan.linkedNotAdded,
     });
     expect(out.notes!.kept > 0, 'a kept CRM value').toBe(!plan.rejected && !overwrite && differs);
     expect(out.notes!.replaced > 0, 'a replaced CRM value').toBe(!plan.rejected && overwrite && differs);
