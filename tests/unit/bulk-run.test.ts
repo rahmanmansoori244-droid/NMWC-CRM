@@ -167,3 +167,14 @@ describe('finding 21, second round: a decision that had already arrived is not c
     );
   });
 });
+
+describe('finding 21, second round: NO_ANSWER_MESSAGE is shown where its comment says', () => {
+  it('only the bulk queue shows it; the single-request page keeps its own error in place', async () => {
+    const { sourceFiles } = await import('../support/call-args');
+    const users = sourceFiles(['app', 'components'])
+      .filter((f) => /\bNO_ANSWER_MESSAGE\b/.test(stripComments(readFileSync(f, 'utf8'), f)))
+      .map((f) => f.split('\\').join('/'));
+    // lib/bulk-run.ts says "Shown by the bulk queue only": change the comment with this list.
+    expect(users).toEqual(['app/(app)/approvals/BulkApprovalQueue.tsx']);
+  });
+});

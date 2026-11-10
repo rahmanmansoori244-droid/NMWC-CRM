@@ -75,9 +75,13 @@ export const TEMIX_CODE_BULK_REFUSED_MESSAGE =
  * Code review 2026-11-10, finding 21: a decision sent, and no answer came back (a
  * weak signal, a dropped connection). The server may have saved some or all of
  * it, so the screen must not say "failed" or "nothing was processed": it says
- * what is known. Shown by the bulk queue and the single-request page; a second
- * tap is safe either way, because the server answers "Your decision already
- * arrived" for a decision it already has (services/edits.ts).
+ * what is known. Shown by the bulk queue only. The single-request page
+ * (app/(app)/approvals/[id]/ApproveRejectActions.tsx) still shows the browser's
+ * own error in place (e.g. "Failed to fetch"); changing that is a separate
+ * decision. A second tap is safe on both, because the server answers "Your
+ * decision already arrived" for a decision it already has (services/edits.ts,
+ * lib/already-decided.ts — a second tap that loses the claim to the first
+ * included).
  */
 export const NO_ANSWER_MESSAGE = 'No answer — reload to see what was decided.';
 
