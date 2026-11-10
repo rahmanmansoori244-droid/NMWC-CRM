@@ -494,6 +494,13 @@ jobs:
           SINCE="$(jq -r '.secondsSinceNewestWrite // empty' manifest.json)"
           echo "newest write $(jq -r '.newestWriteAt // "none"' manifest.json), ${SINCE:-?} s ago"
           bash scripts/ops/backup-freshness.sh "$SINCE" schedule
+          # Second round: the nightly job reads the age from its own small query
+          # first (a failed manifest is only a warning). Run it on Postgres 17 too,
+          # through the same rule, and check it agrees with the manifest.
+          ROW="$(psql "$DATABASE_URL" -At -v ON_ERROR_STOP=1 -f scripts/ops/backup-newest-write.sql)"
+          echo "newest-write query: ${ROW}"
+          test "${ROW#*|}" = "$(jq -r '.newestWriteAt' manifest.json)"
+          bash scripts/ops/backup-freshness.sh "${ROW%%|*}" schedule
 
       - name: Dump with the production flags, then check it like production does
         run: |

@@ -203,7 +203,7 @@ jobs:
           # Absolute path, as the old workflow did: Ubuntu pre-installs a v16
           # client and it wins on PATH, and v16 refuses to talk to a v17 server.
           /usr/lib/postgresql/17/bin/psql "$PGURL" -At -f scripts/ops/backup-manifest.sql > "${STAMP}.manifest.json" \
-            || { echo "::warning::manifest query failed — continuing without row counts; the restore verifier will fall back to its schema checks"; rm -f "${STAMP}.manifest.json"; }
+            || { echo "::warning::manifest query failed — continuing without row counts; the restore verifier will fall back to its schema checks. This alone does not fail the run: the freshness check after the upload asks the database for its newest record with its own query (scripts/ops/backup-newest-write.sql)."; rm -f "${STAMP}.manifest.json"; }
           if [ -s "${STAMP}.manifest.json" ]; then
             jq -r '"source: \(.tableCount) tables, \(.triggerCount) triggers, newest audit \(.newestAuditAt // "none"), newest record \(.newestWriteAt // "none")"' "${STAMP}.manifest.json"
             # An UNLOGGED table would have its DATA silently omitted by the dump.
@@ -352,17 +352,29 @@ jobs:
       # the age without a red run. After the upload (nothing is lost) and before the
       # dead-man report, which then says the backup failed. The rule and why it does
       # not cry wolf on a quiet database: scripts/ops/backup-freshness.sh.
+      # Second round: the age comes from its own small query, not only from the
+      # manifest, so a failed manifest (a row count) stays the warning it says it
+      # is and does not turn a backup that was taken red. The manifest's value is
+      # the fallback; with neither, a scheduled run still fails (it cannot show the
+      # database is live).
       - name: Is this the database the app writes to? (newest record within a day)
         env:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           SINCE=''
-          if [ -s "${STAMP}.manifest.json" ]; then
-            SINCE="$(jq -r '.secondsSinceNewestWrite // empty' "${STAMP}.manifest.json")"
-            NEWEST="$(jq -r '.newestWriteAt // "none"' "${STAMP}.manifest.json")"
-            echo "NEWEST_WRITE_AT=${NEWEST}" >> "$GITHUB_ENV"
+          NEWEST=''
+          if ROW="$(/usr/lib/postgresql/17/bin/psql "$PGURL" -At -v ON_ERROR_STOP=1 -f scripts/ops/backup-newest-write.sql)"; then
+            SINCE="${ROW%%|*}"
+            NEWEST="${ROW#*|}"
+          else
+            echo "::warning::the newest-record query failed; using the manifest's value, if it has one"
+            if [ -s "${STAMP}.manifest.json" ]; then
+              SINCE="$(jq -r '.secondsSinceNewestWrite // empty' "${STAMP}.manifest.json")"
+              NEWEST="$(jq -r '.newestWriteAt // empty' "${STAMP}.manifest.json")"
+            fi
           fi
+          echo "NEWEST_WRITE_AT=${NEWEST:-none}" >> "$GITHUB_ENV"
           bash scripts/ops/backup-freshness.sh "$SINCE" "$EVENT_NAME"
 
       - name: Report the outcome to the app (dead man)

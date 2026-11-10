@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { load } from 'js-yaml';
-import { resolveBash, STEP_TEST_TIMEOUT_MS } from '../support/workflow-step';
+import { resolveBash, runScriptOf, runStep, STEP_TEST_TIMEOUT_MS } from '../support/workflow-step';
 
 const HOUR = 3600;
 
@@ -98,8 +98,9 @@ describe('the backup job runs it (.github/workflows/db-backup.yml)', () => {
     expect(check?.if, 'skipped when an earlier step failed: that run is red already').toBeUndefined();
   });
 
-  it('hands the script the age from the manifest and the event that started the run', () => {
+  it('hands the script the age from its own query (the manifest as the fallback) and the event that started the run', () => {
     expect(check?.env?.EVENT_NAME).toBe('${{ github.event_name }}');
+    expect(check?.run).toContain('-f scripts/ops/backup-newest-write.sql');
     expect(check?.run).toContain(`jq -r '.secondsSinceNewestWrite // empty' "\${STAMP}.manifest.json"`);
     expect(check?.run).toContain('bash scripts/ops/backup-freshness.sh "$SINCE" "$EVENT_NAME"');
   });
@@ -112,5 +113,116 @@ describe('the backup job runs it (.github/workflows/db-backup.yml)', () => {
 
   it('the run summary shows the newest record', () => {
     expect(steps[at('Summary')]?.run).toContain('newest record in the dumped database (UTC): ${NEWEST_WRITE_AT:-unknown}');
+  });
+});
+
+/**
+ * Second round (code review 2026-11-10, finding 14 minor finding): a manifest query
+ * that failed said "continuing without row counts", and then the freshness check
+ * found no age and failed every scheduled run — one failed count turned a backup
+ * that had been taken and uploaded red. The age now comes from its own small
+ * query (scripts/ops/backup-newest-write.sql), the manifest is the fallback, and a
+ * database the app no longer writes to still fails loudly. The step is executed
+ * here under bash, with psql and jq stubbed; the SQL itself ran on a throwaway
+ * Postgres 17 while this was written, and CI's restore chain runs it on every push.
+ */
+describe('second round: a failed manifest no longer fails a backup that was taken', () => {
+  const raw = readFileSync('.github/workflows/db-backup.yml', 'utf8');
+  const repo = process.cwd().replace(/\\/g, '/');
+  const script = runScriptOf(raw, 'Is this the database the app writes to? (newest record within a day)')
+    // The runner's absolute psql path, as a name the stub can stand in for.
+    .split('/usr/lib/postgresql/17/bin/psql')
+    .join('psql')
+    .split('bash scripts/ops/backup-freshness.sh')
+    .join(`bash "${repo}/scripts/ops/backup-freshness.sh"`);
+  // psql: prints PSQL_OUT, or fails as a broken connection would. jq: reads one
+  // top-level field the way the step asks for it (`jq -r '.f // empty' file`).
+  const stubs = [
+    // What the step hands later steps, printed when it ends (pass or fail).
+    `export GITHUB_ENV="$STUB_DIR/github_env"; trap 'cat "$GITHUB_ENV" 2>/dev/null || true' EXIT`,
+    'psql() { echo "psql $*" >> "$STUB_DIR/calls"; if [ "${PSQL_FAIL:-}" = 1 ]; then echo "psql: error: connection refused" >&2; return 2; fi; printf "%s\\n" "$PSQL_OUT"; }',
+    `jq() { local f="\${2#.}"; f="\${f%% *}"; node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const v=d[process.argv[2]];if(v!=null)console.log(String(v))' "$3" "$f"; }`,
+  ].join('\n');
+  const STAMP = 'nmwc-2026-11-11T02-00-00Z';
+  const manifest = (seconds: number) =>
+    JSON.stringify({ secondsSinceNewestWrite: seconds, newestWriteAt: '2026-11-10T23:00:00.000Z' });
+  const run = (event: string, env: Record<string, string>, files: Record<string, string> = {}) =>
+    runStep(script, stubs, { STAMP, EVENT_NAME: event, PGURL: 'postgresql://u@db.invalid/neondb', ...env }, files);
+
+  it('the step script was found and rewritten for the stubs', () => {
+    expect(script).toContain('psql "$PGURL" -At -v ON_ERROR_STOP=1 -f scripts/ops/backup-newest-write.sql');
+    expect(script).toContain(`${repo}/scripts/ops/backup-freshness.sh`);
+  });
+
+  it('the manifest failed (no file), the database is live: the nightly run stays green, from its own query', () => {
+    const r = run('schedule', { PSQL_OUT: `${3 * HOUR}|2026-11-10T23:00:00.000Z` });
+    expect(r.status, r.output).toBe(0);
+    expect(r.calls).toEqual(['psql postgresql://u@db.invalid/neondb -At -v ON_ERROR_STOP=1 -f scripts/ops/backup-newest-write.sql']);
+    expect(r.output).toContain('NEWEST_WRITE_AT=2026-11-10T23:00:00.000Z');
+    expect(r.output).toMatch(/::notice::the newest record in this database is 3 h old/);
+  }, STEP_TEST_TIMEOUT_MS);
+
+  it('the database the app no longer writes to still fails the nightly run loudly, manifest or not', () => {
+    const r = run('schedule', { PSQL_OUT: `${50 * HOUR}|2026-11-09T00:00:00.000Z` });
+    expect(r.status).toBe(1);
+    expect(r.output).toMatch(/::error::The newest record in the database this backup dumped is 50 hours old/);
+    const withManifest = run(
+      'schedule',
+      { PSQL_OUT: `${50 * HOUR}|2026-11-09T00:00:00.000Z` },
+      { [`${STAMP}.manifest.json`]: manifest(HOUR) }
+    );
+    expect(withManifest.status, 'the live query wins over a fresher-looking manifest').toBe(1);
+  }, STEP_TEST_TIMEOUT_MS);
+
+  it('the query fails but the manifest has the age: that is used, with a warning', () => {
+    const fresh = run('schedule', { PSQL_FAIL: '1' }, { [`${STAMP}.manifest.json`]: manifest(2 * HOUR) });
+    expect(fresh.status, fresh.output).toBe(0);
+    expect(fresh.output).toMatch(/::warning::the newest-record query failed; using the manifest's value/);
+    expect(fresh.output).toContain('NEWEST_WRITE_AT=2026-11-10T23:00:00.000Z');
+    const stale = run('schedule', { PSQL_FAIL: '1' }, { [`${STAMP}.manifest.json`]: manifest(30 * HOUR) });
+    expect(stale.status).toBe(1);
+  }, STEP_TEST_TIMEOUT_MS);
+
+  it('neither the query nor a manifest: the nightly run fails (it cannot show the database is live); by hand it warns', () => {
+    const nightly = run('schedule', { PSQL_FAIL: '1' });
+    expect(nightly.status).toBe(1);
+    expect(nightly.output).toMatch(
+      /::error::The backup could not tell how old the newest record .*the newest-record query failed and the manifest has no value/
+    );
+    expect(nightly.output).toContain('NEWEST_WRITE_AT=none');
+    const byHand = run('workflow_dispatch', { PSQL_FAIL: '1' });
+    expect(byHand.status, byHand.output).toBe(0);
+    expect(byHand.output).toMatch(/::warning::The backup could not tell/);
+  }, STEP_TEST_TIMEOUT_MS);
+
+  it('an empty database (no audit row, no heartbeat: the query prints "|") fails the nightly run', () => {
+    const r = run('schedule', { PSQL_OUT: '|' });
+    expect(r.status).toBe(1);
+    expect(r.output).toMatch(/::error::The backup could not tell/);
+    expect(r.output).toContain('NEWEST_WRITE_AT=none');
+  }, STEP_TEST_TIMEOUT_MS);
+
+  it('the manifest warning says what now happens, and the manifest step itself still only warns', () => {
+    const manifestStep = runScriptOf(raw, 'Row-count manifest (before the dump)');
+    expect(manifestStep).toContain('manifest query failed — continuing without row counts');
+    expect(manifestStep).toContain(
+      'This alone does not fail the run: the freshness check after the upload asks the database for its newest record with its own query'
+    );
+  });
+
+  it('the query is the manifest’s expression, on its own (scripts/ops/backup-newest-write.sql)', () => {
+    const sql = readFileSync('scripts/ops/backup-newest-write.sql', 'utf8');
+    const newest = 'greatest((SELECT max("at") FROM "AuditLog"), (SELECT max("lastRunAt") FROM "CronHeartbeat"))';
+    expect(sql).toContain(newest);
+    expect(readFileSync('scripts/ops/backup-manifest.sql', 'utf8')).toContain(newest);
+    expect(sql).toContain("floor(extract(epoch FROM (now() AT TIME ZONE 'UTC') - w))::bigint");
+    expect(sql).toContain(`to_char(w, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`);
+  });
+
+  it('CI’s restore chain runs the query on Postgres 17 and checks it agrees with the manifest', () => {
+    const ci = readFileSync('.github/workflows/ci.yml', 'utf8');
+    expect(ci).toContain('ROW="$(psql "$DATABASE_URL" -At -v ON_ERROR_STOP=1 -f scripts/ops/backup-newest-write.sql)"');
+    expect(ci).toContain(`test "\${ROW#*|}" = "$(jq -r '.newestWriteAt' manifest.json)"`);
+    expect(ci).toContain('bash scripts/ops/backup-freshness.sh "${ROW%%|*}" schedule');
   });
 });
