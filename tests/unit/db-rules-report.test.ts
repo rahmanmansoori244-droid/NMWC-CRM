@@ -100,7 +100,10 @@ describe('the Temix batch paths', () => {
   it('the queue is the one Generate locks (lib/locks.ts lockTemixQueue, pinned to TEMIX_QUEUE_WHERE elsewhere)', () => {
     const locks = stripComments(readFileSync('lib/locks.ts', 'utf8'), 'locks.ts');
     const lockTemixQueue = locks.slice(locks.indexOf('export async function lockTemixQueue'));
-    const lockPredicate = /FROM "Customer" WHERE (.+?) ORDER BY "id"/.exec(lockTemixQueue)?.[1];
+    // The statement that takes the locks (finding 11: the oldest are chosen just before it).
+    const lockPredicate = /FROM "Customer" WHERE (.+?) AND "id" = ANY\(\$\{ids\}\) ORDER BY "id" COLLATE "C" FOR UPDATE/.exec(
+      lockTemixQueue
+    )?.[1];
     expect(lockPredicate).toBeTruthy();
     expect(TEMIX_QUEUE_SQL.replace(/\bt\./g, '')).toBe(lockPredicate);
   });

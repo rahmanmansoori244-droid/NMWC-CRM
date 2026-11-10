@@ -33,6 +33,8 @@ import { PaymentTerms, TemixSyncState, type Prisma } from '@prisma/client';
  * either lane. Its queue state is left as it is, so nothing about it changes if
  * the owner ever unflags it.
  */
+export { TEMIX_BATCH_ROW_CAP, temixMoreQueuedMessage } from './temix-cap';
+
 export const TEMIX_QUEUE_WHERE: Prisma.CustomerWhereInput = {
   OR: [
     { temixSyncState: TemixSyncState.PENDING_UPLOAD, deletedAt: null, isTest: false },

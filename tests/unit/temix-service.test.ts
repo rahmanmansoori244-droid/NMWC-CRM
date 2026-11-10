@@ -39,6 +39,7 @@ type Cust = {
   temixSyncState: TemixSyncState;
   lastTemixUploadAt: Date | null;
   lastTemixUploadBatchId: string | null;
+  temixSyncPendingSince?: Date | null;
   isTest: boolean;
   // Gap 31 review: the columns the Customer CHECKs read (lib/db-rules.ts).
   paymentTerms: string;
@@ -134,12 +135,25 @@ vi.mock('@/lib/db', () => {
     customer: customerModel,
     // lib/locks.ts lockTemixQueue: the rows the queue predicate selects, by id.
     // Its SQL is pinned against TEMIX_QUEUE_WHERE by temix-deactivation-guard.test.ts.
-    $queryRaw: async (strings: TemplateStringsArray) => {
+    // Code review 2026-11-10, finding 11: first the oldest `limit` (no lock), then
+    // those locked in id order.
+    $queryRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const { TEMIX_QUEUE_WHERE } = await import('@/lib/temix');
+      const sql = strings.join('?');
+      const queue = model.state.rows.filter((c) => model.matches(c, TEMIX_QUEUE_WHERE as Record<string, unknown>));
+      if (/LIMIT \?$/.test(sql)) {
+        const t = (c: Record<string, unknown>) =>
+          c.temixSyncPendingSince instanceof Date ? c.temixSyncPendingSince.getTime() : -Infinity;
+        return queue
+          .sort((a, b) => t(a) - t(b) || (String(a.id) < String(b.id) ? -1 : 1))
+          .slice(0, values[0] as number)
+          .map((c) => ({ id: String(c.id) }));
+      }
       model.state.log.push('lock');
-      model.state.lockSql.push(strings.join('?'));
-      return model.state.rows
-        .filter((c) => model.matches(c, TEMIX_QUEUE_WHERE as Record<string, unknown>))
+      model.state.lockSql.push(sql);
+      const ids = new Set(values[0] as string[]);
+      return queue
+        .filter((c) => ids.has(String(c.id)))
         .map((c) => ({ id: String(c.id) }))
         .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     },
@@ -565,16 +579,44 @@ describe('Temix refusals say what happened', () => {
     expect(res).toMatchObject({ ok: false, message: 'Nothing is pending for Temix upload.' });
   });
 
-  it('Generate over the 5,000-customer cap', async () => {
-    model.state.rows = Array.from({ length: 5001 }, (_, i) =>
-      cust({ nmwcCode: `N${i}`, temixSyncState: TemixSyncState.PENDING_UPLOAD })
+  // Code review 2026-11-10, finding 11: over the cap is no longer a refusal.
+  it('Generate over the 5,000-customer cap takes the 5,000 waiting longest and says how many are left', async () => {
+    const base = Date.parse('2026-10-01T00:00:00Z');
+    model.state.rows = Array.from({ length: 5003 }, (_, i) =>
+      cust({
+        nmwcCode: `N${String(i).padStart(5, '0')}`,
+        temixSyncState: TemixSyncState.PENDING_UPLOAD,
+        // N00000 waits shortest, N05002 longest.
+        temixSyncPendingSince: new Date(base - i * 60_000),
+      })
     );
     const res = await generateTemixBatchAction();
-    expect(res).toMatchObject({
-      ok: false,
-      message: 'Queue exceeds 5000 customers — contact support to split the batch.',
-    });
-    expect(model.state.log).not.toContain('flip');
+    expect(res.ok, JSON.stringify(res).slice(0, 300)).toBe(true);
+    if (!res.ok) return;
+    expect(res.data.customerCount).toBe(5000);
+    expect(res.data.moreQueued).toBe(3);
+    expect(res.data.moreQueuedMessage).toBe(
+      '3 more customers are still waiting for Temix: one file holds at most 5,000, and this one took the ones waiting longest. Press Generate again for a file with the rest.'
+    );
+    // The three that waited shortest stay queued, untouched.
+    for (const c of ['N00000', 'N00001', 'N00002']) {
+      expect(row(c)).toMatchObject({ temixSyncState: 'PENDING_UPLOAD', lastTemixUploadBatchId: null });
+    }
+    expect(row('N05002')).toMatchObject({ temixSyncState: 'UPLOADED', lastTemixUploadBatchId: 'batch-new' });
+    expect(h.writeAudit.mock.calls[0][2]).toMatchObject({ after: { customers: 5000, moreQueued: 3, cap: 5000 } });
+    // A second Generate takes the rest, and says nothing more is left.
+    const again = await generateTemixBatchAction();
+    // (The fake names every batch 'batch-new', so the count is read from the rows.)
+    expect(again.ok).toBe(true);
+    expect(again.ok && again.data.moreQueued).toBeUndefined();
+    expect(model.state.rows.filter((c) => c.temixSyncState === 'PENDING_UPLOAD')).toEqual([]);
+  }, 60_000);
+
+  it('at or under the cap, nothing is said about a rest', async () => {
+    model.state.rows = [cust({ nmwcCode: 'N1', temixSyncState: TemixSyncState.PENDING_UPLOAD })];
+    const res = await generateTemixBatchAction();
+    expect(res.ok && res.data.moreQueued).toBeUndefined();
+    expect(res.ok && res.data.moreQueuedMessage).toBeUndefined();
   });
 
   it('Mark loaded on a batch already marked', async () => {

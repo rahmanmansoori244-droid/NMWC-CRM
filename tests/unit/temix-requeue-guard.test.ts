@@ -268,26 +268,26 @@ describe('the script applies the predicate it exports', () => {
 });
 
 describe('the duplicated batch cap still matches the one the app enforces', () => {
-  const capIn = (src: string, where: string) => {
-    const m = /const BATCH_ROW_CAP = (\d+);/.exec(src);
-    expect(m, `BATCH_ROW_CAP must still be a literal in ${where}`).not.toBeNull();
+  // Code review 2026-11-10, finding 11: the cap moved to lib/temix-cap.ts (pure,
+  // importable) and Generate no longer refuses a queue over it — it takes the
+  // customers waiting longest. The script keeps its own literal and still refuses
+  // to push the queue past it, so one requeue tranche goes out in one file.
+  const CAP_LIB = 'lib/temix-cap.ts';
+  const capLib = strip(readFileSync(CAP_LIB, 'utf8'));
+  const capIn = (src: string, where: string, name: string) => {
+    const m = new RegExp(`const ${name} = (\\d+);`).exec(src);
+    expect(m, `${name} must still be a literal in ${where}`).not.toBeNull();
     return Number(m![1]);
   };
 
-  it('carries the same number as services/temix.ts', () => {
-    // The script refuses to requeue when the resulting queue would exceed the cap,
-    // so that the owner does not discover it at /temix with the queue already full.
-    // That refusal is worthless if the two numbers drift.
-    expect(capIn(code, SCRIPT)).toBe(capIn(serviceCode, SERVICE));
+  it('carries the same number as lib/temix-cap.ts', () => {
+    expect(capIn(code, SCRIPT, 'BATCH_ROW_CAP')).toBe(capIn(capLib, CAP_LIB, 'TEMIX_BATCH_ROW_CAP'));
   });
 
-  it('records WHY the number is duplicated rather than imported', () => {
-    // services/temix.ts is a server-action module, and Next permits only async
-    // function exports from one — so the constant cannot be exported from there.
-    // If someone moves it somewhere importable, this goes red and the next person
-    // deletes the copy instead of maintaining it.
+  it('the service keeps no copy of its own, and still cannot export one', () => {
     expect(serviceCode.trimStart().startsWith("'use server'")).toBe(true);
-    expect(serviceCode).not.toMatch(/export const BATCH_ROW_CAP/);
+    expect(serviceCode).not.toMatch(/const (TEMIX_)?BATCH_ROW_CAP = \d/);
+    expect(serviceCode).toMatch(/lockTemixQueue\(tx, TEMIX_BATCH_ROW_CAP\)/);
   });
 
   it('sizes the workbook against the whole queue, not just the rows it adds', () => {
@@ -313,7 +313,7 @@ describe('the duplicated batch cap still matches the one the app enforces', () =
     // Despite the name, generateTemixBatchCore compares BATCH_ROW_CAP against the
     // queue's CUSTOMER count, not the workbook's row count. A script that checked
     // the larger number would refuse runs the application would have allowed.
-    expect(serviceCode).toMatch(/pending > BATCH_ROW_CAP/);
+    expect(serviceCode).toMatch(/pending > TEMIX_BATCH_ROW_CAP/);
     expect(code).toMatch(/queueAfter > BATCH_ROW_CAP/);
     expect(code).toMatch(/const queueAfter = queueBefore \+ targets/);
   });

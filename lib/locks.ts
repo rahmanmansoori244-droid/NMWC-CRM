@@ -67,9 +67,19 @@ export async function lockCustomersAndTemixCodeHolders(
  * locked; Generate claims only those, so no customer lock of its own is taken out
  * of this order, and a customer that joins the queue after this statement waits
  * for the next batch. A test customer is never in the queue (gap 30).
+ *
+ * Code review 2026-11-10, finding 11: at most `limit` customers — the ones
+ * waiting longest (temixSyncPendingSince, an unknown time first, then id) — so a
+ * queue over the batch cap gives a batch of the oldest instead of none. They are
+ * chosen first, without a lock, and then locked in the id order above; the lock
+ * statement keeps the queue predicate, so a row that left the queue in between
+ * is not locked, and one that joined it waits for the next batch, as before.
  */
-export async function lockTemixQueue(tx: Prisma.TransactionClient): Promise<string[]> {
-  const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "Customer" WHERE (("temixSyncState" = 'PENDING_UPLOAD' AND "deletedAt" IS NULL) OR "temixSyncState" = 'DEACTIVATE_PENDING') AND NOT "isTest" ORDER BY "id" COLLATE "C" FOR UPDATE`;
+export async function lockTemixQueue(tx: Prisma.TransactionClient, limit: number): Promise<string[]> {
+  const oldest = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "Customer" WHERE (("temixSyncState" = 'PENDING_UPLOAD' AND "deletedAt" IS NULL) OR "temixSyncState" = 'DEACTIVATE_PENDING') AND NOT "isTest" ORDER BY "temixSyncPendingSince" ASC NULLS FIRST, "id" COLLATE "C" LIMIT ${limit}`;
+  if (oldest.length === 0) return [];
+  const ids = oldest.map((r) => r.id);
+  const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "Customer" WHERE (("temixSyncState" = 'PENDING_UPLOAD' AND "deletedAt" IS NULL) OR "temixSyncState" = 'DEACTIVATE_PENDING') AND NOT "isTest" AND "id" = ANY(${ids}) ORDER BY "id" COLLATE "C" FOR UPDATE`;
   return rows.map((r) => r.id);
 }
 

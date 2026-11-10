@@ -106,6 +106,31 @@ describe('the Temix buttons show the refusal itself', () => {
   });
 });
 
+// Code review 2026-11-10, finding 11.
+describe('Generate over the cap: the oldest 5,000 go, the rest are counted', () => {
+  it('the confirmation says only the 5,000 waiting longest go, and the answer says how many are left', async () => {
+    const more = '3 more customers are still waiting for Temix: one file holds at most 5,000, and this one took the ones waiting longest. Press Generate again for a file with the rest.';
+    h.generate.mockResolvedValue({
+      ok: true,
+      data: { batchId: 'b', base64: '', filename: 'f.xlsx', rowCount: 1, customerCount: 5000, moreQueued: 3, moreQueuedMessage: more },
+    });
+    globalThis.URL.createObjectURL ??= () => 'blob:x';
+    globalThis.URL.revokeObjectURL ??= () => {};
+    render(<GenerateBatchButton disabled={false} queued={5003} />);
+    fireEvent.click(screen.getByRole('button', { name: /Generate upload file/ }));
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.textContent).toContain('5,003 customers are queued, more than one file holds (5,000)');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Generate & download' }));
+    expect(await screen.findByText(more)).toBeTruthy();
+  });
+
+  it('at or under the cap the confirmation reads as before', () => {
+    render(<GenerateBatchButton disabled={false} queued={5000} />);
+    fireEvent.click(screen.getByRole('button', { name: /Generate upload file/ }));
+    expect(screen.getByRole('dialog').textContent).toContain('Every queued customer');
+  });
+});
+
 describe('the batch history keeps every batch reachable', () => {
   function seed(n: number, awaitingIndex: number) {
     const base = Date.UTC(2026, 8, 1);

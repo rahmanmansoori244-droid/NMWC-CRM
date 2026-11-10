@@ -115,12 +115,14 @@ export function wouldRequeue(row: RequeueCandidate): boolean {
 }
 
 /**
- * services/temix.ts keeps BATCH_ROW_CAP module-private and CANNOT export it: that
- * file is `'use server'`, and Next permits only async function exports from a
- * server-action module, so `export const BATCH_ROW_CAP` there fails the build.
- * Hence the number lives twice. tests/unit/temix-requeue-guard.test.ts reads the
- * constant back out of services/temix.ts and asserts the two agree, because a
- * comment asking the next person to keep them in step is not a guard.
+ * The cap one Temix file holds: lib/temix-cap.ts TEMIX_BATCH_ROW_CAP (it moved
+ * there from services/temix.ts, a 'use server' module that could not export it,
+ * in code review 2026-11-10, finding 11). Kept as a literal here so this script
+ * loads nothing from the app; tests/unit/temix-requeue-guard.test.ts reads both
+ * back and asserts they agree, because a comment asking the next person to keep
+ * them in step is not a guard. Since finding 11 a queue over the cap is no
+ * longer refused by Generate (it takes the oldest); this script still refuses
+ * to push the queue past it, so a requeue tranche goes out in one file.
  *
  * Note what it actually caps, despite the name: generateTemixBatchCore compares it
  * against the CUSTOMER count of the queue, not against the workbook's row count.
@@ -489,11 +491,11 @@ async function main(): Promise<number> {
     if (queueAfter > BATCH_ROW_CAP) {
       console.log('='.repeat(76));
       console.log(
-        `REFUSING: the queue would reach ${queueAfter} customers and services/temix.ts\n` +
-          `  refuses to generate a batch above ${BATCH_ROW_CAP} ("Queue exceeds ... contact\n` +
-          '  support to split the batch"). Requeueing now would jam /temix for everyone:\n' +
-          '  the Steward could generate nothing at all, including the batch that would\n' +
-          '  have drained it.\n' +
+        `REFUSING: the queue would reach ${queueAfter} customers, and one Temix file\n` +
+          `  holds at most ${BATCH_ROW_CAP} (since code review 2026-11-10, finding 11,\n` +
+          '  /temix takes the ones waiting longest and the rest wait for the next\n' +
+          '  Generate). Requeue in tranches with --limit instead, so each tranche goes\n' +
+          '  out in one file.\n' +
           '  Drain first — have the Steward generate the current batch, load it into\n' +
           '  Temix and mark it loaded — then re-run this. Nothing has been written.\n'
       );

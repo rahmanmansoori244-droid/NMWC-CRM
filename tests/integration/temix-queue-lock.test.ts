@@ -74,7 +74,7 @@ describe.skipIf(!ENABLED)('lockTemixQueue: the Temix queue, locked in byte id or
     const mine = new Set<string>(ids);
     await prisma.$transaction(
       async (tx) => {
-        const locked = await lockTemixQueue(tx);
+        const locked = await lockTemixQueue(tx, 5000);
         expect(locked).toEqual([...locked].sort());
         expect(locked.filter((id) => mine.has(id))).toEqual([`${P}-B`, `${P}-a`, `${P}-b`]);
         // Another connection cannot take a queued row now, and can take one outside the queue.
@@ -89,5 +89,26 @@ describe.skipIf(!ENABLED)('lockTemixQueue: the Temix queue, locked in byte id or
       },
       { timeout: 30_000, maxWait: 10_000 }
     );
+  });
+
+  // Code review 2026-11-10, finding 11: over the cap, the batch takes the
+  // customers waiting longest. Written and rolled back in one transaction, so the
+  // shared test database is left as it was.
+  it('with a limit, locks only the customers waiting longest, still in byte id order', async () => {
+    const ROLLBACK = new Error('rollback');
+    await expect(
+      prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`UPDATE "Customer" SET "temixSyncPendingSince" = now() WHERE (("temixSyncState" = 'PENDING_UPLOAD' AND "deletedAt" IS NULL) OR "temixSyncState" = 'DEACTIVATE_PENDING') AND NOT "isTest"`;
+          await tx.customer.update({ where: { id: `${P}-b` }, data: { temixSyncPendingSince: new Date('1999-01-01T00:00:00Z') } });
+          await tx.customer.update({ where: { id: `${P}-a` }, data: { temixSyncPendingSince: new Date('2000-01-01T00:00:00Z') } });
+          const locked = await lockTemixQueue(tx, 2);
+          expect(locked).toEqual([`${P}-a`, `${P}-b`]);
+          expect(await lockTemixQueue(tx, 1)).toEqual([`${P}-b`]);
+          throw ROLLBACK;
+        },
+        { timeout: 30_000, maxWait: 10_000 }
+      )
+    ).rejects.toBe(ROLLBACK);
   });
 });

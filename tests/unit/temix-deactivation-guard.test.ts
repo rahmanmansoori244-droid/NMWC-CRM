@@ -138,11 +138,15 @@ describe('Generate takes the queue locks in the holders lock order, before it wr
     temix.indexOf('export async function downloadTemixBatchAction')
   );
 
-  it('locks exactly the queue, in byte id order, in one statement', () => {
-    const sql = /\$queryRaw<[^`]*>`([^`]*)`/.exec(lockFn)?.[1] ?? '';
-    expect(sql).toBe(
-      `SELECT "id" FROM "Customer" WHERE (("temixSyncState" = 'PENDING_UPLOAD' AND "deletedAt" IS NULL) OR "temixSyncState" = 'DEACTIVATE_PENDING') AND NOT "isTest" ORDER BY "id" COLLATE "C" FOR UPDATE`
-    );
+  it('locks exactly the queue — at most the cap, the ones waiting longest — in byte id order', () => {
+    // Code review 2026-11-10, finding 11: the oldest `limit` are chosen first (no
+    // lock), then locked in one statement that keeps the queue predicate.
+    const sqls = [...lockFn.matchAll(/\$queryRaw<[^`]*>`([^`]*)`/g)].map((m) => m[1]);
+    const pred = `(("temixSyncState" = 'PENDING_UPLOAD' AND "deletedAt" IS NULL) OR "temixSyncState" = 'DEACTIVATE_PENDING') AND NOT "isTest"`;
+    expect(sqls).toEqual([
+      `SELECT "id" FROM "Customer" WHERE ${pred} ORDER BY "temixSyncPendingSince" ASC NULLS FIRST, "id" COLLATE "C" LIMIT \${limit}`,
+      `SELECT "id" FROM "Customer" WHERE ${pred} AND "id" = ANY(\${ids}) ORDER BY "id" COLLATE "C" FOR UPDATE`,
+    ]);
     // The same two lanes as the queue predicate: change one, change both.
     expect(TEMIX_QUEUE_WHERE).toEqual({
       // Gap 30: a test customer never reaches the ERP file, on either lane.
@@ -154,9 +158,9 @@ describe('Generate takes the queue locks in the holders lock order, before it wr
   });
 
   it('is Generate’s first lock, and its flip claims only the rows it locked', () => {
-    const lock = generate.search(/const (\w+) = await lockTemixQueue\(tx\);/);
-    const locked = /const (\w+) = await lockTemixQueue\(tx\);/.exec(generate)?.[1];
-    expect(lock, 'Generate does not call lockTemixQueue(tx)').toBeGreaterThan(-1);
+    const lock = generate.search(/const (\w+) = await lockTemixQueue\(tx, TEMIX_BATCH_ROW_CAP\);/);
+    const locked = /const (\w+) = await lockTemixQueue\(tx, TEMIX_BATCH_ROW_CAP\);/.exec(generate)?.[1];
+    expect(lock, 'Generate does not call lockTemixQueue(tx, TEMIX_BATCH_ROW_CAP)').toBeGreaterThan(-1);
     for (const write of ['tx.temixSyncBatch.create(', 'tx.customer.updateMany(']) {
       expect(generate.indexOf(write), write).toBeGreaterThan(lock);
     }

@@ -74,7 +74,7 @@ export default async function TemixPage({
       <PageHeader
         title="Temix sync"
         subtitle="Batch upload queue for the Temix ERP — approved master data waiting to be carried over."
-        actions={<GenerateBatchButton disabled={queueTotal === 0} />}
+        actions={<GenerateBatchButton disabled={queueTotal === 0} queued={queueTotal} />}
       />
 
       <div className="grid gap-3 p-4 sm:grid-cols-3 sm:p-6">

@@ -50,7 +50,9 @@ import {
   buildTemixRows,
   deactivationCode,
   deactivationsOfLiveCodes,
+  TEMIX_BATCH_ROW_CAP,
   TEMIX_QUEUE_WHERE,
+  temixMoreQueuedMessage,
   type TemixExportCustomer,
 } from '@/lib/temix';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
@@ -59,7 +61,6 @@ import { lockTemixQueue } from '@/lib/locks';
 import { brokenChecks, checkColumnsOf } from '@/lib/db-rules';
 import { omanDateISO } from '@/lib/tz';
 
-const BATCH_ROW_CAP = 5000;
 const NOTHING_PENDING = 'Nothing is pending for Temix upload.';
 
 async function requireSteward() {
@@ -159,6 +160,13 @@ export type TemixBatchResult = {
    * everyone. They go out once the record is corrected.
    */
   heldForRules?: string[];
+  /**
+   * Code review 2026-11-10, finding 11: customers still queued after this batch
+   * (the queue was over TEMIX_BATCH_ROW_CAP), not counting those held back, and
+   * what the Steward is told about them. Absent when everyone went out.
+   */
+  moreQueued?: number;
+  moreQueuedMessage?: string;
 };
 
 /** F11: of `codes`, the Temix codes a LIVE customer still holds. */
@@ -265,7 +273,7 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
   // batch generates well inside the budget. Pinned by
   // tests/unit/temix-requeue-guard.test.ts, which asserts both bounds.
   const cause = { actorId: me.id, source: src.temix('generate', 'new') };
-  const { batch, customers, heldBack, heldForRules } = await withChangeContext(prisma, cause, async (tx) => {
+  const { batch, customers, heldBack, heldForRules, moreQueued } = await withChangeContext(prisma, cause, async (tx) => {
     // Soft cap pre-check (updateMany cannot `take`; a handful of rows racing
     // in over the cap between count and flip is harmless).
     const pending = await tx.customer.count({ where: TEMIX_QUEUE_WHERE });
@@ -275,14 +283,14 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
     if (pending === 0) {
       throw new ValidationError({ _form: NOTHING_PENDING }, NOTHING_PENDING);
     }
-    if (pending > BATCH_ROW_CAP) {
-      const why = `Queue exceeds ${BATCH_ROW_CAP} customers — contact support to split the batch.`;
-      throw new ValidationError({ _form: why }, why);
-    }
+    // Code review 2026-11-10, finding 11: a queue over the cap is no longer
+    // refused (the Steward had no way to shrink it). This batch takes the
+    // TEMIX_BATCH_ROW_CAP customers waiting longest, and says how many are still
+    // queued so he generates again for the rest.
     // The queue's row locks, taken first and in the id order archive and merge
     // lock in (lib/locks.ts): the flip below claims only these rows, so it takes
     // no customer lock out of that order and the two cannot deadlock.
-    const locked = await lockTemixQueue(tx);
+    const locked = await lockTemixQueue(tx, TEMIX_BATCH_ROW_CAP);
     // F11: a deactivation must never go out for a code a live customer still
     // holds as its Temix code — an uncoded archived row included, since it goes
     // out keyed on its customer code (lib/temix.ts deactivationCode). Checked over
@@ -363,6 +371,13 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
       throw new ValidationError({ _form: why }, why);
     }
     const ids = queued.map((c) => c.id);
+    // Finding 11: who is still queued after this batch, apart from the rows held
+    // back above (they are named on their own). Only asked when the queue was
+    // over the cap: otherwise everyone not held back is in this batch.
+    const moreQueued =
+      pending > TEMIX_BATCH_ROW_CAP
+        ? Math.max(0, (await tx.customer.count({ where: TEMIX_QUEUE_WHERE })) - heldBack.length - heldForRules.length)
+        : 0;
     await tx.temixSyncBatch.update({
       where: { id: b.id },
       data: {
@@ -387,9 +402,10 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
         ...(ruleBreakers.length
           ? { heldForRules: ruleBreakers.slice(0, 100).map((c) => ({ nmwcCode: c.nmwcCode, rules: c.rules })) }
           : {}),
+        ...(moreQueued > 0 ? { moreQueued, cap: TEMIX_BATCH_ROW_CAP } : {}),
       } as unknown as Prisma.InputJsonValue,
     });
-    return { batch: b, customers: queued, heldBack, heldForRules };
+    return { batch: b, customers: queued, heldBack, heldForRules, moreQueued };
   }, { timeout: 30_000, maxWait: 5_000 });
 
   const enriched = await withGuaranteeCounts(customers);
@@ -418,6 +434,7 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
     customerCount: customers.length,
     ...(heldBack.length ? { heldBack } : {}),
     ...(heldForRules.length ? { heldForRules } : {}),
+    ...(moreQueued > 0 ? { moreQueued, moreQueuedMessage: temixMoreQueuedMessage(moreQueued) } : {}),
   };
 }
 

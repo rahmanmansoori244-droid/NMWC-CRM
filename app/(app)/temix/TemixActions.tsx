@@ -9,6 +9,7 @@ import {
   markTemixBatchLoadedAction,
   type TemixBatchResult,
 } from '@/services/temix';
+import { TEMIX_BATCH_ROW_CAP } from '@/lib/temix-cap';
 
 /**
  * A refusal's words. Launch fix: the services/temix.ts refusals carried their
@@ -34,19 +35,22 @@ function triggerDownload(result: TemixBatchResult) {
   URL.revokeObjectURL(url);
 }
 
-export function GenerateBatchButton({ disabled }: { disabled: boolean }) {
+export function GenerateBatchButton({ disabled, queued = 0 }: { disabled: boolean; queued?: number }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [held, setHeld] = useState<string[]>([]);
   const [heldForRules, setHeldForRules] = useState<string[]>([]);
+  // Code review 2026-11-10, finding 11: customers still queued after the file (over the cap).
+  const [more, setMore] = useState<string | null>(null);
 
   function generate() {
     setConfirming(false);
     setError(null);
     setHeld([]);
     setHeldForRules([]);
+    setMore(null);
     start(async () => {
       const res = await generateTemixBatchAction();
       if (!res.ok) {
@@ -56,6 +60,7 @@ export function GenerateBatchButton({ disabled }: { disabled: boolean }) {
       triggerDownload(res.data);
       setHeld(res.data.heldBack ?? []);
       setHeldForRules(res.data.heldForRules ?? []);
+      setMore(res.data.moreQueuedMessage ?? null);
       router.refresh();
     });
   }
@@ -85,6 +90,11 @@ export function GenerateBatchButton({ disabled }: { disabled: boolean }) {
           correcting first.
         </p>
       )}
+      {more && (
+        <p role="status" data-testid="temix-more-queued" className="max-w-md text-right text-xs font-medium text-amber-700">
+          {more}
+        </p>
+      )}
       {heldForRules.length > 0 && (
         <p className="max-w-md text-right text-xs font-medium text-amber-700">
           Also not in this file, still queued: {heldForRules.slice(0, 10).join(', ')}
@@ -95,7 +105,11 @@ export function GenerateBatchButton({ disabled }: { disabled: boolean }) {
       <ConfirmModal
         open={confirming}
         title="Generate Temix upload batch?"
-        message="Every queued customer (pending upload + pending deactivation) is snapshotted into a new batch and flips to “uploaded”. You can re-download the sheet from the batch history at any time."
+        message={
+          queued > TEMIX_BATCH_ROW_CAP
+            ? `${queued.toLocaleString('en-US')} customers are queued, more than one file holds (${TEMIX_BATCH_ROW_CAP.toLocaleString('en-US')}). This batch takes the ${TEMIX_BATCH_ROW_CAP.toLocaleString('en-US')} waiting longest and they flip to “uploaded”; the rest stay queued for the next Generate. You can re-download the sheet from the batch history at any time.`
+            : 'Every queued customer (pending upload + pending deactivation) is snapshotted into a new batch and flips to “uploaded”. You can re-download the sheet from the batch history at any time.'
+        }
         confirmLabel="Generate & download"
         confirmTone="primary"
         onConfirm={generate}
