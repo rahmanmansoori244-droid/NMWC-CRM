@@ -32,6 +32,7 @@ import { REACTIVATION_STATE_CHANGED_MESSAGE, assertStatusEvidence } from '@/lib/
 import { closeRequestChain, freezeChain, reactivationChain, stepDeadline } from '@/lib/approval-chains';
 import { STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN, stageSnapshot } from '@/lib/working-hours';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { REACTIVATION_DECISION_WORDS, alreadyDecidedRefusal, notPendingMessage } from '@/lib/already-decided';
 import {
   answerIfLanded,
   findReceipt,
@@ -95,6 +96,43 @@ function reactivationDecision(
 /** Gap 22 (part C): the losing side of two Managers deciding one reactivation at once. */
 function reactivationConflict(actorId: string, editId: string, path: string): ConflictMeta {
   return { actorId, entityType: 'CustomerEdit', entityId: editId, path };
+}
+
+/**
+ * Code review 2026-11-10, finding 21: a reactivation no longer pending, decided
+ * by this Manager (a reply lost, a second tap) or by a colleague. His own is
+ * said to him; a colleague's is named only to a Manager of the shop's region
+ * who did not send it — one who could have decided it himself. Anyone else is
+ * told where it stands in plain words (it read `Edit is in state APPROVED.`).
+ * Reads only; the request is refused either way.
+ */
+async function reactivationNotPending(
+  me: { id: string },
+  edit: {
+    id: string;
+    state: EditState;
+    approvalChain: unknown;
+    branch: { regionId: string } | null;
+    submittedBy: { id: string } | null;
+  },
+  path: string
+): Promise<never> {
+  const answer = await alreadyDecidedRefusal(prisma, {
+    editId: edit.id,
+    viewerId: me.id,
+    visit: null,
+    approvalChain: edit.approvalChain,
+    words: REACTIVATION_DECISION_WORDS,
+    couldDecide: async () => {
+      if (!edit.branch || edit.submittedBy?.id === me.id) return false;
+      const { loadScope } = await import('@/lib/access');
+      return (await loadScope(me.id)).managedRegionIds.includes(edit.branch.regionId);
+    },
+    lost: { ...reactivationConflict(me.id, edit.id, path), liveVersion: edit.state },
+  });
+  if (answer) throw answer;
+  const message = notPendingMessage(edit.state);
+  throw new ValidationError({ editId: message }, message);
 }
 
 /**
@@ -565,7 +603,7 @@ async function approveReactivationCore(formData: FormData) {
   if (!edit) throw new NotFoundError('Edit not found.');
   if (!edit.isReactivation) throw new ValidationError({ editId: 'Not a reactivation.' });
   if (edit.state !== EditState.SUBMITTED) {
-    throw new ValidationError({ editId: `Edit is in state ${edit.state}.` });
+    await reactivationNotPending(me, edit, 'reactivation.approve');
   }
   if (!edit.branch || !edit.customer) throw new NotFoundError('Branch / customer missing.');
   // RBAC-05-008: a Manager can only approve reactivations in regions they
@@ -793,7 +831,7 @@ async function rejectReactivationCore(formData: FormData) {
   // still-pending reactivation.
   if (!edit.isReactivation) throw new ValidationError({ editId: 'Not a reactivation.' });
   if (edit.state !== EditState.SUBMITTED) {
-    throw new ValidationError({ editId: `Edit is in state ${edit.state}.` });
+    await reactivationNotPending(me, edit, 'reactivation.reject');
   }
   const { loadScope } = await import('@/lib/access');
   const actorScope = await loadScope(me.id);

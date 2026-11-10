@@ -244,6 +244,10 @@ jobs:
           # the database and named on refusal; shared CR numbers flagged
           # (temix-code-unique).
           RUN_TEMIX_UNIQUE: '1'
+          # Code review 2026-11-10, finding 21: a decision already made is
+          # answered as one - his own, a colleague's - and everyone else is
+          # refused as before (approval-answers).
+          RUN_APPROVAL_ANSWERS: '1'
 
   # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
   # person typing `npm run test:e2e`. It shows: login.spec.ts asserted

@@ -107,10 +107,18 @@ import { omanDayTime } from '@/lib/tz';
 import { stageSnapshot } from '@/lib/working-hours';
 import {
   MISSING_TOKEN_MESSAGE,
+  STALE_VIEW_CODE,
   assertDecisionView,
   assertGuaranteesAsViewed,
   readDecisionToken,
+  type DecisionView,
 } from '@/lib/decision-token';
+import {
+  CLOSE_REQUEST_DECISION_WORDS,
+  REQUEST_DECISION_WORDS,
+  alreadyDecidedRefusal,
+  notPendingMessage,
+} from '@/lib/already-decided';
 import {
   resolveStepAudience,
   resolveStewardAudience,
@@ -250,6 +258,48 @@ function lostOnEdit(
     ...(at.expected ? { expectedVersion: `cycle ${at.expected.cycle} step ${at.expected.stepIndex}` } : {}),
     ...(at.liveVersion !== undefined ? { liveVersion: at.liveVersion } : {}),
   };
+}
+
+/**
+ * Code review 2026-11-10, finding 21: the words of a decision's refusal when the
+ * page's step was already decided — by this approver (a reply lost, a second
+ * tap) or by a colleague. Runs only on a path that refuses anyway, after the
+ * same checks; it reads the decision ledger and writes nothing. Null keeps the
+ * refusal that was coming (lib/already-decided.ts says who is told what).
+ */
+async function decidedAlready(
+  me: { id: string; role: Role; username: string },
+  edit: {
+    id: string;
+    approvalChain: unknown;
+    target: EditTarget;
+    submittedBy: { id: string; supervisorId: string | null };
+  },
+  view: DecisionView,
+  scope: () => Promise<{
+    branches: Array<{ regionId: string; deletedAt: Date | null }>;
+    managedRegionIds: string[];
+  }>,
+  lost: ConflictMeta
+): Promise<ConflictError | null> {
+  return alreadyDecidedRefusal(prisma, {
+    editId: edit.id,
+    viewerId: me.id,
+    visit: view,
+    approvalChain: edit.approvalChain,
+    words: edit.target === EditTarget.BRANCH ? CLOSE_REQUEST_DECISION_WORDS : REQUEST_DECISION_WORDS,
+    couldDecide: async (step, priorStepActorIds) => {
+      const s = await scope();
+      return (
+        stepAuthority(me, step, edit.submittedBy, {
+          customerBranches: s.branches,
+          managedRegionIds: s.managedRegionIds,
+          priorStepActorIds,
+        }) !== null
+      );
+    },
+    lost,
+  });
 }
 
 /** Gap 22 (part C): who lost a race on a customer, by which write. */
@@ -1614,12 +1664,38 @@ async function approveEditCore(formData: FormData) {
     },
   });
   if (!edit) throw new NotFoundError('Edit not found.');
+  const sessionUser = { id: session.id, role: session.role, username: session.username };
+  // Finding 21: who could decide which step — the scope the gate below reads,
+  // computed once and only when it is needed.
+  let approveScope: Promise<{ branches: Array<{ regionId: string; deletedAt: Date | null }>; managedRegionIds: string[] }> | null = null;
+  const scopeOfApprove = () =>
+    (approveScope ??= (async () => {
+      const { loadScope } = await import('@/lib/access');
+      const actorScope = await loadScope(session.id);
+      // Phase 1b / owner decision 3 (2026-10-07): for CREATE the scope branches
+      // are the DRAFT branches (region-scoped approvers act on where the
+      // customer WILL live); for an update or close request, the branches it is
+      // about (requestScopeBranches) — a Manager must manage every one's region.
+      const branches =
+        edit.process === EditProcess.CREATE
+          ? edit.branchDrafts.map((d) => ({ regionId: d.route.regionId, deletedAt: null }))
+          : requestScopeBranches({
+              branches: edit.customer?.branches ?? [],
+              fieldChanges: edit.fieldChanges,
+              branchId: edit.branchId,
+              homeBranchIds: parseSubmitGate(edit.submitGate)?.branchIds,
+              submitterRouteId: edit.submittedBy.ownedRouteId,
+              submitterRegionId: edit.submittedBy.ownedRoute?.regionId,
+            });
+      return { branches, managedRegionIds: actorScope.managedRegionIds };
+    })());
   if (edit.state !== EditState.SUBMITTED) {
-    throw new ConflictError(
-      'NOT_PENDING',
-      `Edit is in state ${edit.state}.`,
-      lostOnEdit(session.id, editId, 'edit.approve', { liveVersion: edit.state })
-    );
+    const lost = lostOnEdit(session.id, editId, 'edit.approve', { liveVersion: edit.state });
+    if (!edit.isReactivation) {
+      const answer = await decidedAlready(sessionUser, edit, expected, scopeOfApprove, lost);
+      if (answer) throw answer;
+    }
+    throw new ConflictError('NOT_PENDING', notPendingMessage(edit.state), lost);
   }
   // QA-C11 (Critical): a reactivation is a Manager-only decision (region-scoped +
   // photo-evidence gated) handled exclusively by approveReactivationAction. It was
@@ -1635,6 +1711,24 @@ async function approveEditCore(formData: FormData) {
     );
   }
   const isCreate = edit.process === EditProcess.CREATE;
+  // Finding 21: a card in a bulk run whose request has moved on since the queue
+  // loaded — most often because this same approver's earlier run arrived and its
+  // answer was lost — is answered for what happened to it, before the bulk rules
+  // below judge the step it is at NOW (a new customer moved on to its last step
+  // read "approved one at a time"). Only the words: it is refused either way.
+  if (
+    formData.get(BULK_RUN_FIELD) === '1' &&
+    (expected.cycle !== edit.cycle || expected.stepIndex !== edit.currentStepIndex)
+  ) {
+    const answer = await decidedAlready(
+      sessionUser,
+      edit,
+      expected,
+      scopeOfApprove,
+      lostOnEdit(session.id, editId, 'edit.approve', { expected, liveVersion: `step ${edit.currentStepIndex}` })
+    );
+    if (answer) throw answer;
+  }
   // Owner decision 2026-10-05 (X-APPR-1(a): no): a credit application is
   // approved one at a time from its own review page, at every step, never inside
   // a bulk approve. Only bulkApproveEditsAction sets the field; nothing is written.
@@ -1668,24 +1762,9 @@ async function approveEditCore(formData: FormData) {
   // Phase 1b: step-aware authorization. Resolve the frozen chain + current step;
   // the actor must be authorized for THIS step (canActOnStep) — region scope for
   // scoped steps (Supervisor/Accountant), plus separation of duty (no
-  // self-approval; no acting on two DIFFERENT steps of the same edit).
-  // For CREATE the scope branches are the DRAFT branches (region-scoped
-  // approvers act on where the customer WILL live). Owner decision 3
-  // (2026-10-07): for an update or close request, the branches it is about
-  // (requestScopeBranches) — a Manager must manage every one's region.
-  const { loadScope } = await import('@/lib/access');
-  const actorScope = await loadScope(session.id);
-  const sessionUser = { id: session.id, role: session.role, username: session.username };
-  const scopeBranches = isCreate
-    ? edit.branchDrafts.map((d) => ({ regionId: d.route.regionId, deletedAt: null }))
-    : requestScopeBranches({
-        branches: edit.customer!.branches,
-        fieldChanges: edit.fieldChanges,
-        branchId: edit.branchId,
-        homeBranchIds: parseSubmitGate(edit.submitGate)?.branchIds,
-        submitterRouteId: edit.submittedBy.ownedRouteId,
-        submitterRegionId: edit.submittedBy.ownedRoute?.regionId,
-      });
+  // self-approval; no acting on two DIFFERENT steps of the same edit). The
+  // scope branches: scopeOfApprove above.
+  const { branches: scopeBranches, managedRegionIds } = await scopeOfApprove();
   const scopeRegionIds = [...new Set(scopeBranches.map((b) => b.regionId))];
   const chain = parseChain(edit.approvalChain);
   const stepIndex = edit.currentStepIndex;
@@ -1703,10 +1782,20 @@ async function approveEditCore(formData: FormData) {
   });
   const authority = stepAuthority(sessionUser, step, edit.submittedBy, {
     customerBranches: scopeBranches,
-    managedRegionIds: actorScope.managedRegionIds,
+    managedRegionIds,
     priorStepActorIds: priorStepDecisions.map((d) => d.actorId),
   });
   if (!authority) {
+    // Finding 21: his own decision already in (a lost reply, a second tap), or a
+    // colleague's he could have made himself — said so, instead of this sentence.
+    const answer = await decidedAlready(
+      sessionUser,
+      edit,
+      expected,
+      scopeOfApprove,
+      lostOnEdit(session.id, editId, 'edit.approve', { expected, liveVersion: `step ${stepIndex}` })
+    );
+    if (answer) throw answer;
     throw new ForbiddenError('You are not authorized to act on this step.');
   }
   // Gap 11 (part C): on every decision row below, beside the step's role, the
@@ -1720,7 +1809,23 @@ async function approveEditCore(formData: FormData) {
   };
   // N01: a page opened before a correction round, a step-back or another
   // reviewer's decision shows a request that no longer exists. Nothing is written.
-  assertDecisionView(expected, edit, lostOnEdit(session.id, editId, 'edit.approve'));
+  // Finding 21: when the step it showed was decided, by him or a colleague, the
+  // refusal says that (decidedAlready); the check itself is unchanged.
+  try {
+    assertDecisionView(expected, edit, lostOnEdit(session.id, editId, 'edit.approve'));
+  } catch (err) {
+    if (err instanceof ConflictError && err.code === STALE_VIEW_CODE) {
+      const answer = await decidedAlready(
+        sessionUser,
+        edit,
+        expected,
+        scopeOfApprove,
+        lostOnEdit(session.id, editId, 'edit.approve', { expected })
+      );
+      if (answer) throw answer;
+    }
+    throw err;
+  }
 
   // DG-06: one audit envelope for the whole action, captured here — after the
   // authorization gate and outside every transaction below. `session.id` (from
@@ -2494,12 +2599,33 @@ async function rejectEditCore(formData: FormData) {
     },
   });
   if (!edit) throw new NotFoundError('Edit not found.');
+  const rejecter = { id: session.id, role: session.role, username: session.username };
+  // Finding 21: the scope the gate below reads, computed once, when needed.
+  let rejectScopeRead: Promise<{ branches: Array<{ regionId: string; deletedAt: Date | null }>; managedRegionIds: string[] }> | null = null;
+  const scopeOfReject = () =>
+    (rejectScopeRead ??= (async () => {
+      const { loadScope } = await import('@/lib/access');
+      const s = await loadScope(session.id);
+      const branches =
+        edit.process === EditProcess.CREATE
+          ? edit.branchDrafts.map((d) => ({ regionId: d.route.regionId, deletedAt: null }))
+          : requestScopeBranches({
+              branches: edit.customer?.branches ?? [],
+              fieldChanges: edit.fieldChanges,
+              branchId: edit.branchId,
+              homeBranchIds: parseSubmitGate(edit.submitGate)?.branchIds,
+              submitterRouteId: edit.submittedBy.ownedRouteId,
+              submitterRegionId: edit.submittedBy.ownedRoute?.regionId,
+            });
+      return { branches, managedRegionIds: s.managedRegionIds };
+    })());
   if (edit.state !== EditState.SUBMITTED) {
-    throw new ConflictError(
-      'NOT_PENDING',
-      `Edit is in state ${edit.state}.`,
-      lostOnEdit(session.id, editId, 'edit.reject', { liveVersion: edit.state })
-    );
+    const lost = lostOnEdit(session.id, editId, 'edit.reject', { liveVersion: edit.state });
+    if (!edit.isReactivation) {
+      const answer = await decidedAlready(rejecter, edit, expected, scopeOfReject, lost);
+      if (answer) throw answer;
+    }
+    throw new ConflictError('NOT_PENDING', notPendingMessage(edit.state), lost);
   }
   // QA-C11 (Critical): reactivations are Manager-only and handled exclusively by
   // rejectReactivationAction — never the generic engine (see approveEditCore).
@@ -2513,18 +2639,7 @@ async function rejectEditCore(formData: FormData) {
   // Phase 1b: step-aware authorization — the rejecter must be the CURRENT step's
   // authorized approver (same rule as approve): region scope for scoped steps +
   // separation of duty (no self-reject; no acting on two different steps).
-  const { loadScope: loadScopeReject } = await import('@/lib/access');
-  const rejectScope = await loadScopeReject(session.id);
-  const rejectScopeBranches = rejectIsCreate
-    ? edit.branchDrafts.map((d) => ({ regionId: d.route.regionId, deletedAt: null }))
-    : requestScopeBranches({
-        branches: edit.customer?.branches ?? [],
-        fieldChanges: edit.fieldChanges,
-        branchId: edit.branchId,
-        homeBranchIds: parseSubmitGate(edit.submitGate)?.branchIds,
-        submitterRouteId: edit.submittedBy.ownedRouteId,
-        submitterRegionId: edit.submittedBy.ownedRoute?.regionId,
-      });
+  const { branches: rejectScopeBranches, managedRegionIds: rejectManagedRegionIds } = await scopeOfReject();
   const rejectRegionIds = [...new Set(rejectScopeBranches.map((b) => b.regionId))];
   const rejectRequestName = rejectIsCreate
     ? (edit.customerDraft?.legalName ?? '—')
@@ -2544,20 +2659,44 @@ async function rejectEditCore(formData: FormData) {
     select: { actorId: true },
   });
   const rejectAuthority = stepAuthority(
-    { id: session.id, role: session.role, username: session.username },
+    rejecter,
     rejectStep,
     edit.submittedBy,
     {
       customerBranches: rejectScopeBranches,
-      managedRegionIds: rejectScope.managedRegionIds,
+      managedRegionIds: rejectManagedRegionIds,
       priorStepActorIds: rejectPriorDecisions.map((d) => d.actorId),
     }
   );
   if (!rejectAuthority) {
+    // Finding 21, as on approve.
+    const answer = await decidedAlready(
+      rejecter,
+      edit,
+      expected,
+      scopeOfReject,
+      lostOnEdit(session.id, editId, 'edit.reject', { expected, liveVersion: `step ${rejectStepIndex}` })
+    );
+    if (answer) throw answer;
     throw new ForbiddenError('You are not authorized to act on this step.');
   }
   // N01: after the gate, before anything is written (see approveEditCore).
-  assertDecisionView(expected, edit, lostOnEdit(session.id, editId, 'edit.reject'));
+  // Finding 21: a page whose step was decided since says so, as on approve.
+  try {
+    assertDecisionView(expected, edit, lostOnEdit(session.id, editId, 'edit.reject'));
+  } catch (err) {
+    if (err instanceof ConflictError && err.code === STALE_VIEW_CODE) {
+      const answer = await decidedAlready(
+        rejecter,
+        edit,
+        expected,
+        scopeOfReject,
+        lostOnEdit(session.id, editId, 'edit.reject', { expected })
+      );
+      if (answer) throw answer;
+    }
+    throw err;
+  }
 
   // Owner-confirmed step-back cascade: a rejection returns the request to the
   // previous approver (step N-1); a rejection at the first step returns it to the
