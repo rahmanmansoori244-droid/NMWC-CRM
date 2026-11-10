@@ -138,3 +138,37 @@ describe('refundLimit on the durable backend', () => {
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({ key: 'login:ip:10.0.0.9' }), 'rate-limit.refund.failed');
   });
 });
+
+// Code review 2026-11-10, finding 22, second round: a fail-closed refusal says
+// it is one (`unavailable`), so a caller need not call it "too many attempts",
+// and it is logged at the level a failed refund is.
+describe('checkLimit when the durable store cannot be reached', () => {
+  const SAVED = { backend: process.env.RATE_LIMIT_BACKEND, db: process.env.DATABASE_URL };
+  const cfg = { capacity: 5, refillPerSec: 5 / 60 };
+  beforeEach(() => {
+    delete process.env.RATE_LIMIT_BACKEND;
+    process.env.DATABASE_URL = 'postgresql://unit:unit@localhost:5432/unit';
+  });
+  afterEach(() => {
+    if (SAVED.backend === undefined) delete process.env.RATE_LIMIT_BACKEND;
+    else process.env.RATE_LIMIT_BACKEND = SAVED.backend;
+    if (SAVED.db === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = SAVED.db;
+    vi.restoreAllMocks();
+  });
+
+  it.each(['pwchange:user:u1', 'login:user:c4', 'passwordreset:u1'])(
+    '%s still fails closed, marked unavailable, with a warning',
+    async (key) => {
+      // The mocked client has no $queryRaw: the durable statement throws.
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      expect(await checkLimit(key, cfg)).toEqual({ ok: false, retryAfterSec: 30, unavailable: true });
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ key }), 'rate-limit.store.unavailable');
+    }
+  );
+
+  it('a key that is not security-critical still falls back to memory, unmarked', async () => {
+    const res = await checkLimit(`form:${Math.random()}`, cfg);
+    expect(res).toEqual({ ok: true, retryAfterSec: 0 });
+  });
+});

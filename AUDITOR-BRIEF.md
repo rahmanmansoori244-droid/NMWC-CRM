@@ -226,7 +226,7 @@ The two export download routes bound their repeated query filters after authenti
 | Key / surface | Limit | Backend / failure mode |
 |---|---|---|
 | `login:user:*`, `login:ip:*` (`authorize()`) | user 5, ip 30 (finding 10), both refill 5/min; the `ip` bucket is charged first and refunded on success or a per-user refusal (X-AUTH-2); a refused request charges and restarts nothing | Postgres; fails closed (the refund never throws) |
-| `pwchange:user:<userId>` — the change-password form (finding 22) | 5, refill 5/min; refunded once the current password is found right, so it counts failed guesses | Postgres; fails closed |
+| `pwchange:user:<userId>` — the change-password form (finding 22) | 5, refill 5/min; refunded once the current password is found right, so it counts failed guesses | Postgres; fails closed, answered as "could not be checked just now" (`DB_UNAVAILABLE`), not as too many attempts (finding 22, second round) |
 | `edit:<userId>` — UPDATE and CREATE submits, both draft saves | 60/hour | Postgres; fails open to memory |
 | photo presign | 120/hour | Postgres |
 | `print:<userId>` — recording a print (part C) | 120/hour | Postgres; fails open to memory |

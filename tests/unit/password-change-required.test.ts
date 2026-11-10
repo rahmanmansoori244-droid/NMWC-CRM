@@ -36,6 +36,8 @@ const h = vi.hoisted(() => ({
   signOut: vi.fn(),
   /** bcrypt comparisons made (finding 22: candidates tested per attempt). */
   compares: 0,
+  /** The durable limiter's store cannot be reached: every raw query throws. */
+  limiterDown: false,
 }));
 
 vi.mock('@/lib/auth', () => ({
@@ -108,6 +110,7 @@ vi.mock('@/lib/db', () => {
         if (typeof prop === 'string' && prop.startsWith('$')) {
           return async () => {
             h.calls.push(prop);
+            if (h.limiterDown && prop === '$queryRaw') throw new Error('connect ECONNREFUSED 127.0.0.1:5432');
             return [];
           };
         }
@@ -568,6 +571,44 @@ describe('finding 22: a password change whose answer was lost', () => {
       });
     }
     expect(await attempt('Stored-password-2026', 'A-new-password-2026')).toEqual({ ok: true, data: { renewed: true } });
+  });
+
+  // Second round of the review: the limiter fails closed when its store cannot be
+  // reached, and used to answer "Too many attempts" — false, and on hand-out day
+  // a salesman retrying a lost reply would think he had been locked out.
+  it('a limiter store that cannot be reached still refuses, before anything is read, and says so plainly; it is logged as a warning', async () => {
+    fresh('Stored-password-2026', false);
+    const { logger } = await import('@/lib/logger');
+    const { PASSWORD_CHANGE_CHECK_UNAVAILABLE } = await import('@/lib/rate-limit');
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
+    const savedUrl = process.env.DATABASE_URL;
+    delete process.env.RATE_LIMIT_BACKEND;
+    process.env.DATABASE_URL = 'postgresql://unit:unit@localhost:5432/unit';
+    h.limiterDown = true;
+    try {
+      h.calls = [];
+      // The right current password: still refused (fail closed), never checked.
+      const res = await attempt('Stored-password-2026', 'A-new-password-2026');
+      expect(res).toEqual({ ok: false, code: 'DB_UNAVAILABLE', message: PASSWORD_CHANGE_CHECK_UNAVAILABLE });
+      expect(PASSWORD_CHANGE_CHECK_UNAVAILABLE).toBe(
+        'Your password could not be checked just now, so nothing was changed. Please try again in a minute.'
+      );
+      expect(PASSWORD_CHANGE_CHECK_UNAVAILABLE).not.toMatch(/too many/i);
+      expect(h.calls.filter((c) => !c.startsWith('$'))).toEqual([]);
+      expect(h.userUpdates).toEqual([]);
+      expect(h.signIn).not.toHaveBeenCalled();
+      // At the level the limiter's other store failure (a refund) is logged.
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ key: expect.stringMatching(/^pwchange:user:/), err: expect.stringContaining('ECONNREFUSED') }),
+        'rate-limit.store.unavailable'
+      );
+    } finally {
+      h.limiterDown = false;
+      process.env.RATE_LIMIT_BACKEND = 'memory';
+      if (savedUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = savedUrl;
+      warn.mockRestore();
+    }
   });
 
   it('the guard is not weaker than before: over ten minutes, at most 2 x (5 + 5 a minute) candidates are ever compared', async () => {

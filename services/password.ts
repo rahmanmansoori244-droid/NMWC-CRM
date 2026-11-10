@@ -16,8 +16,14 @@ import { prisma } from '@/lib/db';
 import { src, withChangeContext } from '@/lib/change-context';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
-import { RateLimitError, ValidationError, runAction, type SafeAction } from '@/lib/errors';
-import { checkLimit, refundLimit, PASSWORD_CHANGE_KEY_PREFIX, PASSWORD_CHANGE_LIMIT } from '@/lib/rate-limit';
+import { AppError, RateLimitError, ValidationError, runAction, type SafeAction } from '@/lib/errors';
+import {
+  checkLimit,
+  refundLimit,
+  PASSWORD_CHANGE_CHECK_UNAVAILABLE,
+  PASSWORD_CHANGE_KEY_PREFIX,
+  PASSWORD_CHANGE_LIMIT,
+} from '@/lib/rate-limit';
 import { requireActor } from '@/lib/session';
 import { signIn, signOut } from '@/lib/auth';
 import { logger } from '@/lib/logger';
@@ -74,6 +80,10 @@ async function changeOwnPasswordCore(formData: FormData) {
   const limitKey = `${PASSWORD_CHANGE_KEY_PREFIX}${actor.id}`;
   const lim = await checkLimit(limitKey, PASSWORD_CHANGE_LIMIT);
   if (!lim.ok) {
+    // Second round of the review: still refused (fail closed) when the limiter's
+    // store cannot be reached, but told as it is, not as too many attempts. The
+    // same code as a database that did not answer: nothing was saved.
+    if (lim.unavailable) throw new AppError('DB_UNAVAILABLE', PASSWORD_CHANGE_CHECK_UNAVAILABLE, 503);
     throw new RateLimitError(`Too many attempts. Try again in ${lim.retryAfterSec}s.`);
   }
   const me = await prisma.user.findUniqueOrThrow({ where: { id: actor.id } });
