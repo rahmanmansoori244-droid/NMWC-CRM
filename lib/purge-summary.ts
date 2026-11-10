@@ -138,6 +138,16 @@ export function rateLimitPurgeSql(now: Date, limit: number, run: PurgeRun): Pris
  * import-payload-90d: the verbatim payload of FINISHED import rows (promoted or
  * rejected, or held back and excluded 90 days ago) in a batch not being promoted.
  * The row, its outcome and its exclusion are kept. Counted by batch and state.
+ *
+ * Code review 2026-11-10 (second round): and every row, whatever its state, of a
+ * batch that can never load it — one DISCARDED, or a customer batch uploaded
+ * before the cut-off that was never loaded (READY, FAILED, or PROMOTING with no
+ * live lease, and no row a promote has touched: the same "loaded" test as
+ * lib/import-master-lookup.ts batchLoadHistory). Such a batch is long past the
+ * 7-day limit of a staged batch (lib/import-batch-guard.ts), so promote, resume
+ * and every fix refuse it; its rows kept the customer's details for ever. A
+ * batch a load has touched keeps its CLEAN rows (they may be fixed rows still
+ * to load), as before.
  */
 export function importPayloadPurgeSql(now: Date, limit: number, run: PurgeRun): Prisma.Sql {
   const rule = RETENTION_RULES['import-payload-90d'];
@@ -147,13 +157,28 @@ export function importPayloadPurgeSql(now: Date, limit: number, run: PurgeRun): 
     Prisma.sql`(${Prisma.raw(r)}."state" IN ('PROMOTED', 'REJECTED') OR (${Prisma.raw(r)}."state" = 'QUARANTINED' AND ${Prisma.raw(r)}."excludedAt" < ${ts(cutoff)}))`;
   const hasPayload = (r: string) =>
     Prisma.raw(`(${r}."raw" <> '{}'::jsonb OR ${r}."parsed" IS NOT NULL OR ${r}."issues" IS NOT NULL OR ${r}."corrections" IS NOT NULL)`);
+  // A batch that can never load its rows again: discarded, or staged before the
+  // cut-off and never loaded, with no promote running on it.
+  const deadBatch = (b: string) => {
+    const t = Prisma.raw(b);
+    return Prisma.sql`(${t}."status" = 'DISCARDED' OR (
+           ${t}."kind" = 'CUSTOMER'
+       AND ${t}."status" IN ('READY', 'FAILED', 'PROMOTING')
+       AND ${t}."uploadedAt" < ${ts(cutoff)}
+       AND (${t}."promoteLeaseUntil" IS NULL OR ${t}."promoteLeaseUntil" < ${ts(now)})
+       AND NOT EXISTS (
+         SELECT 1 FROM "ImportRow" lr
+          WHERE lr."batchId" = ${t}."id"
+            AND (lr."state" IN ('PROMOTED', 'REJECTED')
+                 OR lr."parsed"->'fixedFrom'->>'state' = 'REJECTED'
+                 OR lr."parsed"->>'fixedAfterLoad' = 'true'))))`;
+  };
   return Prisma.sql`WITH doomed AS (
     SELECT r."id"
       FROM "ImportRow" r
       JOIN "ImportBatch" b ON b."id" = r."batchId"
      WHERE r."createdAt" < ${ts(cutoff)}
-       AND b."status" <> 'PROMOTING'
-       AND ${finished('r')}
+       AND ((b."status" <> 'PROMOTING' AND ${finished('r')}) OR ${deadBatch('b')})
        AND ${hasPayload('r')}
      ORDER BY r."createdAt"
      LIMIT ${limit}
@@ -163,9 +188,9 @@ export function importPayloadPurgeSql(now: Date, limit: number, run: PurgeRun): 
       FROM doomed
      WHERE x."id" = doomed."id"
        AND x."createdAt" < ${ts(cutoff)}
-       AND ${finished('x')}
        AND ${hasPayload('x')}
-       AND EXISTS (SELECT 1 FROM "ImportBatch" xb WHERE xb."id" = x."batchId" AND xb."status" <> 'PROMOTING')
+       AND EXISTS (SELECT 1 FROM "ImportBatch" xb WHERE xb."id" = x."batchId"
+                     AND ((xb."status" <> 'PROMOTING' AND ${finished('x')}) OR ${deadBatch('xb')}))
     RETURNING x."createdAt" AS d, x."batchId" AS batch, x."state"::text AS state, x."excludedAt" AS excluded
   ), s AS (
     ${summaryInsert(

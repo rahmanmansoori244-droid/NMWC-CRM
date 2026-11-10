@@ -1105,8 +1105,10 @@ an interrupted one with no question — weeks later it would write its older val
   `20261111100000_import_batch_discarded`, one enum value), leaves Work, and can never be
   promoted, resumed or fixed; the `UPDATE` audit row on the batch has who, when, why, the status
   before, and how many rows were not loaded and how many an earlier promote had loaded (those
-  stay loaded). Nothing is deleted; the retention rules handle its rows as before (rows still
-  waiting to load are not swept, as for any batch).
+  stay loaded). Nothing is deleted. The 90-day retention sweep empties the details of **every**
+  row of a discarded batch, 90 days after upload, and so for a staged batch that expired without
+  ever being loaded; the rows and their outcomes stay, and each sweep leaves its purge summary
+  (code review 2026-11-10, second round).
 
 ### Export the cleaned master for ERP
 1. Sign in as Steward (or Manager).

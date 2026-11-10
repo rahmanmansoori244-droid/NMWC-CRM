@@ -44,6 +44,11 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
   let promotingBatchId = '';
   const reopened = (s: string) => `${sfx}-ro-${s}`;
   const promoting = (s: string) => `${sfx}-pg-${s}`;
+  // Code review 2026-11-10, second round: batches that can never load their
+  // rows — discarded, or staged and expired without being loaded — and two that
+  // keep theirs (a discarded batch inside the 90 days; an old batch a load touched).
+  const dead = (key: string, state: string) => `${sfx}-dead-${key}-${state}`;
+  const deadBatches: Record<string, string> = {};
 
   const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000);
   const PERSONAL = {
@@ -177,6 +182,41 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
       }
     }
 
+    for (const [key, status, leaseUntil, states, age] of [
+      ['dis', 'DISCARDED', null, ['CLEAN', 'QUARANTINED', 'PROMOTED'], 120],
+      ['exp', 'READY', null, ['CLEAN', 'QUARANTINED'], 120],
+      ['int', 'PROMOTING', daysAgo(100), ['CLEAN'], 120],
+      ['ldd', 'READY', null, ['PROMOTED', 'CLEAN'], 120],
+      ['new', 'DISCARDED', null, ['CLEAN'], 3],
+    ] as const) {
+      const b = await prisma.importBatch.create({
+        data: {
+          filename: `${sfx}-dead-${key}.xlsx`,
+          kind: 'CUSTOMER',
+          status,
+          uploadedById: userId,
+          uploadedAt: daysAgo(age),
+          ...(leaseUntil ? { promoteLeaseBy: 'gone:tab', promoteLeaseUntil: leaseUntil } : {}),
+        },
+      });
+      deadBatches[key] = b.id;
+      for (const [n, state] of states.entries()) {
+        await prisma.importRow.create({
+          data: {
+            id: dead(key, state),
+            batchId: b.id,
+            rowNumber: n + 2,
+            raw: PERSONAL,
+            parsed: PERSONAL,
+            issues: [{ field: 'phone', message: 'needs review' }],
+            corrections: { cells: { phone: PERSONAL.phone } },
+            state,
+          },
+        });
+        await prisma.$executeRawUnsafe(`UPDATE "ImportRow" SET "createdAt" = $1 WHERE "id" = $2`, daysAgo(age), dead(key, state));
+      }
+    }
+
     // A spent rate-limit bucket keyed on a username, and a fresh one.
     await prisma.rateLimit.create({ data: { key: `login:user:${sfx}.old`, tokens: 4 } });
     await prisma.rateLimit.create({ data: { key: `login:user:${sfx}.new`, tokens: 4 } });
@@ -212,7 +252,7 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
 
   afterAll(async () => {
     if (!prisma) return;
-    const ours = [batchId, stagedBatchId, reopenedBatchId, promotingBatchId].filter(Boolean);
+    const ours = [batchId, stagedBatchId, reopenedBatchId, promotingBatchId, ...Object.values(deadBatches)].filter(Boolean);
     await prisma.importRow.deleteMany({ where: { batchId: { in: ours } } });
     await prisma.importBatch.deleteMany({ where: { id: { in: ours } } });
     await prisma.notification.deleteMany({ where: { userId } });
@@ -312,6 +352,49 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
       const kept = await prisma.importRow.findUniqueOrThrow({ where: { id: promoting(state) } });
       expect(JSON.stringify(kept.raw)).toContain(PERSONAL.phone);
     }
+  });
+
+  // Code review 2026-11-10, second round: the owner accepted 90 days for upload
+  // details. A discarded batch, and a staged batch that expired without being
+  // loaded, can never load their rows; they used to keep the customer's details
+  // for ever (only finished rows were emptied).
+  it('every row of a discarded batch, and of a staged batch that expired unloaded, is emptied after 90 days', async () => {
+    for (const [key, states] of [
+      ['dis', ['CLEAN', 'QUARANTINED', 'PROMOTED']],
+      ['exp', ['CLEAN', 'QUARANTINED']],
+      ['int', ['CLEAN']],
+    ] as const) {
+      for (const state of states) {
+        const gone = await prisma.importRow.findUniqueOrThrow({ where: { id: dead(key, state) } });
+        expect([gone.raw, gone.parsed, gone.issues, gone.corrections], `${key} ${state}`).toEqual([{}, null, null, null]);
+        // The row and its outcome are kept.
+        expect(gone.state).toBe(state);
+      }
+    }
+    // The same purge summary as any finished row: by batch and state, no personal value.
+    const summaries = await prisma.purgeSummary.findMany({ where: { rule: 'import-payload-90d', tableName: 'ImportRow' } });
+    const byBatch = (id: string) => {
+      const n: Record<string, number> = {};
+      for (const s of summaries) {
+        const states = (s.detail as { byBatch?: Record<string, Record<string, number>> } | null)?.byBatch?.[id] ?? {};
+        for (const [k, v] of Object.entries(states)) n[k] = (n[k] ?? 0) + v;
+      }
+      return n;
+    };
+    expect(byBatch(deadBatches.dis!)).toEqual({ CLEAN: 1, QUARANTINED: 1, PROMOTED: 1 });
+    expect(byBatch(deadBatches.exp!)).toEqual({ CLEAN: 1, QUARANTINED: 1 });
+    expect(byBatch(deadBatches.int!)).toEqual({ CLEAN: 1 });
+    for (const s of summaries) expect(JSON.stringify(s.detail)).not.toContain(PERSONAL.phone);
+  });
+
+  it('kept: a discarded batch inside the 90 days, and the CLEAN row of an old batch a load has touched', async () => {
+    const fresh = await prisma.importRow.findUniqueOrThrow({ where: { id: dead('new', 'CLEAN') } });
+    expect(JSON.stringify(fresh.parsed)).toContain(PERSONAL.phone);
+    // A batch a promote has touched may hold fixed rows still to load: its CLEAN row keeps its payload.
+    const waiting = await prisma.importRow.findUniqueOrThrow({ where: { id: dead('ldd', 'CLEAN') } });
+    expect(JSON.stringify(waiting.parsed)).toContain(PERSONAL.phone);
+    const loaded = await prisma.importRow.findUniqueOrThrow({ where: { id: dead('ldd', 'PROMOTED') } });
+    expect([loaded.raw, loaded.parsed]).toEqual([{}, null]);
   });
 
   it('is idempotent and makes progress — a second run re-clears nothing', async () => {

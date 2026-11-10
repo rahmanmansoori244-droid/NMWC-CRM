@@ -77,6 +77,15 @@ describe('one statement removes the batch and writes its summary', () => {
     expect(update).toMatch(/x\."state" IN \('PROMOTED', 'REJECTED'\) OR \(x\."state" = 'QUARANTINED' AND x\."excludedAt" < /);
     expect(update).toContain(`xb."status" <> 'PROMOTING'`);
     expect(update).toContain(`x."raw" <> '{}'::jsonb OR x."parsed" IS NOT NULL`);
+    // Second round: a discarded batch, or one staged before the cut-off and never
+    // loaded, is a batch that can never load its rows — restated on the row's own
+    // batch too, with the "never loaded" test and no live promote lease.
+    expect(update).toContain(`xb."status" = 'DISCARDED' OR (`);
+    expect(update).toContain(`xb."status" IN ('READY', 'FAILED', 'PROMOTING')`);
+    expect(update).toContain(`xb."uploadedAt" < (?::timestamptz AT TIME ZONE 'UTC')`);
+    expect(update).toMatch(/xb\."promoteLeaseUntil" IS NULL OR xb\."promoteLeaseUntil" < /);
+    expect(update).toMatch(/NOT EXISTS \(\s*SELECT 1 FROM "ImportRow" lr\s+WHERE lr\."batchId" = xb\."id"\s+AND \(lr\."state" IN \('PROMOTED', 'REJECTED'\)/);
+    expect(update).toContain(`lr."parsed"->>'fixedAfterLoad' = 'true'`);
   });
 
   it('a photo is purged by its own id and only past the cut-off; a password prune keeps the newest five it was given', () => {
