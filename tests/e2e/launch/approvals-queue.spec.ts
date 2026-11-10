@@ -1524,6 +1524,8 @@ test.describe('approvals: the whole approval loop on a 360 px phone', { tag: ['@
   test('a request with a 15-digit phone and a long address: Before/After on screen, the sticky bar tappable, modals fit, reject with a quick reason', async ({ browser }) => {
     const page = await pageAs(browser, w, 'M1', 'phone360');
     await page.goto(`/approvals/${longOne}`);
+    // The detail streams in after the skeleton: check the width of the request itself.
+    await expect(page.getByText('Before', { exact: true }).first()).toBeVisible();
     await expectNoSideScroll(page);
     const width = page.viewportSize()!.width;
     for (const label of ['Before', 'After']) {
@@ -1531,6 +1533,9 @@ test.describe('approvals: the whole approval loop on a 360 px phone', { tag: ['@
       const n = await boxes.count();
       expect(n).toBeGreaterThan(0);
       for (let i = 0; i < n; i++) {
+        // The request's detail streams in: until React reveals it, the labels sit in
+        // the stream's hidden container and have no box. Measure what is on screen.
+        await expect(boxes.nth(i), `${label} #${i} on screen`).toBeVisible();
         const box = await boxes.nth(i).locator('xpath=..').boundingBox();
         expect(box, `${label} #${i}`).not.toBeNull();
         expect(box!.x).toBeGreaterThanOrEqual(0);
