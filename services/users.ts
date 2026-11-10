@@ -673,6 +673,9 @@ export async function toggleUserActiveAction(formData: FormData): SafeAction<Act
   return runAction(() => toggleUserActiveCore(formData));
 }
 
+/** Finding 9: thrown inside the switch's transaction to roll it back when another click got there first. */
+class AlreadySwitched extends Error {}
+
 async function toggleUserActiveCore(formData: FormData): Promise<ActiveSwitchResult> {
   const me = await requireUserAdmin();
   const userId = String(formData.get('userId') ?? '');
@@ -735,49 +738,55 @@ async function toggleUserActiveCore(formData: FormData): Promise<ActiveSwitchRes
   const env = await getAuditEnvelope(me.id);
   const now = new Date();
   const cause = { actorId: me.id, source: src.users('toggle', userId) };
-  const changed = await withChangeContext(prisma, cause, async (tx) => {
-    // Finding 9: only from the opposite state. Another admin's click that
-    // committed since the read above leaves nothing to change here: no row is
-    // written, so no history row either, and no audit row below.
-    const switched = await tx.user.updateMany({
-      where: { id: userId, isActive: !newActive },
-      data: {
-        isActive: newActive,
-        // AUTH-12: bump revocation marker so existing JWTs are immediately
-        // invalidated on the next freshness check (≤5 min). Bump on disable
-        // OR re-enable so a re-enabled user still picks up role changes etc.
-        sessionsRevokedAt: now,
-      },
-    });
-    if (switched.count === 0) return false;
-    for (const e of atSignedForm) {
-      const done = await withdrawWithAccountChange(tx, env, e, {
-        submittedById: userId,
-        byId: me.id,
-        at: now,
-        decisionReason:
-          'Withdrawn when your account was disabled: nobody else can upload its signed credit application. The salesman of the shop’s route adds it afresh.',
-        auditReason: 'withdrawn when the account was disabled',
-      });
-      if (!done) {
-        throw new ValidationError({
-          withdrawCreates: `One of ${user.fullName}'s credit requests changed while this was being saved. Nothing was saved — reload the page and try again.`,
+  let changed = true;
+  try {
+    await withChangeContext(prisma, cause, async (tx) => {
+      for (const e of atSignedForm) {
+        const done = await withdrawWithAccountChange(tx, env, e, {
+          submittedById: userId,
+          byId: me.id,
+          at: now,
+          decisionReason:
+            'Withdrawn when your account was disabled: nobody else can upload its signed credit application. The salesman of the shop’s route adds it afresh.',
+          auditReason: 'withdrawn when the account was disabled',
         });
+        if (!done) {
+          throw new ValidationError({
+            withdrawCreates: `One of ${user.fullName}'s credit requests changed while this was being saved. Nothing was saved — reload the page and try again.`,
+          });
+        }
       }
-    }
+      // Finding 9: only from the opposite state. Another admin's click that
+      // committed since the read above leaves nothing to change: the transaction
+      // is rolled back whole (the withdrawals above too), so no history row and
+      // no audit row is written for it.
+      const switched = await tx.user.updateMany({
+        where: { id: userId, isActive: !newActive },
+        data: {
+          isActive: newActive,
+          // AUTH-12: bump revocation marker so existing JWTs are immediately
+          // invalidated on the next freshness check (≤5 min). Bump on disable
+          // OR re-enable so a re-enabled user still picks up role changes etc.
+          sessionsRevokedAt: now,
+        },
+      });
+      if (switched.count === 0) throw new AlreadySwitched();
 
-    // Gap 37: a disable records what he left open, after the withdrawals above.
-    const openWork = newActive ? null : await loadOpenWork(tx, userId, atSignedForm.map((e) => e.id));
-    await writeAudit(tx, env, {
-      action: 'UPDATE',
-      entityType: 'User',
-      entityId: userId,
-      before: { isActive: !newActive },
-      after: { isActive: newActive, ...(openWork ? { openWork } : {}) } as unknown as Prisma.InputJsonValue,
-      reason: newActive ? 'enabled' : 'disabled',
+      // Gap 37: a disable records what he left open, after the withdrawals above.
+      const openWork = newActive ? null : await loadOpenWork(tx, userId, atSignedForm.map((e) => e.id));
+      await writeAudit(tx, env, {
+        action: 'UPDATE',
+        entityType: 'User',
+        entityId: userId,
+        before: { isActive: !newActive },
+        after: { isActive: newActive, ...(openWork ? { openWork } : {}) } as unknown as Prisma.InputJsonValue,
+        reason: newActive ? 'enabled' : 'disabled',
+      });
     });
-    return true;
-  });
+  } catch (err) {
+    if (!(err instanceof AlreadySwitched)) throw err;
+    changed = false;
+  }
   revalidatePath('/users');
   if (!changed) return { isActive: newActive, changed: false };
   revalidateTag('ref:users'); // the cached list holds active accounts only

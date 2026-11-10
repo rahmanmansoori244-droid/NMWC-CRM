@@ -70,8 +70,8 @@ describe('every hand-over row carries openWork (structural)', () => {
     expect(fn.indexOf('withdrawWithAccountChange(')).toBeLessThan(fn.indexOf('loadOpenWork('));
     expect(fn).toMatch(/after: \{ isActive: newActive, \.\.\.\(openWork \? \{ openWork \} : \{\}\) \}/);
     // Finding 9 (code review 2026-11-10): the row is written only once the switch really changed the account.
-    expect(fn.indexOf('if (switched.count === 0) return false;')).toBeGreaterThan(-1);
-    expect(fn.indexOf('if (switched.count === 0) return false;')).toBeLessThan(fn.indexOf('writeAudit('));
+    expect(fn.indexOf('if (switched.count === 0) throw new AlreadySwitched();')).toBeGreaterThan(-1);
+    expect(fn.indexOf('if (switched.count === 0) throw new AlreadySwitched();')).toBeLessThan(fn.indexOf('writeAudit('));
   });
 
   it('the account_edit row of a route or role change, after the withdrawals it made', () => {

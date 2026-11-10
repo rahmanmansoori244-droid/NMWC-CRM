@@ -168,7 +168,9 @@ describe('every account change that could strand one counts it', () => {
     expect(toggle).toMatch(/signedFormDisableIssue\(/);
     const tx = toggle.slice(toggle.indexOf('withChangeContext(prisma,'));
     expect(tx.indexOf('withdrawWithAccountChange(')).toBeGreaterThan(-1);
-    expect(tx.indexOf('withdrawWithAccountChange(')).toBeLessThan(tx.indexOf('tx.user.update('));
+    // Finding 9 (code review 2026-11-10): the switch is an updateMany conditioned on the opposite state.
+    expect(tx.indexOf('tx.user.updateMany(')).toBeGreaterThan(-1);
+    expect(tx.indexOf('withdrawWithAccountChange(')).toBeLessThan(tx.indexOf('tx.user.updateMany('));
   });
 
   it('the Manager’s role action refuses one it would strand', () => {
