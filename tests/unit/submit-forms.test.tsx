@@ -228,8 +228,11 @@ describe('the customer update form', () => {
 
   it('Try again after an unanswered Save draft repeats the SAVE, with its id — and the phone copy stays', async () => {
     renderForm();
-    // Let the mount-time autosave write first: were the save to delete the copy
-    // after it, nothing would write it back and the check below would see that.
+    // Code review 2026-11-10, finding 5: nothing is written for a form merely
+    // opened, so he types a note. Let the autosave write it first: were the save
+    // to delete the copy after it, nothing would write it back and the check
+    // below would see that.
+    fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'Closed Fridays' } });
     await act(async () => {
       await new Promise((r) => setTimeout(r, 600));
     });
@@ -255,15 +258,29 @@ describe('the customer update form', () => {
   });
 
   it('a draft typed before a photo bumped updatedAt is restored — the server values it started from are unchanged', () => {
+    // Finding 5: a copy is kept for seven days, so the photo was taken just now
+    // and the draft typed a minute before it — not in September.
+    const photographed = { ...customer, updatedAt: new Date() };
     window.localStorage.setItem(
       draftKey,
       JSON.stringify({
         contactPerson: 'Said (typed offline)',
-        savedAt: customer.updatedAt.getTime() - 60_000, // older than the photo's bump
-        base: enrichmentBase(customer),
+        savedAt: photographed.updatedAt.getTime() - 60_000, // older than the photo's bump
+        base: enrichmentBase(photographed),
       })
     );
-    renderForm();
+    render(
+      <EnrichmentForm
+        customer={photographed}
+        channels={[]}
+        lockName
+        lockCr={false}
+        userRole="MANAGER"
+        canSubmit
+        sessionUserId="u1"
+        gate="CORE"
+      />
+    );
     expect(screen.getByDisplayValue('Said (typed offline)')).toBeTruthy();
     expect(screen.getByText('Restored a local draft from your last visit.')).toBeTruthy();
   });
@@ -284,8 +301,10 @@ describe('the customer update form', () => {
 
   it('a first-time submit is said beside the button before it moves on, by a document load (no stale cache, forward or Back)', async () => {
     renderForm();
-    // Let the mount-time autosave write the phone copy first — else the "cleared"
-    // check below passes whether or not the submit clears it (post-merge review).
+    // Let the autosave write the phone copy first — else the "cleared" check
+    // below passes whether or not the submit clears it (post-merge review).
+    // Finding 5: only a changed form has a copy, so he types a note.
+    fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'Closed Fridays' } });
     await act(async () => {
       await new Promise((r) => setTimeout(r, 600));
     });
@@ -541,6 +560,8 @@ describe('the customer update form', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       renderForm();
+      // Finding 5: a form merely opened has no copy; a typed note makes one.
+      fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'Closed Fridays' } });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(600);
       });
@@ -704,7 +725,8 @@ describe('the customer update form', () => {
         notes: '',
         // Written before a route handover: b-gone is no longer this salesman's.
         branchStates: { b1, 'b-gone': { ...b1, address: 'Another route now' } },
-        savedAt: 1,
+        // Recent: a copy is kept for seven days (finding 5).
+        savedAt: Date.now() - 60_000,
         base: enrichmentBase(customer),
       })
     );
@@ -1101,7 +1123,10 @@ describe('the customer update form', () => {
     const onFile: Loaded = { ...customer, channelId: 'ch1' };
     const visit = renderAs('SALESMAN', counted(onFile));
     expect(screen.getByText('✓ Equipment counted')).toBeTruthy();
-    // He leaves without touching anything; the mount-time autosave wrote the copy.
+    // He types a note and leaves without touching "Counted"; the autosave wrote
+    // the copy, "Counted" carried along in it. (Finding 5: a form he did not
+    // change at all leaves no copy any more.)
+    fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'Closed Fridays' } });
     await autosaved();
     expect(JSON.parse(window.localStorage.getItem(draftKey)!).branchStates.b1).toMatchObject({
       confirmed: true,
