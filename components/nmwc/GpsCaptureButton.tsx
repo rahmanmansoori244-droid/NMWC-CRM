@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { MapPin, Check, RotateCcw, AlertTriangle, PencilLine, Undo2 } from 'lucide-react';
 import { gpsAccuracyAdvice, gpsAccuracyBand } from '@/lib/gps-accuracy';
-import { GPS_LISTEN_MS, listenForBestFix, rankedAccuracy } from '@/lib/gps-listen';
+import { GPS_LISTEN_MS, listenForBestFix, rankedAccuracy, type PermissionsLike } from '@/lib/gps-listen';
 import { typedDecimal } from '@/lib/digits';
 
 export type Gps = {
@@ -27,6 +27,20 @@ const OMAN_LNG_MAX = 60;
 
 /** Finding 19: the first listen that heard nothing says where a fix is likely, before the typed-coordinates panel. */
 export const GPS_TRY_OUTSIDE_MESSAGE = `No GPS fix in ${Math.round(GPS_LISTEN_MS / 1000)} seconds. Step outside, away from roofs and walls, then tap “Try again outside”.`;
+
+/**
+ * Finding 19, second round: the listen never started — the phone neither said
+ * location is allowed nor sent a reading — most likely because the "Allow
+ * location?" question is still open. Not the sky's fault, so not "step outside".
+ */
+export const GPS_NO_START_MESSAGE =
+  'The phone has not started looking for GPS. If it asks “Allow location?”, tap Allow, then tap the GPS button again.';
+
+/** The browser's Permissions API, when it has one: the listening window starts once location is allowed. */
+function browserPermissions(): PermissionsLike | null {
+  const p = typeof navigator !== 'undefined' ? (navigator as { permissions?: unknown }).permissions : undefined;
+  return p && typeof (p as PermissionsLike).query === 'function' ? (p as PermissionsLike) : null;
+}
 
 const samePoint = (a: Gps | null | undefined, b: Gps | null | undefined) =>
   !!a &&
@@ -165,6 +179,11 @@ export function GpsCaptureButton({
           take(next);
           return;
         }
+        if (outcome.kind === 'no-start') {
+          // Not a silent listen: nothing was listened to. The typed way stays one tap away.
+          setError(GPS_NO_START_MESSAGE);
+          return;
+        }
         if (outcome.kind === 'timeout') {
           silentListensRef.current += 1;
           // Finding 19: the first time, the way out that usually works — the
@@ -187,7 +206,8 @@ export function GpsCaptureButton({
       },
       (best) => {
         if (current()) setBestSoFar(best.accuracy);
-      }
+      },
+      { permissions: browserPermissions() }
     );
   }
 

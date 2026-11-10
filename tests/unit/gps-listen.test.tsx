@@ -17,9 +17,16 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { GPS_LISTEN_MS, GPS_STOP_EARLY_AT_M, listenForBestFix, type ListenOutcome } from '@/lib/gps-listen';
+import {
+  GPS_LISTEN_MS,
+  GPS_START_WAIT_MS,
+  GPS_STOP_EARLY_AT_M,
+  listenForBestFix,
+  type ListenOutcome,
+  type PermissionsLike,
+} from '@/lib/gps-listen';
 import { GPS_TARGET_ACCURACY_M, gpsAccuracyAdvice } from '@/lib/gps-accuracy';
-import { GpsCaptureButton, GPS_TRY_OUTSIDE_MESSAGE, type Gps } from '@/components/nmwc/GpsCaptureButton';
+import { GpsCaptureButton, GPS_NO_START_MESSAGE, GPS_TRY_OUTSIDE_MESSAGE, type Gps } from '@/components/nmwc/GpsCaptureButton';
 
 type Watch = { ok: PositionCallback; fail: PositionErrorCallback; options?: PositionOptions; cleared: boolean };
 let watches: Watch[];
@@ -39,17 +46,44 @@ const failWith = (code: 1 | 2 | 3) =>
   act(() =>
     last().fail({ code, message: '', PERMISSION_DENIED: 1, POSITION_UNAVAILABLE: 2, TIMEOUT: 3 } as GeolocationPositionError)
   );
-const wait = (ms: number) => act(() => void vi.advanceTimersByTime(ms));
+// Async: the Permissions API answers in a promise, which must settle as time passes.
+const wait = (ms: number) => act(async () => void (await vi.advanceTimersByTimeAsync(ms)));
+
+/**
+ * A fake of the browser's Permissions API for 'geolocation': `set` is the
+ * salesman answering the "Allow location?" question (or the phone changing it).
+ */
+function fakePermissions(initial: 'granted' | 'prompt' | 'denied') {
+  const listeners = new Set<() => void>();
+  const status = {
+    state: initial as string,
+    addEventListener: (_t: 'change', fn: () => void) => void listeners.add(fn),
+    removeEventListener: (_t: 'change', fn: () => void) => void listeners.delete(fn),
+  };
+  return {
+    api: { query: vi.fn(async (_d: { name: 'geolocation' }) => status) } satisfies PermissionsLike,
+    listeners,
+    set(state: 'granted' | 'prompt' | 'denied') {
+      status.state = state;
+      for (const fn of [...listeners]) fn();
+    },
+  };
+}
+let perms: ReturnType<typeof fakePermissions>;
 
 beforeEach(() => {
   vi.useFakeTimers();
   watches = [];
   Object.defineProperty(navigator, 'geolocation', { configurable: true, value: fakeGeo });
+  // Location already allowed, as on a phone that has been asked before.
+  perms = fakePermissions('granted');
+  Object.defineProperty(navigator, 'permissions', { configurable: true, value: perms.api });
 });
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
   Reflect.deleteProperty(navigator, 'geolocation');
+  Reflect.deleteProperty(navigator, 'permissions');
 });
 
 describe('the listening rule (lib/gps-listen.ts)', () => {
@@ -88,10 +122,12 @@ describe('the listening rule (lib/gps-listen.ts)', () => {
     expect(last().cleared).toBe(true);
   });
 
-  it('nothing heard: a timeout, by the window or by the browser', () => {
+  it('nothing heard: a timeout, by the window or by the browser', async () => {
     const byWindow = vi.fn();
-    listenForBestFix(fakeGeo, byWindow);
-    vi.advanceTimersByTime(GPS_LISTEN_MS);
+    listenForBestFix(fakeGeo, byWindow, undefined, { permissions: fakePermissions('granted').api });
+    await vi.advanceTimersByTimeAsync(GPS_LISTEN_MS - 1);
+    expect(byWindow).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
     expect(byWindow).toHaveBeenCalledWith({ kind: 'timeout' });
     const byBrowser = vi.fn();
     listenForBestFix(fakeGeo, byBrowser);
@@ -140,6 +176,142 @@ describe('the listening rule (lib/gps-listen.ts)', () => {
     );
     expect(done).toHaveBeenCalledWith({ kind: 'fix', reading: { lat: 1, lng: 1, accuracy: 4 }, early: true });
     expect(cleared).toEqual([7]);
+  });
+});
+
+/**
+ * Second round (code review 2026-11-10, finding 19): the window started at the
+ * tap, so a salesman reading the first-ever "Allow location?" question lost it,
+ * was told "No GPS fix", and the watch was gone when he tapped Allow. It now
+ * starts when readings can arrive; a safety limit still ends every listen.
+ */
+describe('the window starts when readings can arrive, not at the tap', () => {
+  it('its safety limit: two minutes to start, longer than the window it guards', () => {
+    expect(GPS_START_WAIT_MS).toBe(120_000);
+    expect(GPS_START_WAIT_MS).toBeGreaterThan(GPS_LISTEN_MS);
+  });
+
+  it('the question open for 40 s does not use up the window; "Allow" starts the full 25 s, and the watch was never dropped', async () => {
+    const p = fakePermissions('prompt');
+    const done = vi.fn();
+    listenForBestFix(fakeGeo, done, undefined, { permissions: p.api });
+    expect(p.api.query).toHaveBeenCalledWith({ name: 'geolocation' });
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect(done).not.toHaveBeenCalled();
+    expect(last().cleared).toBe(false);
+    p.set('granted');
+    await vi.advanceTimersByTimeAsync(GPS_LISTEN_MS - 1);
+    expect(done).not.toHaveBeenCalled();
+    // A reading heard late in the full window is still kept.
+    last().ok({ coords: { latitude: 1, longitude: 1, accuracy: 60 } } as GeolocationPosition);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(done).toHaveBeenCalledWith({ kind: 'fix', reading: { lat: 1, lng: 1, accuracy: 60 }, early: false });
+    expect(last().cleared).toBe(true);
+    expect(p.listeners.size, 'the permission listener is removed').toBe(0);
+  });
+
+  it('a phone that never says "granted" (no change event): the first reading starts the window', async () => {
+    const p = fakePermissions('prompt');
+    const done = vi.fn();
+    listenForBestFix(fakeGeo, done, undefined, { permissions: p.api });
+    await vi.advanceTimersByTimeAsync(50_000);
+    last().ok({ coords: { latitude: 1, longitude: 1, accuracy: 80 } } as GeolocationPosition);
+    await vi.advanceTimersByTimeAsync(GPS_LISTEN_MS - 1);
+    expect(done).not.toHaveBeenCalled();
+    last().ok({ coords: { latitude: 2, longitude: 2, accuracy: 45 } } as GeolocationPosition);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(done).toHaveBeenCalledWith({ kind: 'fix', reading: { lat: 2, lng: 2, accuracy: 45 }, early: false });
+  });
+
+  it('a browser TIMEOUT while the question is still open is not believed; after "Allow", it is', async () => {
+    const p = fakePermissions('prompt');
+    const done = vi.fn();
+    listenForBestFix(fakeGeo, done, undefined, { permissions: p.api });
+    await vi.advanceTimersByTimeAsync(0);
+    last().fail({ code: 3 } as GeolocationPositionError);
+    expect(done).not.toHaveBeenCalled();
+    expect(last().cleared).toBe(false);
+    p.set('granted');
+    last().fail({ code: 3 } as GeolocationPositionError);
+    expect(done).toHaveBeenCalledWith({ kind: 'timeout' });
+  });
+
+  it('"Block" on the question: denied at once, as before', async () => {
+    const p = fakePermissions('prompt');
+    const done = vi.fn();
+    listenForBestFix(fakeGeo, done, undefined, { permissions: p.api });
+    await vi.advanceTimersByTimeAsync(10_000);
+    p.set('denied');
+    last().fail({ code: 1 } as GeolocationPositionError);
+    expect(done).toHaveBeenCalledWith({ kind: 'denied' });
+  });
+
+  it('no Permissions API: silence is told by the browser’s own timeout (which starts after "Allow"); the app’s window starts at the first reading', async () => {
+    const silent = vi.fn();
+    listenForBestFix(fakeGeo, silent);
+    await vi.advanceTimersByTimeAsync(GPS_LISTEN_MS + 10_000);
+    expect(silent, 'the app does not time out on its own before anything can arrive').not.toHaveBeenCalled();
+    last().fail({ code: 3 } as GeolocationPositionError);
+    expect(silent).toHaveBeenCalledWith({ kind: 'timeout' });
+
+    const late = vi.fn();
+    listenForBestFix(fakeGeo, late);
+    await vi.advanceTimersByTimeAsync(30_000);
+    last().ok({ coords: { latitude: 1, longitude: 1, accuracy: 90 } } as GeolocationPosition);
+    await vi.advanceTimersByTimeAsync(GPS_LISTEN_MS - 1);
+    expect(late).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(late).toHaveBeenCalledWith({ kind: 'fix', reading: { lat: 1, lng: 1, accuracy: 90 }, early: false });
+  });
+
+  it.each([
+    ['the question left open', () => fakePermissions('prompt').api],
+    ['a Permissions API that never answers', () => ({ query: () => new Promise<never>(() => undefined) })],
+    ['one that refuses', () => ({ query: () => Promise.reject(new Error('not supported')) })],
+    [
+      'one that throws',
+      () => ({
+        query: () => {
+          throw new TypeError('geolocation is not a valid permission name');
+        },
+      }),
+    ],
+    ['none at all', () => null],
+  ])('the safety limit — %s — ends the listen with "no-start" and clears the watch: the button never hangs', async (_label, make) => {
+    const done = vi.fn();
+    listenForBestFix(fakeGeo, done, undefined, { permissions: make() as PermissionsLike | null });
+    await vi.advanceTimersByTimeAsync(GPS_START_WAIT_MS - 1);
+    expect(done).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(done).toHaveBeenCalledWith({ kind: 'no-start' });
+    expect(done).toHaveBeenCalledOnce();
+    expect(last().cleared).toBe(true);
+  });
+
+  it('once the window has started, the safety limit no longer cuts it short', async () => {
+    const p = fakePermissions('prompt');
+    const done = vi.fn();
+    listenForBestFix(fakeGeo, done, undefined, { permissions: p.api });
+    await vi.advanceTimersByTimeAsync(GPS_START_WAIT_MS - 5_000);
+    p.set('granted');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(done).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(GPS_LISTEN_MS - 10_000);
+    expect(done).toHaveBeenCalledWith({ kind: 'timeout' });
+  });
+
+  it('cancelled while the question is open: the watch is cleared, the listener removed, nothing said', async () => {
+    const p = fakePermissions('prompt');
+    const done = vi.fn();
+    const cancel = listenForBestFix(fakeGeo, done, undefined, { permissions: p.api });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(p.listeners.size).toBe(1);
+    cancel();
+    expect(last().cleared).toBe(true);
+    expect(p.listeners.size).toBe(0);
+    p.set('granted');
+    await vi.advanceTimersByTimeAsync(GPS_START_WAIT_MS + GPS_LISTEN_MS);
+    expect(done).not.toHaveBeenCalled();
   });
 });
 
@@ -315,5 +487,42 @@ describe('the GPS button', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Capture GPS' }));
     view.unmount();
     expect(last().cleared).toBe(true);
+  });
+
+  it('second round: the first-ever "Allow location?" read slowly — he is not told "No GPS fix", and the fix after "Allow" lands', async () => {
+    perms = fakePermissions('prompt');
+    Object.defineProperty(navigator, 'permissions', { configurable: true, value: perms.api });
+    const onCapture = vi.fn();
+    render(<GpsCaptureButton onCapture={onCapture} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Capture GPS' }));
+    await wait(GPS_LISTEN_MS + 15_000);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Capturing…' })).toBeDisabled();
+    await act(async () => perms.set('granted'));
+    await wait(20_000);
+    await reading(40, 23.6, 58.4);
+    await wait(GPS_LISTEN_MS - 20_000);
+    expect(onCapture).toHaveBeenCalledOnce();
+    expect(onCapture.mock.calls[0]![0]).toMatchObject({ lat: 23.6, lng: 58.4, accuracy: 40 });
+    expect(watches).toHaveLength(1);
+  });
+
+  it('second round: the question never answered — after the safety limit he is told to tap Allow, not to step outside', async () => {
+    perms = fakePermissions('prompt');
+    Object.defineProperty(navigator, 'permissions', { configurable: true, value: perms.api });
+    render(<GpsCaptureButton onCapture={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Capture GPS' }));
+    await wait(GPS_START_WAIT_MS);
+    expect(screen.getByRole('alert').textContent).toBe(GPS_NO_START_MESSAGE);
+    expect(last().cleared).toBe(true);
+    expect(screen.getByRole('button', { name: 'Capture GPS' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Try again outside' })).toBeNull();
+    // The typed way stays one tap away.
+    expect(screen.getByRole('button', { name: 'Enter coordinates manually' })).toBeEnabled();
+    // Not counted as a silent listen: the next silent one still offers the open sky first.
+    fireEvent.click(screen.getByRole('button', { name: 'Capture GPS' }));
+    await act(async () => perms.set('granted'));
+    await wait(GPS_LISTEN_MS);
+    expect(screen.getByRole('alert').textContent).toBe(GPS_TRY_OUTSIDE_MESSAGE);
   });
 });
