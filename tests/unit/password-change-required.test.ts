@@ -598,10 +598,12 @@ describe('finding 22: a password change whose answer was lost', () => {
       expect(h.userUpdates).toEqual([]);
       expect(h.signIn).not.toHaveBeenCalled();
       // At the level the limiter's other store failure (a refund) is logged.
+      // Third round: the kind of key, never the key itself.
       expect(warn).toHaveBeenCalledWith(
-        expect.objectContaining({ key: expect.stringMatching(/^pwchange:user:/), err: expect.stringContaining('ECONNREFUSED') }),
+        expect.objectContaining({ keyKind: 'pwchange:user', err: expect.stringContaining('ECONNREFUSED') }),
         'rate-limit.store.unavailable'
       );
+      expect(warn.mock.calls.find((c) => c[1] === 'rate-limit.store.unavailable')![0]).not.toHaveProperty('key');
     } finally {
       h.limiterDown = false;
       process.env.RATE_LIMIT_BACKEND = 'memory';

@@ -13,7 +13,7 @@ const h = vi.hoisted(() => ({
 }));
 vi.mock('@/lib/db', () => ({ prisma: { $executeRaw: h.executeRaw } }));
 
-import { checkLimit, refundLimit } from '@/lib/rate-limit';
+import { checkLimit, rateLimitKeyKind, refundLimit } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 
 describe('checkLimit — token bucket', () => {
@@ -157,15 +157,32 @@ describe('checkLimit when the durable store cannot be reached', () => {
     vi.restoreAllMocks();
   });
 
-  it.each(['pwchange:user:u1', 'login:user:c4', 'passwordreset:u1'])(
-    '%s still fails closed, marked unavailable, with a warning',
-    async (key) => {
+  it.each([
+    ['pwchange:user:u1', 'pwchange:user'],
+    ['login:user:c4', 'login:user'],
+    ['login:ip:203.0.113.7', 'login:ip'],
+    ['passwordreset:u1', 'passwordreset'],
+  ])(
+    '%s still fails closed, marked unavailable, with a warning that names the kind of key, never the key',
+    async (key, kind) => {
       // The mocked client has no $queryRaw: the durable statement throws.
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
       expect(await checkLimit(key, cfg)).toEqual({ ok: false, retryAfterSec: 30, unavailable: true });
-      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ key }), 'rate-limit.store.unavailable');
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ keyKind: kind }), 'rate-limit.store.unavailable');
+      // Third round: the typed username or the IP is not in the log line.
+      const [fields] = warn.mock.calls.find((c) => c[1] === 'rate-limit.store.unavailable')! as [Record<string, unknown>];
+      expect(fields).not.toHaveProperty('key');
+      expect(JSON.stringify(fields)).not.toContain(key.split(':').at(-1));
     }
   );
+
+  it('rateLimitKeyKind: the kind of every key, and "other" for the rest', () => {
+    expect(rateLimitKeyKind('login:user:someone')).toBe('login:user');
+    expect(rateLimitKeyKind('login:ip:198.51.100.1')).toBe('login:ip');
+    expect(rateLimitKeyKind('passwordreset:x')).toBe('passwordreset');
+    expect(rateLimitKeyKind('pwchange:user:u1')).toBe('pwchange:user');
+    expect(rateLimitKeyKind('form:abc')).toBe('other');
+  });
 
   it('a key that is not security-critical still falls back to memory, unmarked', async () => {
     const res = await checkLimit(`form:${Math.random()}`, cfg);
