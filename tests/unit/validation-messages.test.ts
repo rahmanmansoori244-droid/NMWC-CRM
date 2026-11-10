@@ -215,7 +215,8 @@ import {
   type ParsedSubmitCreate,
 } from '@/lib/validation/create';
 import { BRANCH_EDIT_FIELDS, CUSTOMER_EDIT_FIELDS, EDIT_PAYLOAD_VERSION } from '@/lib/edit-values';
-import { CREDIT_DOCUMENT_KINDS } from '@/lib/credit-documents';
+import { CREDIT_DOCUMENT_KINDS, MAX_SIGNED_FORM_PAGES } from '@/lib/credit-documents';
+import { parseCreateCopy, parseSignedPagesCopy } from '@/lib/create-draft';
 import { parseSubmitGate } from '@/lib/edit-scope';
 import {
   gpsManualReasonSchema,
@@ -1440,11 +1441,182 @@ const safe = (r: { success: boolean; data?: unknown }) => (r.success ? { ok: tru
 for (const [label, value] of UUIDS) add(`submission.submissionIdSchema/${label}`, SALESMAN, async () => safe(submissionIdSchema.safeParse(value)));
 for (const [label, value] of REASONS) add(`gps-manual.reasonSchema/${label}`, SALESMAN, async () => safe(gpsManualReasonSchema.safeParse(value)));
 
+// ─── what a copy put back from the phone sends (code review 2026-11-10, finding 4) ─
+//
+// Added when claude/review-fixes-1 was merged onto the upgrades. That branch adds
+// no schema and changes none, but it gives three schemas inputs no earlier path
+// could: the new-customer form and the signed-application pages now keep their
+// work on the phone (lib/create-draft.ts) and send what they read back from it.
+// A copy is read by hand, so a value the reader lets through — whatever the
+// phone's storage held — goes to the schema as it is:
+//   - the ids of sends that got no answer, which the form asks the server about
+//     only when submissionIdSchema accepts them (CreateCustomerForm);
+//   - photo, guarantee and page ids (any 1–64 of [A-Za-z0-9_-]) and GPS points
+//     (any finite numbers, any time Date.parse reads, a typed-in reason of any
+//     text), sent through submitCreateSchema and the signed-form upload's schema.
+// Each case runs the copy through the real reader, builds what the form sends
+// from it (the form's own mapping, as a draft), and records what the consumer
+// answers. They were recorded under zod 3.25.76 on claude/review-fixes-1 at
+// 718da18 (fixture.extendedWith), with this file's harness, and are checked
+// like every other case.
+const FROM_PHONE_FIRST = CASES.length;
+
+/** The body CreateCustomerForm sends (as a draft) for the form a stored copy puts back. */
+function createBodyFromCopy(stored: Record<string, unknown>): Record<string, unknown> {
+  const copy = parseCreateCopy(JSON.stringify(stored));
+  if (!copy) throw new Error('not a copy');
+  const f = copy.form;
+  const isCredit = f.paymentTerms === 'CREDIT';
+  return {
+    isDraft: true,
+    customer: {
+      legalName: f.legalName.trim(),
+      paymentTerms: f.paymentTerms,
+      crNumber: f.crNumber.trim() || undefined,
+      channelId: f.channelId || undefined,
+      subChannelId: f.subChannelId || undefined,
+      primaryPhone: f.primaryPhone.trim() || undefined,
+      altPhone: f.altPhone.trim() || undefined,
+      contactPerson: f.contactPerson.trim() || undefined,
+      contactRole: f.contactRole.trim() || undefined,
+      notes: f.notes.trim() || undefined,
+      crPhotoAttachmentId: f.crPhotoId ?? undefined,
+      email: isCredit ? f.email.trim() || undefined : undefined,
+    },
+    // The copies below leave the two credit boxes blank.
+    credit: isCredit ? { requestedCreditLimit: undefined, requestedPaymentTermDays: undefined } : undefined,
+    guaranteeAttachmentIds: isCredit ? f.guaranteeIds : [],
+    creditDocuments: isCredit ? Object.fromEntries(CREDIT_DOCUMENT_KINDS.map((k) => [k, f.creditDocs[k]])) : {},
+    branches: f.branches.map((s) => ({
+      branchName: s.branchName.trim() || 'Main',
+      address: s.address.trim() || undefined,
+      areaDescription: s.areaDescription.trim() || undefined,
+      gpsLat: s.gps?.lat,
+      gpsLng: s.gps?.lng,
+      gpsAccuracy: s.gps?.accuracy,
+      gpsCapturedAt: s.gps?.capturedAt,
+      gpsManualReason: s.gps?.isManual ? s.gps.manualReason : undefined,
+      dayOfVisit: s.dayOfVisit || undefined,
+      openingHours: s.openingHours.trim() || undefined,
+      deliveryWindow: s.deliveryWindow.trim() || undefined,
+      coolersCount: s.coolers,
+      standsCount: s.stands,
+      emptyBottlesCount: s.bottles,
+      shopPhotoAttachmentId: s.shopPhotoId ?? undefined,
+      signboardPhotoAttachmentId: s.signboardPhotoId ?? undefined,
+      extraPhotoAttachmentIds: s.extraPhotoIds.filter((id): id is string => id != null),
+    })),
+  };
+}
+const COPY = { v: 2, legalName: 'Al Noor Trading', paymentTerms: 'CASH', branches: [{ branchName: 'Main' }] };
+const CREDIT_COPY = { ...COPY, paymentTerms: 'CREDIT' };
+const copyBranch = (over: Record<string, unknown>) => ({ ...COPY, branches: [{ branchName: 'Main', ...over }] });
+
+/** UUID-shaped strings the copy's reader keeps (any version, any variant, any case) beside UUIDS. */
+const COPY_UUIDS: Input[] = [
+  ...UUIDS.filter(([, v]) => typeof v === 'string'),
+  ['v2', '000003e8-1234-21ef-8a00-325096b39f47'],
+  ['v3', 'a3bb189e-8bf9-3888-9912-ace4e6543002'],
+  ['v5', 'a3bb189e-8bf9-5888-9912-ace4e6543002'],
+  ['v6', '1ef21d2f-1207-6660-8c4f-419efbd44d48'],
+  ['v8', 'a3bb189e-8bf9-8888-9912-ace4e6543002'],
+  ['version-0', 'a3bb189e-8bf9-0888-9912-ace4e6543002'],
+  ['version-9', 'a3bb189e-8bf9-9888-9912-ace4e6543002'],
+  ['version-f', 'a3bb189e-8bf9-f888-9912-ace4e6543002'],
+  ['variant-0', 'a3bb189e-8bf9-4888-0912-ace4e6543002'],
+  ['variant-7', 'a3bb189e-8bf9-4888-7912-ace4e6543002'],
+  ['variant-a', 'a3bb189e-8bf9-4888-a912-ace4e6543002'],
+  ['variant-b-upper', 'a3bb189e-8bf9-4888-B912-ace4e6543002'],
+  ['variant-d', 'a3bb189e-8bf9-4888-d912-ace4e6543002'],
+  ['variant-f', 'a3bb189e-8bf9-4888-f912-ace4e6543002'],
+  ['mixed-case', 'A3bb189E-8BF9-4888-9912-aCe4e6543002'],
+  ['max-upper', 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF'],
+  ['nil-plus-one', '00000000-0000-0000-0000-000000000001'],
+];
+for (const [label, value] of COPY_UUIDS) {
+  add(`create-draft.unanswered/${label}`, SALESMAN, async () => {
+    const read = parseCreateCopy(JSON.stringify({ ...COPY, unanswered: [value] }))?.unanswered ?? null;
+    return { read, asked: (read ?? []).filter((x) => submissionIdSchema.safeParse(x).success) };
+  });
+}
+
+/** Id-shaped strings: what the copy's reader keeps (1–64 of [A-Za-z0-9_-]) and two it drops. */
+const COPY_IDS: Input[] = [
+  ['valid', VALID_CUID],
+  ['underscore', 'ck_valid_000000000000001'],
+  ['hyphen', 'ck-valid-000000000000001'],
+  ['upper', 'CKVALID000000000000000001'],
+  ['upper-inside', 'ckVALID000000000000000001'],
+  ['c-8', 'c1234567'],
+  ['c-9', 'c12345678'],
+  ['abc', 'abc'],
+  ['one-char', 'c'],
+  ['digits', '123456789'],
+  ['len-64', 'c' + rep(63, 'x')],
+  ['len-65-dropped', 'c' + rep(64, 'x')],
+  ['uuid', V4],
+  ['space-dropped', 'c1234 5678'],
+];
+for (const [label, value] of COPY_IDS) {
+  add(`create-draft.crPhotoId/${label}`, SALESMAN, create(() => createBodyFromCopy({ ...COPY, crPhotoId: value }), (d) => d.customer), CREATE_READS);
+  add(`create-draft.shopPhotoId/${label}`, SALESMAN, create(() => createBodyFromCopy(copyBranch({ shopPhotoId: value })), (d) => d.branches), CREATE_READS);
+  add(`create-draft.extraPhotoIds/${label}`, SALESMAN, create(() => createBodyFromCopy(copyBranch({ extraPhotoIds: [VALID_CUID.replace(/1$/, '2'), value] })), (d) => d.branches), CREATE_READS);
+  add(`create-draft.guaranteeIds/${label}`, SALESMAN, create(() => createBodyFromCopy({ ...CREDIT_COPY, guaranteeIds: [value] })), CREATE_READS);
+  add(`signed-form.restored/${label}`, SALESMAN, async () => {
+    const copy = parseSignedPagesCopy(JSON.stringify({ token: 'token', ids: [page('CREDIT_FORM'), value] }), MAX_SIGNED_FORM_PAGES);
+    if (!copy) throw new Error('not a copy');
+    return submitSignedFormAction({ editId: VALID_CUID, attachmentIds: copy.ids, decisionToken: copy.token } as never);
+  });
+}
+add('signed-form.restored/seven-kept-six', SALESMAN, async () => {
+  const copy = parseSignedPagesCopy(JSON.stringify({ token: 'token', ids: signedPages(7) }), MAX_SIGNED_FORM_PAGES);
+  if (!copy) throw new Error('not a copy');
+  return submitSignedFormAction({ editId: VALID_CUID, attachmentIds: copy.ids, decisionToken: copy.token } as never);
+});
+
+/**
+ * GPS points the copy's reader keeps: finite numbers, a time Date.parse reads, a
+ * typed-in reason of any text. Text Date reads in the machine's own zone is left
+ * out, as for COERCED_DATES: the parsed time is recorded.
+ */
+const GPS_POINT = { lat: 23.6, lng: 58.4, accuracy: 5, capturedAt: '2026-10-20T08:00:00Z' };
+const COPY_POINTS: Array<[string, Record<string, unknown>]> = [
+  ['point', GPS_POINT],
+  ['no-accuracy', { lat: 23.6, lng: 58.4, capturedAt: '2026-10-20T08:00:00Z' }],
+  ['lat-91', { ...GPS_POINT, lat: 91 }],
+  ['lng-minus-181', { ...GPS_POINT, lng: -181 }],
+  ['zero-zero', { ...GPS_POINT, lat: 0, lng: 0 }],
+  ['accuracy-negative', { ...GPS_POINT, accuracy: -1 }],
+  ['accuracy-huge', { ...GPS_POINT, accuracy: 1e9 }],
+  ['date-only', { ...GPS_POINT, capturedAt: '2026-10-20' }],
+  ['offset', { ...GPS_POINT, capturedAt: '2026-10-20T12:00:00+04:00' }],
+  ['millis', { ...GPS_POINT, capturedAt: '2026-10-20T08:00:00.123Z' }],
+  ['far-future', { ...GPS_POINT, capturedAt: '2030-01-01T00:00:00Z' }],
+  ['year-1970', { ...GPS_POINT, capturedAt: '1970-01-01T00:00:00Z' }],
+  ['manual-reason', { ...GPS_POINT, isManual: true, manualReason: 'No signal inside the shop' }],
+  ['manual-no-reason', { ...GPS_POINT, isManual: true }],
+  ['manual-blank-reason', { ...GPS_POINT, isManual: true, manualReason: '   ' }],
+  ['manual-short-reason', { ...GPS_POINT, isManual: true, manualReason: 'ab' }],
+  ['manual-tags-reason', { ...GPS_POINT, isManual: true, manualReason: '<b></b>' }],
+  ['manual-500-reason', { ...GPS_POINT, isManual: true, manualReason: rep(500) }],
+  ['manual-501-cut', { ...GPS_POINT, isManual: true, manualReason: rep(501) }],
+];
+for (const [label, gps] of COPY_POINTS) {
+  add(`create-draft.gps/${label}`, SALESMAN, create(() => createBodyFromCopy(copyBranch({ gps })), (d) => d.branches), CREATE_READS);
+}
+const FROM_PHONE_IDS = CASES.slice(FROM_PHONE_FIRST).map((c) => c.id);
+
 // ---- checks against the fixture ----
 
 const FIXTURE = 'tests/unit/fixtures/validation-messages.zod3.json';
 const GENERATED_WITH = 'zod 3.25.76 @ a454239';
-const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8')) as { generatedWith: string; cases: Record<string, unknown> };
+/** The cases added with the merge of claude/review-fixes-1, recorded under zod 3 on that branch. */
+const EXTENDED_WITH = 'zod 3.25.76 @ 718da18 (claude/review-fixes-1)';
+const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8')) as {
+  generatedWith: string;
+  extendedWith: Record<string, string[]>;
+  cases: Record<string, unknown>;
+};
 
 // The clock and the random id a presign mints: fixed, so a record does not move with the day.
 beforeAll(() => {
@@ -1460,6 +1632,11 @@ describe('what users are told, and what an accepted body is read as, is what zod
   it('the record is the one taken under zod 3.25.76, and holds exactly these cases', () => {
     expect(fixture.generatedWith).toBe(GENERATED_WITH);
     expect(CASES.map((c) => c.id)).toEqual(Object.keys(fixture.cases));
+    // Every case after the first record says where it was recorded: only the
+    // phone-copy cases were added, and they come last.
+    expect(fixture.extendedWith).toEqual({ [EXTENDED_WITH]: FROM_PHONE_IDS });
+    expect(FROM_PHONE_IDS).toEqual(CASES.slice(FROM_PHONE_FIRST).map((c) => c.id));
+    expect(FROM_PHONE_FIRST).toBe(3179);
   });
 
   it.each(CASES.map((c) => [c.id, c] as const))('%s', async (id, c) => {
