@@ -70,7 +70,14 @@ describe.skipIf(!ENABLED)('gap 22: a lost race is recorded', () => {
     expect(await decide(id, page)).toMatchObject({ ok: true });
     current = { id: w.manager, role: 'MANAGER', username: w.manager };
     const lost = await decide(id, page);
-    expect(lost).toEqual({ ok: false, code: 'NOT_PENDING', message: 'Edit is in state APPROVED.' });
+    // Code review 2026-11-10, finding 21: the Manager could have decided it
+    // himself, so he is told who did (it read "Edit is in state APPROVED.").
+    expect(lost).toEqual({
+      ok: false,
+      code: 'NOT_PENDING',
+      message:
+        'Already decided by a colleague: ZZ Sup (Supervisor) approved this request at the Supervisor step. Nothing more was saved. Reload to see where it is now.',
+    });
 
     const rows = await settled(id, 1);
     const row = rows[0]!;

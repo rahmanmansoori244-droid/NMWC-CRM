@@ -107,7 +107,6 @@ import { omanDayTime } from '@/lib/tz';
 import { stageSnapshot } from '@/lib/working-hours';
 import {
   MISSING_TOKEN_MESSAGE,
-  STALE_VIEW_CODE,
   assertDecisionView,
   assertGuaranteesAsViewed,
   readDecisionToken,
@@ -1809,23 +1808,10 @@ async function approveEditCore(formData: FormData) {
   };
   // N01: a page opened before a correction round, a step-back or another
   // reviewer's decision shows a request that no longer exists. Nothing is written.
-  // Finding 21: when the step it showed was decided, by him or a colleague, the
-  // refusal says that (decidedAlready); the check itself is unchanged.
-  try {
-    assertDecisionView(expected, edit, lostOnEdit(session.id, editId, 'edit.approve'));
-  } catch (err) {
-    if (err instanceof ConflictError && err.code === STALE_VIEW_CODE) {
-      const answer = await decidedAlready(
-        sessionUser,
-        edit,
-        expected,
-        scopeOfApprove,
-        lostOnEdit(session.id, editId, 'edit.approve', { expected })
-      );
-      if (answer) throw answer;
-    }
-    throw err;
-  }
+  // (Finding 21 leaves this answer alone: a stale page whose viewer may still
+  // decide the request means it came back to a step he can decide — "This
+  // request changed since you opened it" is the true answer then.)
+  assertDecisionView(expected, edit, lostOnEdit(session.id, editId, 'edit.approve'));
 
   // DG-06: one audit envelope for the whole action, captured here — after the
   // authorization gate and outside every transaction below. `session.id` (from
@@ -2681,22 +2667,7 @@ async function rejectEditCore(formData: FormData) {
     throw new ForbiddenError('You are not authorized to act on this step.');
   }
   // N01: after the gate, before anything is written (see approveEditCore).
-  // Finding 21: a page whose step was decided since says so, as on approve.
-  try {
-    assertDecisionView(expected, edit, lostOnEdit(session.id, editId, 'edit.reject'));
-  } catch (err) {
-    if (err instanceof ConflictError && err.code === STALE_VIEW_CODE) {
-      const answer = await decidedAlready(
-        rejecter,
-        edit,
-        expected,
-        scopeOfReject,
-        lostOnEdit(session.id, editId, 'edit.reject', { expected })
-      );
-      if (answer) throw answer;
-    }
-    throw err;
-  }
+  assertDecisionView(expected, edit, lostOnEdit(session.id, editId, 'edit.reject'));
 
   // Owner-confirmed step-back cascade: a rejection returns the request to the
   // previous approver (step N-1); a rejection at the first step returns it to the
