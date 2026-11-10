@@ -210,7 +210,7 @@ and its auth rule).
 |---|---|---|
 | Production | Neon production endpoint | Vercel Production. **Merging to `main` deploys it.** |
 | UAT | Neon branch `uat-testing` | Vercel Preview builds from branch pushes. Per the docs, previews run `prisma migrate deploy` against UAT. This is a Vercel setting the repo cannot show. |
-| CI | A throwaway `postgres:16` container per job | `.github/workflows/ci.yml` |
+| CI | A throwaway `postgres:16` container per job (`postgres:17` with the Postgres 17 client for the restore chain, as production dumps and restores) | `.github/workflows/ci.yml` |
 | Local | Your own empty Postgres, or UAT. **Never** a `.env` that names production: run `node scripts/dev/env-check.cjs` first. | `npm run dev` |
 
 The build script runs the migration **before** `next build`:
