@@ -5,7 +5,8 @@
  * (lib/errors.ts ConflictMeta). A refusal thrown without it is answered exactly
  * as before and leaves no CONFLICT row, which nobody would notice: the defect is
  * "nobody passed it". So this reads every `new ConflictError(<code>` of a
- * recorded code, and every `new StaleFieldsError(`, in app/, lib/ and services/,
+ * recorded code (and every `new LostClaimError(`, its lost-claim subclass), and
+ * every `new StaleFieldsError(`, in app/, lib/ and services/,
  * and fails on one without its third argument. A code named by a constant is
  * read from that constant's definition in the same file.
  *
@@ -71,7 +72,7 @@ function sites(): Site[] {
   const out: Site[] = [];
   for (const file of FILES) {
     const src = stripComments(readFileSync(file, 'utf8'), file);
-    for (const text of callArguments(src, /new ConflictError/)) {
+    for (const text of callArguments(src, /new (?:ConflictError|LostClaimError)/)) {
       const args = topLevelArgs(text);
       out.push({ file, code: codeOf(args[0], src), args });
     }

@@ -116,6 +116,8 @@ import {
   CLOSE_REQUEST_DECISION_WORDS,
   REQUEST_DECISION_WORDS,
   alreadyDecidedRefusal,
+  answerLostClaim,
+  LostClaimError,
   notPendingMessage,
 } from '@/lib/already-decided';
 import {
@@ -257,6 +259,33 @@ function lostOnEdit(
     ...(at.expected ? { expectedVersion: `cycle ${at.expected.cycle} step ${at.expected.stepIndex}` } : {}),
     ...(at.liveVersion !== undefined ? { liveVersion: at.liveVersion } : {}),
   };
+}
+
+/**
+ * Code review 2026-11-10, finding 21, second round: a decision whose claim
+ * matched nothing because this approver's own earlier request (a double tap, a
+ * bulk batch re-sent after "No answer") claimed that visit first is answered
+ * "Your decision already arrived"; a claim lost to anyone else keeps "just
+ * decided by another reviewer" (lib/already-decided.ts answerLostClaim). Read
+ * after the transaction has rolled back; the claim itself is unchanged.
+ */
+function ownLostClaim<T>(
+  me: { id: string },
+  edit: Pick<CustomerEdit, 'id' | 'approvalChain' | 'target'>,
+  view: DecisionView,
+  run: () => Promise<T>
+): Promise<T> {
+  return answerLostClaim(
+    prisma,
+    {
+      editId: edit.id,
+      viewerId: me.id,
+      visit: view,
+      approvalChain: edit.approvalChain,
+      words: edit.target === EditTarget.BRANCH ? CLOSE_REQUEST_DECISION_WORDS : REQUEST_DECISION_WORDS,
+    },
+    run
+  );
 }
 
 /**
@@ -1695,6 +1724,31 @@ async function approveEditCore(formData: FormData) {
             });
       return { branches, managedRegionIds: actorScope.managedRegionIds };
     })());
+  // Second round of finding 21: whether the gate below would let this approver
+  // decide the step the request waits at now. Read only by the bulk card check
+  // below, to choose its words; the gate itself is unchanged and runs as before.
+  const canDecideLiveStep = async (): Promise<boolean> => {
+    let liveStep: ApprovalStep | undefined;
+    try {
+      liveStep = parseChain(edit.approvalChain)[edit.currentStepIndex];
+    } catch {
+      // An unreadable chain: the early answer runs as before; the decision refuses below.
+      return false;
+    }
+    if (!liveStep) return false;
+    const s = await scopeOfApprove();
+    const others = await prisma.editApproval.findMany({
+      where: { editId, cycle: edit.cycle, stepIndex: { not: edit.currentStepIndex } },
+      select: { actorId: true },
+    });
+    return (
+      stepAuthority(sessionUser, liveStep, edit.submittedBy, {
+        customerBranches: s.branches,
+        managedRegionIds: s.managedRegionIds,
+        priorStepActorIds: others.map((o) => o.actorId),
+      }) !== null
+    );
+  };
   if (edit.state !== EditState.SUBMITTED) {
     const lost = lostOnEdit(session.id, editId, 'edit.approve', { liveVersion: edit.state });
     if (!edit.isReactivation) {
@@ -1722,9 +1776,14 @@ async function approveEditCore(formData: FormData) {
   // answer was lost — is answered for what happened to it, before the bulk rules
   // below judge the step it is at NOW (a new customer moved on to its last step
   // read "approved one at a time"). Only the words: it is refused either way.
+  // Second round: not when the request now waits at a step this approver can
+  // decide — it came back to him (a new round after a send-back), and the
+  // single-request path's answer, STALE_VIEW below, is the true one; "already
+  // decided by a colleague" pointed the wrong way.
   if (
     formData.get(BULK_RUN_FIELD) === '1' &&
-    (expected.cycle !== edit.cycle || expected.stepIndex !== edit.currentStepIndex)
+    (expected.cycle !== edit.cycle || expected.stepIndex !== edit.currentStepIndex) &&
+    !(await canDecideLiveStep())
   ) {
     const answer = await decidedAlready(
       sessionUser,
@@ -1837,7 +1896,7 @@ async function approveEditCore(formData: FormData) {
   if (!isFinal) {
     const nextStep = chain[stepIndex + 1]!;
     const advancedAt = new Date();
-    await withChangeContext(
+    await ownLostClaim(sessionUser, edit, expected, () => withChangeContext(
       prisma,
       { actorId: session.id, source: src.edit(editId) },
       async (tx) => {
@@ -1874,7 +1933,7 @@ async function approveEditCore(formData: FormData) {
           },
         });
         if (claim.count === 0) {
-          throw new ConflictError(
+          throw new LostClaimError(
             'NOT_PENDING',
             'This step was just decided by another reviewer. Refresh to see the current state.',
             lostOnEdit(session.id, editId, 'edit.approve', { expected })
@@ -1948,7 +2007,7 @@ async function approveEditCore(formData: FormData) {
         // default interactive-transaction limit.
       },
       { timeout: 30_000, maxWait: 10_000 }
-    );
+    ));
     logger.info(
       { editId, by: session.id, stepIndex, advancedTo: stepIndex + 1 },
       'edit.step_approve'
@@ -1972,7 +2031,7 @@ async function approveEditCore(formData: FormData) {
     // inside the transaction below, so it cannot read the request context
     // itself; the envelope is built out here and handed down.
     const finalizeEnv = await getAuditEnvelope(session.id);
-    const result = await withChangeContext(
+    const result = await ownLostClaim(sessionUser, edit, expected, () => withChangeContext(
       prisma,
       { actorId: session.id, source: src.edit(editId) },
       async (tx) => {
@@ -2000,7 +2059,7 @@ async function approveEditCore(formData: FormData) {
           },
         });
         if (claim.count === 0) {
-          throw new ConflictError(
+          throw new LostClaimError(
             'NOT_PENDING',
             'This request was just decided by another reviewer. Refresh to see the current state.',
             lostOnEdit(session.id, editId, 'edit.approve', { expected })
@@ -2073,7 +2132,7 @@ async function approveEditCore(formData: FormData) {
       // customer holds the code.
       const refusal = await temixCodeRefusal(prisma, err, temixCode);
       throw refusal ? temixCodeTakenError(refusal) : err;
-    });
+    }));
     logger.info(
       {
         editId,
@@ -2174,7 +2233,7 @@ async function approveEditCore(formData: FormData) {
   // concurrent detachPhoto committing between the check and the apply let an APPROVED
   // record land with a missing CR/shop photo.
 
-  await withChangeContext(
+  await ownLostClaim(sessionUser, edit, expected, () => withChangeContext(
     prisma,
     { actorId: session.id, source: src.edit(editId) },
     async (tx) => {
@@ -2201,7 +2260,7 @@ async function approveEditCore(formData: FormData) {
         },
       });
       if (claim.count === 0) {
-        throw new ConflictError(
+        throw new LostClaimError(
           'NOT_PENDING',
           'This edit was just decided by another reviewer. Refresh to see the current state.',
           lostOnEdit(session.id, editId, 'edit.approve', { expected })
@@ -2405,7 +2464,7 @@ async function approveEditCore(formData: FormData) {
       // (e.g. a close-shop) with an opaque "Transaction already closed" error.
     },
     { timeout: 30_000, maxWait: 10_000 }
-  );
+  ));
 
   logger.info({ editId, by: session.id }, 'edit.approve');
   revalidatePath(`/approvals`);
@@ -2717,7 +2776,7 @@ async function rejectEditCore(formData: FormData) {
 
   // DG-06: envelope outside the transaction; `session.id` is the rejecting actor.
   const env = await getAuditEnvelope(session.id);
-  await withChangeContext(prisma, { actorId: session.id, source: src.edit(editId) }, async (tx) => {
+  await ownLostClaim(rejecter, edit, expected, () => withChangeContext(prisma, { actorId: session.id, source: src.edit(editId) }, async (tx) => {
     await tx.editApproval.create({
       data: {
         editId,
@@ -2786,7 +2845,7 @@ async function rejectEditCore(formData: FormData) {
       data,
     });
     if (claim.count === 0) {
-      throw new ConflictError(
+      throw new LostClaimError(
         'NOT_PENDING',
         'This edit was just decided by another reviewer. Refresh to see the current state.',
         lostOnEdit(session.id, editId, 'edit.reject', { expected })
@@ -2863,7 +2922,7 @@ async function rejectEditCore(formData: FormData) {
         customerId: edit.customerId ?? undefined,
       });
     }
-  });
+  }));
 
   logger.info({ editId, by: session.id, category }, 'edit.reject');
   revalidatePath('/approvals');

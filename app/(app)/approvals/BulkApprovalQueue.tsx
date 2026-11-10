@@ -9,9 +9,13 @@ import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
 import { bulkApproveEditsAction, bulkRejectEditsAction } from '@/services/edits';
 import {
   BULK_DECISION_LIMIT,
+  ALREADY_DECIDED_BY_YOU,
+  BULK_LINES_SHOWN,
   CREDIT_BULK_REFUSED_MESSAGE,
   NO_ANSWER_MESSAGE,
   TEMIX_CODE_BULK_REFUSED_MESSAGE,
+  bulkHeadline,
+  splitBulkFailures,
 } from '@/lib/bulk-run';
 
 /**
@@ -435,8 +439,10 @@ export function BulkOutcomeBanner({
   outcome: BulkOutcomeView;
   innerRef?: React.Ref<HTMLDivElement>;
 }) {
-  const allDone =
-    outcome.kind === 'answered' && outcome.failures.length === 0 && outcome.notAttempted === 0;
+  // Finding 21, second round: a request whose decision had already arrived did
+  // not fail — it is counted and listed apart, and alone it leaves the batch done.
+  const split = outcome.kind === 'answered' ? splitBulkFailures(outcome.failures) : { arrived: [], failed: [] };
+  const allDone = outcome.kind === 'answered' && split.failed.length === 0 && outcome.notAttempted === 0;
   return (
     <div
       ref={innerRef}
@@ -464,26 +470,39 @@ export function BulkOutcomeBanner({
       ) : (
         <>
           <p className="font-semibold">
-            {outcome.successes} processed
-            {outcome.failures.length > 0 ? `, ${outcome.failures.length} failed` : ''}
-            {outcome.notAttempted > 0
-              ? `, ${outcome.notAttempted} not attempted — run it again to finish`
-              : ''}
-            .
+            {bulkHeadline({
+              processed: outcome.successes,
+              arrived: split.arrived.length,
+              failed: split.failed.length,
+              notAttempted: outcome.notAttempted,
+            })}
           </p>
-          {outcome.failures.length > 0 && (
-            <ul className="mt-2 list-disc pl-5 text-xs">
-              {outcome.failures.slice(0, 5).map((f) => (
-                <li key={f.editId}>
-                  {f.editId.slice(-8)}: {f.message}
-                </li>
-              ))}
-              {outcome.failures.length > 5 && <li>… and {outcome.failures.length - 5} more.</li>}
-            </ul>
-          )}
+          <BulkLines lines={split.failed} more={(n) => `… and ${n} more failed.`} />
+          <BulkLines lines={split.arrived} more={(n) => `… and ${n} more ${ALREADY_DECIDED_BY_YOU}.`} />
         </>
       )}
     </div>
+  );
+}
+
+/** One kind of line of the banner: the request's reference and its message, the first few, then how many more. */
+function BulkLines({
+  lines,
+  more,
+}: {
+  lines: Array<{ editId: string; message: string }>;
+  more: (n: number) => string;
+}) {
+  if (lines.length === 0) return null;
+  return (
+    <ul className="mt-2 list-disc pl-5 text-xs">
+      {lines.slice(0, BULK_LINES_SHOWN).map((f) => (
+        <li key={f.editId}>
+          {f.editId.slice(-8)}: {f.message}
+        </li>
+      ))}
+      {lines.length > BULK_LINES_SHOWN && <li>{more(lines.length - BULK_LINES_SHOWN)}</li>}
+    </ul>
   );
 }
 
