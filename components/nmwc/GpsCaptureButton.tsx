@@ -64,6 +64,12 @@ function isRougher(next: Gps, current: Gps | null): boolean {
   return rankedAccuracy(next.accuracy) > was;
 }
 
+/** How a point is named in the undo line: "±150 m reading", or "typed-in point". */
+function pointLabel(g: Gps): string {
+  if (g.isManual) return 'typed-in point';
+  return g.accuracy != null ? `±${Math.round(g.accuracy)} m reading` : 'reading';
+}
+
 export function GpsCaptureButton({
   initial,
   saved,
@@ -131,6 +137,9 @@ export function GpsCaptureButton({
   const [rougher, setRougher] = useState<Gps | null>(null);
   const [offerOutside, setOfferOutside] = useState(false);
   const silentListensRef = useRef(0);
+  // Finding 19, second round: the point "Go back to the saved location" took off
+  // the chip, so a tap by mistake can be undone; cleared by any newer choice.
+  const [replaced, setReplaced] = useState<{ gps: Gps; fresh: boolean } | null>(null);
 
   function take(next: Gps) {
     setGps(next);
@@ -138,6 +147,7 @@ export function GpsCaptureButton({
     onCapture(next);
     setShowManual(false);
     setRougher(null);
+    setReplaced(null);
     setError(null);
   }
 
@@ -147,6 +157,7 @@ export function GpsCaptureButton({
     cancelListenRef.current?.();
     cancelListenRef.current = null;
     setRougher(null);
+    setReplaced(null);
     setOfferOutside(false);
     if (!('geolocation' in navigator)) {
       setError('GPS not available in this browser. Use manual entry below.');
@@ -211,9 +222,14 @@ export function GpsCaptureButton({
     );
   }
 
-  /** Finding 19: back to the location on file, whatever was captured or typed since. */
+  /**
+   * Finding 19: back to the location on file, from a rougher point on the chip.
+   * Second round: the point it replaces is kept, so a tap by mistake is undone
+   * with one more ("Use the ±N m reading again").
+   */
   function keepSaved() {
     if (disabledRef.current || !saved) return;
+    if (gps && !samePoint(gps, saved)) setReplaced({ gps, fresh });
     captureGenerationRef.current += 1;
     cancelListenRef.current?.();
     cancelListenRef.current = null;
@@ -226,6 +242,22 @@ export function GpsCaptureButton({
     setGps(saved);
     setFresh(false);
     onCapture(saved);
+  }
+
+  /** Finding 19, second round: undo "Go back to the saved location". */
+  function restoreReplaced() {
+    if (disabledRef.current || !replaced) return;
+    captureGenerationRef.current += 1;
+    cancelListenRef.current?.();
+    cancelListenRef.current = null;
+    setPending(false);
+    setBestSoFar(null);
+    setRougher(null);
+    setError(null);
+    setGps(replaced.gps);
+    setFresh(replaced.fresh);
+    onCapture(replaced.gps);
+    setReplaced(null);
   }
 
   function applyManual() {
@@ -257,6 +289,7 @@ export function GpsCaptureButton({
     setPending(false);
     setBestSoFar(null);
     setRougher(null);
+    setReplaced(null);
     setOfferOutside(false);
     const outside =
       latNum < OMAN_LAT_MIN ||
@@ -289,8 +322,12 @@ export function GpsCaptureButton({
   // put back after a reload is held at submit, so it is said the same way.
   const isNewPoint = fresh || (saved !== undefined && !!gps && !samePoint(gps, saved));
   const advice = gps && !gps.isManual ? gpsAccuracyAdvice(gps.accuracy, enforceAccuracy && isNewPoint) : null;
-  // Also while listening: it stops the listen (keepSaved).
-  const canKeepSaved = !!saved && !samePoint(gps, saved);
+  // Finding 19, second round: offered only when the chip holds a point rougher
+  // than the one on file (the case it was built for: a rough reading taken
+  // anyway, or one put back from the phone copy). After a fresh, better capture
+  // it was one easy mis-tap from throwing that capture away. Also while
+  // listening: it stops the listen (keepSaved).
+  const canKeepSaved = !!saved && !!gps && !samePoint(gps, saved) && isRougher(gps, saved);
   const currentLabel = gps && saved && samePoint(gps, saved) ? 'the saved location' : 'the location already here';
 
   return (
@@ -410,8 +447,23 @@ export function GpsCaptureButton({
           className="inline-flex min-h-11 items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
         >
           <Undo2 className="h-4 w-4" />
-          {`Keep the saved location${saved.isManual ? ' (typed in)' : saved.accuracy != null ? ` (±${Math.round(saved.accuracy)} m)` : ''}`}
+          {`Go back to the saved location${saved.isManual ? ' (typed in)' : saved.accuracy != null ? ` (±${Math.round(saved.accuracy)} m)` : ''}`}
         </button>
+      )}
+      {/* Finding 19, second round: going back is undone with one more tap. */}
+      {replaced && !rougher && !pending && (
+        <div role="status" className="flex flex-wrap items-center gap-2 text-sm text-slate-700">
+          <span>{`The saved location is back. The ${pointLabel(replaced.gps)} you had is not used.`}</span>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={restoreReplaced}
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+          >
+            <RotateCcw className="h-4 w-4" />
+            {`Undo: use the ${pointLabel(replaced.gps)} again`}
+          </button>
+        </div>
       )}
 
       {/* B-07: manual fallback UI. Tertiary trigger always available so a user

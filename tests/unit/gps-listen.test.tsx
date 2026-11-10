@@ -411,31 +411,73 @@ describe('the GPS button', () => {
     expect(screen.getByText('23.700000, 58.500000')).toBeTruthy();
   });
 
-  it('a reading as good or better replaces it without a question; "Keep the saved location" undoes it', async () => {
+  it('a reading as good or better replaces it without a question, and no button offers to throw it away (second round)', async () => {
     const onCapture = vi.fn();
     render(<GpsCaptureButton initial={ON_FILE} saved={ON_FILE} onCapture={onCapture} />);
-    // Nothing to undo while the chip shows the saved location.
-    expect(screen.queryByRole('button', { name: /Keep the saved location/ })).toBeNull();
+    // Nothing to go back to while the chip shows the saved location.
+    expect(screen.queryByRole('button', { name: /Go back to the saved location/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
     await reading(8, 23.7, 58.5);
     expect(onCapture).toHaveBeenCalledTimes(1);
     expect(screen.getByText('23.700000, 58.500000')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Keep the saved location (±8 m)' }));
-    expect(onCapture).toHaveBeenCalledTimes(2);
-    expect(onCapture.mock.calls[1]![0]).toBe(ON_FILE);
-    expect(screen.getByText('23.500000, 58.300000')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Keep the saved location/ })).toBeNull();
+    // Finding 19, second round: the better capture is not one mis-tap from being lost.
+    expect(screen.queryByRole('button', { name: /saved location/ })).toBeNull();
+    // A sharper one too.
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    await reading(4, 23.71, 58.51);
+    expect(screen.queryByRole('button', { name: /saved location/ })).toBeNull();
   });
 
-  it('"Keep the saved location" also stops a listen in progress, and nothing it hears lands later', async () => {
+  it('second round: going back to the saved location is offered for a rougher point taken anyway, and a tap by mistake is undone', async () => {
+    const onCapture = vi.fn();
+    render(<GpsCaptureButton initial={ON_FILE} saved={ON_FILE} onCapture={onCapture} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    await reading(60, 23.7, 58.5);
+    await wait(GPS_LISTEN_MS);
+    fireEvent.click(screen.getByRole('button', { name: 'Use the new reading (±60 m)' }));
+    expect(screen.getByText('23.700000, 58.500000')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Go back to the saved location (±8 m)' }));
+    expect(onCapture.mock.calls.at(-1)![0]).toBe(ON_FILE);
+    expect(screen.getByText('23.500000, 58.300000')).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toContain('The saved location is back. The ±60 m reading you had is not used.');
+    fireEvent.click(screen.getByRole('button', { name: 'Undo: use the ±60 m reading again' }));
+    expect(onCapture.mock.calls.at(-1)![0]).toMatchObject({ lat: 23.7, lng: 58.5, accuracy: 60 });
+    expect(screen.getByText('23.700000, 58.500000')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Undo/ })).toBeNull();
+    // Still a fresh capture: held to the rule at submit, as before the mis-tap.
+    expect(screen.getByRole('button', { name: 'Go back to the saved location (±8 m)' })).toBeTruthy();
+  });
+
+  it('second round: a newer capture or typed point clears the undo', async () => {
+    const restored: Gps = { lat: 23.9, lng: 58.9, accuracy: 150, capturedAt: new Date() };
+    render(<GpsCaptureButton initial={restored} saved={ON_FILE} onCapture={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Go back to the saved location (±8 m)' }));
+    expect(screen.getByRole('button', { name: 'Undo: use the ±150 m reading again' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    expect(screen.queryByRole('button', { name: /Undo/ })).toBeNull();
+    await reading(6, 23.51, 58.31);
+    expect(screen.queryByRole('button', { name: /Undo/ })).toBeNull();
+  });
+
+  it('second round: the undo puts back a point restored from the phone copy exactly as it was, still said as held at submit', () => {
+    const onCapture = vi.fn();
+    const restored: Gps = { lat: 23.9, lng: 58.9, accuracy: 150, capturedAt: new Date() };
+    render(<GpsCaptureButton initial={restored} saved={ON_FILE} onCapture={onCapture} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Go back to the saved location (±8 m)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Undo: use the ±150 m reading again' }));
+    expect(onCapture.mock.calls.at(-1)![0]).toBe(restored);
+    expect(screen.getByText(gpsAccuracyAdvice(150, true)!)).toBeTruthy();
+  });
+
+  it('"Go back to the saved location" also stops a listen in progress, and nothing it hears lands later', async () => {
     const onCapture = vi.fn();
     const restored: Gps = { lat: 23.9, lng: 58.9, accuracy: 150, capturedAt: new Date() };
     render(<GpsCaptureButton initial={restored} saved={ON_FILE} onCapture={onCapture} />);
     fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
     await reading(90);
-    fireEvent.click(screen.getByRole('button', { name: 'Keep the saved location (±8 m)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Go back to the saved location (±8 m)' }));
     expect(last().cleared).toBe(true);
-    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.queryByText(/Looking for/)).toBeNull();
     await reading(3, 25, 60);
     await wait(GPS_LISTEN_MS);
     expect(onCapture.mock.calls).toEqual([[ON_FILE]]);
@@ -465,7 +507,7 @@ describe('the GPS button', () => {
     render(<GpsCaptureButton initial={restored} saved={ON_FILE} onCapture={onCapture} />);
     // Not "if you can": Submit is held for it (the skeptic's note on finding 19).
     expect(screen.getByText(gpsAccuracyAdvice(150, true)!)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Keep the saved location (±8 m)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Go back to the saved location (±8 m)' }));
     expect(onCapture).toHaveBeenCalledWith(ON_FILE);
     expect(screen.queryByText(/cannot be submitted/)).toBeNull();
   });
@@ -474,7 +516,7 @@ describe('the GPS button', () => {
     const restored: Gps = { lat: 23.9, lng: 58.9, accuracy: 150, capturedAt: new Date() };
     render(<GpsCaptureButton initial={restored} saved={null} onCapture={vi.fn()} />);
     expect(screen.getByText(gpsAccuracyAdvice(150, true)!)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Keep the saved location/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Go back to the saved location/ })).toBeNull();
   });
 
   it('a point loaded with no "saved" given keeps the softer advice it always had', () => {
