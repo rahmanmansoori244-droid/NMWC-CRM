@@ -31,7 +31,8 @@
  *     the list ("Invalid enum value. …"); zod 4 raises one issue for both.
  *   - `array3`: zod 3's bounded array, whose count is reported BEFORE its
  *     elements and does not stop them being read (users.ts shows the last issue
- *     under "regionIds"; the signed-form upload reads the first).
+ *     under "regionIds"; the signed-form upload reads the first) — up to a
+ *     ceiling far past any form; a longer list is refused on its count alone.
  *   - `string3` / `stopUnless3`: zod 3 read no length bound of a value of the
  *     wrong type; zod 4 reads one on anything with a length (an array sent for a
  *     name also got "Array must contain at least 1 element(s)").
@@ -391,22 +392,45 @@ export function object3<S extends z.ZodType>(schema: S): z.ZodType<z.output<S>, 
 type Bound = { value: number; message?: string };
 
 /**
+ * The longest list array3 still reads element by element: twenty times its cap,
+ * and never under a thousand — far past anything a form here can send (six
+ * pages, fifty regions). A longer one is answered on its count alone.
+ */
+export const array3Ceiling = (cap: number): number => Math.max(1000, 20 * cap);
+
+/**
  * zod 3's `z.array(element).min(…).max(…)`: the count is checked first, and a
  * wrong count does not stop the elements being read — every bad one is
  * reported after it, as zod 3 did. Zod 4 reads the elements first and, from
  * 4.6.6, refuses an oversized array on its count alone; either would change
  * which issue a service shows (users.ts: the last under "regionIds"; the
- * signed-form upload: the first). The arrays this keeps are bounded by the
- * request they arrive in (FormData, a server action's body); the payload
- * arrays of CREATE and UPDATE are refused on their count alone instead
- * (cappedArray, lib/validation/fields.ts).
+ * signed-form upload: the first).
+ *
+ * Up to a ceiling (array3Ceiling), and not past it. A request can carry a list
+ * of well over a million ids (a server action's body may be megabytes), and
+ * reading every one of them is the work GHSA-mrhx-c7xc-m3w5 is about: it cost
+ * seconds of CPU, and from about 125,000 issues zod 4 no longer answers at all —
+ * it merges a child's issues with a spread call, which overflows the stack, so
+ * the parse THREW a RangeError (a 500) where zod 3 refused. So a list longer
+ * than the ceiling raises the count issue alone and none of its elements is
+ * given to the element schema, as zod 4's own bounded array and cappedArray
+ * (lib/validation/fields.ts, the CREATE and UPDATE payloads) refuse theirs.
+ * (The array of unknowns underneath still walks the list once, raising
+ * nothing: about 20 ms for the million and a half ids of the largest body,
+ * less than reading the request took.) Below the ceiling nothing moves. Above
+ * it the signed-form upload still answers with the count's words (it reads the
+ * first issue); the users forms show the count's words where zod 3 showed the
+ * last bad id's — for a list no form builds. `max` is required: an array3
+ * without a cap would have no ceiling.
+ * tests/unit/array3-ceiling.test.ts holds the three schemas to it.
  */
-export function array3<E extends z.ZodType>(element: E, bounds: { min?: Bound; max?: Bound } = {}) {
+export function array3<E extends z.ZodType>(element: E, bounds: { min?: Bound; max: Bound }) {
   const { min, max } = bounds;
+  const ceiling = array3Ceiling(max.value);
   const ch: z.core.$ZodCheck<unknown> = z.check<unknown>((payload) => {
     const v = payload.value;
     if (!Array.isArray(v)) return;
-    const size = (code: 'too_small' | 'too_big', b: Bound) =>
+    const size = (code: 'too_small' | 'too_big', b: Bound, goOn: boolean) =>
       payload.issues.push({
         code,
         origin: 'array',
@@ -415,11 +439,15 @@ export function array3<E extends z.ZodType>(element: E, bounds: { min?: Bound; m
         exact: false,
         input: v,
         inst: ch,
-        continue: true,
+        continue: goOn,
         ...(b.message !== undefined ? { message: b.message } : {}),
       } as RawIssue);
-    if (min && v.length < min.value) size('too_small', min);
-    if (max && v.length > max.value) size('too_big', max);
+    if (v.length > ceiling) {
+      size('too_big', max, false);
+      return;
+    }
+    if (min && v.length < min.value) size('too_small', min, true);
+    if (v.length > max.value) size('too_big', max, true);
     const out: unknown[] = [];
     let failed = false;
     v.forEach((e, i) => {
