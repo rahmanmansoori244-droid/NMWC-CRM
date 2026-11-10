@@ -609,6 +609,20 @@ export function CreateCustomerForm({
   const [storageFailed, setStorageFailed] = useState(false);
   const [banner, setBanner] = useState<RestoreBanner | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  // Review of finding 4 (code review 2026-11-10): a never-saved form has ONE
+  // slot per salesman, and its copy now carries the shop's GPS point and every
+  // photo id. Put back with only a banner, the next shop's form opened filled
+  // with the last one: typed over, it went out with the last shop's point and
+  // photos, which the server cannot tell apart (they are his own uploads). So
+  // a never-saved copy that comes back holds the form until he says which shop
+  // it is: "Continue" this one, or "Start a new customer". Nothing in the form
+  // can be changed or sent before that. A saved draft's copy is under that
+  // draft's own key, so it cannot be another shop's, and is not held.
+  const [mustChoose, setMustChoose] = useState<RestoreBanner | null>(null);
+  const [confirmingNew, setConfirmingNew] = useState(false);
+  // Held until he chooses; a send of it found already on the server (the reload
+  // check below) is said instead, with the form locked.
+  const choosing = mustChoose !== null && !readOnly && !arrived;
   // The copy as last written or restored, with its save time: its age runs
   // from the last change to it, not from the last visit.
   const stampRef = useRef<{ content: string; savedAt: number } | null>(null);
@@ -819,6 +833,9 @@ export function CreateCustomerForm({
       applyForm(copy.form);
       if (holds) setBanner({ kind: 'new', savedAt: copy.savedAt, summary: createFormSummary(copy.form) });
     }
+    // Which shop is it? Asked before anything in it can be changed or sent —
+    // the old text-only copy too: it carries the last shop's name and CR number.
+    if (holds) setMustChoose({ kind: 'new', savedAt: copy.savedAt, summary: createFormSummary(copy.form) });
     lastSentRef.current = copy.lastSent;
     if (numericAge) stampRef.current = { content: copyComparable, savedAt: copy.savedAt as number };
     const unanswered = copy.unanswered.filter((x) => submissionIdSchema.safeParse(x).success);
@@ -982,6 +999,8 @@ export function CreateCustomerForm({
     setErrors({});
     setBanner(null);
     setConfirmingReset(false);
+    setMustChoose(null);
+    setConfirmingNew(false);
     stampRef.current = null;
     writeAfterRenderRef.current = true;
   }
@@ -1022,6 +1041,8 @@ export function CreateCustomerForm({
     // Try again repeats a Submit too, past the button disabled while a photo is
     // going up. The line beside the button says why nothing happens.
     if (!isDraft && uploading > 0) return;
+    // A never-saved copy that came back is not sent before he says it is this shop.
+    if (choosing) return;
     if (submitLockRef.current) return;
     submitLockRef.current = true;
     setSending(true);
@@ -1187,6 +1208,77 @@ export function CreateCustomerForm({
   const bannerAge = banner ? draftAgeText(banner.savedAt) : null;
   const resetBusy = sending || uploading > 0;
 
+  if (choosing && mustChoose) {
+    const held = mustChoose.summary;
+    const heldAge = draftAgeText(mustChoose.savedAt);
+    const heldName = held.name ? `“${held.name}”` : 'the unsaved form';
+    return (
+      <div className="space-y-4 p-4 sm:p-6">
+        {info && (
+          <div className="rounded-md bg-emerald-50 px-3 py-2 text-base font-medium text-emerald-700 ring-1 ring-emerald-200">
+            {info}
+          </div>
+        )}
+        <section
+          role="alert"
+          aria-labelledby={`${uid}-held-title`}
+          className="rounded-md bg-amber-50 px-3 py-3 text-amber-900 ring-1 ring-amber-300"
+        >
+          <h2 id={`${uid}-held-title`} className="text-base font-semibold">
+            You have a new customer on this phone that was never saved
+          </h2>
+          <p className="mt-1 text-sm [overflow-wrap:anywhere]">
+            {`“${held.name || 'no name yet'}” — ${plural(held.shops, 'shop')}, ${plural(held.gpsPoints, 'GPS point')}, ${plural(held.photos, 'photo')}. Saved on this phone ${heldAge ?? 'earlier'}.`}
+          </p>
+          <p className="mt-1 text-sm">
+            Is this the shop you are at now? If it is another shop, start a new customer: this
+            one’s GPS point and photos must not be sent with it.
+          </p>
+          {confirmingNew ? (
+            <div className="mt-3">
+              <p className="text-sm font-medium">
+                {`Discard ${heldName}? It was never saved: its photos and GPS point will have to be taken again.`}
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => resetTo(emptyCreateForm())}
+                  className="min-h-11 rounded-md border border-red-300 bg-white px-3 text-sm font-semibold text-red-700 hover:bg-red-50"
+                >
+                  Yes, discard it
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingNew(false)}
+                  className="min-h-11 rounded-md border border-amber-300 bg-white px-3 text-sm font-semibold text-amber-900 hover:bg-amber-100"
+                >
+                  Back
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setMustChoose(null)}
+                className="min-h-11 rounded-md bg-brand-600 px-3 text-sm font-semibold text-white hover:bg-brand-700 [overflow-wrap:anywhere]"
+              >
+                {`Continue ${heldName}${heldAge ? ` (saved ${heldAge})` : ''}`}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmingNew(true)}
+                className="min-h-11 rounded-md border border-amber-300 bg-white px-3 text-sm font-semibold text-amber-900 hover:bg-amber-100"
+              >
+                Start a new customer
+              </button>
+            </div>
+          )}
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4 p-4 sm:p-6">
       {/* Launch fix (review): a sent-back request saved as a draft since is a
@@ -1216,6 +1308,8 @@ export function CreateCustomerForm({
         </div>
       )}
       {/* Finding 4: what the phone copy put back, how old it is, and the way out.
+          Amber, not the green of a success: it is a reminder to check what
+          came back (review of finding 4).
           A never-saved form has one slot per salesman, so the banner names the
           shop it holds: at the next shop he starts a blank form instead of
           sending this one's photos and GPS point with it. No layer of its own
@@ -1223,7 +1317,7 @@ export function CreateCustomerForm({
       {banner && dirty && !arrived && (
         <div
           role="status"
-          className="rounded-md bg-emerald-50 px-3 py-2 text-emerald-800 ring-1 ring-emerald-200"
+          className="rounded-md bg-amber-50 px-3 py-2 text-amber-900 ring-1 ring-amber-300"
         >
           <p className="text-base font-medium">
             {banner.kind === 'new'
@@ -1254,7 +1348,7 @@ export function CreateCustomerForm({
                 <button
                   type="button"
                   onClick={() => setConfirmingReset(false)}
-                  className="min-h-11 rounded-md border border-emerald-300 bg-white px-3 text-sm font-semibold text-emerald-900 hover:bg-emerald-100"
+                  className="min-h-11 rounded-md border border-amber-300 bg-white px-3 text-sm font-semibold text-amber-900 hover:bg-amber-100"
                 >
                   {banner.kind === 'new' ? 'Keep it' : 'Keep them'}
                 </button>
@@ -1265,7 +1359,7 @@ export function CreateCustomerForm({
               type="button"
               disabled={resetBusy}
               onClick={() => setConfirmingReset(true)}
-              className="mt-2 min-h-11 rounded-md border border-emerald-300 bg-white px-3 text-sm font-semibold text-emerald-900 hover:bg-emerald-100 disabled:opacity-60"
+              className="mt-2 min-h-11 rounded-md border border-amber-300 bg-white px-3 text-sm font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-60"
             >
               {banner.kind === 'new' ? 'Start a blank form' : 'Discard these changes'}
             </button>

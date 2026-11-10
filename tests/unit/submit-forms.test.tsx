@@ -1360,6 +1360,8 @@ describe('the new-customer form', () => {
     replies.push(answer({ ok: true, data: null }));
     renderCreate();
     await waitFor(() => expect(screen.getByText(/^Restored the details you typed on this phone\. Branch details/)).toBeTruthy());
+    // Held until he says it is this shop (code review 2026-11-10, review of finding 4).
+    fireEvent.click(screen.getByRole('button', { name: /^Continue / }));
     expect(screen.getByDisplayValue('Blue Sea Cafe')).toBeTruthy();
   });
 
@@ -1368,6 +1370,8 @@ describe('the new-customer form', () => {
     replies.push(noAnswer);
     renderCreate();
     await waitFor(() => expect(screen.getByText(/Your last send got no answer and may have arrived/)).toBeTruthy());
+    // Held until he says it is this shop (code review 2026-11-10, review of finding 4).
+    fireEvent.click(screen.getByRole('button', { name: /^Continue / }));
     expect(screen.getByDisplayValue('Blue Sea Cafe')).toBeTruthy();
   });
 
@@ -1378,6 +1382,8 @@ describe('the new-customer form', () => {
     replies.push(noAnswer);
     renderCreate();
     await waitFor(() => expect(screen.getByText(/Your last send got no answer and may have arrived/)).toBeTruthy());
+    // Held until he says it is this shop (code review 2026-11-10, review of finding 4).
+    fireEvent.click(screen.getByRole('button', { name: /^Continue / }));
     goOffline();
     fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(OFFLINE_AFTER_EARLIER_MESSAGE));

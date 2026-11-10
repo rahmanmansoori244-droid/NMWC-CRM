@@ -186,6 +186,17 @@ const createKeys = () => Object.keys(window.localStorage).filter((k) => k.starts
 
 const renderNew = (user = 'u1') => render(<CreateCustomerForm channels={channels} initial={null} sessionUserId={user} />);
 const saveDraft = () => fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+/**
+ * A never-saved copy that comes back holds the form until he says it is this
+ * shop (review of finding 4): "Continue …" lets him on with it.
+ */
+const chooseContinue = () => fireEvent.click(screen.getByRole('button', { name: /^Continue / }));
+/** The never-saved form reopened over its copy, and continued. */
+const reopenNew = (user = 'u1') => {
+  const view = renderNew(user);
+  chooseContinue();
+  return view;
+};
 const restoredBanner = () =>
   screen.queryByText(/^Restored (the details you typed on this phone — shops|what you added on this phone after)/)?.parentElement ?? null;
 /** What a send carried, without the id of that send. */
@@ -288,7 +299,7 @@ describe('4(a): a reload brings back the shops, the GPS points and the photos', 
     await tick();
     before.unmount(); // the tab is gone
 
-    renderNew(); // …and reopened
+    reopenNew(); // …and reopened
     // The boxes.
     expect(box('Legal name *')).toHaveValue('Blue Sea Cafe');
     expect(box('CR number *')).toHaveValue('7654321');
@@ -371,11 +382,11 @@ describe('4(a): a reload brings back the shops, the GPS points and the photos', 
     type('Legal name *', 'Blue Sea Cafe');
     take(slots('SHOP')[0]!, 'att-shop');
     first.unmount();
-    const second = renderNew();
+    const second = reopenNew();
     expect(shows('SHOP')).toEqual(['att-shop']);
     await tick();
     second.unmount();
-    renderNew();
+    reopenNew();
     expect(box('Legal name *')).toHaveValue('Blue Sea Cafe');
     expect(shows('SHOP')).toEqual(['att-shop']);
   });
@@ -403,7 +414,7 @@ describe('4(b): the copy is written when it matters, not half a second too late'
     take(slots('CR')[0]!, 'att-cr');
     view.unmount();
     expect(stored()).toMatchObject({ crPhotoId: 'att-cr' });
-    renderNew();
+    reopenNew();
     expect(shows('CR')).toEqual(['att-cr']);
   });
 
@@ -652,7 +663,7 @@ describe('the restored copy can be given up', () => {
     const first = renderNew();
     await fillACreditRequest();
     first.unmount();
-    renderNew();
+    reopenNew();
     fireEvent.click(screen.getByRole('button', { name: 'Start a blank form' }));
     expect(screen.getByText('Discard this unsent form? Its photos will have to be taken again.')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Keep it' }));
@@ -715,7 +726,7 @@ describe('the restored copy can be given up', () => {
     const first = renderNew();
     type('Legal name *', 'Blue Sea Cafe');
     first.unmount();
-    renderNew();
+    reopenNew();
     const out = () => screen.getByRole('button', { name: 'Start a blank form' });
     expect(out()).toBeEnabled();
     act(() => slots('SHOP')[0]!.props.onBusyChange?.(true));
@@ -737,7 +748,7 @@ describe('the restored copy can be given up', () => {
     const first = renderNew();
     type('Legal name *', 'Blue Sea Cafe');
     first.unmount();
-    renderNew();
+    reopenNew();
     expect(restoredBanner()).not.toBeNull();
     type('Legal name *', '');
     expect(restoredBanner()).toBeNull();
@@ -765,7 +776,7 @@ describe('4(e): never another salesman\'s copy, nor another request\'s', () => {
     expect(JSON.parse(window.localStorage.getItem('nmwc:create:u2:new')!).legalName).toBe('Typed by the second salesman');
 
     // …and the first one still finds his own.
-    renderNew('u1');
+    reopenNew('u1');
     expect(box('Legal name *')).toHaveValue('Blue Sea Cafe');
     expect(shows('SHOP')).toEqual(['att-shop']);
   });
@@ -784,7 +795,7 @@ describe('4(e): never another salesman\'s copy, nor another request\'s', () => {
     expect(box('Legal name *')).toHaveValue('Blue Sea Cafe');
     expect(restoredBanner()).toBeNull();
     d8.unmount();
-    const again = renderNew();
+    const again = reopenNew();
     expect(shows('SIGNBOARD')).toEqual(['empty']);
     expect(box('Legal name *')).toHaveValue('A never-saved form');
     again.unmount();
@@ -801,11 +812,171 @@ describe('4(e): never another salesman\'s copy, nor another request\'s', () => {
     capture(0, { lat: 23.5881, lng: 58.3829, accuracy: 9 });
     first.unmount();
     age(2 * DAY);
-    renderNew();
+    reopenNew();
     expect(
       within(restoredBanner()!).getByText('Saved on this phone 2 days ago: “Shop A” — 1 shop, 1 GPS point, 1 photo.')
     ).toBeTruthy();
     expect(within(restoredBanner()!).getByRole('button', { name: 'Start a blank form' })).toBeEnabled();
+    // A reminder to check, not a success: amber, not green.
+    expect(restoredBanner()!.className).toMatch(/amber/);
+    expect(restoredBanner()!.className).not.toMatch(/emerald/);
+  });
+});
+
+/*
+ * Review of finding 4 (code review 2026-11-10): the never-saved form has ONE slot
+ * per salesman, and its copy carries the shop's GPS point and every photo id. A
+ * salesman who left shop A unsaved and tapped New customer at shop B days later
+ * found the form filled with A, its point and photos counted as present: typed
+ * over with B's name and phones, it went out with A's point and photos, behind a
+ * green banner only. Now the form is held until he says which shop it is.
+ */
+describe('review of finding 4: a never-saved copy is not used until he says it is this shop', () => {
+  /** Shop A, complete enough to submit, left unsaved two days ago. */
+  const leaveShopA = () => {
+    const first = renderNew();
+    type('Legal name *', 'Shop A');
+    type('CR number *', '1111111');
+    take(slots('CR')[0]!, 'att-cr-a');
+    fireEvent.change(screen.getByLabelText('Channel *'), { target: { value: 'ch1' } });
+    fireEvent.change(screen.getByLabelText('Sub-channel *'), { target: { value: 'sc1' } });
+    type('Primary phone *', '9111 1111');
+    type('Contact person *', 'Ali');
+    type('Address *', 'Way 1, Ruwi');
+    capture(0, { lat: 23.5881, lng: 58.3829, accuracy: 9 });
+    fireEvent.change(screen.getAllByLabelText('Day of visit *')[0]!, { target: { value: 'SUN' } });
+    take(slots('SHOP')[0]!, 'att-shop-a');
+    take(slots('SIGNBOARD')[0]!, 'att-sign-a');
+    // Complete: Submit is on offer before it is left.
+    expect(screen.getByRole('button', { name: 'Submit for approval ▶' })).toBeEnabled();
+    first.unmount();
+    age(2 * DAY);
+  };
+  /** The question, when it is on screen (SubmitNoticeBox keeps an empty alert region of its own). */
+  const held = () =>
+    (screen.queryByRole('heading', { name: 'You have a new customer on this phone that was never saved' })?.closest('section') ??
+      null) as HTMLElement | null;
+
+  it('reopened, the form is held: nothing of it can be changed, saved or submitted, and it says which shop it holds and how old it is', async () => {
+    leaveShopA();
+    const copyBefore = window.localStorage.getItem(NEW_KEY);
+    renderNew();
+    const panel = held()!;
+    expect(panel).not.toBeNull();
+    expect(panel.className).toMatch(/amber/);
+    expect(within(panel).getByText('You have a new customer on this phone that was never saved')).toBeTruthy();
+    expect(within(panel).getByText('“Shop A” — 1 shop, 1 GPS point, 3 photos. Saved on this phone 2 days ago.')).toBeTruthy();
+    expect(within(panel).getByRole('button', { name: 'Continue “Shop A” (saved 2 days ago)' })).toBeTruthy();
+    expect(within(panel).getByRole('button', { name: 'Start a new customer' })).toBeTruthy();
+    // Not one box, photo slot, GPS button, Save draft or Submit is there to use.
+    expect(screen.queryAllByLabelText('Legal name *')).toEqual([]);
+    expect(screen.queryAllByTestId('slot')).toEqual([]);
+    expect(screen.queryAllByTestId('gps')).toEqual([]);
+    expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Submit for approval ▶' })).toBeNull();
+    // Waiting on the question changes nothing on the phone and sends nothing.
+    await tick(5_000);
+    window.dispatchEvent(new Event('pagehide'));
+    expect(window.localStorage.getItem(NEW_KEY)).toBe(copyBefore);
+    expect(sent).toEqual([]);
+  });
+
+  it('"Continue": the form opens as it was left, and can then be submitted', async () => {
+    leaveShopA();
+    renderNew();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue “Shop A” (saved 2 days ago)' }));
+    expect(held()).toBeNull();
+    expect(box('Legal name *')).toHaveValue('Shop A');
+    expect(shows('SHOP')).toEqual(['att-shop-a']);
+    expect(gps()[0]!.shows).toBe('23.5881, 58.3829');
+    const submitButton = screen.getByRole('button', { name: 'Submit for approval ▶' });
+    expect(submitButton).toBeEnabled();
+    replies.push(saved('e1', 'SUBMITTED'));
+    fireEvent.click(submitButton);
+    await settleUntil(() => sent.length === 1);
+    expect(sent[0]!.body).toMatchObject({ isDraft: false, customer: { legalName: 'Shop A' } });
+  });
+
+  it('"Start a new customer": asks, then a blank form — and nothing of shop A goes with the next shop', async () => {
+    leaveShopA();
+    renderNew();
+    fireEvent.click(screen.getByRole('button', { name: 'Start a new customer' }));
+    expect(
+      screen.getByText('Discard “Shop A”? It was never saved: its photos and GPS point will have to be taken again.')
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByRole('button', { name: 'Continue “Shop A” (saved 2 days ago)' })).toBeTruthy();
+    expect(stored()).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start a new customer' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, discard it' }));
+    expect(held()).toBeNull();
+    expect(restoredBanner()).toBeNull();
+    expect(box('Legal name *')).toHaveValue('');
+    expect(gps().map((g) => g.shows)).toEqual(['no point']);
+    expect(shows('CR')).toEqual(['empty']);
+    expect(shows('SHOP')).toEqual(['empty']);
+    expect(shows('SIGNBOARD')).toEqual(['empty']);
+    expect(stored()).toBeNull();
+    expect(screen.getByRole('button', { name: 'Submit for approval ▶' })).toBeDisabled();
+
+    type('Legal name *', 'Shop B');
+    replies.push(saved('d8'));
+    saveDraft();
+    await settleUntil(() => sent.length === 1);
+    expect(sent[0]!.body).toMatchObject({ customer: { legalName: 'Shop B' } });
+    expect(JSON.stringify(sent[0]!.body)).not.toMatch(/att-|Shop A|1111111|23\.5881/);
+  });
+
+  it('asked on every reopen until he chooses; a form without a name is named as unsaved', () => {
+    const first = renderNew();
+    take(slots('SHOP')[0]!, 'att-shop');
+    first.unmount();
+    const again = renderNew();
+    expect(screen.getByRole('button', { name: 'Continue the unsaved form (saved just now)' })).toBeTruthy();
+    expect(within(held()!).getByText('“no name yet” — 1 shop, 0 GPS points, 1 photo. Saved on this phone just now.')).toBeTruthy();
+    again.unmount();
+    renderNew();
+    expect(held()).not.toBeNull();
+  });
+
+  it('not asked over a blank form, another salesman\'s slot, or a saved draft (its copy is under its own key)', () => {
+    const blank = renderNew();
+    expect(held()).toBeNull();
+    type('Legal name *', 'Shop A');
+    blank.unmount();
+    const other = renderNew('u2');
+    expect(held()).toBeNull();
+    other.unmount();
+    const d7 = renderSaved();
+    take(slots('SIGNBOARD')[0]!, 'att-sign');
+    d7.unmount();
+    renderSaved();
+    expect(held()).toBeNull();
+    expect(shows('SIGNBOARD')).toEqual(['att-sign']);
+  });
+
+  it('the old text-only copy is held the same way: it carries the last shop\'s name and CR number', () => {
+    window.localStorage.setItem(NEW_KEY, JSON.stringify({ legalName: 'Shop A', crNumber: '1111111', savedAt: NOW - DAY, unanswered: [] }));
+    renderNew();
+    expect(screen.getByRole('button', { name: 'Continue “Shop A” (saved 1 day ago)' })).toBeTruthy();
+    expect(screen.queryAllByLabelText('Legal name *')).toEqual([]);
+  });
+
+  it('a send of it found already submitted (the reload check) is said, with the form locked — no question', async () => {
+    const first = renderNew();
+    type('Legal name *', 'Shop A');
+    take(slots('SHOP')[0]!, 'att-shop');
+    replies.push(noAnswer);
+    saveDraft();
+    await settleUntil(() => screen.queryByRole('button', { name: 'Try again' }) !== null);
+    first.unmount();
+    replies.push(answer({ ok: true, data: { editId: 'e1', state: 'SUBMITTED', submittedAt: '2026-11-10T07:42:00.000Z', replayed: true } }));
+    renderNew();
+    expect(held()).not.toBeNull();
+    await settleUntil(() => screen.queryByText(/^Your last send arrived after all\./) !== null);
+    expect(held()).toBeNull();
+    expect(screen.getByRole('button', { name: 'Sent ✓' })).toBeTruthy();
   });
 
   it('a form with photos but no name yet says so', () => {
@@ -813,7 +984,7 @@ describe('4(e): never another salesman\'s copy, nor another request\'s', () => {
     take(slots('SHOP')[0]!, 'att-shop');
     take(slots('SIGNBOARD')[0]!, 'att-sign');
     first.unmount();
-    renderNew();
+    reopenNew();
     expect(
       within(restoredBanner()!).getByText('Saved on this phone just now: “no name yet” — 1 shop, 0 GPS points, 2 photos.')
     ).toBeTruthy();
@@ -916,7 +1087,7 @@ describe('5(c) for this form: a copy is kept seven days from its last change', (
     leave();
     age(6 * DAY);
     const savedAt = stored()!.savedAt;
-    const again = renderNew();
+    const again = reopenNew();
     expect(box('Legal name *')).toHaveValue('Blue Sea Cafe');
     await tick(5_000);
     window.dispatchEvent(new Event('pagehide'));
@@ -924,7 +1095,7 @@ describe('5(c) for this form: a copy is kept seven days from its last change', (
     again.unmount();
     expect(stored()!.savedAt).toBe(savedAt);
 
-    renderNew();
+    reopenNew();
     type('Notes', 'Still working on it');
     await tick();
     expect(Date.now() - stored()!.savedAt).toBeLessThan(1_000);
@@ -1008,6 +1179,7 @@ describe('a send that got no answer, then a reload (item 22), with the whole for
     replies.push(receipt(null));
     renderNew();
     await settleUntil(() => screen.queryByText(/checking whether it arrived/) === null);
+    chooseContinue();
     expect(shows('SHOP')).toEqual(['att-shop']);
     expect(restoredBanner()).not.toBeNull();
     expect(screen.queryByText(/Your last send/)).toBeNull();
@@ -1027,6 +1199,7 @@ describe('a send that got no answer, then a reload (item 22), with the whole for
           'Your last send got no answer and may have arrived — when you have signal, check Work before you send this form again.'
         ) !== null
     );
+    chooseContinue();
     expect(shows('SHOP')).toEqual(['att-shop']);
     expect(stored()).toMatchObject({ unanswered: [id] });
   });
@@ -1050,6 +1223,7 @@ describe('a send that got no answer, then a reload (item 22), with the whole for
     replies.push(noAnswer);
     renderNew();
     await settleUntil(() => screen.queryByText(/may have arrived/) !== null);
+    chooseContinue();
     fireEvent.click(screen.getByRole('button', { name: 'Start a blank form' }));
     fireEvent.click(screen.getByRole('button', { name: 'Yes, start blank' }));
     expect(box('Legal name *')).toHaveValue('');
@@ -1060,7 +1234,7 @@ describe('a send that got no answer, then a reload (item 22), with the whole for
 describe('a copy the old form wrote (typed text only) still comes back, in the words it always had', () => {
   it('its text is restored; it becomes a whole-form copy with the next change, keeping its age until then', async () => {
     window.localStorage.setItem(NEW_KEY, JSON.stringify({ legalName: 'Blue Sea Cafe', crNumber: '7654321', savedAt: NOW - DAY, unanswered: [] }));
-    renderNew();
+    reopenNew();
     expect(box('Legal name *')).toHaveValue('Blue Sea Cafe');
     expect(
       screen.getByText(

@@ -2033,6 +2033,7 @@ test.describe('salesman phone: nothing is lost on a reload (review 2026-11-10, f
     page.locator('details').filter({ has: page.locator('summary h3').filter({ hasText: new RegExp(`^Branch ${n}\\b`) }) });
   const RESTORED_NEW = 'Restored the details you typed on this phone — shops, GPS points and photos included.';
   const RESTORED_AFTER_SAVE = 'Restored what you added on this phone after your last Save draft.';
+  const HELD_NEW = 'You have a new customer on this phone that was never saved';
   const takeIn = async (slot: Locator, name: string) => {
     await pickFile(slot, pngFile(name));
     await expect(retakeOf(slot), `${name} is in`).toBeVisible({ timeout: 120_000 });
@@ -2096,9 +2097,14 @@ test.describe('salesman phone: nothing is lost on a reload (review 2026-11-10, f
     expect(typeof copy.crPhotoId, 'the CR photo is kept by its id').toBe('string');
     expect(await requests()).toEqual([]);
 
-    // The tab comes back from the camera reloaded.
+    // The tab comes back from the camera reloaded. The never-saved form is held
+    // until he says it is this shop (review of finding 4): nothing to type in yet.
     await reloadLeaving(page);
     await settled(page);
+    await expect(page.getByRole('heading', { name: HELD_NEW, exact: true })).toBeVisible();
+    await expect(nameBox).toHaveCount(0);
+    await expect(page.getByRole('button', { name: SUBMIT })).toHaveCount(0);
+    await page.getByRole('button', { name: `Continue “${name}” (saved ` }).click();
     await expect(page.getByText(RESTORED_NEW, { exact: true })).toBeVisible();
     await expect(page.getByText(`“${name}” — 2 shops, 1 GPS point, 2 photos.`)).toBeVisible();
     await expect(page.getByText(/are not kept on the phone/)).toHaveCount(0);
@@ -2208,9 +2214,14 @@ test.describe('salesman phone: nothing is lost on a reload (review 2026-11-10, f
     expect(asked).toEqual([LEAVE_FORM_QUESTION]);
     expect((await deviceCopy(page, newKey))?.legalName).toBe(name);
 
-    // Reopened: it is back, named, with the way to a blank form for the next shop.
+    // Reopened: it is held, named, until he says which shop it is (review of
+    // finding 4). "Continue" puts it back, with the way to a blank form too.
     await page.goto('/customers/new');
     await settled(page);
+    await expect(page.getByRole('heading', { name: HELD_NEW, exact: true })).toBeVisible();
+    await expect(page.getByText(`“${name}” — 1 shop, 0 GPS points, 0 photos. Saved on this phone`)).toBeVisible();
+    await expect(nameBox).toHaveCount(0);
+    await page.getByRole('button', { name: `Continue “${name}” (saved ` }).click();
     await expect(page.getByText(RESTORED_NEW, { exact: true })).toBeVisible();
     await expect(page.getByText(`“${name}” — 1 shop, 0 GPS points, 0 photos.`)).toBeVisible();
     await expect(nameBox).toHaveValue(name);
@@ -2220,6 +2231,55 @@ test.describe('salesman phone: nothing is lost on a reload (review 2026-11-10, f
     await expect(nameBox).toHaveValue('');
     await expect(page.getByText(RESTORED_NEW, { exact: true })).toHaveCount(0);
     await expect.poll(() => deviceCopy(page, newKey), { message: 'the copy left the phone' }).toBeNull();
+    expect(await db.customerEdit.count({ where: { submittedById: user.id, process: 'CREATE' } }), 'nothing was sent').toBe(0);
+  });
+
+  // Code review 2026-11-10, review of finding 4: the never-saved form has one slot
+  // per salesman, and its copy now carries the GPS point and the photo ids. Left
+  // unsaved at shop A, it opened filled at shop B, A's point counted as present.
+  test('new customer: left unsaved at shop A, the form opened at the next shop is held until he chooses; "Start a new customer" keeps nothing of A', async ({ browser }) => {
+    const { user } = await addFieldSalesman(world, 'N6');
+    const page = await (await contextAs(browser, user, { device: 'phone' })).newPage();
+    const newKey = `nmwc:create:${user.id}:new`;
+    const shopA = world.name('Shop A Left Unsaved');
+
+    await page.goto('/customers/new');
+    await settled(page);
+    await page.getByLabel('Legal name *', { exact: true }).fill(shopA);
+    const branch = branchOf(page, 1);
+    await branch.getByLabel('Address *', { exact: true }).fill(world.name('Way 9, Ruwi'));
+    await branch.getByRole('button', { name: /^Capture GPS/ }).click();
+    await expect(branch.getByText(GPS_TEXT)).toBeVisible();
+    await expect
+      .poll(async () => !!((await deviceCopy(page, newKey))?.branches as Array<{ gps?: unknown }> | undefined)?.[0]?.gps, {
+        message: 'the point is in the phone copy',
+      })
+      .toBe(true);
+    // He leaves without saving.
+    page.once('dialog', (d) => void d.accept().catch(() => undefined));
+    await tabBar(page).getByRole('link', { name: 'Today', exact: true }).click();
+    await expect(page).toHaveURL(/\/today(\?|$)/);
+
+    // At the next shop: New customer. Nothing of A can be typed over or sent.
+    await page.goto('/customers/new');
+    await settled(page);
+    const question = page.getByRole('heading', { name: HELD_NEW, exact: true });
+    await expect(question).toBeVisible();
+    await expect(page.getByText(`“${shopA}” — 1 shop, 1 GPS point, 0 photos. Saved on this phone`)).toBeVisible();
+    await expect(page.getByLabel('Legal name *', { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: SUBMIT })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Save draft', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: `Continue “${shopA}” (saved ` })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Start a new customer', exact: true }).click();
+    await expect(
+      page.getByText(`Discard “${shopA}”? It was never saved: its photos and GPS point will have to be taken again.`, { exact: true })
+    ).toBeVisible();
+    await page.getByRole('button', { name: 'Yes, discard it', exact: true }).click();
+    await expect(question).toHaveCount(0);
+    await expect(page.getByLabel('Legal name *', { exact: true })).toHaveValue('');
+    await expect(branchOf(page, 1).getByText(GPS_TEXT), 'no point of shop A').toHaveCount(0);
+    await expect.poll(() => deviceCopy(page, newKey), { message: 'shop A left the phone' }).toBeNull();
     expect(await db.customerEdit.count({ where: { submittedById: user.id, process: 'CREATE' } }), 'nothing was sent').toBe(0);
   });
 

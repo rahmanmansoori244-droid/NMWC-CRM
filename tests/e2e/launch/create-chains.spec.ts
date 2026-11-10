@@ -2216,6 +2216,10 @@ test.describe("the salesman's new-customer form", { tag: ['@phone'] }, () => {
     // The form has unsent work on it: the browser may ask "Leave site?" before it reloads; he says leave.
     page.on('dialog', (d) => void d.accept().catch(() => undefined));
     await page.reload();
+    // Held until he says it is this shop (code review 2026-11-10, review of finding 4).
+    await expect(page.getByRole('heading', { name: 'You have a new customer on this phone that was never saved', exact: true })).toBeVisible();
+    await expect(page.getByLabel('Legal name *', { exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: `Continue “${name}” (saved ` }).click();
     await expect(
       page.getByText('Restored the details you typed on this phone — shops, GPS points and photos included.', { exact: true })
     ).toBeVisible();
