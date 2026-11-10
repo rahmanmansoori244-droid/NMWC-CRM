@@ -197,6 +197,7 @@ import {
 } from '@/services/routes';
 
 import { RESERVED_USERNAME_MESSAGE } from '@/lib/demo-accounts';
+import { ACTIVE_MISSING } from '@/lib/active-switch';
 
 const STEWARD = 'ckstewardactor0000000001';
 const TARGET = 'cktargetuser000000000001';
@@ -662,10 +663,12 @@ describe('finding 9: Disable and Enable set the state the click wants', () => {
   it('a click that does not say what it wants is refused and changes nothing (no guessing)', async () => {
     const before = snapshot();
     const res = await click(null);
+    // Second round of the review: the message says it too, not "Validation failed".
     expect(res).toMatchObject({
       ok: false,
       code: 'VALIDATION_FAILED',
-      fields: { active: expect.stringMatching(/Reload the page/) },
+      message: ACTIVE_MISSING,
+      fields: { active: ACTIVE_MISSING },
     });
     expect(snapshot()).toEqual(before);
     for (const bad of ['on', '1', 'TRUE', '']) {

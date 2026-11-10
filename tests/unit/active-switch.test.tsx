@@ -18,7 +18,7 @@ vi.mock('@/services/routes', () => ({
   toggleRouteActiveAction: h.route,
 }));
 
-import { ACTIVE_FIELD, placeSwitchMessage, userSwitchMessage, wantedActive } from '@/lib/active-switch';
+import { ACTIVE_FIELD, ACTIVE_MISSING, placeSwitchMessage, userSwitchMessage, wantedActive } from '@/lib/active-switch';
 import { ToggleButton } from '@/app/(app)/routes/forms';
 
 const fd = (v?: string) => {
@@ -86,6 +86,23 @@ describe('the /routes switch button', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Enable' }));
     await waitFor(() => expect(window.alert).toHaveBeenCalledWith('This region was already enabled. Nothing changed.'));
     expect((h.region.mock.calls[0]![0] as FormData).get(ACTIVE_FIELD)).toBe('true');
+  });
+
+  // Code review 2026-11-10, finding 9, second round: a tab still running the code
+  // from before the deploy sends no wanted state. The services now answer with the
+  // reason as the message (tests/unit/region-route-toggle.test.tsx), and this
+  // button shows only the message, so the alert says to reload.
+  it('a click from a screen older than the deploy: the alert says to reload, not "Validation failed"', async () => {
+    h.route.mockResolvedValue({
+      ok: false,
+      code: 'VALIDATION_FAILED',
+      message: ACTIVE_MISSING,
+      fields: { [ACTIVE_FIELD]: ACTIVE_MISSING },
+    });
+    render(<ToggleButton id="r1" kind="route" isActive />);
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+    await waitFor(() => expect(window.alert).toHaveBeenCalledWith(ACTIVE_MISSING));
+    expect(window.alert).not.toHaveBeenCalledWith('Validation failed');
   });
 
   it('a refusal is still shown as before', async () => {

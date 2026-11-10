@@ -702,7 +702,7 @@ async function toggleUserActiveCore(formData: FormData): Promise<ActiveSwitchRes
 
   // Finding 9: the wanted state, never the opposite of what was read.
   const wanted = wantedActive(formData);
-  if (wanted === null) throw new ValidationError({ [ACTIVE_FIELD]: ACTIVE_MISSING });
+  if (wanted === null) throw new ValidationError({ [ACTIVE_FIELD]: ACTIVE_MISSING }, ACTIVE_MISSING);
   const newActive = wanted;
   if (user.isActive === newActive) {
     revalidatePath('/users'); // the stale screen that sent this is put right
