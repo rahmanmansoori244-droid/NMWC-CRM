@@ -248,6 +248,9 @@ jobs:
           # answered as one - his own, a colleague's - and everyone else is
           # refused as before (approval-answers).
           RUN_APPROVAL_ANSWERS: '1'
+          # Finding 27: approving a change to one shop writes no history row and
+          # no updated date on its sister shops (sister-shops).
+          RUN_SISTER_SHOPS: '1'
 
   # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
   # person typing `npm run test:e2e`. It shows: login.spec.ts asserted

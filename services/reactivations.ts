@@ -25,7 +25,7 @@ import {
 } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
-import { scoreCustomer, scoreBranch } from '@/lib/completeness';
+import { namingShop, rescoreAfterChangeTx } from '@/lib/shop-rescore';
 import { lockCustomerRow, lockLiveCustomer } from '@/lib/locks';
 import { followBranchStatus, statusEvents } from '@/lib/customer-status';
 import { REACTIVATION_STATE_CHANGED_MESSAGE, assertStatusEvidence } from '@/lib/status-evidence';
@@ -728,38 +728,37 @@ async function approveReactivationCore(formData: FormData) {
     const evidence = atRequest.attachmentId
       ? await tx.attachment.findUnique({ where: { id: atRequest.attachmentId }, select: { capturedAt: true } })
       : null;
-    await tx.branch.update({
-      where: { id: edit.branchId! },
-      data: {
-        status: 'ACTIVE',
-        lastEditedById: me.id,
-        lastStatusChangeAt: new Date(),
-      },
-    });
+    // Finding 27: a rule refusing this shop's save names it.
+    await namingShop(edit.branch!.branchCode, () =>
+      tx.branch.update({
+        where: { id: edit.branchId! },
+        data: {
+          status: 'ACTIVE',
+          lastEditedById: me.id,
+          lastStatusChangeAt: new Date(),
+        },
+      })
+    );
     // Owner decision 7 (2026-10-07): a customer with at least one ACTIVE branch
     // is ACTIVE — the same rule a closure follows (lib/customer-status.ts). It
     // used to wait until EVERY branch was active, so reopening one shop of a
     // closed customer with another still closed left the customer CLOSED.
-    await followBranchStatus(
+    const customerFollowed = await followBranchStatus(
       tx,
       env,
       edit.customerId!,
       statusEvents(CustomerStatus.CLOSED, CustomerStatus.ACTIVE),
       { actorId: me.id, via: `reactivation ${editId}` }
     );
-    // Recompute scores
-    const fresh = await tx.customer.findUniqueOrThrow({
-      where: { id: edit.customerId! },
-      include: { branches: { where: { deletedAt: null } } },
-    });
-    const cScore = scoreCustomer(fresh, fresh.branches);
-    await tx.customer.update({
-      where: { id: edit.customerId! },
-      data: { completenessScore: cScore },
-    });
-    for (const b of fresh.branches) {
-      const bScore = scoreBranch(b);
-      await tx.branch.update({ where: { id: b.id }, data: { completenessScore: bScore } });
+    // Recompute scores. Code review 2026-11-10, finding 27: only the scores that
+    // changed, with no sister shop's updatedAt moved (lib/shop-rescore.ts); it
+    // re-saved every live shop of the customer through Prisma.
+    await rescoreAfterChangeTx(tx, edit.customerId!);
+    // The rescore no longer moves the customer's updatedAt ("updated since"
+    // exports read it); the reopened shop is a change, so move it when the
+    // customer's status did not (lib/rescore.ts, as services/edits.ts does).
+    if (!customerFollowed) {
+      await tx.customer.update({ where: { id: edit.customerId! }, data: { updatedAt: new Date() } });
     }
     // (edit state already claimed to APPROVED at the top of this tx — QA-C12.)
     await writeAudit(tx, env, {

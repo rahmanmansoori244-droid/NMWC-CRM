@@ -88,7 +88,7 @@ import { isGpsTooInaccurate, gpsTooInaccurateMessage } from '@/lib/gps-accuracy'
 import { normalizeCR } from '@/lib/cr';
 import { lockCustomerRow, lockLiveCustomer } from '@/lib/locks';
 import { assertStatusEvidence, evidenceIds } from '@/lib/status-evidence';
-import { scoreCustomer, scoreBranch } from '@/lib/completeness';
+import { namingShop, rescoreAfterChangeTx } from '@/lib/shop-rescore';
 import { checkLimit, FORM_LIMIT } from '@/lib/rate-limit';
 import { answerIfLanded, findReceipt, ownOpenRequestMessage } from '@/lib/submission-replay';
 import { submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
@@ -1494,7 +1494,8 @@ async function applyEditChanges(
         updateCustomer.crNumberNorm = normalizeCR(String(customerProposed[f] ?? ''));
     }
   }
-  if (Object.keys(updateCustomer).length > 0) {
+  const customerWritten = Object.keys(updateCustomer).length > 0;
+  if (customerWritten) {
     appliedAnything = true;
     updateCustomer.lastEditedById = actorId;
     const currentCustomer = await tx.customer.findUniqueOrThrow({
@@ -1526,6 +1527,7 @@ async function applyEditChanges(
 
   // Branches — same versioned-updateMany pattern per branch.
   let statusChanges = NO_STATUS_EVENTS;
+  let branchWritten = false;
   for (const bp of branches) {
     const branchUpdate: Record<string, unknown> = {};
     for (const f of BRANCH_EDIT_FIELDS) {
@@ -1535,10 +1537,12 @@ async function applyEditChanges(
     }
     if (Object.keys(branchUpdate).length === 0) continue;
     appliedAnything = true;
+    branchWritten = true;
     branchUpdate.lastEditedById = actorId;
     const currentBranch = await tx.branch.findUniqueOrThrow({
       where: { id: bp.branchId },
-      select: { version: true, status: true },
+      // branchCode: finding 27, a rule refusing this shop's save names it.
+      select: { version: true, status: true, branchCode: true },
     });
     // EL-11/EL-12: stamp lastStatusChangeAt whenever status actually changes
     // so reactivation evidence freshness is anchored to the closure event,
@@ -1550,10 +1554,12 @@ async function applyEditChanges(
         statusEvents(currentBranch.status, branchUpdate.status as typeof currentBranch.status)
       );
     }
-    const branchResult = await tx.branch.updateMany({
-      where: { id: bp.branchId, version: currentBranch.version },
-      data: { ...branchUpdate, version: { increment: 1 } } as Prisma.BranchUpdateManyMutationInput,
-    });
+    const branchResult = await namingShop(currentBranch.branchCode, () =>
+      tx.branch.updateMany({
+        where: { id: bp.branchId, version: currentBranch.version },
+        data: { ...branchUpdate, version: { increment: 1 } } as Prisma.BranchUpdateManyMutationInput,
+      })
+    );
     if (branchResult.count === 0) {
       throw new ConflictError(
         'VERSION_CONFLICT',
@@ -1577,16 +1583,20 @@ async function applyEditChanges(
     via: statusAudit.via,
   });
 
-  // Recompute completeness
-  const fresh = await tx.customer.findUniqueOrThrow({
-    where: { id: customerId },
-    include: { branches: { where: { deletedAt: null } } },
-  });
-  const cScore = scoreCustomer(fresh, fresh.branches);
-  await tx.customer.update({ where: { id: customerId }, data: { completenessScore: cScore } });
-  for (const b of fresh.branches) {
-    const bScore = scoreBranch(b);
-    await tx.branch.update({ where: { id: b.id }, data: { completenessScore: bScore } });
+  // Recompute completeness. Code review 2026-11-10, finding 27: only the scores
+  // that changed, in raw SQL (lib/shop-rescore.ts over lib/rescore.ts). Every
+  // live shop of the customer used to be re-saved through Prisma, which moved
+  // each sister shop's updatedAt (the export's last_edited_at) and let one older
+  // shop that breaks a database rule block a change to another shop.
+  await rescoreAfterChangeTx(tx, customerId);
+  // The score write above no longer moves the customer's updatedAt, which the
+  // export's "updated since" and the list's "edited after" filters read. When a
+  // shop was written and the customer row was not, move it here, or a change
+  // to a shop would fall out of an "updated since" export (lib/rescore.ts; the
+  // import's branch-only lane does the same). updatedAt only: not the version,
+  // not lastEditedById — none of the customer's own fields changed.
+  if (branchWritten && !customerWritten) {
+    await tx.customer.update({ where: { id: customerId }, data: { updatedAt: new Date() } });
   }
 
   // Phase 1 Temix sync: an applied master change re-queues the customer for
