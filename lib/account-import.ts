@@ -7,7 +7,7 @@
  * tests/unit/account-import-rules.test.ts. Nothing here reads the database.
  */
 import type { Role } from '@prisma/client';
-import { isTransientDbError, mayHaveCommitted } from './db-errors';
+import { isTransientDbError, mayHaveCommitted, uniqueTargetFields } from './db-errors';
 import { scrubAndTruncate } from './scrub';
 
 /** Roles an import may neither mint nor change; the Users UI owns them. */
@@ -241,12 +241,9 @@ export function accountRowFailure(err: unknown, subject: string): RowFailure {
     message: `nothing was written for ${subject}: ${why}`,
   });
   if (code === 'P2002') {
-    const target = (err as { meta?: { target?: unknown } }).meta?.target;
-    const fields = Array.isArray(target)
-      ? target.map(String).join(', ')
-      : typeof target === 'string'
-        ? target
-        : 'a value';
+    // The columns, from Prisma 6's meta.target or the constraint Prisma 7 names.
+    const target = uniqueTargetFields(err);
+    const fields = target.length > 0 ? target.join(', ') : 'a value';
     return refused(`its ${fields} is already used by another record.`);
   }
   const constraint = /constraint "([A-Za-z0-9_]+)"/.exec(

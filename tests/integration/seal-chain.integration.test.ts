@@ -15,6 +15,8 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { Prisma, PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 import { writeSeal, type HorizonReader } from '@/lib/seal/seal';
 import { recheckSeals } from '@/lib/seal/verify';
 import { sealObjectKey } from '@/lib/seal/chain';
@@ -33,7 +35,7 @@ describe.skipIf(!ENABLED)('gap 28: the seal chain on Postgres', () => {
     assertNotProductionEnv();
     const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL!;
     if (url.includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    const owner = new PrismaClient({ datasourceUrl: url });
+    const owner = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
     const sfx = `zzw${Date.now().toString(36)}`;
     try {
       await owner

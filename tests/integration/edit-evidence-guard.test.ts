@@ -28,6 +28,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { PrismaClient, type Prisma } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 import { src, withChangeContext } from '@/lib/change-context';
 import { purgeCustomerEdits, purgeHistory, withAuditMaintenance } from '../support/audit';
 
@@ -70,7 +72,7 @@ describe.skipIf(!ENABLED)('a sent request is evidence (gap 19)', () => {
   beforeAll(async () => {
     const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
     if (url.includes(PROD) || (process.env.DATABASE_URL ?? '').includes(PROD)) throw new Error('ABORT: production');
-    db = new PrismaClient({ datasourceUrl: url });
+    db = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
     await write(async (tx) => {
       await tx.region.create({ data: { id: ids.region, code: `G${SFX}`, name: `Evidence G ${sfx}` } });
       await tx.route.create({ data: { id: ids.route, code: `R${SFX}`, name: `Evidence R ${sfx}`, regionId: ids.region } });
@@ -235,7 +237,7 @@ describe.skipIf(!ENABLED)('a sent request is evidence (gap 19)', () => {
   it.skipIf(!APP_URL)('the runtime role cannot rewrite or delete a sent request, not even with the maintenance setting', async () => {
     if (APP_URL.includes(PROD)) throw new Error('ABORT: production');
     const e = await newEdit({ customerId: ids.c1, state: 'SUBMITTED', submittedAt: new Date() });
-    const app = new PrismaClient({ datasourceUrl: APP_URL });
+    const app = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(APP_URL)) });
     try {
       await expect(
         app.$transaction([

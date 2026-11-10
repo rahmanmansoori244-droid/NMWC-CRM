@@ -34,6 +34,8 @@
  * (tests/unit/scripts-production-guard.test.ts).
  */
 import { Prisma, PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { connectWaking, requireExpectedHost } from './requeue-untracked';
 import { OperatorRefusal, operatorErrorLabel } from './error-label';
 import { MISMATCH_LABEL, type Mismatch } from '../../lib/seal/chain';
@@ -112,7 +114,7 @@ async function main(): Promise<number> {
   requireExpectedHost(args, url, host);
   const opts = parseVerifySealsArgs(args);
 
-  const prisma = new PrismaClient({ datasourceUrl: url });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
   try {
     console.log(`\nTarget: ${host}`);
     console.log('='.repeat(76));

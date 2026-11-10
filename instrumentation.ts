@@ -4,13 +4,18 @@ import type { Instrumentation } from 'next';
 export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
     await import('./sentry.server.config');
-    // PERF (audit #2): warm the Prisma engine + Neon TLS/auth handshake in the
+    // PERF (audit #2): warm the Prisma client + Neon TLS/auth handshake in the
     // background so a cold lambda's FIRST query doesn't serially pay ~50-200ms
     // of connection setup on top of the user's round trip. Deliberately NOT
-    // awaited — overlap with the rest of cold start; $connect is idempotent and
-    // a failure just falls back to lazy connect on the first real query.
+    // awaited — overlap with the rest of cold start; a failure just falls back
+    // to a lazy connect on the first real query.
+    //
+    // Prisma 7: `$connect()` no longer opens a connection (the driver adapter's
+    // pool connects on the first query — measured on the upgrade probe), so the
+    // warm-up runs one trivial query, which leaves an open, authenticated
+    // connection in the pool for the first real request.
     import('./lib/db')
-      .then(({ prisma }) => prisma.$connect())
+      .then(({ prisma }) => prisma.$queryRaw`SELECT 1`)
       .catch(() => {
         /* first query will connect lazily; never crash startup */
       });

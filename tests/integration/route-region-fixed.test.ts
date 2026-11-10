@@ -17,6 +17,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 import ExcelJS from 'exceljs';
 import { ROUTE_REGION_FIXED_MESSAGE } from '@/lib/route-region';
 import { src, withChangeContext } from '@/lib/change-context';
@@ -62,7 +64,7 @@ describe.skipIf(!ENABLED)('gap 16: a route never changes region', () => {
 
   it('refused for the table owner in raw SQL, even inside the maintenance window', async () => {
     const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL!;
-    const owner = new PrismaClient({ datasourceUrl: url });
+    const owner = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
     try {
       await expect(
         owner.$transaction(async (tx) => {

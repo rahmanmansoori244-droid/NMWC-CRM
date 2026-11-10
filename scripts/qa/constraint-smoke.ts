@@ -7,6 +7,8 @@
  */
 import { readFileSync } from 'node:fs';
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { assertNotProduction } from '../lib/assert-not-production';
 import { DB_RULES } from '../../lib/db-rules';
 
@@ -19,7 +21,7 @@ if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) {
 }
 // The shared guard too (data audit 2026-10-10), on the same URL the client gets:
 // the abort above stays, so this never runs on production even with --expect-host.
-const prisma = new PrismaClient({ datasourceUrl: assertNotProduction(process.env.DATABASE_URL) });
+const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(assertNotProduction(process.env.DATABASE_URL))) });
 
 // Invariants that MUST be present (verified against pg_catalog + migrations).
 const REQUIRED_PARTIAL_UNIQUE = [

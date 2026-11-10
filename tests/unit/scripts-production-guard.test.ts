@@ -16,9 +16,12 @@
  *     from scripts/ops/requeue-untracked.ts, which is checked below to end in
  *     assertNotProduction();
  *   - the client must be given its URL explicitly, and that URL must be the one the
- *     guard checked, before the client is built — a bare `new PrismaClient()` reads
- *     DATABASE_URL from the schema behind the guard's back, and so does a client
- *     handed some other variable;
+ *     guard checked, before the client is built — a client handed some other
+ *     variable connects behind the guard's back. Prisma 7: the URL reaches the
+ *     client only through the Postgres driver adapter, built inline as
+ *     `adapter: new PrismaPg(pgPoolConfig(<url>))`; an adapter built anywhere else
+ *     (a variable, a factory, a pg.Pool) is refused, because what it connects to
+ *     is not traced;
  *   - no file there may import, directly or through other modules, a module outside
  *     scripts/ and prisma/ that opens its own database (lib/db.ts, the app's client).
  *
@@ -266,8 +269,9 @@ const parse = memo((file) =>
 
 // A raw Postgres driver counts as opening a database the moment it is imported:
 // its Client / Pool is what connects, and nothing else would be imported it for.
+// Prisma 7: the Postgres driver adapter counts too — it builds its own pg.Pool.
 const PG_IMPORT =
-  /(?:from\s*|require\(\s*|import\(\s*)['"](?:pg|postgres|@neondatabase\/serverless)['"]/;
+  /(?:from\s*|require\(\s*|import\(\s*)['"](?:pg|postgres|@neondatabase\/serverless|@prisma\/adapter-pg)['"]/;
 const GUARD_IMPORT = /import\s*\{[^}]*\bassertNotProduction\b[^}]*\}\s*from\s*['"][./]+(?:scripts\/)?lib\/assert-not-production(?:\.js)?['"]/;
 const HOST_GUARD_IMPORT = /import\s*\{[^}]*\brequireExpectedHost\b[^}]*\}\s*from\s*['"]\.\/requeue-untracked['"]/;
 const GUARD_CALL = /\b(?:assertNotProduction|requireExpectedHost)\s*\(/g;
@@ -460,29 +464,115 @@ function checkedUrl(sf: ts.SourceFile, expr: ts.Expression, at: number, depth = 
   });
 }
 
-/** The `datasourceUrl` (or `datasources.<name>.url`) a client's options give it, or null. */
+const objectProp = (obj: ts.ObjectLiteralExpression, key: string): ts.Expression | null => {
+  for (const p of obj.properties) {
+    if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) && p.name.text === key) {
+      return p.initializer;
+    }
+    if (ts.isShorthandPropertyAssignment(p) && p.name.text === key) return p.name;
+  }
+  return null;
+};
+
+/** The names a file calls the Postgres driver adapter by (`PrismaPg`, any alias). */
+function adapterNames(sf: ts.SourceFile): Set<string> {
+  const names = new Set(['PrismaPg']);
+  for (const n of all(sf)) {
+    if (ts.isImportDeclaration(n) && ts.isStringLiteral(n.moduleSpecifier) && n.moduleSpecifier.text === '@prisma/adapter-pg') {
+      const nb = n.importClause?.namedBindings;
+      if (nb && ts.isNamedImports(nb)) {
+        for (const el of nb.elements) if ((el.propertyName ?? el.name).text === 'PrismaPg') names.add(el.name.text);
+      }
+    }
+    if (ts.isVariableDeclaration(n) && n.initializer && ts.isCallExpression(n.initializer) &&
+        calleeName(n.initializer) === 'require' && ts.isStringLiteral(n.initializer.arguments[0] ?? n) &&
+        (n.initializer.arguments[0] as ts.StringLiteral).text === '@prisma/adapter-pg' && ts.isObjectBindingPattern(n.name)) {
+      for (const el of n.name.elements) {
+        const key = el.propertyName && ts.isIdentifier(el.propertyName) ? el.propertyName.text : (el.name as ts.Identifier).text;
+        if (key === 'PrismaPg' && ts.isIdentifier(el.name)) names.add(el.name.text);
+      }
+    }
+  }
+  return names;
+}
+
+/** `new PrismaPg(…)` under any name it was imported as, or from a namespace (`new pg.PrismaPg(…)`). */
+function isAdapterConstruction(e: ts.Expression, names: Set<string>): e is ts.NewExpression {
+  if (!ts.isNewExpression(e)) return false;
+  const callee = unwrap(e.expression);
+  return (ts.isIdentifier(callee) && names.has(callee.text)) ||
+    (ts.isPropertyAccessExpression(callee) && callee.name.text === 'PrismaPg');
+}
+
+/** Is `pgPoolConfig` in this file the one from lib/pg-pool-config.ts (imported, not redefined)? */
+const POOL_CONFIG_IMPORT = /import\s*\{[^}]*\bpgPoolConfig\b[^}]*\}\s*from\s*['"](?:@\/|(?:\.\.?\/)+)lib\/pg-pool-config(?:\.js)?['"]/;
+
+/**
+ * The URL a client is given, or null. Prisma 7: only the Postgres driver adapter,
+ * built INLINE in the client's options from a URL written inline too —
+ *
+ *   new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(<url>)) })
+ *   new PrismaClient({ adapter: new PrismaPg({ connectionString: <url> }) })
+ *
+ * — so the URL the guard traces is the one that connects. An adapter held in a
+ * variable or returned by a factory, a PrismaPg handed a pg.Pool (which carries
+ * its own connection settings) or any other options object, and the Prisma 6
+ * `datasourceUrl` / `datasources` (which Prisma 7 no longer accepts) give null.
+ */
 function clientUrl(construction: ts.NewExpression): ts.Expression | null {
+  const sf = construction.getSourceFile();
   const opts = construction.arguments?.[0] && unwrap(construction.arguments[0]);
   if (!opts || !ts.isObjectLiteralExpression(opts)) return null;
-  const prop = (obj: ts.ObjectLiteralExpression, key: string): ts.Expression | null => {
-    for (const p of obj.properties) {
-      if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) && p.name.text === key) {
-        return p.initializer;
-      }
-      if (ts.isShorthandPropertyAssignment(p) && p.name.text === key) return p.name;
+  const adapter = objectProp(opts, 'adapter');
+  if (!adapter) return null;
+  const made = unwrap(adapter);
+  if (!isAdapterConstruction(made, adapterNames(sf))) return null;
+  const arg = made.arguments?.[0] && unwrap(made.arguments[0]);
+  if (!arg || (made.arguments?.length ?? 0) > 2) return null;
+  if (ts.isCallExpression(arg) && calleeName(arg) === 'pgPoolConfig' && arg.arguments.length === 1) {
+    return POOL_CONFIG_IMPORT.test(code_(sf)) ? arg.arguments[0]! : null;
+  }
+  if (ts.isObjectLiteralExpression(arg) && arg.properties.length === 1) {
+    return objectProp(arg, 'connectionString');
+  }
+  return null;
+}
+/** Comment-stripped text of a parsed file (the real files, or a probe's source). */
+const code_ = (sf: ts.SourceFile) => stripComments(sf.getFullText(), sf.fileName.replace(EXT, '.ts'));
+
+/**
+ * Every `new PrismaPg(…)` that is NOT the inline `adapter` of a `new PrismaClient(…)`,
+ * and every use of PrismaPg as a value other than `new`: an adapter built anywhere
+ * else could reach a client this scan does not trace.
+ */
+function strayAdapters(sf: ts.SourceFile, clientNames: Set<string>): number[] {
+  const names = adapterNames(sf);
+  const out: number[] = [];
+  for (const n of all(sf)) {
+    const isRef = (ts.isIdentifier(n) && names.has(n.text)) || (ts.isPropertyAccessExpression(n) && n.name.text === 'PrismaPg');
+    if (!isRef) continue;
+    const parent = n.parent;
+    if (ts.isNewExpression(parent) && parent.expression === n) {
+      // new PrismaPg(…) → must be `adapter: <it>` in `new PrismaClient({ … })`.
+      let up: ts.Node = parent.parent;
+      while (ts.isParenthesizedExpression(up) || ts.isAsExpression(up) || ts.isSatisfiesExpression(up) || ts.isNonNullExpression(up)) up = up.parent;
+      const prop = up;
+      const obj = prop?.parent;
+      const client = obj?.parent;
+      const ok = !!prop && ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name) && prop.name.text === 'adapter' &&
+        !!obj && ts.isObjectLiteralExpression(obj) && !!client && ts.isNewExpression(client) &&
+        client.arguments?.[0] !== undefined && unwrap(client.arguments[0]) === obj &&
+        ((ts.isIdentifier(unwrap(client.expression)) && clientNames.has((unwrap(client.expression) as ts.Identifier).text)) ||
+          (ts.isPropertyAccessExpression(unwrap(client.expression)) && (unwrap(client.expression) as ts.PropertyAccessExpression).name.text === 'PrismaClient'));
+      if (!ok) out.push(parent.getStart());
+      continue;
     }
-    return null;
-  };
-  const direct = prop(opts, 'datasourceUrl');
-  if (direct) return direct;
-  const sources = prop(opts, 'datasources');
-  if (!sources || !ts.isObjectLiteralExpression(unwrap(sources))) return null;
-  const urls = (unwrap(sources) as ts.ObjectLiteralExpression).properties.flatMap((p) => {
-    const inner = ts.isPropertyAssignment(p) ? unwrap(p.initializer) : null;
-    const url = inner && ts.isObjectLiteralExpression(inner) ? prop(inner, 'url') : null;
-    return url ? [url] : [];
-  });
-  return urls.length === 1 ? urls[0]! : null;
+    if (ts.isIdentifier(n)) {
+      const declaring = ts.isImportSpecifier(parent) || ts.isBindingElement(parent) || (ts.isPropertyAccessExpression(parent) && parent.name === n);
+      if (!declaring && !inTypePosition(n)) out.push(n.getStart());
+    } else if (!inTypePosition(n)) out.push(n.getStart());
+  }
+  return out;
 }
 
 type ClientScan = {
@@ -492,6 +582,8 @@ type ClientScan = {
   escapes: number[];
   /** A value import of PrismaClient (not `import type`), aliases included. */
   valueImport: boolean;
+  /** The names PrismaClient goes by in this file. */
+  names: Set<string>;
 };
 
 function scanClients(sf: ts.SourceFile): ClientScan {
@@ -541,7 +633,7 @@ function scanClients(sf: ts.SourceFile): ClientScan {
       if (!declaring && !inTypePosition(n)) escapes.push(n.getStart());
     } else if (!inTypePosition(n)) escapes.push(n.getStart());
   }
-  return { constructions, escapes, valueImport };
+  return { constructions, escapes, valueImport, names };
 }
 
 /**
@@ -630,13 +722,22 @@ describe('every script that opens a database calls the production guard', () => 
     const scan = scanClients(sf);
     expect(
       scan.escapes,
-      `${file}: PrismaClient is used as a value other than \`new PrismaClient({ datasourceUrl: … })\` ` +
+      `${file}: PrismaClient is used as a value other than \`new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(…)) })\` ` +
         '(an alias, a factory, a re-export), so a client could be built where this test cannot see it'
+    ).toEqual([]);
+    expect(
+      strayAdapters(sf, scan.names),
+      `${file}: a PrismaPg adapter is built (or PrismaPg handed around) somewhere other than inline in ` +
+        '`new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(<the guarded URL>)) })`, so its URL is not traced'
     ).toEqual([]);
     for (const construction of scan.constructions) {
       const at = construction.getStart();
       const url = clientUrl(construction);
-      expect(url, `${file}: give the client at offset ${at} its URL explicitly (datasourceUrl)`).not.toBeNull();
+      expect(
+        url,
+        `${file}: give the client at offset ${at} its URL explicitly: ` +
+          '`adapter: new PrismaPg(pgPoolConfig(<url>))`, built inline (pgPoolConfig imported from lib/pg-pool-config.ts)'
+      ).not.toBeNull();
       expect(
         checkedUrl(sf, url!, at),
         `${file}: the client at offset ${at} must be given the URL the guard checked — ` +
@@ -691,13 +792,16 @@ describe('the structural scan sees what it is meant to see', () => {
     const scan = scanClients(sf);
     return {
       scan,
+      stray: strayAdapters(sf, scan.names),
       checked: scan.constructions.map((c) => {
         const url = clientUrl(c);
         return url !== null && checkedUrl(sf, url, c.getStart());
       }),
     };
   };
-  const GUARD = "import { assertNotProduction } from '../lib/assert-not-production';\n";
+  const ADAPTER =
+    "import { PrismaPg } from '@prisma/adapter-pg';\nimport { pgPoolConfig } from '../../lib/pg-pool-config';\n";
+  const GUARD = "import { assertNotProduction } from '../lib/assert-not-production';\n" + ADAPTER;
 
   it('finds a client under an alias, from a namespace, or from require()', () => {
     expect(scanSource(`import { PrismaClient as P } from '@prisma/client';\nconst c = new P({});`).scan.constructions).toHaveLength(1);
@@ -717,34 +821,83 @@ describe('the structural scan sees what it is meant to see', () => {
     ).toEqual([]);
   });
 
-  it('accepts only the URL the guard checked', () => {
+  it('accepts only the URL the guard checked, handed to an adapter built inline', () => {
     const ok = [
-      `${GUARD}new PrismaClient({ datasourceUrl: assertNotProduction(process.env.DIRECT_URL) });`,
-      `${GUARD}const url = assertNotProduction(process.env.DIRECT_URL);\nnew PrismaClient({ datasourceUrl: url });`,
-      `${GUARD}function main() { const url = process.env.DIRECT_URL ?? ''; requireExpectedHost(args, url, h); new PrismaClient({ datasourceUrl: url }); }`,
-      `${GUARD}function owner(): string { return assertNotProduction(process.env.DIRECT_URL); }\nnew PrismaClient({ datasourceUrl: owner() });`,
+      `${GUARD}new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(assertNotProduction(process.env.DIRECT_URL))) });`,
+      `${GUARD}const url = assertNotProduction(process.env.DIRECT_URL);\nnew PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });`,
+      `${GUARD}function main() { const url = process.env.DIRECT_URL ?? ''; requireExpectedHost(args, url, h); new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) }); }`,
+      `${GUARD}function owner(): string { return assertNotProduction(process.env.DIRECT_URL); }\nnew PrismaClient({ adapter: new PrismaPg(pgPoolConfig(owner())) });`,
       `${GUARD}function prepare() { const url = process.env.DIRECT_URL ?? ''; requireExpectedHost(a, url, h); return { url, h }; }\n` +
-        `function main() { const { url } = prepare(); new PrismaClient({ datasourceUrl: url }); }`,
-      `${GUARD}new PrismaClient({ datasources: { db: { url: assertNotProduction(process.env.DIRECT_URL) } } });`,
+        `function main() { const { url } = prepare(); new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) }); }`,
+      // pg's own option, inline, and other client options beside the adapter.
+      `${GUARD}new PrismaClient({ adapter: new PrismaPg({ connectionString: assertNotProduction(process.env.DIRECT_URL) }) });`,
+      `${GUARD}new PrismaClient({ log: ['error'], adapter: new PrismaPg(pgPoolConfig(assertNotProduction(process.env.DIRECT_URL)), { schema: 'public' }) });`,
+      // The adapter under an alias.
+      "import { assertNotProduction } from '../lib/assert-not-production';\nimport { PrismaPg as Pg } from '@prisma/adapter-pg';\n" +
+        "import { pgPoolConfig } from '@/lib/pg-pool-config';\nnew PrismaClient({ adapter: new Pg(pgPoolConfig(assertNotProduction(process.env.DIRECT_URL))) });",
     ];
-    for (const src of ok) expect(scanSource(src).checked, src).toEqual([true]);
+    for (const src of ok) {
+      const r = scanSource(src);
+      expect(r.checked, src).toEqual([true]);
+      expect(r.stray, src).toEqual([]);
+    }
 
     const refused = [
       // Checked one variable, handed the client another (the review's example).
-      `${GUARD}assertNotProduction(process.env.DIRECT_URL);\nnew PrismaClient({ datasourceUrl: process.env.DATABASE_URL });`,
-      `${GUARD}const a = process.env.DIRECT_URL; const b = process.env.DATABASE_URL;\nassertNotProduction(a);\nnew PrismaClient({ datasourceUrl: b });`,
+      `${GUARD}assertNotProduction(process.env.DIRECT_URL);\nnew PrismaClient({ adapter: new PrismaPg(pgPoolConfig(process.env.DATABASE_URL)) });`,
+      `${GUARD}assertNotProduction(process.env.DIRECT_URL);\nnew PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) });`,
+      `${GUARD}const a = process.env.DIRECT_URL; const b = process.env.DATABASE_URL;\nassertNotProduction(a);\nnew PrismaClient({ adapter: new PrismaPg(pgPoolConfig(b)) });`,
       // The guard ran in an unrelated function, on its own variable of the same name.
       `${GUARD}function check() { const url = process.env.DIRECT_URL; assertNotProduction(url); }\n` +
-        `function main() { const url = process.env.DATABASE_URL; new PrismaClient({ datasourceUrl: url }); }`,
+        `function main() { const url = process.env.DATABASE_URL; new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) }); }`,
       // Checked after the client was built.
-      `${GUARD}const url = process.env.DIRECT_URL;\nconst c = new PrismaClient({ datasourceUrl: url });\nassertNotProduction(url);`,
+      `${GUARD}const url = process.env.DIRECT_URL;\nconst c = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });\nassertNotProduction(url);`,
       // Checked, then replaced.
-      `${GUARD}let url = process.env.DIRECT_URL;\nassertNotProduction(url);\nurl = process.env.DATABASE_URL;\nnew PrismaClient({ datasourceUrl: url });`,
-      // No URL at all: the client reads DATABASE_URL from the schema.
+      `${GUARD}let url = process.env.DIRECT_URL;\nassertNotProduction(url);\nurl = process.env.DATABASE_URL;\nnew PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });`,
+      // No adapter at all.
       `${GUARD}assertNotProduction(process.env.DATABASE_URL);\nnew PrismaClient();`,
-      `${GUARD}const opts = { datasourceUrl: assertNotProduction(process.env.DIRECT_URL) };\nnew PrismaClient(opts);`,
+      `${GUARD}const opts = { adapter: new PrismaPg(pgPoolConfig(assertNotProduction(process.env.DIRECT_URL))) };\nnew PrismaClient(opts);`,
+      // The adapter held in a variable, or made by a factory: what it connects to is not traced.
+      `${GUARD}const adapter = new PrismaPg(pgPoolConfig(assertNotProduction(process.env.DIRECT_URL)));\nnew PrismaClient({ adapter });`,
+      `${GUARD}const a = new PrismaPg(pgPoolConfig(assertNotProduction(process.env.DIRECT_URL)));\nnew PrismaClient({ adapter: a });`,
+      `${GUARD}function make() { return new PrismaPg(pgPoolConfig(assertNotProduction(process.env.DIRECT_URL))); }\nnew PrismaClient({ adapter: make() });`,
+      // A pg.Pool carries its own connection settings, whatever was checked.
+      `${GUARD}import pg from 'pg';\nconst pool = new pg.Pool({ connectionString: assertNotProduction(process.env.DIRECT_URL) });\nnew PrismaClient({ adapter: new PrismaPg(pool) });`,
+      `${GUARD}new PrismaClient({ adapter: new PrismaPg({ connectionString: assertNotProduction(process.env.DIRECT_URL), host: 'elsewhere' }) });`,
+      // A pgPoolConfig that is not lib/pg-pool-config.ts's.
+      "import { assertNotProduction } from '../lib/assert-not-production';\nimport { PrismaPg } from '@prisma/adapter-pg';\n" +
+        'function pgPoolConfig(_u: string) { return { connectionString: process.env.DATABASE_URL }; }\n' +
+        'new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(assertNotProduction(process.env.DIRECT_URL))) });',
+      // Prisma 6's options: Prisma 7 no longer accepts them, so neither does the scan.
+      `${GUARD}new PrismaClient({ datasourceUrl: assertNotProduction(process.env.DIRECT_URL) });`,
+      `${GUARD}new PrismaClient({ datasources: { db: { url: assertNotProduction(process.env.DIRECT_URL) } } });`,
     ];
     for (const src of refused) expect(scanSource(src).checked, src).toEqual([false]);
+  });
+
+  it('flags a PrismaPg built anywhere but inline in a client, or handed around as a value', () => {
+    const stray = [
+      `${GUARD}const adapter = new PrismaPg(pgPoolConfig(assertNotProduction(process.env.DIRECT_URL)));\nnew PrismaClient({ adapter });`,
+      `${GUARD}function make() { return new PrismaPg(pgPoolConfig(assertNotProduction(process.env.DIRECT_URL))); }`,
+      `${GUARD}const opts = { adapter: new PrismaPg(pgPoolConfig(assertNotProduction(process.env.DIRECT_URL))) };\nnew PrismaClient(opts);`,
+      `${GUARD}const P = PrismaPg;`,
+      `${GUARD}export { PrismaPg };`,
+      "import * as pga from '@prisma/adapter-pg';\nconst a = new pga.PrismaPg({ connectionString: 'x' });",
+      "const { PrismaPg: Q } = require('@prisma/adapter-pg');\nconst a = new Q({ connectionString: 'x' });",
+    ];
+    for (const src of stray) expect(scanSource(src).stray.length, src).toBeGreaterThan(0);
+    expect(
+      scanSource(`${GUARD}function f(a: PrismaPg): InstanceType<typeof PrismaPg> { return a; }`).stray,
+      'a type position is not a value use'
+    ).toEqual([]);
+  });
+
+  it('counts the driver adapter as opening a database', () => {
+    expect(PG_IMPORT.test("import { PrismaPg } from '@prisma/adapter-pg';")).toBe(true);
+    expect(PG_IMPORT.test("const { PrismaPg } = require('@prisma/adapter-pg');")).toBe(true);
+    // lib/pg-pool-config.ts is reached by every script; it must open nothing itself.
+    expect(PG_IMPORT.test(code('lib/pg-pool-config.ts'))).toBe(false);
+    expect(/\bnew\s+PrismaClient\s*\(/.test(code('lib/pg-pool-config.ts'))).toBe(false);
   });
 
   it('follows imports to a module that opens its own database', () => {
@@ -1066,8 +1219,9 @@ describe('prisma/seed.ts never runs on production and never changes an existing 
   // Run for real: the script, as `npm run db:seed` starts it, handed a fake
   // production-looking URL (`.invalid` never resolves, so even a broken refusal
   // could reach nothing). It must stop before it inserts anything, whatever
-  // --expect-host says. DIRECT_URL is always given: the Prisma client loads a
-  // checkout's .env when it is imported, and fills in any variable left unset.
+  // --expect-host says. DIRECT_URL is always given: Prisma 6's client loaded a
+  // checkout's .env when it was imported and filled in any variable left unset.
+  // Prisma 7's does not, but the seed must not depend on which one is installed.
   const runSeed = (env: Record<string, string>, args: string[]) => {
     const clean = Object.fromEntries(
       Object.entries(process.env).filter(([k, v]) => v !== undefined && !/_URL$/.test(k))

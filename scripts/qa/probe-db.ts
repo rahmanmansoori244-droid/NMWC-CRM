@@ -5,6 +5,8 @@
  */
 import { readFileSync } from 'node:fs';
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { assertNotProduction } from '../lib/assert-not-production';
 
 // self-load .env (no dependency) so PrismaClient sees DATABASE_URL/DIRECT_URL
@@ -23,7 +25,7 @@ const host = /@([^/]+)\//.exec(url)?.[1] ?? '?';
 
 // The shared guard too (data audit 2026-10-10), on the same URL the client gets:
 // the abort above stays, so this never runs on production even with --expect-host.
-const prisma = new PrismaClient({ datasourceUrl: assertNotProduction(url) });
+const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(assertNotProduction(url))) });
 
 async function main() {
   const now = await prisma.$queryRaw<{ db: string; usr: string; now: Date }[]>`

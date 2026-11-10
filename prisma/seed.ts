@@ -20,6 +20,8 @@
  *     whose stored values differ from the seed's are listed by key only.
  */
 import { PrismaClient, Role } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../lib/pg-pool-config';
 import bcrypt from 'bcryptjs';
 import {
   ProductionGuardRefusal,
@@ -210,7 +212,7 @@ export function refuseProductionSeed(url: string | undefined, out: GuardOutput =
 async function main(): Promise<void> {
   const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
   refuseProductionSeed(url);
-  const prisma = new PrismaClient({ datasourceUrl: assertNotProduction(url) });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(assertNotProduction(url))) });
   const ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD ?? 'ChangeMeNow!2026';
   try {
     console.log('▸ Inserting missing channels, sub-channels, regions and the admin account…');

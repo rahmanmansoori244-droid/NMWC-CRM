@@ -38,13 +38,15 @@
  *     scripts/bulk-reset-credentials.ts --username=<username> --expect-host ep-sweet-haze
  */
 import { PrismaClient, type Prisma } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../lib/pg-pool-config';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { assertNotProduction } from './lib/assert-not-production';
 import { setChangeContext, src } from '../lib/change-context';
 
 const prisma = new PrismaClient({
-  datasourceUrl: assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL),
+  adapter: new PrismaPg(pgPoolConfig(assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL))),
 });
 
 const CONFIRMED = process.env.CONFIRM_CREDENTIAL_RESET === 'yes';

@@ -8,6 +8,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, withAuditMaintenance } from '../support/audit';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 
 const ENABLED = process.env.RUN_AUDIT_IMMUTABLE === '1' && !!process.env.DATABASE_URL;
 const sfx = `aim${Date.now().toString(36)}`;
@@ -103,7 +105,7 @@ describe.skipIf(!ENABLED)('B4: AuditLog and EditApproval are append-only at the 
     async () => {
       if (APP_URL.includes('ep-sweet-haze')) throw new Error('ABORT: production');
       const { PrismaClient } = await import('@prisma/client');
-      const app = new PrismaClient({ datasourceUrl: APP_URL });
+      const app = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(APP_URL)) });
       try {
         const [{ me }] = await app.$queryRawUnsafe<{ me: string }[]>('SELECT current_user AS me');
         expect(me).toBe('nmwc_app');

@@ -26,6 +26,8 @@
  * Exit 0 when everything passes, 1 when anything fails, 2 on an error.
  */
 import { Prisma, PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { GOLIVE_REGION_CODES } from '../../lib/ops/golive-accounts';
@@ -635,7 +637,7 @@ async function main(): Promise<number> {
   let host = '?';
   try { host = new URL(url).hostname; } catch { /* The guard above has already parsed it. */ }
   const prisma = new PrismaClient({
-    datasourceUrl: url,
+    adapter: new PrismaPg(pgPoolConfig(url)),
   });
   try {
     console.log(`\nLoad verification — ${host}`);

@@ -3,8 +3,11 @@
 # emergency after an advisory lands.
 #
 # Grouped so one PR carries a coherent set rather than fifteen PRs nobody reads.
-# Major versions are deliberately NOT opened automatically: next 16 and prisma 7
-# are migrations with their own testing, not dependency bumps.
+# Major versions are deliberately NOT opened automatically: next 16 and prisma 8
+# are migrations with their own testing, not dependency bumps (prisma 7 was one:
+# the driver adapter, prisma.config.ts and the new error shapes, October 2026).
+# prisma, @prisma/client and @prisma/adapter-pg are pinned to one exact version
+# and must move together.
 version: 2
 updates:
   - package-ecosystem: "npm"

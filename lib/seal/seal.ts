@@ -26,6 +26,7 @@
  */
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { src, withChangeContext } from '../change-context';
+import { sqlStateOf } from '../db-errors';
 import { omanDateISO } from '../tz';
 import { SEAL_FORMAT_VERSION, maxKeySql, rangeDigestSql } from './canon';
 import {
@@ -110,13 +111,17 @@ export async function genesisHash(db: Raw): Promise<string | null> {
 /**
  * Whether a failed seal transaction lost a race with another run: the insert hit
  * UNIQUE(seq) or UNIQUE(day) (23505), or a serialization failure (40001). Prisma
- * reports a raw statement's SQLSTATE as P2010 with meta.code, or only in its words.
+ * reports a raw statement's SQLSTATE as P2010 with meta.code (Prisma 6) or in
+ * meta.driverAdapterError (Prisma 7), or only in its words (lib/db-errors.ts
+ * sqlStateOf reads all three). Prisma 7 also reports a DEADLOCK (40P01) from a
+ * model query as P2034, and a deadlock is not a lost race: when the SQLSTATE is
+ * known it decides, and the Prisma code only when it is not.
  */
 export function isSealRace(err: unknown): boolean {
-  const e = err as { code?: unknown; meta?: { code?: unknown }; message?: unknown } | null;
-  const sqlState = e?.meta?.code;
+  const e = err as { code?: unknown; message?: unknown } | null;
+  const sqlState = sqlStateOf(err);
   if (sqlState === '23505' || sqlState === '40001') return true;
-  if (e?.code === 'P2002' || e?.code === 'P2034') return true;
+  if (sqlState === null && (e?.code === 'P2002' || e?.code === 'P2034')) return true;
   return /Code: `(23505|40001)`|duplicate key value violates unique constraint "SealRecord_(seq|day|hash)_key"|could not serialize access/.test(
     String(e?.message ?? '')
   );

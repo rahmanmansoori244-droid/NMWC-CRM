@@ -78,7 +78,18 @@ jobs:
       # Four need a major upgrade that is its own project: next 16 (for the
       # postcss 8.4.31 that next pins; flags next), prisma 7 (for deepmerge-ts;
       # flags @prisma/config and prisma), zod 4, and an exceljs change (for
-      # uuid; flags exceljs). The fifth is nodemailer (moderate, addressparser;
+      # uuid; flags exceljs).
+      #
+      # 2026-10-25: prisma 7 is in, pinned to 7.10.0, the newest 7.x that was two
+      # weeks old. It does NOT close the prisma line yet: its @prisma/config still
+      # takes deepmerge-ts 7.1.5 (GHSA-ggr8-5vv4-36mx, fixed in 8.0), and its CLI
+      # adds mysql2 3.15.3 (GHSA-3f6p-5ww8-9rcr high, GHSA-rgwj-5xj2-c3m3
+      # moderate; the CLI's MySQL driver, never loaded by this Postgres app). So
+      # the count is 12 (0 critical, 6 high, 6 moderate). 7.10.1 (published
+      # 2026-10-15) moves them to deepmerge-ts 8.0.2 and mysql2 3.24.4, which
+      # takes prisma, @prisma/config, deepmerge-ts and mysql2 off this list
+      # (8: 2 high, 6 moderate); it is taken once it is two weeks old.
+      # The fifth is nodemailer (moderate, addressparser;
       # flags @auth/core and next-auth): it is KEPT on 10.0.14 on purpose. The
       # advisories are fixed from 10.1.4, and `npm audit fix` picked 10.2.1, a
       # minor release published on 2026-10-22 (two days old when this was
@@ -90,7 +101,7 @@ jobs:
       # advisory against a production dependency fails the build rather than
       # printing into a log nobody reads.
       #
-      # The full report still runs, unfiltered, so the 11 stay visible and the
+      # The full report still runs, unfiltered, so the 12 stay visible and the
       # list cannot quietly grow.
       - name: npm audit (production dependencies)
         run: |
@@ -150,10 +161,19 @@ jobs:
       # by name; any other difference fails. (Prisma 6.19 leaves partial indexes out of
       # the diff, so the last one does not appear today: it is named for a Prisma that
       # reports it.)
+      #
+      # Prisma 7: --to-schema-datamodel became --to-schema, and the shadow database
+      # is no longer a flag but prisma.config.ts's datasource.shadowDatabaseUrl,
+      # read from SHADOW_DATABASE_URL (set here only — never in Vercel). --output
+      # writes the SQL to the file itself, so nothing else the CLI prints (it now
+      # also announces "Loaded Prisma config…", on stderr today) can ever land in
+      # drift.sql and read as a difference.
       - name: Schema matches the migrations
+        env:
+          SHADOW_DATABASE_URL: postgresql://ci:ci@localhost:5432/nmwc_shadow
         run: |
           psql "postgresql://ci:ci@localhost:5432/nmwc_ci" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE nmwc_shadow'
-          npx prisma migrate diff             --from-migrations prisma/migrations             --to-schema-datamodel prisma/schema.prisma             --shadow-database-url postgresql://ci:ci@localhost:5432/nmwc_shadow             --script > drift.sql
+          npx prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --script --output drift.sql
           ALLOWED='Branch_routeId_dayOfVisit_deletedAt_idx|Customer_deletedAt_idx|Customer_legalName_trgm_idx|Customer_nmwcCode_trgm_idx|Customer_temixCode_live_unique'
           REST=$(grep -v -E '^[[:space:]]*(--.*)?$' drift.sql | grep -v -E "^DROP INDEX \"($ALLOWED)\";$" || true)
           if [ -n "$REST" ]; then

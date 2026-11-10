@@ -23,6 +23,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 import { randomUUID } from 'node:crypto';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
@@ -349,7 +351,7 @@ describe.skipIf(!ENABLED)('status evidence at decision time (F10, X-STATUS-1, F1
       const marker = `${P} audit refused`;
       const fn = `zz_refuse_audit_${tag.replace(/[^a-z0-9]/gi, '')}`;
       // DDL as the owner: the runtime role cannot create triggers.
-      const owner = new PrismaClient({ datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL });
+      const owner = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(process.env.DIRECT_URL ?? process.env.DATABASE_URL)) });
       try {
         await owner.$executeRawUnsafe(
           `CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $f$

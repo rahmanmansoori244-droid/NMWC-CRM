@@ -21,6 +21,8 @@
  * Run with:  npm run db:synthetic
  */
 import { PrismaClient, Role, PaymentTerms, CustomerStatus, DayOfWeek, EditState, EditTarget } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../lib/pg-pool-config';
 import { faker } from '@faker-js/faker';
 import bcrypt from 'bcryptjs';
 import { normalizePhone } from '../lib/phone';
@@ -55,7 +57,7 @@ const prisma = contextClient(
     // Long-running seed: use the DIRECT (unpooled) URL to avoid pgBouncer idle timeouts.
     // And the shared guard on top of the abort above (data audit 2026-10-10, owner
     // decision 2026-10-11): production would need ALLOW_PROD_SEED=1 AND --expect-host.
-    datasourceUrl: assertNotProduction(SEED_URL),
+    adapter: new PrismaPg(pgPoolConfig(assertNotProduction(SEED_URL))),
   }),
   { actorId: null, source: src.seed('synthetic') }
 );

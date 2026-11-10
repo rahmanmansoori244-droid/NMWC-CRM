@@ -29,7 +29,7 @@ Accountant. A credit customer goes through the Supervisor step, the Finance Mana
 and then the Accountant. Approved data is queued for the company ERP, **Temix** (spelled
 "Timix" in some files), which stays the system of record. A Data Steward uploads the data
 to Temix as Excel batches. There is no live API. The stack is Next.js 15 (App Router) with React 19,
-Prisma 6 on Neon Postgres (production plus a separate UAT branch), Auth.js credentials
+Prisma 7 on Neon Postgres (production plus a separate UAT branch), Auth.js credentials
 sign-in, Cloudflare R2 for photos and Sentry for errors. It is hosted on Vercel Pro
 (project `nmwc-cm`, <https://nmwc-cm.vercel.app>). **Merging to `main` deploys to
 production.**

@@ -33,6 +33,8 @@
  * Read-only. Writes one CSV of codes and terms; no PII, no figures, no limits.
  */
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import path from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { connectWaking, requireExpectedHost } from './requeue-untracked';
@@ -45,7 +47,7 @@ async function main(): Promise<number> {
   requireExpectedHost(args, url, host);
 
   const out = path.join(process.env.GOLIVE_DIR ?? 'golive-data', 'crm-payment-terms.csv');
-  const prisma = new PrismaClient({ datasourceUrl: url });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
   try {
     console.log(`\nTarget: ${host}`);
     console.log('='.repeat(76));

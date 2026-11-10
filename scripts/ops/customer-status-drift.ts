@@ -41,6 +41,8 @@
  * --expect-host is required, as for every operator script here.
  */
 import { PrismaClient, CustomerStatus, type Prisma } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
 import { OperatorRefusal, operatorErrorLabel } from './error-label';
 import { statusDrift, type StatusDrift } from '../../lib/customer-status-rule';
@@ -142,7 +144,7 @@ async function main(): Promise<number> {
     throw new OperatorRefusal('--actor was passed without a username');
   }
 
-  const prisma = new PrismaClient({ datasourceUrl: url });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
   try {
     await connectWaking(prisma);
     // Production check 2026-10-09: the default 5 s interactive-transaction budget

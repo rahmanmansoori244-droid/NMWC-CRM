@@ -35,7 +35,12 @@
  * Returns the URL unchanged, so the caller hands the client the very value that
  * was checked:
  *
- *   new PrismaClient({ datasourceUrl: assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL) })
+ *   new PrismaClient({
+ *     adapter: new PrismaPg(pgPoolConfig(assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL))),
+ *   })
+ *
+ * (Prisma 7: PrismaPg from @prisma/adapter-pg, pgPoolConfig from lib/pg-pool-config.ts;
+ * the URL is written inline in the adapter, never through a variable holding the adapter.)
  *
  * tests/unit/scripts-production-guard.test.ts fails CI when a file under
  * scripts/ or prisma/ builds a database client without calling this (directly,

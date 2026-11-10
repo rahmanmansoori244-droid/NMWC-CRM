@@ -41,6 +41,8 @@
  * changed — which is the only way back, since /temix offers no un-queue action.
  */
 import { PrismaClient, Role, TemixSyncState, type Prisma } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { readFileSync } from 'node:fs';
 import { TEMIX_QUEUE_WHERE } from '../../lib/temix';
 import { isDemoAccount } from '../../lib/demo-accounts';
@@ -358,7 +360,7 @@ async function main(): Promise<number> {
     limit = Number(raw);
   }
 
-  const prisma = new PrismaClient({ datasourceUrl: url });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
   try {
     // Before anything is read or written, not after. This is the operator's only
     // evidence of which database is about to be changed, and evidence that arrives

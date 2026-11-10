@@ -70,6 +70,8 @@
  * verification after writes that the COMPLETED row still records).
  */
 import { PrismaClient, EditProcess, EditState, type Prisma } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { normalizeCR } from '../../lib/cr';
 import {
   dismissalHides,
@@ -191,7 +193,7 @@ export async function main(): Promise<number> {
     throw new OperatorRefusal('--actor was passed without a username');
   }
 
-  const prisma = new PrismaClient({ datasourceUrl: url });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
   try {
     console.log(`\nTarget: ${host}`);
     console.log(

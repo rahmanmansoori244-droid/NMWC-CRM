@@ -322,12 +322,12 @@ export function scriptMeter(cdp: CDPSession): { bytes(): number; count(): number
 
 /**
  * Markers that must never be in a browser chunk: the Prisma query engine (the
- * native or WASM library) and exceljs. The Prisma BROWSER SHIM (what a client
- * component's `import { Role } from '@prisma/client'` pulls in) is reported
- * separately: it holds no engine.
+ * native or WASM library; Prisma 7's query compiler) and exceljs. The Prisma
+ * BROWSER SHIM (what a client component's `import { Role } from '@prisma/client'`
+ * pulls in) is reported separately: it holds no engine.
  */
 export const ENGINE_MARKERS: Array<{ what: string; re: RegExp }> = [
-  { what: 'Prisma query engine', re: /libquery_engine|query_engine_bg|PRISMA_QUERY_ENGINE_LIBRARY|prisma-engines/ },
+  { what: 'Prisma query engine', re: /libquery_engine|query_engine_bg|query_compiler|PRISMA_QUERY_ENGINE_LIBRARY|prisma-engines/ },
   { what: 'exceljs', re: /\bExcelJS\b|xl\/sharedStrings\.xml|xl\/worksheets\/sheet/ },
 ];
 export const PRISMA_BROWSER_SHIM = /is unable to run in this browser environment/;

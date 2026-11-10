@@ -24,6 +24,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { PrismaClient, type Prisma } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 import { setChangeContext, src, withChangeContext } from '@/lib/change-context';
 import { purgeHistory, REMOTE_TX, withAuditMaintenance } from '../support/audit';
 
@@ -74,7 +76,7 @@ describe.skipIf(!ENABLED)('the dated history is written by the database', () => 
     const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
     if (url.includes(PROD) || (process.env.DATABASE_URL ?? '').includes(PROD))
       throw new Error('ABORT: production');
-    db = new PrismaClient({ datasourceUrl: url });
+    db = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
     await write(async (tx) => {
       await tx.region.createMany({
         data: [
@@ -497,7 +499,7 @@ describe.skipIf(!ENABLED)('the dated history is written by the database', () => 
     'the runtime role writes the master and is recorded by name, but cannot write the history',
     async () => {
       if (APP_URL.includes(PROD)) throw new Error('ABORT: production');
-      const app = new PrismaClient({ datasourceUrl: APP_URL });
+      const app = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(APP_URL)) });
       try {
         await withChangeContext(app, ctx(src.edit(`${sfx}-app`)), (tx) =>
           tx.branch.update({ where: { id: ids.branch }, data: { dayOfVisit: 'TUE' } })

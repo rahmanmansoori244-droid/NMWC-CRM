@@ -5,10 +5,12 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// Prisma 7: the connection strings are no longer read here. The CLI (migrate
+// deploy / status / diff) takes its URL from prisma.config.ts — DIRECT_URL, the
+// owner, as `directUrl` used to be — and the application builds its client with
+// the Postgres driver adapter on DATABASE_URL (lib/db.ts, lib/pg-pool-config.ts).
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "postgresql"
 }
 
 // ── ENUMS ────────────────────────────────────────────────

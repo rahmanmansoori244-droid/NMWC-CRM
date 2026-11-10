@@ -18,6 +18,8 @@
  * 1 when something needs a look, 2 when it could not run.
  */
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { connectWaking, requireExpectedHost } from './requeue-untracked';
 import { OperatorRefusal, operatorErrorLabel } from './error-label';
 import {
@@ -48,7 +50,7 @@ async function main(): Promise<number> {
   requireExpectedHost(args, url, host);
   const days = parseDays(args);
 
-  const prisma = new PrismaClient({ datasourceUrl: url });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
   try {
     console.log(`\nTarget: ${host}`);
     console.log('='.repeat(76));

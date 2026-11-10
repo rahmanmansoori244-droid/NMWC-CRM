@@ -30,6 +30,8 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { purgeAuditLog, purgeCustomerEdits } from '../support/audit';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 const ENABLED = process.env.RUN_PHOTO_CONCURRENCY === '1' && !!process.env.DATABASE_URL;
@@ -78,7 +80,7 @@ describe.skipIf(!ENABLED)('photo attach scope under a real customer lock', () =>
     if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     const { PrismaClient } = await import('@prisma/client');
-    mover = new PrismaClient();
+    mover = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(process.env.DATABASE_URL)) });
     photos = await import('@/services/photos');
     for (const side of ['A', 'B'] as const) {
       const region = await prisma.region.create({ data: { name: `ZZPS ${side} ${tag}`, code: `ZZPS-${side}-${tag}` } });
@@ -559,7 +561,7 @@ describe.skipIf(!ENABLED)('Remove scope under the customer lock on real Postgres
     if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     const { PrismaClient } = await import('@prisma/client');
-    mover = new PrismaClient();
+    mover = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(process.env.DATABASE_URL)) });
     photos = await import('@/services/photos');
     for (const side of ['A', 'B'] as const) {
       const region = await prisma.region.create({ data: { name: `ZZPR ${side} ${tag}`, code: `ZZPR-${side}-${tag}` } });
@@ -708,7 +710,7 @@ describe.skipIf(!ENABLED)("a salesman's Remove of a photo on his new-customer re
     if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     const { PrismaClient } = await import('@prisma/client');
-    submitter = new PrismaClient();
+    submitter = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(process.env.DATABASE_URL)) });
     photos = await import('@/services/photos');
     ({ PHOTO_IN_REVIEW_MESSAGE } = await import('@/lib/photo-attach'));
     const region = await prisma.region.create({ data: { name: `ZZPV Region ${tag}`, code: `ZZPV-${tag}` } });

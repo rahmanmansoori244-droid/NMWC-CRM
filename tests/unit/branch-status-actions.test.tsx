@@ -105,7 +105,14 @@ describe('the evidence photo is on no slot until the request is accepted', () =>
     type('Shop shut for good.');
     fireEvent.click(screen.getByRole('button', { name: 'Submit closure' }));
     expect(await screen.findByText('Photo is older than 24 hours — capture a fresh one.', {}, { timeout: LOADED_MS })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    // Cancel is disabled while the submit is pending, and under the full suite's
+    // load the refusal can render a moment before the transition ends: a click
+    // then lands on a disabled button and does nothing, which is what a person
+    // would see too. So it is clicked once a person could click it (seen failing
+    // on every full run after the Prisma 7 upgrade made the suite's workers busier).
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    await waitFor(() => expect(cancel).not.toBeDisabled(), { timeout: LOADED_MS });
+    fireEvent.click(cancel);
     expect(screen.getByRole('button', { name: 'Mark closed' })).toBeTruthy();
     expect(h.sent.map((s) => s.url)).toEqual(['/api/forms/branch-close']);
   });

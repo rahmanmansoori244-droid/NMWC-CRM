@@ -39,6 +39,8 @@
  * before the first chunk and a COMPLETED row after the last.
  */
 import { PrismaClient, PaymentTerms, type Prisma } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
@@ -140,7 +142,7 @@ async function main(): Promise<number> {
     );
   }
 
-  const prisma = new PrismaClient({ datasourceUrl: url });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
   try {
     console.log(`\nTarget: ${host}`);
     console.log(

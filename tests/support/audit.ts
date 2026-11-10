@@ -14,6 +14,8 @@
  * passed client is used (local set-ups that still run everything as the owner).
  */
 import { PrismaClient, type Prisma } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 
 type Tx = Prisma.TransactionClient;
 
@@ -47,7 +49,7 @@ export async function withAuditMaintenance<T>(
       return fn(tx);
     }, REMOTE_TX);
   if (!url) return run(prisma);
-  const owner = new PrismaClient({ datasourceUrl: url });
+  const owner = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
   try {
     return await run(owner);
   } finally {

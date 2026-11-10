@@ -177,7 +177,8 @@ grant still stands. Tell it in the chat.
 
 - `npm run smoke` before and after any production change.
 - **Reads:** a small script that opens a `SET TRANSACTION READ ONLY` transaction, builds
-  its client as `new PrismaClient({ datasourceUrl: process.env.DIRECT_URL })`, and
+  its client as `new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(process.env.DIRECT_URL)) })`
+  (Prisma 7; `PrismaPg` from `@prisma/adapter-pg`, `pgPoolConfig` from `lib/pg-pool-config.ts`), and
   prints counts only — never a name, code, phone or id. Run it with
   `NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze [args]`.
   In PowerShell:

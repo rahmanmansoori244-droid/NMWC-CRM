@@ -186,7 +186,7 @@ describe('the script keeps the operator conventions (comment-stripped source)', 
 
   it('owner connection, its own client, --expect-host before any read, dry run unless --apply', () => {
     expect(main).toMatch(/process\.env\.DIRECT_URL \?\? process\.env\.DATABASE_URL/);
-    expect(main).toMatch(/new PrismaClient\(\{ datasourceUrl: url \}\)/);
+    expect(main).toMatch(/new PrismaClient\(\{ adapter: new PrismaPg\(pgPoolConfig\(url\)\) \}\)/);
     expect(main.indexOf('requireExpectedHost(')).toBeGreaterThan(-1);
     expect(main.indexOf('requireExpectedHost(')).toBeLessThan(main.indexOf('new PrismaClient('));
     expect(main).toMatch(/const apply = args\.includes\('--apply'\)/);

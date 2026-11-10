@@ -24,6 +24,8 @@
  * Regions are NOT set here — the account import's `region_codes` column does that.
  */
 import { PrismaClient, Role } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import bcrypt from 'bcryptjs';
 import { readFileSync } from 'node:fs';
 import { assertNotProduction, withoutExpectHost } from '../lib/assert-not-production';
@@ -108,7 +110,7 @@ async function main() {
   // The shared production guard as well (data audit 2026-10-10, owner decision
   // 2026-10-11): on production the name must start with ep-sweet-haze, not just
   // be some part of the host.
-  const prisma = new PrismaClient({ datasourceUrl: assertNotProduction(url, args) });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(assertNotProduction(url, args))) });
   const created: string[] = [];
   const skipped: string[] = [];
   // Gap 24: one run id, on every account's dated history.
