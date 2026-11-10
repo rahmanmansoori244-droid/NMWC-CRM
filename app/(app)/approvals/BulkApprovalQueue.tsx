@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState, useTransition } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { unstable_rethrow, useRouter } from 'next/navigation';
 import { Lock } from 'lucide-react';
 import { CompletenessRing } from '@/components/nmwc/CompletenessRing';
 import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
@@ -10,6 +10,7 @@ import { bulkApproveEditsAction, bulkRejectEditsAction } from '@/services/edits'
 import {
   BULK_DECISION_LIMIT,
   CREDIT_BULK_REFUSED_MESSAGE,
+  NO_ANSWER_MESSAGE,
   TEMIX_CODE_BULK_REFUSED_MESSAGE,
 } from '@/lib/bulk-run';
 
@@ -59,6 +60,27 @@ export type ApprovalQueueItem = {
   submittedByFullName: string;
 };
 
+/**
+ * What one bulk decision did, as the banner shows it. Kept by the queue itself,
+ * not derived from the cards: the batch takes its decided cards off the queue
+ * (router.refresh), often all of them, and the banner must still say what
+ * happened to each (launch browser suite, 2026-11-10).
+ */
+export type BulkOutcomeView =
+  | {
+      kind: 'answered';
+      successes: number;
+      /** `label`: the card's customer as it was on screen, so a failure is named after its card has gone. */
+      failures: Array<{ editId: string; code: string; message: string; label: string }>;
+      // REL-04: selected but never started, because the batch ran out of time.
+      // Distinct from a failure: nothing was attempted, so running it again is safe.
+      notAttempted: number;
+    }
+  /** The whole action refused (e.g. over the bulk limit): nothing was decided. */
+  | { kind: 'refused'; code: string; message: string }
+  /** Code review 2026-11-10, finding 21: no answer came back, so what was saved is unknown. */
+  | { kind: 'noAnswer' };
+
 const REJECT_CATEGORIES = [
   { value: 'bad_photo', label: 'Bad photo' },
   { value: 'wrong_gps', label: 'Wrong GPS' },
@@ -68,6 +90,9 @@ const REJECT_CATEGORIES = [
 ];
 
 export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
+  // The page keeps this component mounted while the queue is empty (it shows
+  // "Nothing pending" beside it), so what the last batch did outlives the batch
+  // taking every card off the queue, and the refresh that follows.
   const router = useRouter();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [showApprove, setShowApprove] = useState(false);
@@ -75,13 +100,7 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
   const [rejectCategory, setRejectCategory] = useState('other');
   const [rejectReason, setRejectReason] = useState('');
   const [pending, start] = useTransition();
-  const [outcome, setOutcome] = useState<{
-    successes: number;
-    failures: Array<{ editId: string; code: string; message: string }>;
-    // REL-04: selected but never started, because the batch ran out of time.
-    // Distinct from a failure: nothing was attempted, so running it again is safe.
-    notAttempted: number;
-  } | null>(null);
+  const [outcome, setOutcome] = useState<BulkOutcomeView | null>(null);
   // The outcome takes focus when it lands: on success the bulk bar that held focus
   // unmounts, and focus would otherwise fall to <body>, a screen reader's page top.
   const outcomeRef = useRef<HTMLDivElement>(null);
@@ -137,107 +156,80 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
       .map((i) => ({ editId: i.id, decisionToken: i.decisionToken }));
   }
 
-  function handleBulkApprove() {
+  /**
+   * Sends one bulk decision and keeps what it did. A reply that never arrives
+   * (a weak signal: the requests may have been saved, all or some) is caught
+   * here: uncaught, it went to the error page and the approver learned nothing
+   * about up to fifty requests (code review 2026-11-10, finding 21). The
+   * selection is kept then, so sending it again is one tap: a request already
+   * decided answers so, and nothing is decided twice.
+   */
+  function runBatch(
+    send: (fd: FormData) => ReturnType<typeof bulkApproveEditsAction>,
+    fill: (fd: FormData) => void,
+    onDone: () => void
+  ) {
     const decisions = selectedDecisions();
-    setShowApprove(false);
+    // The customer each card showed, to name a failure after its card has gone.
+    const labelOf = new Map(items.map((i) => [i.id, cardLabel(i.id, i.customer?.legalName)]));
     setOutcome(null);
     start(async () => {
       const fd = new FormData();
       fd.set('decisions', JSON.stringify(decisions));
-      const res = await bulkApproveEditsAction(fd);
+      fill(fd);
+      let res: Awaited<ReturnType<typeof bulkApproveEditsAction>>;
+      try {
+        res = await send(fd);
+      } catch (err) {
+        unstable_rethrow(err);
+        setOutcome({ kind: 'noAnswer' });
+        return;
+      }
       if (res.ok) {
         setOutcome({
+          kind: 'answered',
           successes: res.data.successes.length,
-          failures: res.data.failures,
+          failures: res.data.failures.map((f) => ({
+            ...f,
+            label: labelOf.get(f.editId) ?? cardLabel(f.editId),
+          })),
           notAttempted: res.data.notAttempted.length,
         });
         setSelected(new Set());
+        onDone();
         router.refresh();
       } else {
-        setOutcome({
-          successes: 0,
-          failures: [{ editId: '_form', code: res.code, message: res.message }],
-          notAttempted: 0,
-        });
+        setOutcome({ kind: 'refused', code: res.code, message: res.message });
       }
     });
+  }
+
+  function handleBulkApprove() {
+    setShowApprove(false);
+    runBatch(bulkApproveEditsAction, () => {}, () => {});
   }
 
   function handleBulkReject() {
     if (rejectReason.length < 5) return;
-    const decisions = selectedDecisions();
     setShowReject(false);
-    setOutcome(null);
-    start(async () => {
-      const fd = new FormData();
-      fd.set('decisions', JSON.stringify(decisions));
-      fd.set('reason', rejectReason);
-      fd.set('category', rejectCategory);
-      const res = await bulkRejectEditsAction(fd);
-      if (res.ok) {
-        setOutcome({
-          successes: res.data.successes.length,
-          failures: res.data.failures,
-          notAttempted: res.data.notAttempted.length,
-        });
-        setSelected(new Set());
-        setRejectReason('');
-        router.refresh();
-      } else {
-        setOutcome({
-          successes: 0,
-          failures: [{ editId: '_form', code: res.code, message: res.message }],
-          notAttempted: 0,
-        });
-      }
-    });
+    runBatch(
+      bulkRejectEditsAction,
+      (fd) => {
+        fd.set('reason', rejectReason);
+        fd.set('category', rejectCategory);
+      },
+      () => setRejectReason('')
+    );
   }
+
+  const banner = outcome && <BulkOutcomeBanner outcome={outcome} innerRef={outcomeRef} />;
+  // Nothing left to decide: only what the last batch did, if anything. The page
+  // shows "Nothing pending" under it.
+  if (items.length === 0) return banner ? <div>{banner}</div> : null;
 
   return (
     <div className="pb-32">
-      {outcome && (
-        <div
-          ref={outcomeRef}
-          tabIndex={-1}
-          // Read out when it lands: what a bulk decision did was text a screen
-          // reader never reached. Anything failed or not attempted is an alert.
-          role={outcome.failures.length === 0 && outcome.notAttempted === 0 ? 'status' : 'alert'}
-          className={`mx-4 mb-4 rounded-md p-3 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 sm:mx-6 ${
-            outcome.failures.length === 0 && outcome.notAttempted === 0
-              ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200'
-              : 'bg-amber-50 text-amber-800 ring-1 ring-amber-200'
-          }`}
-        >
-          {/* A refusal of the whole action (`_form`, e.g. over the bulk limit)
-              decided nothing, so it is not "0 processed, 1 failed"; its message,
-              below, says what to do. */}
-          <p className="font-semibold">
-            {outcome.failures[0]?.editId === '_form' ? (
-              'Nothing was processed.'
-            ) : (
-              <>
-                {outcome.successes} processed
-                {outcome.failures.length > 0 ? `, ${outcome.failures.length} failed` : ''}
-                {outcome.notAttempted > 0
-                  ? `, ${outcome.notAttempted} not attempted — run it again to finish`
-                  : ''}
-                .
-              </>
-            )}
-          </p>
-          {outcome.failures.length > 0 && (
-            <ul className="mt-2 list-disc pl-5 text-xs">
-              {outcome.failures.slice(0, 5).map((f) => (
-                <li key={f.editId}>
-                  {f.editId === '_form' ? '' : f.editId.slice(-8) + ': '}
-                  {f.message}
-                </li>
-              ))}
-              {outcome.failures.length > 5 && <li>… and {outcome.failures.length - 5} more.</li>}
-            </ul>
-          )}
-        </div>
-      )}
+      {banner}
 
       {hasCredit && (
         <p className="mx-4 mb-3 text-xs font-medium text-slate-600 sm:mx-6">
@@ -436,6 +428,71 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
           onCancel={() => setShowReject(false)}
           disabled={pending}
         />
+      )}
+    </div>
+  );
+}
+
+/** A card's name in the banner: its customer, or the end of its id when it showed none. */
+function cardLabel(editId: string, legalName?: string | null): string {
+  return legalName || `Request …${editId.slice(-8)}`;
+}
+
+/** What one bulk decision did: a status when all went through, an alert otherwise. */
+export function BulkOutcomeBanner({
+  outcome,
+  innerRef,
+}: {
+  outcome: BulkOutcomeView;
+  innerRef?: React.Ref<HTMLDivElement>;
+}) {
+  const allDone =
+    outcome.kind === 'answered' && outcome.failures.length === 0 && outcome.notAttempted === 0;
+  return (
+    <div
+      ref={innerRef}
+      tabIndex={-1}
+      // Read out when it lands: what a bulk decision did was text a screen
+      // reader never reached. Anything failed, not attempted or unknown is an alert.
+      role={allDone ? 'status' : 'alert'}
+      className={`mx-4 mb-4 rounded-md p-3 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 sm:mx-6 ${
+        allDone
+          ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200'
+          : 'bg-amber-50 text-amber-800 ring-1 ring-amber-200'
+      }`}
+    >
+      {outcome.kind === 'noAnswer' ? (
+        <p className="font-semibold">{NO_ANSWER_MESSAGE}</p>
+      ) : outcome.kind === 'refused' ? (
+        // A refusal of the whole action (e.g. over the bulk limit) decided
+        // nothing, so it is not "0 processed, 1 failed"; its message says what to do.
+        <>
+          <p className="font-semibold">Nothing was processed.</p>
+          <ul className="mt-2 list-disc pl-5 text-xs">
+            <li>{outcome.message}</li>
+          </ul>
+        </>
+      ) : (
+        <>
+          <p className="font-semibold">
+            {outcome.successes} processed
+            {outcome.failures.length > 0 ? `, ${outcome.failures.length} failed` : ''}
+            {outcome.notAttempted > 0
+              ? `, ${outcome.notAttempted} not attempted — run it again to finish`
+              : ''}
+            .
+          </p>
+          {outcome.failures.length > 0 && (
+            <ul className="mt-2 list-disc pl-5 text-xs">
+              {outcome.failures.slice(0, 5).map((f) => (
+                <li key={f.editId}>
+                  {f.label}: {f.message}
+                </li>
+              ))}
+              {outcome.failures.length > 5 && <li>… and {outcome.failures.length - 5} more.</li>}
+            </ul>
+          )}
+        </>
       )}
     </div>
   );

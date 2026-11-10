@@ -71,6 +71,16 @@ export const CREDIT_BULK_REFUSED_MESSAGE =
 export const TEMIX_CODE_BULK_REFUSED_MESSAGE =
   'A new customer at its last step is approved one at a time: open it, enter its Temix code, then approve it there.';
 
+/**
+ * Code review 2026-11-10, finding 21: a decision sent, and no answer came back (a
+ * weak signal, a dropped connection). The server may have saved some or all of
+ * it, so the screen must not say "failed" or "nothing was processed": it says
+ * what is known. Shown by the bulk queue and the single-request page; a second
+ * tap is safe either way, because the server answers "Your decision already
+ * arrived" for a decision it already has (services/edits.ts).
+ */
+export const NO_ANSWER_MESSAGE = 'No answer — reload to see what was decided.';
+
 /** Set by bulkApproveEditsAction on each item it hands to approveEditAction. */
 export const BULK_RUN_FIELD = 'viaBulk';
 

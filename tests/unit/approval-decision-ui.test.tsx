@@ -29,6 +29,7 @@ import {
   BULK_DECISION_LIMIT,
   BULK_DECISION_LIMIT_MESSAGE,
   CREDIT_BULK_REFUSED_MESSAGE,
+  NO_ANSWER_MESSAGE,
   TEMIX_CODE_BULK_REFUSED_MESSAGE,
 } from '@/lib/bulk-run';
 import {
@@ -773,6 +774,83 @@ describe('the bulk queue', () => {
       });
       approveBoth();
       expect((await screen.findByRole('alert')).textContent).toBe(`Nothing was processed.${BULK_DECISION_LIMIT_MESSAGE}`);
+    });
+  });
+
+  describe('launch browser suite 2026-11-10: what a batch did stays on screen when it empties the queue', () => {
+    const approveBoth = () => {
+      const view = render(<BulkApprovalQueue items={ITEMS} />);
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
+      fireEvent.click(screen.getByRole('button', { name: '✓ Approve 2' }));
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
+      return view;
+    };
+
+    it('every card decided: the refresh brings an empty queue, and "2 processed." stays', async () => {
+      h.bulkApprove.mockResolvedValue({ ok: true, data: { successes: ['c2', 'u1'], failures: [], notAttempted: [] } });
+      const view = approveBoth();
+      expect((await screen.findByRole('status')).textContent).toBe('2 processed.');
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+      // What router.refresh() brings: the page renders the same queue with no cards.
+      view.rerender(<BulkApprovalQueue items={[]} />);
+      const status = screen.getByRole('status');
+      // The launch test's own pattern (create-chains.spec.ts, the twelve cash customers).
+      expect(status.textContent).toMatch(/^\d+ processed.*\.$/);
+      expect(status.textContent).toBe('2 processed.');
+      expect(screen.queryByRole('listitem')).toBeNull();
+      expect(screen.queryByRole('checkbox')).toBeNull();
+    });
+
+    it('a partly failed batch that empties the queue still names each failure, by the customer its card showed', async () => {
+      h.bulkApprove.mockResolvedValue({
+        ok: true,
+        data: { successes: ['c2'], failures: [{ editId: 'u1', code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE }], notAttempted: [] },
+      });
+      const view = approveBoth();
+      await screen.findByRole('alert');
+      view.rerender(<BulkApprovalQueue items={[]} />);
+      const alert = screen.getByRole('alert');
+      expect(alert.textContent).toMatch(/^1 processed, 1 failed\./);
+      expect(within(alert).getByText(`Shop u1: ${STALE_VIEW_MESSAGE}`)).toBeTruthy();
+    });
+
+    it('a batch the time budget cut short says so after the refresh too', async () => {
+      h.bulkApprove.mockResolvedValue({ ok: true, data: { successes: ['c2'], failures: [], notAttempted: ['u1'] } });
+      const view = approveBoth();
+      await screen.findByRole('alert');
+      view.rerender(<BulkApprovalQueue items={[ITEMS[2]!]} />);
+      expect(screen.getByRole('alert').textContent).toBe('1 processed, 1 not attempted — run it again to finish.');
+    });
+
+    it('an empty queue with no batch behind it renders nothing (the page shows "Nothing pending")', () => {
+      const { container } = render(<BulkApprovalQueue items={[]} />);
+      expect(container.innerHTML).toBe('');
+    });
+  });
+
+  describe('finding 21 (code review 2026-11-10): a bulk decision whose answer is lost', () => {
+    it('is not an error page: it says there was no answer, and keeps the selection to send again', async () => {
+      h.bulkApprove.mockRejectedValue(new TypeError('Failed to fetch'));
+      render(<BulkApprovalQueue items={ITEMS} />);
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
+      fireEvent.click(screen.getByRole('button', { name: '✓ Approve 2' }));
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
+      const alert = await screen.findByRole('alert');
+      expect(alert.textContent).toBe(NO_ANSWER_MESSAGE);
+      // Not "failed" and not "nothing was processed": what was saved is unknown.
+      expect(alert.textContent).not.toMatch(/failed|Nothing was processed/);
+      expect(screen.getByRole('button', { name: '✓ Approve 2' })).toBeTruthy();
+      expect(h.refresh).not.toHaveBeenCalled();
+    });
+
+    it('a bulk reject too', async () => {
+      h.bulkReject.mockRejectedValue(new TypeError('Failed to fetch'));
+      render(<BulkApprovalQueue items={ITEMS} />);
+      fireEvent.click(screen.getByLabelText('Select edit for Shop c2'));
+      fireEvent.click(screen.getByRole('button', { name: '✗ Reject 1' }));
+      fireEvent.change(screen.getByPlaceholderText(/Be specific/), { target: { value: 'Photos are blurry, retake.' } });
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Reject 1' }));
+      expect((await screen.findByRole('alert')).textContent).toBe(NO_ANSWER_MESSAGE);
     });
   });
 
