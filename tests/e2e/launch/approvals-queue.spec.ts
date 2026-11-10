@@ -1577,6 +1577,11 @@ test.describe('approvals: the whole approval loop on a 360 px phone', { tag: ['@
     await card.getByRole('button', { name: 'Cancel' }).click();
 
     await page.goto('/dashboard');
+    // The figures stream in after the "Loading…" skeleton: measure the tiles only once
+    // they are on screen (a streamed tile is first attached hidden, and its box is null).
+    for (const label of ['New customers', 'Customers updated', 'Pending approval']) {
+      await expect(kpiTile(page, label)).toBeVisible();
+    }
     const a = await kpiTile(page, 'New customers').boundingBox();
     const b = await kpiTile(page, 'Customers updated').boundingBox();
     const c = await kpiTile(page, 'Pending approval').boundingBox();
