@@ -683,6 +683,16 @@ model ImportBatch {
   fileSha256 String?
   fileBytes  Int?
 
+  // Code review 2026-11-10, finding 1. A customer import only FILLS blank
+  // CRM-owned fields of a customer or shop that already exists, and never changes
+  // its open/closed status. With this option on — Steward only, per batch, with a
+  // reason, off by default — the sheet may replace those values (a deliberate bulk
+  // correction). It switches itself off when the batch finishes; overwriteCrmFieldsAt
+  // stays as the record of when it was last switched on (who: the AuditLog UPDATE
+  // row on the batch).
+  overwriteCrmFields   Boolean   @default(false)
+  overwriteCrmFieldsAt DateTime?
+
   uploadedBy User        @relation("ImportUploader", fields: [uploadedById], references: [id])
   rows       ImportRow[]
   customers  Customer[]

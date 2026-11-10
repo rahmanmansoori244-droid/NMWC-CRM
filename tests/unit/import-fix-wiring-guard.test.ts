@@ -42,7 +42,17 @@ describe('one row check for the upload and the fix', () => {
 });
 
 describe('every fix action', () => {
-  const cores = ['recheckCore', 'correctCore', 'releaseCore', 'withdrawCore', 'excludeCore', 'includeCore'];
+  // setOverwriteCore: the batch's "Overwrite CRM fields from this sheet" option
+  // (code review 2026-11-10, finding 1) — Steward only, under the same lock.
+  const cores = [
+    'recheckCore',
+    'correctCore',
+    'releaseCore',
+    'withdrawCore',
+    'excludeCore',
+    'includeCore',
+    'setOverwriteCore',
+  ];
 
   it.each(cores)('%s checks the role before anything else, and writes inside the batch lock', (name) => {
     const b = body(fixes, name);

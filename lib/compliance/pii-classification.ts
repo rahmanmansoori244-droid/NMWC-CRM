@@ -321,6 +321,11 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
     note: 'SHA-256 of the uploaded workbook as a whole (gap 7): identifies the file, not its contents — no value can be read back from it',
   },
   'ImportBatch.fileBytes': { subject: 'none', note: 'size of the uploaded workbook' },
+  'ImportBatch.overwriteCrmFields': {
+    subject: 'none',
+    note: 'per-batch option: the sheet may replace CRM-owned fields (code review 2026-11-10, finding 1)',
+  },
+  'ImportBatch.overwriteCrmFieldsAt': { subject: 'employee', kind: 'behaviour' },
   'ImportRow.id': { subject: 'none', note: STRUCTURAL },
   'ImportRow.batchId': { subject: 'none', note: STRUCTURAL },
   'ImportRow.rowNumber': { subject: 'none' },

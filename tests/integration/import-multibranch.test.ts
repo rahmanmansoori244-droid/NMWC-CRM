@@ -34,7 +34,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import ExcelJS from 'exceljs';
 import { purgeAuditLog } from '../support/audit';
-import { promoteFully } from '../support/promote';
+import { overwriteOn, promoteFully } from '../support/promote';
 import { scoreBranch, scoreCustomer } from '@/lib/completeness';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -208,8 +208,13 @@ describe.skipIf(!ENABLED)('F21 / F16: what the promote writes on a multi-branch 
     at({ branch_code: `${code}-01`, address: 'Way 1, Muscat', ...over }),
     at({ branch_code: `${code}-02`, address: 'Way 2, Muscat', ...over }),
   ];
-  /** Upload and promote; every row must land. */
-  const load = async (rows: Array<Record<string, string | number>>) => {
+  /**
+   * Upload and promote; every row must land. `overwrite`: with the batch's
+   * "Overwrite CRM fields from this sheet" option on (code review 2026-11-10,
+   * finding 1) — for a load that is meant to replace an address or a channel on
+   * record, as every re-import did when these cases were written.
+   */
+  const load = async (rows: Array<Record<string, string | number>>, opts: { overwrite?: boolean } = {}) => {
     await prisma.rateLimit.deleteMany({ where: { key: { contains: stewardId } } });
     const fd = new FormData();
     fd.set(
@@ -222,6 +227,7 @@ describe.skipIf(!ENABLED)('F21 / F16: what the promote writes on a multi-branch 
     expect(res.ok, JSON.stringify(res)).toBe(true);
     const id = (res as { ok: true; data: { batchId: string } }).data.batchId;
     batchIds.push(id);
+    if (opts.overwrite) await overwriteOn(id);
     expect(await promoteFully(imports, id)).toMatchObject({ promoted: rows.length, failed: 0 });
     return id;
   };
@@ -333,10 +339,41 @@ describe.skipIf(!ENABLED)('F21 / F16: what the promote writes on a multi-branch 
     // so that updatedAt stays put.
     await prisma.$executeRaw`UPDATE "Branch" SET "completenessScore" = 0 WHERE "id" = ${b2.id}`;
 
-    await load([
+    // Finding 1: a different address no longer replaces the one on record by
+    // default. Without the option the load changes nothing here, and says so on
+    // the row; the stale score is still fixed without touching the row.
+    const kept = await load([
       at({ branch_code: `${code}-01`, address: 'Way 1b, Muscat' }),
       at({ branch_code: `${code}-02`, address: 'Way 2, Muscat' }),
     ]);
+    const [k1, k2] = await branchesOf();
+    expect(k1.address).toBe('Way 1, Muscat');
+    expect([k1.version, k1.updatedAt.getTime()]).toEqual([b1.version, b1.updatedAt.getTime()]);
+    expect([k2.version, k2.updatedAt.getTime()]).toEqual([b2.version, b2.updatedAt.getTime()]);
+    expect(k2.completenessScore).toBe(scoreBranch(k2));
+    expect(
+      (await prisma.importRow.findMany({ where: { batchId: kept }, orderBy: { rowNumber: 'asc' }, select: { issues: true } })).map(
+        (r) => r.issues
+      )
+    ).toEqual([
+      [
+        {
+          field: '_kept',
+          message: `shop ${code}-01: the address in this row differs from the record and was kept — an import fills blank CRM fields only`,
+        },
+      ],
+      null,
+    ]);
+    await prisma.$executeRaw`UPDATE "Branch" SET "completenessScore" = 0 WHERE "id" = ${b2.id}`;
+
+    // With the option on, the load replaces it, as it always did.
+    await load(
+      [
+        at({ branch_code: `${code}-01`, address: 'Way 1b, Muscat' }),
+        at({ branch_code: `${code}-02`, address: 'Way 2, Muscat' }),
+      ],
+      { overwrite: true }
+    );
     const [a1, a2] = await branchesOf();
     expect(a1.address).toBe('Way 1b, Muscat');
     expect(a1.version).toBe(b1.version + 1);
@@ -354,7 +391,14 @@ describe.skipIf(!ENABLED)('F21 / F16: what the promote writes on a multi-branch 
     const before = await customerOf();
     expect(before.channelId).toBe(horeca.id);
 
-    const batchId = await load(two({ channel: 'GENERAL_TRADE' }));
+    // Finding 1: the channel is the CRM's. By default a sheet naming another
+    // channel changes nothing, so the sub-channel that belongs to it stays too.
+    const keptBatch = await load(two({ channel: 'GENERAL_TRADE' }));
+    expect(await customerOf()).toMatchObject({ channelId: horeca.id, subChannelId: horeca.subId });
+    expect(await laneNotes(keptBatch)).toEqual([[], []]);
+
+    // With the option on, the channel moves and the old sub-channel is cleared (F16).
+    const batchId = await load(two({ channel: 'GENERAL_TRADE' }), { overwrite: true });
     const c = await customerOf();
     expect(c.channelId).toBe(general.id);
     expect(c.subChannelId).toBeNull();
@@ -407,7 +451,9 @@ describe.skipIf(!ENABLED)('F21 / F16: what the promote writes on a multi-branch 
 
     // A load moving the customer back to HORECA clears GENERAL_TRADE's
     // sub-channel in the same write, so the pair the import leaves passes the rule.
-    const back = await load(two({ channel: 'HORECA' }));
+    // (Code review 2026-11-10, finding 1: a sheet moves the channel on record
+    // only with the batch's overwrite option on.)
+    const back = await load(two({ channel: 'HORECA' }), { overwrite: true });
     expect(await customerOf()).toMatchObject({ channelId: horeca.id, subChannelId: null });
     const notes = await laneNotes(back);
     expect(notes[0]).toEqual([

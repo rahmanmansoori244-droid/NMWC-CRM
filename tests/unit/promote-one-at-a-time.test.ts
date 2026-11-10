@@ -47,6 +47,9 @@ type Batch = {
   status: string;
   promoteLeaseBy: string | null;
   promoteLeaseUntil: Date | null;
+  // Code review 2026-11-10, finding 1: the claim takes the batch only with the
+  // overwrite option as the preflight read it.
+  overwriteCrmFields: boolean;
 };
 
 type Where = Record<string, unknown>;
@@ -136,6 +139,7 @@ function batch(over: Partial<Batch>): Batch {
     status: 'READY',
     promoteLeaseBy: null,
     promoteLeaseUntil: null,
+    overwriteCrmFields: false,
     ...over,
   };
 }
@@ -309,4 +313,26 @@ describe('promote while another customer import is being promoted', () => {
     expect(JSON.stringify(res)).toMatch(/changed just as Promote started/);
     expect(mine()).toEqual(batch({ status: 'READY' }));
   });
+
+  // Code review 2026-11-10, finding 1: the batch's "Overwrite CRM fields from
+  // this sheet" option decides whether CRM values on record are replaced.
+  it.each([
+    ['switched ON', false, true],
+    ['switched off', true, false],
+  ])(
+    'the overwrite option %s between the read and the claim: the batch is not claimed, and nothing runs under the stale answer',
+    async (_label, read, now) => {
+      table = [batch({ overwriteCrmFields: read })];
+      beforeClaim = () => Object.assign(mine(), { overwriteCrmFields: now });
+
+      const res = await promote();
+
+      expect(res.ok).toBe(false);
+      expect(JSON.stringify(res)).toMatch(/changed just as Promote started/);
+      // Still READY, no lease, and the option as the Steward left it.
+      expect(mine()).toEqual(batch({ overwriteCrmFields: now }));
+      const claim = writes[0]!;
+      expect(claim.where).toMatchObject({ id: 'batch-9', status: 'READY', overwriteCrmFields: read });
+    }
+  );
 });

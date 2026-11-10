@@ -84,6 +84,7 @@ type LockedBatch = {
   promoteLeaseUntil: Date | null;
   uploadedAt: Date;
   filename: string;
+  overwriteCrmFields: boolean;
 };
 
 const MIN_REASON = 5;
@@ -103,7 +104,8 @@ async function withBatch<T>(
     { actorId: cause.actorId, source: src.importFix(batchId, cause.row) },
     async (tx) => {
       const [batch] = await tx.$queryRaw<LockedBatch[]>`
-        SELECT "id", "kind", "status"::text AS "status", "promoteLeaseUntil", "uploadedAt", "filename"
+        SELECT "id", "kind", "status"::text AS "status", "promoteLeaseUntil", "uploadedAt", "filename",
+               "overwriteCrmFields"
           FROM "ImportBatch" WHERE "id" = ${batchId} FOR UPDATE`;
       if (!batch) throw new NotFoundError('Import batch not found.');
       if (batch.kind !== 'CUSTOMER') {
@@ -765,6 +767,94 @@ async function includeCore(formData: FormData): Promise<void> {
     await audit(tx, env, 'UPDATE', rowId, 'Import row included again by the Data Steward', {});
   });
   done(batchId);
+}
+
+// ── The batch's "Overwrite CRM fields from this sheet" option ────────────────
+
+/**
+ * Code review 2026-11-10, finding 1. A customer import only FILLS blank
+ * CRM-owned fields of a customer or shop that already exists, and never changes
+ * its open/closed status (lib/import-crm-rule.ts). For a deliberate bulk
+ * correction the Data Steward — nobody else — can switch that off for ONE batch:
+ * with this option on, the sheet's name, phone, CR number, contact person,
+ * channel, shop name, address, visit day and status replace what is on record,
+ * as every re-import did before.
+ *
+ *  - Off by default; switching it on needs a written reason, kept in the audit
+ *    row of the switch (UPDATE on the batch, before and after).
+ *  - Only while the batch is ready to promote. Not in the middle of a load: a
+ *    batch part-way through a promote must finish under the option it started
+ *    with, or half its customers would be loaded one way and half the other.
+ *  - Under the batch's row lock, which the promote's claim also takes, and the
+ *    claim only takes the batch with the option as it read it
+ *    (services/imports.ts), so the two cannot cross.
+ *  - The promote switches it off again when the batch finishes.
+ */
+export async function setImportOverwriteAction(formData: FormData): SafeAction<{ on: boolean }> {
+  return runAction(() => setOverwriteCore(formData));
+}
+
+const MIN_OVERWRITE_REASON = 10;
+const MAX_OVERWRITE_REASON = 500;
+
+async function setOverwriteCore(formData: FormData): Promise<{ on: boolean }> {
+  const me = await requireSteward();
+  const batchId = String(formData.get('batchId') ?? '');
+  const which = String(formData.get('on') ?? '');
+  const reason = String(formData.get('reason') ?? '').trim();
+  if (!batchId) throw new ValidationError({ _form: 'Batch required.' });
+  if (which !== 'on' && which !== 'off') {
+    throw new ValidationError({ _form: 'Say whether the option is to be on or off.' });
+  }
+  const on = which === 'on';
+  if (on && reason.length < MIN_OVERWRITE_REASON) {
+    throw new ValidationError({
+      reason: `Say why this sheet should replace CRM fields (${MIN_OVERWRITE_REASON}+ characters).`,
+    });
+  }
+  if (on && reason.length > MAX_OVERWRITE_REASON) {
+    throw new ValidationError({
+      reason: `Keep the reason to ${MAX_OVERWRITE_REASON} characters or fewer.`,
+    });
+  }
+  const env = await getAuditEnvelope(me.id);
+  await withBatch(batchId, { actorId: me.id, row: 'overwrite' }, async (tx, batch) => {
+    if (batch.status === 'PROMOTING') {
+      throw new ValidationError({
+        _form:
+          'This batch is part-way through a promote — resume it first. The option cannot change in the middle of a load.',
+      });
+    }
+    if (batch.status !== 'READY' && batch.status !== 'FAILED') {
+      throw new ValidationError({
+        _form: 'Only a batch that is ready to promote can change this option.',
+      });
+    }
+    if (batch.overwriteCrmFields === on) {
+      throw new ValidationError({
+        _form: `The option is already ${on ? 'on' : 'off'} for this batch.`,
+      });
+    }
+    await tx.importBatch.update({
+      where: { id: batch.id },
+      // overwriteCrmFieldsAt is when the option was last switched ON, and is
+      // never cleared: it is what tells the batch page that this batch has had
+      // it on at some time, after the promote has switched it off again.
+      data: { overwriteCrmFields: on, ...(on ? { overwriteCrmFieldsAt: new Date() } : {}) },
+    });
+    await writeAudit(tx, env, {
+      action: 'UPDATE',
+      entityType: 'ImportBatch',
+      entityId: batch.id,
+      before: { overwriteCrmFields: !on } as Prisma.InputJsonValue,
+      after: { overwriteCrmFields: on } as Prisma.InputJsonValue,
+      reason: on
+        ? `Overwrite CRM fields from this sheet switched ON: ${reason}`
+        : 'Overwrite CRM fields from this sheet switched off',
+    });
+  });
+  done(batchId);
+  return { on };
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────

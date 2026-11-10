@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**537 stored columns across 37 tables** — Customer contact: 29 · Employee: 96 · Customer entity (personal if a sole establishment): 50 · Not personal data: 362.
+**539 stored columns across 37 tables** — Customer contact: 29 · Employee: 97 · Customer entity (personal if a sole establishment): 50 · Not personal data: 363.
 
 ## Columns holding personal data
 
@@ -133,6 +133,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | `uploadedById` | Employee | behaviour |  |
 | `uploadedAt` | Employee | behaviour |  |
 | `promoteLeaseBy` | Employee | identifier | which Steward holds the promote lease |
+| `overwriteCrmFieldsAt` | Employee | behaviour |  |
 
 ### ImportRow
 
@@ -444,6 +445,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | ImportBatch | `promoteLeaseUntil` | DateTime | record timestamp, not an attribute of a person |
 | ImportBatch | `fileSha256` | String | SHA-256 of the uploaded workbook as a whole (gap 7): identifies the file, not its contents — no value can be read back from it |
 | ImportBatch | `fileBytes` | Int | size of the uploaded workbook |
+| ImportBatch | `overwriteCrmFields` | Boolean | per-batch option: the sheet may replace CRM-owned fields (code review 2026-11-10, finding 1) |
 | ImportRow | `id` | String | foreign key / structural value |
 | ImportRow | `batchId` | String | foreign key / structural value |
 | ImportRow | `rowNumber` | Int | structural / operational value |

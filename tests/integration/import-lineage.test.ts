@@ -21,7 +21,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import ExcelJS from 'exceljs';
 import { purgeAuditLog, purgeHistory } from '../support/audit';
-import { promoteFully } from '../support/promote';
+import { overwriteOn, promoteFully } from '../support/promote';
 
 vi.setConfig({ testTimeout: 90_000, hookTimeout: 120_000 });
 
@@ -65,7 +65,12 @@ describe.skipIf(!ENABLED)('the import says which file and row set a value (gaps 
     ...over,
   });
 
-  async function load(rows: Array<Record<string, string>>, name: string) {
+  /**
+   * `overwrite`: with the batch's "Overwrite CRM fields from this sheet" option
+   * on (code review 2026-11-10, finding 1), for a load meant to replace a CRM
+   * value on record — here a shop's visit day.
+   */
+  async function load(rows: Array<Record<string, string>>, name: string, opts: { overwrite?: boolean } = {}) {
     const buf = await workbook(rows);
     const fd = new FormData();
     fd.set('file', new File([buf], name, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
@@ -73,6 +78,7 @@ describe.skipIf(!ENABLED)('the import says which file and row set a value (gaps 
     expect(res.ok, JSON.stringify(res)).toBe(true);
     const batchId = (res as { ok: true; data: { batchId: string } }).data.batchId;
     batches.push(batchId);
+    if (opts.overwrite) await overwriteOn(batchId);
     const totals = await promoteFully(imports, batchId);
     expect(totals.failed).toBe(0);
     return { batchId, buf };
@@ -158,7 +164,12 @@ describe.skipIf(!ENABLED)('the import says which file and row set a value (gaps 
 
   it('a row that moves the shop is said once, with its file row, and the customer is not written', async () => {
     const customer = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: code } });
-    const { batchId } = await load([line({ route: `${tag}R2`, day_of_visit: 'TUE' })], `${tag}-3.xlsx`);
+    // The route is Temix's and moves with any load. The visit day is the CRM's:
+    // a sheet replaces the one on record only with the option on, and every audit
+    // row of such a load is marked (asserted below).
+    const { batchId } = await load([line({ route: `${tag}R2`, day_of_visit: 'TUE' })], `${tag}-3.xlsx`, {
+      overwrite: true,
+    });
     const row = await prisma.importRow.findFirstOrThrow({ where: { batchId } });
     const shop = await prisma.branch.findUniqueOrThrow({ where: { branchCode } });
     expect(shop).toMatchObject({ routeId: ids.route2, dayOfVisit: 'TUE' });
@@ -171,6 +182,7 @@ describe.skipIf(!ENABLED)('the import says which file and row set a value (gaps 
     const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: 'UPDATE', entityType: 'Branch', entityId: shop.id } });
     expect(audit.before).toEqual({ routeId: ids.route1, dayOfVisit: 'MON' });
     expect(audit.after).toMatchObject({ routeId: ids.route2, dayOfVisit: 'TUE', batchId, importRowId: row.id, lane: 'full' });
+    expect(audit.after).toMatchObject({ overwriteCrmFields: true });
 
     const after = await prisma.customer.findUniqueOrThrow({ where: { id: customer.id } });
     expect(after.version).toBe(customer.version);
