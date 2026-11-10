@@ -1,7 +1,10 @@
 /**
  * The form copies kept in this browser's localStorage, per user (UXI-002): the
- * enrichment form's `nmwc:draft:<userId>:<customerId>` (EnrichmentForm) and the
- * new-customer form's `nmwc:create:<userId>:<editId|new>` (CreateCustomerForm).
+ * enrichment form's `nmwc:draft:<userId>:<customerId>` (EnrichmentForm), the
+ * new-customer form's `nmwc:create:<userId>:<editId|new>` (CreateCustomerForm)
+ * and the signed-application pages' `nmwc:create:<userId>:signed:<editId>`
+ * (SignedFormUpload). Each key names the user and the form it belongs to, so one
+ * salesman's copy, or one customer's, is never shown in another's form.
  *
  * Launch review (a shared or lost phone): they hold customer names, phones,
  * contacts and addresses, and nothing removed them at Sign out. The next person
@@ -18,6 +21,7 @@
  * Every storage call is guarded: a browser that refuses storage has nothing
  * stored, and must still be able to sign out.
  */
+import { createCopyHoldsWork } from './create-draft';
 import { draftChangedPaths } from './enrichment-draft';
 
 export const DEVICE_DRAFT_PREFIXES = ['nmwc:draft:', 'nmwc:create:'] as const;
@@ -58,6 +62,16 @@ export function draftAgeText(savedAt: unknown, now: number = Date.now()): string
   return ago(Math.floor(seconds / 86_400), 'day');
 }
 
+/** The new-customer form's key: the never-saved form's one slot, or a saved request's. */
+export function createDraftKey(userId: string, editId: string | null): string {
+  return `nmwc:create:${userId}:${editId ?? 'new'}`;
+}
+
+/** The signed-application pages' key, per request. Under the new-customer prefix, so Sign out clears it. */
+export function signedFormDraftKey(userId: string, editId: string): string {
+  return `nmwc:create:${userId}:signed:${editId}`;
+}
+
 function ownKeys(userId: string): string[] {
   if (!userId) return [];
   const mine = DEVICE_DRAFT_PREFIXES.map((p) => `${p}${userId}:`);
@@ -91,8 +105,9 @@ function holdsUnsentWork(key: string): boolean {
       const changed = draftChangedPaths(copy);
       return changed === null || changed.length > 0;
     }
-    // The new-customer form writes a copy only for something typed or sent.
-    return true;
+    // The new-customer form, and the signed-application pages.
+    const slot = key.split(':').slice(3).join(':');
+    return createCopyHoldsWork(slot, window.localStorage.getItem(key));
   } catch {
     return true;
   }
@@ -157,4 +172,26 @@ export function announceSignOut(): void {
 export function onSignOut(stop: () => void): () => void {
   window.addEventListener(SIGNING_OUT, stop);
   return () => window.removeEventListener(SIGNING_OUT, stop);
+}
+
+/**
+ * A new-customer request was withdrawn (WithdrawRequest): the forms on that page
+ * that keep a copy of it — the request's own form, the signed-application upload
+ * — delete it and write nothing more. Announced on the window like Sign out: the
+ * withdraw control is its own component beside them, by design.
+ */
+const REQUEST_CLOSED = 'nmwc:request-closed';
+
+/** This request is closed for good: its copies go, and nothing writes them back. */
+export function announceRequestClosed(editId: string): void {
+  window.dispatchEvent(new CustomEvent<string>(REQUEST_CLOSED, { detail: editId }));
+}
+
+/** `stop` runs when `editId` is announced closed; returns the unsubscribe (an effect's cleanup). */
+export function onRequestClosed(editId: string | null, stop: () => void): () => void {
+  const heard = (e: Event) => {
+    if (editId !== null && (e as CustomEvent<string>).detail === editId) stop();
+  };
+  window.addEventListener(REQUEST_CLOSED, heard);
+  return () => window.removeEventListener(REQUEST_CLOSED, heard);
 }

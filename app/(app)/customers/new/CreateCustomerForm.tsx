@@ -20,7 +20,7 @@
  * offered, and the guarantees a returned request already carries stay shown,
  * removable, and sent again. A CASH request shows and sends none of these.
  */
-import { useCallback, useId, useEffect, useRef, useState } from 'react';
+import { useCallback, useId, useEffect, useMemo, useRef, useState } from 'react';
 import type { DayOfWeek, EditState, PaymentTerms } from '@prisma/client';
 import { FormSection } from '@/components/nmwc/FormSection';
 import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
@@ -44,7 +44,32 @@ import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
 import { hardReplace } from '@/lib/navigate';
 import { LabeledField as Field, errorTiedTo, groupNamedBy } from '@/components/nmwc/LabeledField';
 import { typedNumber } from '@/lib/digits';
-import { onSignOut } from '@/lib/device-drafts';
+import {
+  DEVICE_DRAFT_MAX_AGE_DAYS,
+  createDraftKey,
+  deviceDraftExpired,
+  draftAgeText,
+  onRequestClosed,
+  onSignOut,
+  signedFormDraftKey,
+  sweepExpiredDeviceDrafts,
+} from '@/lib/device-drafts';
+import {
+  comparableCreateForm,
+  createFormSummary,
+  emptyCreateBranch,
+  emptyCreateForm,
+  parseCreateCopy,
+  serializeCreateCopy,
+  type CreateDraftBranch,
+  type CreateDraftForm,
+} from '@/lib/create-draft';
+import {
+  LEAVE_FORM_LOST_QUESTION,
+  LEAVE_FORM_QUESTION,
+  useLeaveGuard,
+  useNoPullToRefresh,
+} from '@/lib/leave-guard';
 import {
   CREDIT_DOCUMENT_KINDS,
   CREDIT_DOCUMENT_LABELS,
@@ -63,6 +88,13 @@ type ChannelWithSubs = {
 
 export type CreateFormInitial = {
   editId: string;
+  /**
+   * Code review 2026-11-10, finding 4: which save of the request this is — the
+   * id of its last draft save or submit (CustomerEdit.submissionId), which the
+   * page passes. What was added on the phone after a Save draft is put back
+   * only over the version it was added to.
+   */
+  version?: string | null;
   state: EditState;
   decisionReason: string | null;
   pendingRole: string | null;
@@ -140,32 +172,8 @@ type BState = {
  * that had finished first. Compacted only for the payload. Any photo past the
  * two slots (not reachable from this form) is kept, as before.
  */
-function extraPositions(ids: string[]): (string | null)[] {
+function extraPositions(ids: ReadonlyArray<string | null>): (string | null)[] {
   return [ids[0] ?? null, ids[1] ?? null, ...ids.slice(2)];
-}
-
-/**
- * Whether the never-saved phone copy holds anything the salesman typed. The
- * autosave wrote an empty copy on every visit, and the next one said "Restored
- * the details you typed" over a blank form (item 22 review): an empty copy is
- * not written, and one found anyway is not announced.
- */
-function typedAnything(d: Record<string, unknown>): boolean {
-  if (d.paymentTerms === 'CREDIT') return true;
-  return [
-    d.legalName,
-    d.crNumber,
-    d.channelId,
-    d.subChannelId,
-    d.primaryPhone,
-    d.altPhone,
-    d.contactPerson,
-    d.contactRole,
-    d.notes,
-    d.creditLimit,
-    d.termDays,
-    d.email,
-  ].some((v) => typeof v === 'string' && v.trim() !== '');
 }
 
 /**
@@ -192,30 +200,152 @@ function initialCreditDocuments(
 }
 
 let branchKeyCounter = 1;
-function emptyBranch(): BState {
+
+/** A point's capture time as the copy keeps it. A time that cannot be read is given one fixed value, so the form never differs from itself. */
+function isoOf(at: Date): string {
+  return Number.isNaN(at.getTime()) ? new Date(0).toISOString() : at.toISOString();
+}
+
+/**
+ * A shop's boxes as the form holds them, from the shape the phone copy keeps
+ * (lib/create-draft.ts): a client key of its own, the point's time as a Date,
+ * the extra photos by slot position.
+ */
+function branchState(b: CreateDraftBranch): BState {
   return {
     key: branchKeyCounter++,
-    branchName: 'Main',
-    address: '',
-    areaDescription: '',
-    gps: null,
-    dayOfVisit: '',
-    openingHours: '',
-    deliveryWindow: '',
-    coolers: 0,
-    stands: 0,
-    bottles: 0,
-    shopPhotoId: null,
-    signboardPhotoId: null,
-    extraPhotoIds: extraPositions([]),
+    branchName: b.branchName,
+    address: b.address,
+    areaDescription: b.areaDescription,
+    gps: b.gps
+      ? {
+          lat: b.gps.lat,
+          lng: b.gps.lng,
+          accuracy: b.gps.accuracy,
+          capturedAt: new Date(b.gps.capturedAt),
+          ...(b.gps.isManual ? { isManual: true, manualReason: b.gps.manualReason } : {}),
+        }
+      : null,
+    dayOfVisit: b.dayOfVisit,
+    openingHours: b.openingHours,
+    deliveryWindow: b.deliveryWindow,
+    coolers: b.coolers,
+    stands: b.stands,
+    bottles: b.bottles,
+    shopPhotoId: b.shopPhotoId,
+    signboardPhotoId: b.signboardPhotoId,
+    extraPhotoIds: extraPositions(b.extraPhotoIds),
   };
 }
+
+/** …and back: a shop's boxes as the phone copy keeps them. */
+function draftOfBranch(s: BState): CreateDraftBranch {
+  const g = s.gps;
+  return {
+    branchName: s.branchName,
+    address: s.address,
+    areaDescription: s.areaDescription,
+    gps: g
+      ? {
+          lat: g.lat,
+          lng: g.lng,
+          ...(typeof g.accuracy === 'number' ? { accuracy: g.accuracy } : {}),
+          capturedAt: isoOf(g.capturedAt),
+          ...(g.isManual ? { isManual: true } : {}),
+          ...(g.isManual && typeof g.manualReason === 'string' ? { manualReason: g.manualReason } : {}),
+        }
+      : null,
+    dayOfVisit: s.dayOfVisit,
+    openingHours: s.openingHours,
+    deliveryWindow: s.deliveryWindow,
+    coolers: s.coolers,
+    stands: s.stands,
+    bottles: s.bottles,
+    shopPhotoId: s.shopPhotoId,
+    signboardPhotoId: s.signboardPhotoId,
+    extraPhotoIds: s.extraPhotoIds,
+  };
+}
+
+/** The request on file (a draft, a sent-back or a submitted one) as the form's boxes. */
+function formOfInitial(initial: CreateFormInitial): CreateDraftForm {
+  const ic = initial.customer;
+  return {
+    legalName: ic.legalName,
+    paymentTerms: ic.paymentTerms,
+    crNumber: ic.crNumber,
+    channelId: ic.channelId,
+    subChannelId: ic.subChannelId,
+    primaryPhone: ic.primaryPhone,
+    altPhone: ic.altPhone,
+    contactPerson: ic.contactPerson,
+    contactRole: ic.contactRole,
+    notes: ic.notes,
+    creditLimit:
+      initial.credit.requestedCreditLimit != null ? String(initial.credit.requestedCreditLimit) : '',
+    termDays:
+      initial.credit.requestedPaymentTermDays != null
+        ? String(initial.credit.requestedPaymentTermDays)
+        : '',
+    // Owner decisions 2026-10-11: CREDIT only — shown, checked and sent for credit.
+    email: ic.email ?? '',
+    crPhotoId: ic.crPhotoAttachmentId ?? null,
+    guaranteeIds: [...(initial.guaranteeAttachmentIds ?? [])],
+    creditDocs: Object.fromEntries(
+      CREDIT_DOCUMENT_KINDS.map((k) => [k, [...(initial.creditDocuments?.[k] ?? [])]])
+    ) as Record<CreditDocumentKind, string[]>,
+    branches:
+      initial.branches.length > 0
+        ? initial.branches.map((b) => ({
+            branchName: b.branchName,
+            address: b.address,
+            areaDescription: b.areaDescription,
+            gps:
+              b.gpsLat != null && b.gpsLng != null
+                ? {
+                    lat: b.gpsLat,
+                    lng: b.gpsLng,
+                    ...(b.gpsAccuracy != null ? { accuracy: b.gpsAccuracy } : {}),
+                    capturedAt: b.gpsCapturedAt ?? new Date().toISOString(),
+                    // Resuming a draft or a returned request keeps the Manual badge and
+                    // the reason, so resubmitting does not silently drop them.
+                    ...(b.gpsManualReason ? { isManual: true, manualReason: b.gpsManualReason } : {}),
+                  }
+                : null,
+            dayOfVisit: b.dayOfVisit ?? '',
+            openingHours: b.openingHours,
+            deliveryWindow: b.deliveryWindow,
+            coolers: b.coolersCount,
+            stands: b.standsCount,
+            bottles: b.emptyBottlesCount,
+            shopPhotoId: b.shopPhotoAttachmentId,
+            signboardPhotoId: b.signboardPhotoAttachmentId,
+            extraPhotoIds: b.extraPhotoAttachmentIds,
+          }))
+        : [emptyCreateBranch()],
+  };
+}
+
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
+
+/** What the restored-copy banner shows (code review 2026-11-10, finding 4). */
+type RestoreBanner = {
+  /** 'new': a never-saved form came back. 'saved': what was added after the last Save draft. */
+  kind: 'new' | 'saved';
+  savedAt: unknown;
+  summary: ReturnType<typeof createFormSummary>;
+};
+
+/** v1 copies (text only, written before finding 4 was fixed) keep the words they always had. */
+const RESTORED_TEXT_ONLY =
+  'Restored the details you typed on this phone. Branch details, GPS points and photos are not kept on the phone — add them again, then tap Save draft to keep everything.';
 
 export function CreateCustomerForm({
   channels,
   initial,
   sessionUserId,
   startedOnOtherRoute = false,
+  signedFormOpen = false,
 }: {
   channels: ChannelWithSubs[];
   initial: CreateFormInitial | null;
@@ -226,6 +356,12 @@ export function CreateCustomerForm({
    * The page says why above the form and offers Withdraw below it.
    */
   startedOnOtherRoute?: boolean;
+  /**
+   * The request waits at his signed-application step (SignedFormUpload keeps the
+   * pages he has added on the phone): this form, read-only then, leaves that copy
+   * alone. At any other step a leftover of it is removed.
+   */
+  signedFormOpen?: boolean;
 }) {
   // UAT-07: one id prefix per form instance, so the labels on the inline
   // selects can point at their controls. Branch rows append their own key.
@@ -246,13 +382,21 @@ export function CreateCustomerForm({
   // Set when a retry learns the request had already arrived: nothing to send.
   const [arrived, setArrived] = useState(false);
   // Item 22: ids of sends from this never-saved form that got no answer. Kept
-  // in the phone copy, so a reload can ask the server whether one landed — the
-  // branches, points and photos never lived on the phone, and without the
-  // answer the form could only say "add them again" to a request already in.
+  // in the phone copy, so a reload can ask the server whether one landed.
   const unansweredRef = useRef<string[]>([]);
-  // Set once this form's request is known to be on the server: from then on
-  // nothing may write the never-saved phone copy — not even an autosave
-  // already due, which can fire before the re-render that would clear it.
+  // Finding 4: the same for a SAVED form's saves. The copy laid over a saved
+  // draft is put back only over the version of the draft it grew on; a save
+  // that got no answer may have become that version, so its id counts too.
+  const sentRef = useRef<string[]>([]);
+  // …the draft's version as this form knows it (the page's, then each answered
+  // save's id), and the last send of a never-saved form with the form as sent.
+  const versionRef = useRef<string | null>(initial?.version ?? null);
+  const lastSentRef = useRef<{ id: string; form: string } | null>(null);
+  // Set once nothing may write the phone copy any more on this page: the
+  // request was submitted, or withdrawn, or the reload check found it on the
+  // server and is leaving for it — not even an autosave already due, which can
+  // fire before the re-render that would clear it. A saved DRAFT does not set
+  // it (finding 4): the form goes on keeping what is added after Save draft.
   const phoneCopyGoneRef = useRef(false);
   // And once Sign out has deleted it (lib/device-drafts.ts): the form stays on
   // screen until the sign-in page loads, and its autosave wrote the copy back.
@@ -266,12 +410,6 @@ export function CreateCustomerForm({
   // The reload check can outlive the form (a tap on Work while it waits);
   // after unmount it must not remove, navigate or say anything.
   const unmountedRef = useRef(false);
-  useEffect(() => {
-    unmountedRef.current = false;
-    return () => {
-      unmountedRef.current = true;
-    };
-  }, []);
 
   // A SUBMITTED request is read-only for the salesman until it is decided; a
   // withdrawn one (launch fix: REJECTED, services/creates.ts) for good; and one
@@ -279,81 +417,55 @@ export function CreateCustomerForm({
   const closed = initial?.state === 'REJECTED';
   const readOnly = initial?.state === 'SUBMITTED' || closed || startedOnOtherRoute;
 
-  const ic = initial?.customer;
-  const [legalName, setLegalName] = useState(ic?.legalName ?? '');
-  const [paymentTerms, setPaymentTerms] = useState<PaymentTerms>(ic?.paymentTerms ?? 'CASH');
-  const [crNumber, setCrNumber] = useState(ic?.crNumber ?? '');
-  const [channelId, setChannelId] = useState(ic?.channelId ?? '');
-  const [subChannelId, setSubChannelId] = useState(ic?.subChannelId ?? '');
-  const [primaryPhone, setPrimaryPhone] = useState(ic?.primaryPhone ?? '');
-  const [altPhone, setAltPhone] = useState(ic?.altPhone ?? '');
-  const [contactPerson, setContactPerson] = useState(ic?.contactPerson ?? '');
-  const [contactRole, setContactRole] = useState(ic?.contactRole ?? '');
-  const [notes, setNotes] = useState(ic?.notes ?? '');
-  const [crPhotoId, setCrPhotoId] = useState<string | null>(ic?.crPhotoAttachmentId ?? null);
-  // Owner decisions 2026-10-11: CREDIT only — shown, checked and sent for credit.
-  const [email, setEmail] = useState(ic?.email ?? '');
+  // The boxes the form opens on: the request on file, or a blank form. One
+  // value for the life of the form — "Discard these changes" goes back to it.
+  const initialFormRef = useRef<CreateDraftForm | null>(null);
+  if (initialFormRef.current === null) {
+    initialFormRef.current = initial ? formOfInitial(initial) : emptyCreateForm();
+  }
+  const initialForm = initialFormRef.current;
 
-  const [creditLimit, setCreditLimit] = useState(
-    initial?.credit.requestedCreditLimit != null ? String(initial.credit.requestedCreditLimit) : ''
-  );
-  const [termDays, setTermDays] = useState(
-    initial?.credit.requestedPaymentTermDays != null
-      ? String(initial.credit.requestedPaymentTermDays)
-      : ''
-  );
+  const [legalName, setLegalName] = useState(initialForm.legalName);
+  const [paymentTerms, setPaymentTerms] = useState<PaymentTerms>(initialForm.paymentTerms);
+  const [crNumber, setCrNumber] = useState(initialForm.crNumber);
+  const [channelId, setChannelId] = useState(initialForm.channelId);
+  const [subChannelId, setSubChannelId] = useState(initialForm.subChannelId);
+  const [primaryPhone, setPrimaryPhone] = useState(initialForm.primaryPhone);
+  const [altPhone, setAltPhone] = useState(initialForm.altPhone);
+  const [contactPerson, setContactPerson] = useState(initialForm.contactPerson);
+  const [contactRole, setContactRole] = useState(initialForm.contactRole);
+  const [notes, setNotes] = useState(initialForm.notes);
+  const [crPhotoId, setCrPhotoId] = useState<string | null>(initialForm.crPhotoId);
+  // Owner decisions 2026-10-11: CREDIT only — shown, checked and sent for credit.
+  const [email, setEmail] = useState(initialForm.email);
+
+  const [creditLimit, setCreditLimit] = useState(initialForm.creditLimit);
+  const [termDays, setTermDays] = useState(initialForm.termDays);
   // The documents, and the key of the empty slot for the next one: a fresh
   // slot only when a new document is in. It was keyed by the number of
   // documents, so removing another one remounted it mid-upload and let Submit
   // go (item 22 review). One state, so the key moves with the list, never for
   // a document already on it. CreditDocumentSlots renders each list.
   const [guarantees, setGuarantees] = useState<DocumentPages>(() =>
-    documentPages(initial?.guaranteeAttachmentIds)
+    documentPages(initialForm.guaranteeIds)
   );
   const guaranteeIds = guarantees.ids;
   // Owner decisions 2026-10-11: offered while the switch is on; with it off,
   // only the guarantees a returned request already carries are shown (and kept).
   const showGuarantees = GUARANTEE_REQUIRED_FOR_CREDIT || guaranteeIds.length > 0;
   // The four credit documents, each like the guarantee list.
-  const [creditDocs, setCreditDocs] = useState(() => initialCreditDocuments(initial?.creditDocuments));
+  const [creditDocs, setCreditDocs] = useState(() => initialCreditDocuments(initialForm.creditDocs));
   const setDocPages = useCallback(
     (kind: CreditDocumentKind) => (update: (p: DocumentPages) => DocumentPages) =>
       setCreditDocs((all) => ({ ...all, [kind]: update(all[kind]) })),
     []
   );
 
-  const [branchStates, setBranchStates] = useState<BState[]>(() => {
-    if (initial && initial.branches.length > 0) {
-      return initial.branches.map((b) => ({
-        key: branchKeyCounter++,
-        branchName: b.branchName,
-        address: b.address,
-        areaDescription: b.areaDescription,
-        gps:
-          b.gpsLat != null && b.gpsLng != null
-            ? {
-                lat: b.gpsLat,
-                lng: b.gpsLng,
-                accuracy: b.gpsAccuracy ?? undefined,
-                capturedAt: b.gpsCapturedAt ? new Date(b.gpsCapturedAt) : new Date(),
-                // Resuming a draft or a returned request keeps the Manual badge and
-                // the reason, so resubmitting does not silently drop them.
-                ...(b.gpsManualReason ? { isManual: true, manualReason: b.gpsManualReason } : {}),
-              }
-            : null,
-        dayOfVisit: b.dayOfVisit ?? '',
-        openingHours: b.openingHours,
-        deliveryWindow: b.deliveryWindow,
-        coolers: b.coolersCount,
-        stands: b.standsCount,
-        bottles: b.emptyBottlesCount,
-        shopPhotoId: b.shopPhotoAttachmentId,
-        signboardPhotoId: b.signboardPhotoAttachmentId,
-        extraPhotoIds: extraPositions(b.extraPhotoAttachmentIds),
-      }));
-    }
-    return [emptyBranch()];
-  });
+  const [branchStates, setBranchStates] = useState<BState[]>(() => initialForm.branches.map(branchState));
+  // The CR slot reads its photo only when it mounts (as every slot does): a
+  // restored copy, or a reset, remounts it. The shops remount by their new keys,
+  // the document pages by their ids.
+  const [slotGen, setSlotGen] = useState(0);
 
   const subChannels = channels.find((c) => c.id === channelId)?.subChannels ?? [];
   const isCredit = paymentTerms === 'CREDIT';
@@ -405,176 +517,429 @@ export function CreateCustomerForm({
   const onPhotoBusy = useCallback((busy: boolean) => setUploading((n) => n + (busy ? 1 : -1)), []);
   const submitBlocked = readOnly || arrived || uploading > 0 || missingMandatory.length > 0;
 
-  // ── Local draft auto-save (UXI-002 posture: scoped per user + request). ──
-  // Only for NEVER-server-saved forms: once a server draft exists (initial !=
-  // null) the server is the source of truth — restoring a stale local copy
-  // over it would silently mask edits made from another device.
+  // ── The copy on the phone (UXI-002 posture: scoped per user + request). ──
+  //
+  // Code review 2026-11-10, finding 4. It held the typed text only, for a
+  // never-saved form only: a reload brought the form back without its shops,
+  // GPS points and photos, and after the first Save draft nothing was kept at
+  // all. Now the whole form is kept (lib/create-draft.ts) — the photos are on
+  // the server already, only their ids are here — and it is kept after Save
+  // draft too, under the saved request's own key:
+  //   - written only while the form differs from what is saved (a blank form,
+  //     the request the page loaded, or the last answered Save draft), removed
+  //     when it no longer differs, never on open;
+  //   - half a second after a keystroke; at once when a photo or a GPS point is
+  //     in; and when the page is hidden, goes or the form unmounts — Android
+  //     drops a tab behind the camera without a word;
+  //   - put back over a saved draft only when that draft is still the version
+  //     the copy grew on (the server stays the source of truth for a draft saved
+  //     again from another phone or tab);
+  //   - kept seven days from its last change (lib/device-drafts.ts).
+  // The automatic server save was not chosen: every open draft blocks its CR
+  // number and shop for every salesman, the server refuses a draft with a
+  // half-typed phone, and it needs the signal the copy does not.
   const draftKey = `nmwc:create:${sessionUserId}:${editId ?? 'new'}`;
 
-  /** Item 22: the sends that may have landed, written to the phone copy at once. */
-  const writeUnanswered = useCallback(
-    (ids: string[]) => {
-      unansweredRef.current = ids;
-      if (phoneCopyGoneRef.current) return;
-      try {
-        const saved = JSON.parse(window.localStorage.getItem(draftKey) ?? '{}');
-        window.localStorage.setItem(draftKey, JSON.stringify({ ...saved, unanswered: ids }));
-      } catch {
-        /* a full or blocked storage only loses the reload check */
-      }
-    },
-    [draftKey]
+  /** The form's boxes as the copy keeps them. */
+  const formNow = useMemo<CreateDraftForm>(
+    () => ({
+      legalName,
+      paymentTerms,
+      crNumber,
+      channelId,
+      subChannelId,
+      primaryPhone,
+      altPhone,
+      contactPerson,
+      contactRole,
+      notes,
+      creditLimit,
+      termDays,
+      email,
+      crPhotoId,
+      guaranteeIds,
+      creditDocs: Object.fromEntries(CREDIT_DOCUMENT_KINDS.map((k) => [k, creditDocs[k].ids])) as Record<
+        CreditDocumentKind,
+        string[]
+      >,
+      branches: branchStates.map(draftOfBranch),
+    }),
+    [
+      legalName,
+      paymentTerms,
+      crNumber,
+      channelId,
+      subChannelId,
+      primaryPhone,
+      altPhone,
+      contactPerson,
+      contactRole,
+      notes,
+      creditLimit,
+      termDays,
+      email,
+      crPhotoId,
+      guaranteeIds,
+      creditDocs,
+      branchStates,
+    ]
+  );
+  const comparableNow = useMemo(() => comparableCreateForm(formNow), [formNow]);
+  // What is saved, as the form compares itself with it: the boxes it mounted
+  // with, then the form as sent by each answered Save draft.
+  const baselineRef = useRef<string | null>(null);
+  if (baselineRef.current === null) baselineRef.current = comparableNow;
+  const dirty = comparableNow !== baselineRef.current;
+  // The photos and points alone: a change of these is written at once.
+  const mediaKey = useMemo(
+    () =>
+      JSON.stringify([
+        formNow.crPhotoId,
+        formNow.guaranteeIds,
+        formNow.creditDocs,
+        formNow.branches.map((b) => [b.gps, b.shopPhotoId, b.signboardPhotoId, b.extraPhotoIds]),
+      ]),
+    [formNow]
   );
 
-  /** Item 22: the request is on the server — the never-saved copy goes, for good. */
+  // Nothing is written before the restore below has run and its boxes are in
+  // (one render, with them): a write from the mount's blank boxes would delete
+  // the copy about to be put back.
+  const [hydrated, setHydrated] = useState(false);
+  const [storageFailed, setStorageFailed] = useState(false);
+  const [banner, setBanner] = useState<RestoreBanner | null>(null);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  // The copy as last written or restored, with its save time: its age runs
+  // from the last change to it, not from the last visit.
+  const stampRef = useRef<{ content: string; savedAt: number } | null>(null);
+  // This render's form, for the writers below: they run from timers, page
+  // events and the unmount, after the render that armed them.
+  const liveRef = useRef({ form: formNow, comparable: comparableNow, key: draftKey, canWrite: false });
+  liveRef.current = {
+    form: formNow,
+    comparable: comparableNow,
+    key: draftKey,
+    canWrite: hydrated && !readOnly && !arrived,
+  };
+
+  /** Writes the copy, or removes it when the form no longer differs from what is saved. */
+  const writeCopy = useCallback(() => {
+    const live = liveRef.current;
+    if (typeof window === 'undefined' || !live.canWrite || phoneCopyGoneRef.current) return;
+    try {
+      // Nothing unsent, and no send to ask about: no copy. Removed, not just
+      // skipped — clearing every field must not leave the old text to return.
+      if (live.comparable === baselineRef.current && unansweredRef.current.length === 0) {
+        stampRef.current = null;
+        window.localStorage.removeItem(live.key);
+        setStorageFailed(false);
+        return;
+      }
+      const savedAt =
+        stampRef.current?.content === live.comparable ? stampRef.current.savedAt : Date.now();
+      window.localStorage.setItem(
+        live.key,
+        JSON.stringify(
+          serializeCreateCopy({
+            form: live.form,
+            savedAt,
+            unanswered: unansweredRef.current,
+            base: versionRef.current,
+            sent: sentRef.current,
+            lastSent: lastSentRef.current,
+          })
+        )
+      );
+      stampRef.current = { content: live.comparable, savedAt };
+      setStorageFailed(false);
+    } catch {
+      // A full or blocked storage: said on the form, and the leave question changes.
+      setStorageFailed(true);
+    }
+  }, []);
+
+  /** The request is on the server for good, or closed: the copy goes, and nothing writes it back. */
   const dropPhoneCopy = useCallback(() => {
     phoneCopyGoneRef.current = true;
     unansweredRef.current = [];
+    sentRef.current = [];
     try {
-      window.localStorage.removeItem(draftKey);
+      window.localStorage.removeItem(liveRef.current.key);
     } catch {
       /* ignore */
     }
-  }, [draftKey]);
+  }, []);
+
+  // Withdrawn (WithdrawRequest, beside this form): the copy of this request goes.
+  useEffect(() => onRequestClosed(editId, dropPhoneCopy), [editId, dropPhoneCopy]);
+
+  // The page is hidden (the camera, another app, the tab bar of the phone), is
+  // going (a reload, Back), or the form unmounts (a tap on a link): write now —
+  // the half-second timer may never fire.
+  useEffect(() => {
+    const hidden = () => {
+      if (document.visibilityState === 'hidden') writeCopy();
+    };
+    document.addEventListener('visibilitychange', hidden);
+    window.addEventListener('pagehide', writeCopy);
+    unmountedRef.current = false;
+    return () => {
+      document.removeEventListener('visibilitychange', hidden);
+      window.removeEventListener('pagehide', writeCopy);
+      unmountedRef.current = true;
+      writeCopy();
+    };
+  }, [writeCopy]);
+
+  /** Puts a whole form into the boxes: new shop keys and a new CR slot, so every photo slot and GPS chip shows it. */
+  const applyForm = useCallback((f: CreateDraftForm) => {
+    setLegalName(f.legalName);
+    setPaymentTerms(f.paymentTerms);
+    setCrNumber(f.crNumber);
+    setChannelId(f.channelId);
+    setSubChannelId(f.subChannelId);
+    setPrimaryPhone(f.primaryPhone);
+    setAltPhone(f.altPhone);
+    setContactPerson(f.contactPerson);
+    setContactRole(f.contactRole);
+    setNotes(f.notes);
+    setCreditLimit(f.creditLimit);
+    setTermDays(f.termDays);
+    setEmail(f.email);
+    setCrPhotoId(f.crPhotoId);
+    setGuarantees(documentPages(f.guaranteeIds));
+    setCreditDocs(initialCreditDocuments(f.creditDocs));
+    setBranchStates(f.branches.map(branchState));
+    setSlotGen((g) => g + 1);
+  }, []);
+
   const restoredRef = useRef(false);
   useEffect(() => {
-    if (restoredRef.current || readOnly) return;
+    if (restoredRef.current) return;
     restoredRef.current = true;
-    if (initial) {
+    let raw: string | null = null;
+    try {
+      raw = window.localStorage.getItem(draftKey);
+    } catch {
+      raw = null;
+    }
+    const drop = () => {
       try {
         window.localStorage.removeItem(draftKey);
       } catch {
         /* ignore */
       }
+    };
+    // This form's own copy is in hand (and said, below); the expired copies of
+    // other forms do not stay on the phone for good.
+    sweepExpiredDeviceDrafts(sessionUserId);
+    if (readOnly) {
+      // In review, withdrawn, or on a route he has left: nothing here can be
+      // saved, so no copy of it is kept — nor of the signed-application pages
+      // once that step is not the one it waits at.
+      drop();
+      if (editId && !signedFormOpen) {
+        try {
+          window.localStorage.removeItem(signedFormDraftKey(sessionUserId, editId));
+        } catch {
+          /* ignore */
+        }
+      }
       return;
     }
-    const saved = typeof window !== 'undefined' ? window.localStorage.getItem(draftKey) : null;
-    if (!saved) return;
-    try {
-      const d = JSON.parse(saved);
-      if (typeof d.legalName === 'string') setLegalName(d.legalName);
-      if (d.paymentTerms === 'CASH' || d.paymentTerms === 'CREDIT') setPaymentTerms(d.paymentTerms);
-      if (typeof d.crNumber === 'string') setCrNumber(d.crNumber);
-      if (typeof d.channelId === 'string') setChannelId(d.channelId);
-      if (typeof d.subChannelId === 'string') setSubChannelId(d.subChannelId);
-      if (typeof d.primaryPhone === 'string') setPrimaryPhone(d.primaryPhone);
-      if (typeof d.altPhone === 'string') setAltPhone(d.altPhone);
-      if (typeof d.contactPerson === 'string') setContactPerson(d.contactPerson);
-      if (typeof d.contactRole === 'string') setContactRole(d.contactRole);
-      if (typeof d.notes === 'string') setNotes(d.notes);
-      if (typeof d.creditLimit === 'string') setCreditLimit(d.creditLimit);
-      if (typeof d.termDays === 'string') setTermDays(d.termDays);
-      if (typeof d.email === 'string') setEmail(d.email);
-      // Item 22: this form was never saved to the server (a server draft would
-      // have been loaded instead), so nothing else was kept anywhere. The old
-      // text said photos, GPS and branches were "kept on the server".
-      const RESTORED =
-        'Restored the details you typed on this phone. Branch details, GPS points and photos are not kept on the phone — add them again, then tap Save draft to keep everything.';
-      const unanswered: string[] = Array.isArray(d.unanswered)
-        ? d.unanswered.filter((x: unknown) => submissionIdSchema.safeParse(x).success)
-        : [];
-      if (unanswered.length === 0) {
-        if (typedAnything(d)) setInfo(RESTORED);
-      } else {
-        // A send got no answer before this reload. Ask before inviting a rebuild.
-        unansweredRef.current = unanswered;
-        setInfo(
-          'Restored the details you typed on this phone. Your last send got no answer — checking whether it arrived…'
-        );
-        void (async () => {
-          let noAnswer = false;
-          const checked: string[] = [];
-          for (const id of [...unanswered].reverse()) {
-            const r = await fetchCreateReceipt(id);
-            // Gone (he moved on): do nothing to the page he is on now.
-            if (unmountedRef.current) return;
-            if (r.kind === 'noAnswer') {
-              noAnswer = true;
-              continue;
-            }
-            checked.push(id);
-            if (!r.receipt) continue;
-            // It landed: the request is on the server, the phone copy goes, and
-            // nothing writes it back — not even an autosave already due.
-            dropPhoneCopy();
-            setArrived(true);
-            if (r.receipt.state === 'DRAFT') {
-              // A saved draft: open it, with its branches, points and photos.
-              hardReplace(`/customers/new?edit=${r.receipt.editId}`);
-              return;
-            }
-            setInfo(`Your last send arrived after all. ${alreadyReceivedMessage(r.receipt)}`);
-            return;
-          }
-          // Off the list: only what was checked and did not land. A send made
-          // while the check ran, or one it could not ask about, stays.
-          writeUnanswered(unansweredRef.current.filter((x) => !checked.includes(x)));
-          if (noAnswer) {
-            setInfo(
-              'Restored the details you typed on this phone. Your last send got no answer and may have arrived — when you have signal, check Work before adding photos again.'
-            );
-            return;
-          }
-          // None landed: the form is all there is.
-          setInfo(RESTORED);
-        })();
-      }
-    } catch {
-      /* ignore */
+    const copy = parseCreateCopy(raw);
+    if (!copy) {
+      setHydrated(true);
+      return;
     }
-    // restoredRef guards against re-runs; `initial` is stable per mount.
-  }, [draftKey, readOnly, initial, dropPhoneCopy, writeUnanswered]);
+    const age = draftAgeText(copy.savedAt);
+    const copyComparable = comparableCreateForm(copy.form);
+    // Whether it holds anything the boxes do not already show.
+    const holds = copyComparable !== baselineRef.current;
+    const numericAge = typeof copy.savedAt === 'number' && Number.isFinite(copy.savedAt);
 
+    if (deviceDraftExpired(copy.savedAt)) {
+      drop();
+      if (holds) {
+        setInfo(
+          `An unsent copy of this form saved on this phone ${age ?? 'earlier'} was removed: unsent work is kept on the phone for ${DEVICE_DRAFT_MAX_AGE_DAYS} days.`
+        );
+      }
+      setHydrated(true);
+      return;
+    }
+
+    if (initial) {
+      // Over a saved draft: only what was added on this phone to THIS version
+      // of it. A draft saved again since (another phone, another tab) is the
+      // truth; the copy is dropped, and said.
+      const version = initial.version ?? null;
+      const grewOnThis =
+        copy.version === 2 &&
+        copy.base !== null &&
+        version !== null &&
+        (version === copy.base || copy.sent.includes(version));
+      if (!grewOnThis || !holds) {
+        drop();
+        if (!grewOnThis && copy.version === 2 && holds) {
+          setInfo(
+            'What you had added on this phone was not restored, because this draft was saved again since (from another phone or tab). The form shows what is saved now — check it and add anything that is missing.'
+          );
+        }
+        setHydrated(true);
+        return;
+      }
+      applyForm(copy.form);
+      sentRef.current = copy.sent.filter((x) => x !== version);
+      if (numericAge) stampRef.current = { content: copyComparable, savedAt: copy.savedAt as number };
+      setBanner({ kind: 'saved', savedAt: copy.savedAt, summary: createFormSummary(copy.form) });
+      setHydrated(true);
+      return;
+    }
+
+    // A never-saved form. A copy the old form wrote (version 1) holds the typed
+    // text only, and says so in the words it always had.
+    const textOnly = copy.version === 1;
+    if (textOnly) {
+      const f = copy.form;
+      setLegalName(f.legalName);
+      setPaymentTerms(f.paymentTerms);
+      setCrNumber(f.crNumber);
+      setChannelId(f.channelId);
+      setSubChannelId(f.subChannelId);
+      setPrimaryPhone(f.primaryPhone);
+      setAltPhone(f.altPhone);
+      setContactPerson(f.contactPerson);
+      setContactRole(f.contactRole);
+      setNotes(f.notes);
+      setCreditLimit(f.creditLimit);
+      setTermDays(f.termDays);
+      setEmail(f.email);
+    } else {
+      applyForm(copy.form);
+      if (holds) setBanner({ kind: 'new', savedAt: copy.savedAt, summary: createFormSummary(copy.form) });
+    }
+    lastSentRef.current = copy.lastSent;
+    if (numericAge) stampRef.current = { content: copyComparable, savedAt: copy.savedAt as number };
+    const unanswered = copy.unanswered.filter((x) => submissionIdSchema.safeParse(x).success);
+    setHydrated(true);
+    if (unanswered.length === 0) {
+      if (textOnly && holds) setInfo(RESTORED_TEXT_ONLY);
+      return;
+    }
+    // A send got no answer before this reload. Ask before inviting a rebuild.
+    unansweredRef.current = unanswered;
+    setInfo(
+      textOnly
+        ? 'Restored the details you typed on this phone. Your last send got no answer — checking whether it arrived…'
+        : 'Your last send got no answer — checking whether it arrived…'
+    );
+    void (async () => {
+      let noAnswer = false;
+      const checked: string[] = [];
+      for (const id of [...unanswered].reverse()) {
+        const r = await fetchCreateReceipt(id);
+        // Gone (he moved on): do nothing to the page he is on now.
+        if (unmountedRef.current) return;
+        if (r.kind === 'noAnswer') {
+          noAnswer = true;
+          continue;
+        }
+        checked.push(id);
+        if (!r.receipt) continue;
+        // It landed: the request is on the server.
+        if (r.receipt.state === 'DRAFT') {
+          // A saved draft: open it. If the form holds more than that send
+          // carried (a photo taken after it, text typed since), that goes with
+          // him: the copy moves under the draft's own key, as grown on the
+          // version this send made, and the draft's page puts it back.
+          const live = liveRef.current;
+          const last = lastSentRef.current;
+          const addedSince = !textOnly && !(last?.id === id && last.form === live.comparable);
+          if (addedSince) {
+            try {
+              window.localStorage.setItem(
+                createDraftKey(sessionUserId, r.receipt.editId),
+                JSON.stringify(
+                  serializeCreateCopy({
+                    form: live.form,
+                    savedAt:
+                      stampRef.current?.content === live.comparable ? stampRef.current.savedAt : Date.now(),
+                    unanswered: [],
+                    base: id,
+                  })
+                )
+              );
+            } catch {
+              /* It could not be kept: the draft opens as it was saved. */
+            }
+          }
+          // Nothing writes the never-saved copy back — not even an autosave already due.
+          dropPhoneCopy();
+          setArrived(true);
+          hardReplace(`/customers/new?edit=${r.receipt.editId}`);
+          return;
+        }
+        dropPhoneCopy();
+        setArrived(true);
+        setBanner(null);
+        setInfo(`Your last send arrived after all. ${alreadyReceivedMessage(r.receipt)}`);
+        return;
+      }
+      // Off the list: only what was checked and did not land. A send made
+      // while the check ran, or one it could not ask about, stays.
+      unansweredRef.current = unansweredRef.current.filter((x) => !checked.includes(x));
+      writeCopy();
+      if (noAnswer) {
+        setInfo(
+          textOnly
+            ? 'Restored the details you typed on this phone. Your last send got no answer and may have arrived — when you have signal, check Work before adding photos again.'
+            : 'Your last send got no answer and may have arrived — when you have signal, check Work before you send this form again.'
+        );
+        return;
+      }
+      // None landed: the form is all there is.
+      setInfo(textOnly ? RESTORED_TEXT_ONLY : null);
+    })();
+    // Once, on mount (the ref above): the props it reads are this mount's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Half a second after any change (and once the restore is in, and when a
+  // saved draft gives the form its own key).
   useEffect(() => {
     // Item 22: nothing is written once the request is in — a typo fixed after
     // "Already received" must not refill the never-saved copy with this shop.
-    if (readOnly || arrived) return;
-    const handle = setTimeout(() => {
-      if (typeof window === 'undefined' || phoneCopyGoneRef.current) return;
-      const copy = {
-        legalName,
-        paymentTerms,
-        crNumber,
-        channelId,
-        subChannelId,
-        primaryPhone,
-        altPhone,
-        contactPerson,
-        contactRole,
-        notes,
-        creditLimit,
-        termDays,
-        email,
-        savedAt: Date.now(),
-        unanswered: unansweredRef.current,
-      };
-      // Nothing typed and no send to ask about: no copy. Removed, not just
-      // skipped — clearing every field must not leave the old text to return.
-      if (!typedAnything(copy) && unansweredRef.current.length === 0) {
-        window.localStorage.removeItem(draftKey);
-        return;
-      }
-      window.localStorage.setItem(draftKey, JSON.stringify(copy));
-    }, 500);
+    if (!hydrated || readOnly || arrived) return;
+    const handle = setTimeout(writeCopy, 500);
     return () => clearTimeout(handle);
-  }, [
-    readOnly,
-    arrived,
-    draftKey,
-    legalName,
-    paymentTerms,
-    crNumber,
-    channelId,
-    subChannelId,
-    primaryPhone,
-    altPhone,
-    contactPerson,
-    contactRole,
-    notes,
-    creditLimit,
-    termDays,
-    email,
-  ]);
+  }, [hydrated, readOnly, arrived, draftKey, comparableNow, formNow, writeCopy]);
+
+  // At once when a photo or a GPS point is in: the next thing he does is open
+  // the camera again, and the tab may not come back from it.
+  const writtenMediaRef = useRef(mediaKey);
+  useEffect(() => {
+    if (writtenMediaRef.current === mediaKey) return;
+    writtenMediaRef.current = mediaKey;
+    writeCopy();
+  }, [mediaKey, writeCopy]);
+
+  // After "Start a blank form" / "Discard these changes": write (that is,
+  // remove) as soon as the reset boxes are in, not half a second later.
+  const writeAfterRenderRef = useRef(false);
+  useEffect(() => {
+    if (!writeAfterRenderRef.current) return;
+    writeAfterRenderRef.current = false;
+    writeCopy();
+  });
+
+  // Finding 4: leaving with unsent work asks first, and a pull down at the top
+  // of the page does not reload it (lib/leave-guard.ts).
+  useLeaveGuard(
+    !readOnly && !arrived && (dirty || uploading > 0),
+    storageFailed ? LEAVE_FORM_LOST_QUESTION : LEAVE_FORM_QUESTION
+  );
+  useNoPullToRefresh(!readOnly);
 
   // Item 22: a green "saved" or "received" no longer describes the form once it
   // changes; a failure notice stays until the next try replaces it.
@@ -602,6 +967,55 @@ export function CreateCustomerForm({
 
   function setBranch(key: number, patch: Partial<BState>) {
     setBranchStates((list) => list.map((b) => (b.key === key ? { ...b, ...patch } : b)));
+  }
+
+  /**
+   * Finding 4: "Start a blank form" (a never-saved form that came back) and
+   * "Discard these changes" (what was added after the last Save draft). The
+   * boxes go to a blank form, or to the draft as the page loaded it, and the
+   * copy leaves the phone with the next render. A send still to be asked about
+   * stays on it. Off while a photo is going up or a send is on its way.
+   */
+  function resetTo(form: CreateDraftForm) {
+    if (submitLockRef.current || uploading > 0 || arrived) return;
+    applyForm(form);
+    setErrors({});
+    setBanner(null);
+    setConfirmingReset(false);
+    stampRef.current = null;
+    writeAfterRenderRef.current = true;
+  }
+
+  /**
+   * A Save draft is on the server (answered now, or found already there). The
+   * form is that request from here on: its address, its key on the phone, and
+   * what it compares itself with — the form as it was sent. The copy it was sent
+   * from goes; anything added while the save was on its way, or after it, is
+   * kept under the request's own key (finding 4: it used to be lost).
+   */
+  function nowSavedAs(id: string, version: string, sentForm: string) {
+    try {
+      window.localStorage.removeItem(liveRef.current.key);
+    } catch {
+      /* ignore */
+    }
+    unansweredRef.current = [];
+    sentRef.current = [];
+    lastSentRef.current = null;
+    stampRef.current = null;
+    baselineRef.current = sentForm;
+    versionRef.current = version;
+    // Before the render that carries the new id: a write already due must not
+    // go to the never-saved slot, where the next new customer would find it.
+    liveRef.current = { ...liveRef.current, key: createDraftKey(sessionUserId, id) };
+    setEditId(id);
+    setBanner(null);
+    setConfirmingReset(false);
+    // Pin the URL to this request so a refresh resumes it (no reload).
+    if (typeof window !== 'undefined') {
+      window.history.replaceState(null, '', `/customers/new?edit=${id}`);
+    }
+    writeCopy();
   }
 
   async function submit(isDraft: boolean) {
@@ -673,19 +1087,28 @@ export function CreateCustomerForm({
         extraPhotoAttachmentIds: s.extraPhotoIds.filter((id): id is string => id != null),
       })),
     };
+    // The form as this send carries it: what a saved draft is compared with afterwards.
+    const sentForm = comparableNow;
 
     idsRef.current ??= new SubmissionIds();
     // The same payload after no answer keeps its id, so a retry is never written twice.
     const submissionId = idsRef.current.idFor(payload);
-    // Item 22: on a never-saved form this send's id goes on the phone BEFORE it
-    // is sent. A reload or a killed tab mid-send runs no continuation, and the
-    // reload must still be able to ask whether it landed. It comes off when an
+    // Item 22: this send's id goes on the phone BEFORE it is sent. A reload or
+    // a killed tab mid-send runs no continuation, and the reload must still be
+    // able to ask whether it landed (a never-saved form), or know that the
+    // draft's new version is its own (a saved one). It comes off when an
     // outcome settles it.
     const neverSaved = !editId;
     const triedBefore = idsRef.current.doubt === 'this';
+    const withThis = (ids: string[]) => [...ids.filter((x) => x !== submissionId), submissionId].slice(-3);
+    const withoutThis = (ids: string[]) => ids.filter((x) => x !== submissionId);
     if (neverSaved) {
-      writeUnanswered([...unansweredRef.current.filter((x) => x !== submissionId), submissionId].slice(-3));
+      unansweredRef.current = withThis(unansweredRef.current);
+      lastSentRef.current = { id: submissionId, form: sentForm };
+    } else {
+      sentRef.current = withThis(sentRef.current);
     }
+    writeCopy();
 
     try {
       // Item 22: over fetch, not the server action (lib/submit-client.ts).
@@ -697,17 +1120,19 @@ export function CreateCustomerForm({
       // a reload they are not in this form's SubmissionIds, and an offline
       // try read "nothing was sent" over one that may have arrived (item 22
       // review). Read before this send's own id comes off the list below.
-      const earlierOnPhone = unansweredRef.current.some((x) => x !== submissionId);
+      const earlierOnPhone = [...unansweredRef.current, ...sentRef.current].some((x) => x !== submissionId);
       setNotice(
         noticeFor(outcome, { doubt: ids.doubt === 'none' && earlierOnPhone ? 'earlier' : ids.doubt })
       );
-      if (neverSaved) {
+      {
         // Did not land: refused, or never read and no earlier try of it was.
         const refused = outcome.kind === 'answered' && !outcome.result.ok;
         const unread =
           outcome.kind === 'offline' || outcome.kind === 'signedOut' || outcome.kind === 'maintenance';
         if (refused || (unread && !triedBefore)) {
-          writeUnanswered(unansweredRef.current.filter((x) => x !== submissionId));
+          if (neverSaved) unansweredRef.current = withoutThis(unansweredRef.current);
+          else sentRef.current = withoutThis(sentRef.current);
+          writeCopy();
         }
       }
       if (outcome.kind !== 'answered') return;
@@ -732,26 +1157,19 @@ export function CreateCustomerForm({
         // request exists on the server now, so the never-saved copy on the
         // phone goes — else the next "New customer" opens pre-filled with
         // this shop. A saved draft becomes this form's request.
-        dropPhoneCopy();
         if (res.state === 'DRAFT') {
-          setEditId(res.editId);
-          if (typeof window !== 'undefined') {
-            window.history.replaceState(null, '', `/customers/new?edit=${res.editId}`);
-          }
-        } else if (res.state === 'SUBMITTED' || res.state === 'APPROVED') {
-          setArrived(true);
+          nowSavedAs(res.editId, submissionId, sentForm);
+        } else {
+          dropPhoneCopy();
+          if (res.state === 'SUBMITTED' || res.state === 'APPROVED') setArrived(true);
         }
         return;
       }
-      dropPhoneCopy();
       if (isDraft) {
-        setEditId(res.editId);
+        nowSavedAs(res.editId, submissionId, sentForm);
         setNotice({ tone: 'received', text: '✓ Draft saved. Finish and submit when ready.' });
-        // Pin the URL to this request so a refresh resumes it (no reload).
-        if (typeof window !== 'undefined') {
-          window.history.replaceState(null, '', `/customers/new?edit=${res.editId}`);
-        }
       } else {
+        dropPhoneCopy();
         // Item 22: said beside the button BEFORE moving on — the next page can
         // be slow or fail to load on weak signal. A document load of Work
         // (lib/navigate.ts): the router cache would still list this as a
@@ -765,6 +1183,9 @@ export function CreateCustomerForm({
       setSending(false);
     }
   }
+
+  const bannerAge = banner ? draftAgeText(banner.savedAt) : null;
+  const resetBusy = sending || uploading > 0;
 
   return (
     <div className="space-y-4 p-4 sm:p-6">
@@ -792,6 +1213,68 @@ export function CreateCustomerForm({
       {info && (
         <div className="rounded-md bg-emerald-50 px-3 py-2 text-base font-medium text-emerald-700 ring-1 ring-emerald-200">
           {info}
+        </div>
+      )}
+      {/* Finding 4: what the phone copy put back, how old it is, and the way out.
+          A never-saved form has one slot per salesman, so the banner names the
+          shop it holds: at the next shop he starts a blank form instead of
+          sending this one's photos and GPS point with it. No layer of its own
+          (tests/unit/mobile-submit-bar.test.ts): the two-step confirm is inline. */}
+      {banner && dirty && !arrived && (
+        <div
+          role="status"
+          className="rounded-md bg-emerald-50 px-3 py-2 text-emerald-800 ring-1 ring-emerald-200"
+        >
+          <p className="text-base font-medium">
+            {banner.kind === 'new'
+              ? 'Restored the details you typed on this phone — shops, GPS points and photos included.'
+              : 'Restored what you added on this phone after your last Save draft.'}
+          </p>
+          <p className="mt-1 text-sm [overflow-wrap:anywhere]">
+            {banner.kind === 'new'
+              ? `Saved on this phone${bannerAge ? ` ${bannerAge}` : ''}: “${banner.summary.name || 'no name yet'}” — ${plural(banner.summary.shops, 'shop')}, ${plural(banner.summary.gpsPoints, 'GPS point')}, ${plural(banner.summary.photos, 'photo')}.`
+              : `${bannerAge ? `Saved on this phone ${bannerAge}. ` : ''}It is not on the server yet — tap Save draft to keep it.`}
+          </p>
+          {confirmingReset ? (
+            <div className="mt-2">
+              <p className="text-sm font-medium">
+                {banner.kind === 'new'
+                  ? 'Discard this unsent form? Its photos will have to be taken again.'
+                  : 'Go back to the draft as it was last saved? What you added since will be lost.'}
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={resetBusy}
+                  onClick={() => resetTo(banner.kind === 'new' ? emptyCreateForm() : initialForm)}
+                  className="min-h-11 rounded-md border border-red-300 bg-white px-3 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-60"
+                >
+                  {banner.kind === 'new' ? 'Yes, start blank' : 'Yes, discard'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingReset(false)}
+                  className="min-h-11 rounded-md border border-emerald-300 bg-white px-3 text-sm font-semibold text-emerald-900 hover:bg-emerald-100"
+                >
+                  {banner.kind === 'new' ? 'Keep it' : 'Keep them'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              disabled={resetBusy}
+              onClick={() => setConfirmingReset(true)}
+              className="mt-2 min-h-11 rounded-md border border-emerald-300 bg-white px-3 text-sm font-semibold text-emerald-900 hover:bg-emerald-100 disabled:opacity-60"
+            >
+              {banner.kind === 'new' ? 'Start a blank form' : 'Discard these changes'}
+            </button>
+          )}
+        </div>
+      )}
+      {storageFailed && !readOnly && !arrived && (
+        <div className="rounded-md bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800 ring-1 ring-amber-200">
+          This phone could not keep a copy of this form. Keep this page open, and tap Save draft often.
         </div>
       )}
       {errors._form && (
@@ -860,6 +1343,7 @@ export function CreateCustomerForm({
             )}
             <div className="w-48">
               <PhotoCaptureSlot
+                key={`cr-${slotGen}`}
                 kind="CR"
                 required
                 disabled={readOnly || photosLocked}
@@ -1335,7 +1819,7 @@ export function CreateCustomerForm({
       {!readOnly && branchStates.length < 10 && (
         <button
           type="button"
-          onClick={() => setBranchStates((list) => [...list, emptyBranch()])}
+          onClick={() => setBranchStates((list) => [...list, branchState(emptyCreateBranch())])}
           className="rounded-md border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
         >
           + Add another branch

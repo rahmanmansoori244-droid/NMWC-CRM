@@ -9,3 +9,22 @@
   html { -webkit-tap-highlight-color: transparent; }
   body { font-feature-settings: 'cv11', 'ss01'; }
 }
+
+/*
+ * Code review 2026-11-10, finding 4: on the new-customer form and the
+ * signed-application upload, pulling down at the top of the page reloaded it
+ * (Chrome's pull-to-refresh) and the shops, GPS points and photos went with it.
+ * While one of them is open the class is on <html> (lib/leave-guard.ts
+ * useNoPullToRefresh), and the page's scroll stops at its top instead. On both
+ * elements: which of the two the browser treats as the page's scroller depends
+ * on the browser.
+ *
+ * Outside every @layer on purpose: Tailwind drops a layered rule whose class it
+ * does not find in the files it scans, and this class is only ever set from
+ * script.
+ */
+html.nmwc-no-pull-refresh,
+html.nmwc-no-pull-refresh body {
+  overscroll-behavior-y: contain;
+}
+

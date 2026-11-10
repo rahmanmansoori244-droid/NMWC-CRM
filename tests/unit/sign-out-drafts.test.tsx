@@ -22,7 +22,13 @@ vi.mock('@/lib/navigate', () => ({ hardReplace: vi.fn() }));
 
 import { SignOutButton, signOutDraftsQuestion } from '@/components/nmwc/SignOutButton';
 import { TopBar } from '@/components/nmwc/TopBar';
-import { DEVICE_DRAFT_PREFIXES, clearDeviceDrafts, countDeviceDrafts } from '@/lib/device-drafts';
+import {
+  DEVICE_DRAFT_PREFIXES,
+  clearDeviceDrafts,
+  countDeviceDrafts,
+  createDraftKey,
+  signedFormDraftKey,
+} from '@/lib/device-drafts';
 import { EnrichmentForm } from '@/app/(app)/customers/[id]/edit/EnrichmentForm';
 import { CreateCustomerForm } from '@/app/(app)/customers/new/CreateCustomerForm';
 
@@ -111,6 +117,28 @@ describe('Sign out deletes the signing-out user’s form copies from the phone',
     expect(DEVICE_DRAFT_PREFIXES).toEqual(['nmwc:draft:', 'nmwc:create:']);
     expect(enrich).toContain('const draftKey = `nmwc:draft:${sessionUserId}:${customer.id}`;');
     expect(create).toContain("const draftKey = `nmwc:create:${sessionUserId}:${editId ?? 'new'}`;");
+  });
+
+  // Code review 2026-11-10, finding 4: two more copies exist now — what is added
+  // to a saved draft, and the signed-application pages. Both under the pinned
+  // prefix, so Sign out deletes them with no rule of their own.
+  it('the saved draft\'s copy and the signed-application pages are his copies too: counted, and deleted', async () => {
+    expect(createDraftKey('u1', null)).toBe('nmwc:create:u1:new');
+    expect(createDraftKey('u1', 'edit-7')).toBe('nmwc:create:u1:edit-7');
+    expect(signedFormDraftKey('u1', 'edit-7')).toBe('nmwc:create:u1:signed:edit-7');
+    const signed = readFileSync('app/(app)/customers/new/SignedFormUpload.tsx', 'utf8');
+    expect(signed).toContain('const draftKey = signedFormDraftKey(sessionUserId, editId);');
+
+    const mine = [createDraftKey('u1', 'edit-7'), signedFormDraftKey('u1', 'edit-7')];
+    const theirs = [createDraftKey('u2', 'edit-7'), signedFormDraftKey('u2', 'edit-7')];
+    for (const k of [...mine, ...theirs]) localStorage.setItem(k, '{"v":1,"token":"t","ids":["p1"],"savedAt":' + Date.now() + '}');
+    expect(countDeviceDrafts('u1')).toBe(2);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<SignOutButton userId="u1" className="" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    expect(confirm).toHaveBeenCalledWith(signOutDraftsQuestion(2));
+    expect(stored()).toEqual([...theirs].sort());
+    await waitFor(() => expect(h.logout).toHaveBeenCalledTimes(1));
   });
 });
 

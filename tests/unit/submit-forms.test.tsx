@@ -17,6 +17,11 @@ vi.mock('next/navigation', () => ({ useRouter: () => router }));
 // here is simply "already attached". Its two buttons stand for an upload that
 // starts and one that ends — the onBusyChange contract, which
 // photo-slot-busy.test.tsx pins on the real slot.
+//
+// Code review 2026-11-10, finding 4: a photo taken on the new-customer form is
+// unsent work now, kept in the phone copy. The two tests about a visit with
+// nothing on the form switch the "already attached" photo off.
+const slotMock = vi.hoisted(() => ({ attached: true }));
 vi.mock('@/components/nmwc/PhotoCaptureSlot', () => ({
   PhotoCaptureSlot: ({
     kind,
@@ -30,7 +35,7 @@ vi.mock('@/components/nmwc/PhotoCaptureSlot', () => ({
     disabled?: boolean;
   }) => {
     useEffect(() => {
-      onChange?.({ attachmentId: 'att-evidence' });
+      if (slotMock.attached) onChange?.({ attachmentId: 'att-evidence' });
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
     return (
       <span data-slot={kind} data-locked={disabled ? 'yes' : 'no'}>
@@ -77,6 +82,7 @@ const noAnswer = async (): Promise<Response> => {
 beforeEach(() => {
   sent = [];
   replies = [];
+  slotMock.attached = true;
   for (const f of Object.values(router)) f.mockReset();
   nav.hardReplace.mockReset();
   window.localStorage.clear();
@@ -1407,6 +1413,7 @@ describe('the new-customer form', () => {
   // Item 22 review: the autosave wrote an empty copy on every visit, and the
   // next one said "Restored the details you typed" over a blank form.
   it('a visit that typed nothing leaves no copy, and the next visit claims no restore', async () => {
+    slotMock.attached = false; // nothing typed, and no photo taken either (finding 4)
     const first = renderCreate();
     await act(async () => {
       await new Promise((r) => setTimeout(r, 600));
@@ -1421,6 +1428,7 @@ describe('the new-customer form', () => {
   });
 
   it('clearing every field removes the copy — the old text does not come back', async () => {
+    slotMock.attached = false; // text only: a photo on the form would be unsent work too (finding 4)
     const first = renderCreate();
     fireEvent.change(screen.getByLabelText(/Legal name/), { target: { value: 'Blue Sea Cafe' } });
     await act(async () => {

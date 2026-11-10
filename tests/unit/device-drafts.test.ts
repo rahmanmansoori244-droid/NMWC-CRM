@@ -6,12 +6,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEVICE_DRAFT_MAX_AGE_DAYS,
+  DEVICE_DRAFT_PREFIXES,
+  announceRequestClosed,
   clearDeviceDrafts,
   countDeviceDrafts,
+  createDraftKey,
   deviceDraftExpired,
   draftAgeText,
+  onRequestClosed,
+  signedFormDraftKey,
   sweepExpiredDeviceDrafts,
 } from '@/lib/device-drafts';
+import { emptyCreateBranch, emptyCreateForm, serializeCreateCopy } from '@/lib/create-draft';
 import { enrichmentBase } from '@/lib/enrichment-draft';
 import { draftBranchStates, loadedFormState, type LoadedCustomer } from '@/lib/enrichment-patch';
 
@@ -194,5 +200,80 @@ describe('sweepExpiredDeviceDrafts', () => {
       throw new Error('SecurityError');
     });
     expect(sweepExpiredDeviceDrafts('u1')).toBe(0);
+  });
+});
+
+// Code review 2026-11-10, finding 4.
+describe('the keys: each names the user and the form it belongs to', () => {
+  it('the new-customer form: one slot for the never-saved form, one per saved request', () => {
+    expect(createDraftKey('u1', null)).toBe('nmwc:create:u1:new');
+    expect(createDraftKey('u1', 'ckedit1')).toBe('nmwc:create:u1:ckedit1');
+    expect(createDraftKey('u2', 'ckedit1')).not.toBe(createDraftKey('u1', 'ckedit1'));
+  });
+
+  it('the signed-application pages: per request, and never the request form\'s own key', () => {
+    expect(signedFormDraftKey('u1', 'ckedit1')).toBe('nmwc:create:u1:signed:ckedit1');
+    expect(signedFormDraftKey('u1', 'ckedit1')).not.toBe(createDraftKey('u1', 'ckedit1'));
+    expect(signedFormDraftKey('u1', 'ckedit2')).not.toBe(signedFormDraftKey('u1', 'ckedit1'));
+  });
+
+  it('all under the prefixes Sign out clears', () => {
+    for (const k of [createDraftKey('u1', null), createDraftKey('u1', 'e'), signedFormDraftKey('u1', 'e')]) {
+      expect(DEVICE_DRAFT_PREFIXES.some((p) => k.startsWith(`${p}u1:`)), k).toBe(true);
+    }
+  });
+});
+
+describe('Sign out counts the new-customer copies that hold unsent work', () => {
+  const copyOf = (form = emptyCreateForm(), over: Record<string, unknown> = {}) =>
+    JSON.stringify({ ...serializeCreateCopy({ form, savedAt: NOW - HOUR, unanswered: [] }), ...over });
+
+  it('a never-saved form with something on it; not a blank one', () => {
+    window.localStorage.setItem(createDraftKey('u1', null), copyOf());
+    expect(countDeviceDrafts('u1')).toBe(0);
+    window.localStorage.setItem(createDraftKey('u1', null), copyOf({ ...emptyCreateForm(), legalName: 'Blue Sea Cafe' }));
+    expect(countDeviceDrafts('u1')).toBe(1);
+    // A photo or a GPS point alone is unsent work too.
+    window.localStorage.setItem(
+      createDraftKey('u1', null),
+      copyOf({ ...emptyCreateForm(), branches: [{ ...emptyCreateBranch(), shopPhotoId: 'att-shop' }] })
+    );
+    expect(countDeviceDrafts('u1')).toBe(1);
+  });
+
+  it('a blank form whose send still has to be asked about', () => {
+    window.localStorage.setItem(
+      createDraftKey('u1', null),
+      copyOf(emptyCreateForm(), { unanswered: ['3f1c1d2e-7a4b-4c5d-9e8f-0a1b2c3d4e5f'] })
+    );
+    expect(countDeviceDrafts('u1')).toBe(1);
+  });
+
+  it('what was added to a saved draft, and signed-application pages — each its own unsent form', () => {
+    window.localStorage.setItem(createDraftKey('u1', 'e1'), copyOf({ ...emptyCreateForm(), legalName: 'Blue Sea Cafe' }, { base: 'v1' }));
+    window.localStorage.setItem(signedFormDraftKey('u1', 'e1'), JSON.stringify({ v: 1, savedAt: NOW - HOUR, token: 't', ids: ['p1'] }));
+    window.localStorage.setItem(signedFormDraftKey('u1', 'e2'), JSON.stringify({ v: 1, savedAt: NOW - 8 * DAY, token: 't', ids: ['p1'] }));
+    expect(countDeviceDrafts('u1'), 'the one past its keep time is not counted').toBe(2);
+  });
+});
+
+describe('a withdrawn request is announced to the forms that keep a copy of it', () => {
+  it('only the forms of that request hear it, and only while they listen', () => {
+    const e1 = vi.fn();
+    const e2 = vi.fn();
+    const none = vi.fn();
+    const offE1 = onRequestClosed('e1', e1);
+    const offE2 = onRequestClosed('e2', e2);
+    // A never-saved form has no request to be withdrawn.
+    const offNone = onRequestClosed(null, none);
+    announceRequestClosed('e1');
+    expect(e1).toHaveBeenCalledTimes(1);
+    expect(e2).not.toHaveBeenCalled();
+    expect(none).not.toHaveBeenCalled();
+    offE1();
+    announceRequestClosed('e1');
+    expect(e1).toHaveBeenCalledTimes(1);
+    offE2();
+    offNone();
   });
 });

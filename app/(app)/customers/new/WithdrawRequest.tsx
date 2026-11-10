@@ -16,6 +16,7 @@ import { useState, useTransition } from 'react';
 import { withdrawCreateAction } from '@/services/creates';
 import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
 import { hardReplace } from '@/lib/navigate';
+import { announceRequestClosed } from '@/lib/device-drafts';
 
 export function WithdrawRequest({
   editId,
@@ -44,6 +45,11 @@ export function WithdrawRequest({
           setError(res.message);
           return;
         }
+        // Code review 2026-11-10, finding 4: the forms on this page keep a copy
+        // of the request on the phone (what was added after Save draft, the
+        // signed-application pages). It is closed for good: they delete it, and
+        // write nothing more while Work loads.
+        announceRequestClosed(editId);
         // A document load: Work must not show it from the router cache.
         hardReplace('/work');
       } catch {

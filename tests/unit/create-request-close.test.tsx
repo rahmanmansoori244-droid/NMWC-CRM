@@ -30,6 +30,7 @@ vi.mock('@/components/nmwc/PhotoCaptureSlot', () => ({ PhotoCaptureSlot: () => <
 
 import { CreateCustomerForm, type CreateFormInitial } from '@/app/(app)/customers/new/CreateCustomerForm';
 import { WithdrawRequest } from '@/app/(app)/customers/new/WithdrawRequest';
+import { onRequestClosed } from '@/lib/device-drafts';
 
 const initial = (state: CreateFormInitial['state']): CreateFormInitial => ({
   editId: 'e1',
@@ -192,6 +193,32 @@ describe('Withdraw', () => {
     confirm();
     expect(await screen.findByText('This request is in review, so it cannot be withdrawn now.')).toBeTruthy();
     expect(nav.hardReplace).not.toHaveBeenCalled();
+  });
+
+  // Code review 2026-11-10, finding 4: the forms on the page keep a copy of the
+  // request on the phone. A withdrawn request has no use for it.
+  it('a withdraw that went through tells the forms on the page, before Work loads; a refused one does not', async () => {
+    const order: string[] = [];
+    const heard = vi.fn(() => order.push('closed'));
+    const other = vi.fn();
+    const off = [onRequestClosed('e1', heard), onRequestClosed('e2', other)];
+    nav.hardReplace.mockImplementation(() => order.push('work'));
+    try {
+      h.withdraw.mockResolvedValueOnce({ ok: false, code: 'EDIT_LOCKED', message: 'In review.' });
+      render(<WithdrawRequest editId="e1" isDraft />);
+      fireEvent.click(screen.getByRole('button', { name: 'Discard this draft' }));
+      confirm();
+      expect(await screen.findByText('In review.')).toBeTruthy();
+      expect(heard).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Discard this draft' }));
+      confirm();
+      await waitFor(() => expect(nav.hardReplace).toHaveBeenCalledWith('/work'));
+      expect(order).toEqual(['closed', 'work']);
+      expect(other, 'another request is not told').not.toHaveBeenCalled();
+    } finally {
+      off.forEach((f) => f());
+    }
   });
 });
 
@@ -459,6 +486,28 @@ describe('owner decisions 2026-10-11: his credit request at the signed-applicati
     });
     expect(h.withdrawProps).toEqual([{ editId: 'e1', isDraft: false, atSignedForm: true }]);
     expect((h.formProps[0]!.initial as { pendingRole: string }).pendingRole).toBe('Signed application');
+    // Code review 2026-11-10, finding 4: the pages he adds are kept on the phone
+    // under his own user id, and the request's form leaves that copy alone.
+    expect(p.sessionUserId).toBe('u1');
+    expect(h.formProps[0]).toMatchObject({ sessionUserId: 'u1', signedFormOpen: true });
+  });
+
+  it('finding 4: the form is told which save of the request it shows — the id of its last save, else its last-updated time', async () => {
+    const { default: Page } = await import('@/app/(app)/customers/new/page');
+    const versionOf = async (over: Record<string, unknown>) => {
+      h.formProps = [];
+      h.edit = await atStep(1, over);
+      cleanup();
+      render(await Page({ searchParams: Promise.resolve({ edit: 'e1' }) }));
+      return (h.formProps[0]!.initial as CreateFormInitial).version;
+    };
+    const sid = '3f1c1d2e-7a4b-4c5d-9e8f-0a1b2c3d4e5f';
+    const updatedAt = new Date('2026-11-10T06:00:00.000Z');
+    expect(await versionOf({ submissionId: sid, updatedAt })).toBe(sid);
+    expect(await versionOf({ submissionId: null, updatedAt })).toBe(`at:${updatedAt.getTime()}`);
+    expect(await versionOf({})).toBeNull();
+    // At another step the signed-application copy is not kept open.
+    expect(h.formProps[0]).toMatchObject({ signedFormOpen: false });
   });
 
   it("part B: the e-mail and each credit document's pages on file reach the form; a guarantee too; the signed pages are not a form document", async () => {
