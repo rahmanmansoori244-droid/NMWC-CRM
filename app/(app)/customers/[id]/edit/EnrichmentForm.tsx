@@ -16,24 +16,34 @@ import { postForm, noticeFor, SubmissionIds, type SubmitNotice } from '@/lib/sub
 import { PHOTO_UPLOADING_MESSAGE, type SubmitReceipt } from '@/lib/submission';
 import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
 import { hardReplace } from '@/lib/navigate';
-import { draftIsStale, enrichmentBase } from '@/lib/enrichment-draft';
+import { draftChangedPaths, draftIsStale, enrichmentBase } from '@/lib/enrichment-draft';
 import { isRequired, type SubmitGate } from '@/lib/submit-gate';
 import { gateScopeOf } from '@/lib/validation/gate-scope';
 import { CR_DOCUMENT_LOCKED_MESSAGE, isFieldLocked } from '@/lib/permissions';
 import { LabeledField as Field, groupNamedBy } from '@/components/nmwc/LabeledField';
-import { onSignOut } from '@/lib/device-drafts';
+import {
+  DEVICE_DRAFT_MAX_AGE_DAYS,
+  deviceDraftExpired,
+  draftAgeText,
+  onSignOut,
+  sweepExpiredDeviceDrafts,
+} from '@/lib/device-drafts';
 import { EDIT_PAYLOAD_VERSION, fieldLabel, type BaseValue } from '@/lib/edit-values';
 import {
   buildEnrichmentPatch,
+  changedFieldLabels,
   conflictsFrom,
   countedNow,
   countsMoved,
   draftBranchStates,
+  labelsForPaths,
   loadedFormState,
   NO_KEPT_FIELDS,
   openConflicts,
+  patchDifference,
   resolveConflict,
   restoreBranchStates,
+  restoreCustomerBoxes,
   restoreKept,
   sentPaths,
   type Conflicts,
@@ -63,18 +73,12 @@ type CustomerWithBranches = Omit<LoadedCustomer, 'branches'> & {
   >;
 };
 
-/** The customer text boxes a phone draft holds (lib/enrichment-draft.ts). */
-const DRAFT_TEXT_FIELDS = [
-  'legalName',
-  'crNumber',
-  'channelId',
-  'subChannelId',
-  'primaryPhone',
-  'altPhone',
-  'contactPerson',
-  'contactRole',
-  'notes',
-] as const;
+/** Said over a phone copy put back into the boxes (the words are older than the list of fields under them). */
+const RESTORED_LEAD = 'Restored a local draft from your last visit.';
+
+/** Said when a phone copy is dropped because the customer changed on the server since. */
+const STALE_DRAFT_MESSAGE =
+  'Your offline draft is older than the latest server changes. The form has been refreshed — re-enter anything you still need.';
 
 /** Why Submit waits after a STALE_FIELDS answer (ruling 1). */
 const UNRESOLVED_TITLE =
@@ -229,13 +233,15 @@ export function EnrichmentForm({
   // Bumped by each choice: the phone copy then carries the moved base.
   const [rebaseGen, setRebaseGen] = useState(0);
   const patchOptions = { role: userRole, lockName, lockCr };
-  const patch = buildEnrichmentPatch(
-    loadedRef.current,
-    { customer: values, branches: branchStates },
-    { ...patchOptions, kept }
-  );
+  // What a submit of these boxes would send. The one place a patch is built:
+  // always from the values the page loaded (loadedRef), never the phone draft's.
+  const patchFor = (state: FormState, keptNow: KeptFields) =>
+    buildEnrichmentPatch(loadedRef.current, state, { ...patchOptions, kept: keptNow });
+  const patch = patchFor({ customer: values, branches: branchStates }, kept);
   // A conflict on a field no longer sent is moot; one still sent would be refused again.
   const unresolved = openConflicts(conflicts, patch);
+  // Code review 2026-11-10, finding 5: what this form is changing, by name.
+  const changing = changedFieldLabels(patch, customer.branches);
   const shownBranchIds = new Set(customer.branches.map((b) => b.id));
 
   // Available sub-channels for chosen channel
@@ -359,6 +365,41 @@ export function EnrichmentForm({
   // (losing an open manual entry or an in-flight capture), or told the salesman
   // their own draft was stale. A ref, so a StrictMode double run also counts once.
   const restoredForKeyRef = useRef<string | null>(null);
+  // Code review 2026-11-10, finding 5: what the restore put back — when the copy
+  // was saved and the fields it changes — shown with "Discard these changes".
+  // "Restored a local draft" alone, on almost every visit, said nothing; an old
+  // unsent change then went out with the next unrelated submit.
+  const [restored, setRestored] = useState<{ savedAt: unknown; labels: string[] } | null>(null);
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  const restoredAge = restored ? draftAgeText(restored.savedAt) : null;
+  // The copy as last written or restored, with its save time: a copy keeps its
+  // age until its content changes, so opening the form does not make it younger
+  // (lib/device-drafts.ts, the 7-day keep).
+  const savedStampRef = useRef<{ content: string; savedAt: number } | null>(null);
+  /** The copy the phone keeps of these boxes, without its save time. */
+  const phoneDraftBody = (
+    c: FormCustomer,
+    branches: Readonly<Record<string, FormBranch>>,
+    keptNow: KeptFields
+  ) => ({
+    legalName: c.legalName,
+    crNumber: c.crNumber,
+    channelId: c.channelId,
+    subChannelId: c.subChannelId,
+    primaryPhone: c.primaryPhone,
+    altPhone: c.altPhone,
+    contactPerson: c.contactPerson,
+    contactRole: c.contactRole,
+    notes: c.notes,
+    // OCT-05: preserve permitted status choices without changing the base
+    // format or authorizing status transitions for any additional role.
+    ...(userRole === Role.MANAGER || userRole === Role.STEWARD ? { status: c.status } : {}),
+    branchStates: draftBranchStates(branches, loadedRef.current),
+    base: baseRef.current,
+    // Launch fix: which boxes it started from (the restore below).
+    ...(returnedId ? { returnedId } : {}),
+    ...(keptNow.customer.length > 0 || Object.keys(keptNow.branches).length > 0 ? { kept: keptNow } : {}),
+  });
   useEffect(() => {
     if (restoredForKeyRef.current === draftKey) return;
     restoredForKeyRef.current = draftKey;
@@ -369,52 +410,96 @@ export function EnrichmentForm({
       setNotice({ tone: 'failed', text: 'Could not read the draft on this phone. Keep this page open while you work.', retry: false });
       return;
     }
-    if (!saved) return;
+    const drop = () => {
+      try {
+        window.localStorage.removeItem(draftKey);
+      } catch {
+        /* ignore */
+      }
+    };
     try {
+      if (!saved) return;
       const d = JSON.parse(saved);
       // Launch fix: a phone draft is restored only over the boxes it started
       // from — what he sent (tagged with that request), or the customer as it
       // is. One started from what he sent never comes back on a plain visit, so
       // a value he was told not to send cannot ride along with a later edit; and
       // an older one is not put over what he asked to have filled in. The next
-      // autosave replaces it.
+      // autosave replaces it, or removes it when nothing was changed.
       if ((typeof d.returnedId === 'string' ? d.returnedId : null) !== returnedId) return;
+      const age = draftAgeText(d.savedAt);
       // UXI-003: stale-draft guard. If the server values the draft started from
       // have changed since, prefer server data and tell the user. Item 22: by
       // the values, not updatedAt — a photo taken after typing bumps updatedAt,
       // and every such draft used to be thrown away here. Phase 2: a draft with
       // no starting values at all is dropped too (lib/enrichment-draft.ts).
       if (draftIsStale(d, baseRef.current!)) {
-        setInfo(
-          'Your offline draft is older than the latest server changes. The form has been refreshed — re-enter anything you still need.'
-        );
-        try {
-          window.localStorage.removeItem(draftKey);
-        } catch {
-          /* ignore */
+        // Finding 5: said only when the copy held a change of his (or nothing
+        // says whether it did) — one the old form wrote for a customer he had
+        // only opened told him he had lost work he never did.
+        const had = draftChangedPaths(d, userRole);
+        if (had === null) setInfo(STALE_DRAFT_MESSAGE);
+        else if (had.length > 0) {
+          setInfo(
+            `${STALE_DRAFT_MESSAGE} It ${age ? `was saved ${age} and ` : ''}had changed: ${labelsForPaths(had, customer.branches).join(', ')}.`
+          );
         }
+        drop();
         return;
       }
-      setValues((c) => {
-        const next = { ...c };
-        for (const k of DRAFT_TEXT_FIELDS) if (typeof d[k] === 'string') next[k] = d[k];
-        if ((userRole === Role.MANAGER || userRole === Role.STEWARD) &&
-            (d.status === 'ACTIVE' || d.status === 'CLOSED' || d.status === 'SUSPENDED')) {
-          next.status = d.status;
-        }
-        return next;
-      });
-      // Phase 2: per branch the page shows, never a branch handed to another
-      // route since (it used to be sent, and refused).
+      // The boxes with the copy put over them, and what that changes from the
+      // boxes the page opened on. Phase 2: per branch the page shows, never a
+      // branch handed to another route since (it used to be sent, and refused).
+      const opening = returned?.prefill ?? loadedFormState(loadedRef.current);
+      const next: FormState = {
+        customer: restoreCustomerBoxes(opening.customer, d, userRole),
+        branches: d.branchStates
+          ? restoreBranchStates(opening.branches, d.branchStates, customer.branches)
+          : opening.branches,
+      };
+      const nextKept = d.kept ? restoreKept(d.kept, customer.branches) : NO_KEPT_FIELDS;
+      const nextPatch = patchFor(next, nextKept);
+      const labels = labelsForPaths(
+        patchDifference(nextPatch, patchFor(opening, NO_KEPT_FIELDS)),
+        customer.branches
+      );
+      if (labels.length === 0) {
+        // It changes nothing here: not restored, and not announced. A copy of
+        // the customer as it is — what the old form wrote on every visit — goes.
+        if (sentPaths(nextPatch).length === 0) drop();
+        return;
+      }
+      // Finding 5: unsent work is kept for seven days from its last change.
+      if (deviceDraftExpired(d.savedAt)) {
+        setInfo(
+          `An unsent draft saved on this phone ${age ?? 'earlier'} was removed: drafts are kept for ${DEVICE_DRAFT_MAX_AGE_DAYS} days. It had changed: ${labels.join(', ')}.`
+        );
+        drop();
+        return;
+      }
+      setValues(next.customer);
       if (d.branchStates) {
-        setBranchStates((prev) => restoreBranchStates(prev, d.branchStates, customer.branches));
+        setBranchStates(next.branches);
         setRestoreGeneration((g) => g + 1);
       }
-      if (d.kept) setKept(restoreKept(d.kept, customer.branches));
-      setInfo('Restored a local draft from your last visit.');
+      if (d.kept) setKept(nextKept);
+      if (typeof d.savedAt === 'number' && Number.isFinite(d.savedAt)) {
+        savedStampRef.current = {
+          content: JSON.stringify(phoneDraftBody(next.customer, next.branches, nextKept)),
+          savedAt: d.savedAt,
+        };
+      }
+      setRestored({ savedAt: d.savedAt, labels });
     } catch {
       /* ignore */
+    } finally {
+      // This customer's copy is dealt with (and said, above); the expired copies
+      // of other customers do not stay on the phone for good.
+      sweepExpiredDeviceDrafts(sessionUserId);
     }
+    // Once per draft key (the ref above): the boxes and locks it reads are the
+    // ones this form mounted with.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey, customer.branches, userRole, returnedId]);
 
   // Set when a submit arrived and the page is leaving: from then on nothing
@@ -436,35 +521,42 @@ export function EnrichmentForm({
 
   // OCT-04: both the debounce and explicit Save draft write this exact phone
   // snapshot. A successful server draft is not proof that local storage worked.
+  //
+  // Code review 2026-11-10, finding 5: only while the boxes differ from what the
+  // page loaded — by the patch a submit would send, built here from this
+  // render's own boxes. The copy used to be written half a second after the
+  // form opened, changed or not, so every customer merely opened left a "draft"
+  // that the next visit "restored". With nothing to send there is nothing to
+  // keep: the copy is removed, so a change undone does not come back either.
   const savePhoneDraft = useCallback(() => {
     if (typeof window === 'undefined' || draftGoneRef.current) return false;
+    const unsent = patchFor({ customer: values, branches: branchStates }, kept);
+    if (sentPaths(unsent).length === 0) {
+      savedStampRef.current = null;
+      try {
+        window.localStorage.removeItem(draftKey);
+      } catch {
+        /* Nothing of his is lost with it. */
+      }
+      return true;
+    }
     try {
-      window.localStorage.setItem(draftKey, JSON.stringify({
-        legalName: values.legalName,
-        crNumber: values.crNumber,
-        channelId: values.channelId,
-        subChannelId: values.subChannelId,
-        primaryPhone: values.primaryPhone,
-        altPhone: values.altPhone,
-        contactPerson: values.contactPerson,
-        contactRole: values.contactRole,
-        notes: values.notes,
-        // OCT-05: preserve permitted status choices without changing the base
-        // format or authorizing status transitions for any additional role.
-        ...((userRole === Role.MANAGER || userRole === Role.STEWARD) ? { status: values.status } : {}),
-        branchStates: draftBranchStates(branchStates, loadedRef.current),
-        savedAt: Date.now(),
-        base: baseRef.current,
-        // Launch fix: which boxes it started from (the restore above).
-        ...(returnedId ? { returnedId } : {}),
-        ...(kept.customer.length > 0 || Object.keys(kept.branches).length > 0 ? { kept } : {}),
-      }));
+      const copy = phoneDraftBody(values, branchStates, kept);
+      const content = JSON.stringify(copy);
+      // Its age runs from the last change to it, not from the last visit.
+      const savedAt =
+        savedStampRef.current?.content === content ? savedStampRef.current.savedAt : Date.now();
+      window.localStorage.setItem(draftKey, JSON.stringify({ ...copy, savedAt }));
+      savedStampRef.current = { content, savedAt };
       return true;
     } catch {
       setNotice({ tone: 'failed', text: 'Could not save the draft on this phone. Keep this page open; your entries are still here.', retry: false });
       return false;
     }
-  }, [draftKey, values, branchStates, kept, userRole, returnedId]);
+    // patchFor and phoneDraftBody read this render's role, locks and returned
+    // id (all listed) and two refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey, values, branchStates, kept, userRole, lockName, lockCr, returnedId]);
 
   // Auto-save every change (debounced).
   useEffect(() => {
@@ -478,6 +570,37 @@ export function EnrichmentForm({
   function setBranch(id: string, change: Partial<FormBranch>) {
     if (submitLockRef.current || arrived) return;
     setBranchStates((s) => ({ ...s, [id]: { ...s[id]!, ...change } }));
+  }
+
+  /**
+   * Finding 5: "Discard these changes" on a restored phone copy. The boxes go
+   * back to what the page opened on — the customer as saved (as last seen: a
+   * "Keep mine" or "Use this value" moved it), or what he sent when he asked for
+   * a sent-back update to be filled in — and the copy leaves the phone. Every
+   * branch's GPS chip remounts on its saved point: the chip reads its point only
+   * when it mounts (a restore remounts them all the same way).
+   */
+  function discardRestored() {
+    if (submitLockRef.current || arrived) return;
+    const opening = returned?.prefill ?? loadedFormState(loadedRef.current);
+    setValues(opening.customer);
+    setBranchStates(opening.branches);
+    setKept(NO_KEPT_FIELDS);
+    setConflicts({});
+    staleLiveRef.current = {};
+    setErrors({});
+    setGpsGeneration((g) =>
+      Object.fromEntries(customer.branches.map((b) => [b.id, (g[b.id] ?? 0) + 1]))
+    );
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    savedStampRef.current = null;
+    try {
+      window.localStorage.removeItem(draftKey);
+    } catch {
+      /* The boxes are back either way; the next autosave removes it. */
+    }
+    setRestored(null);
+    setConfirmingDiscard(false);
   }
 
   /**
@@ -602,6 +725,9 @@ export function EnrichmentForm({
         return;
       }
       const res = result.data;
+      // It is on the server now: what was restored is no longer only on the phone.
+      setRestored(null);
+      setConfirmingDiscard(false);
       // Flush before acknowledging a first or replayed DRAFT, including a
       // response that beats the 500 ms debounce and an immediate page leave.
       if (isDraft && res.state === 'DRAFT') {
@@ -677,6 +803,52 @@ export function EnrichmentForm({
       {info && (
         <div className="rounded-md bg-emerald-50 px-3 py-2 text-base font-medium text-emerald-700 ring-1 ring-emerald-200">
           {info}
+        </div>
+      )}
+      {/* Finding 5: what the phone copy put back, how old it is, and the way out.
+          Inside the fieldset, so its buttons are off while a submit is on its
+          way. Gone once nothing differs from the page any more. */}
+      {restored && changing.length > 0 && (
+        <div
+          role="status"
+          className="rounded-md bg-emerald-50 px-3 py-2 text-emerald-800 ring-1 ring-emerald-200"
+        >
+          <p className="text-base font-medium">{RESTORED_LEAD}</p>
+          <p className="mt-1 text-sm [overflow-wrap:anywhere]">
+            {restoredAge ? `Saved on this phone ${restoredAge}. ` : ''}It changes:{' '}
+            {restored.labels.join(', ')}.
+          </p>
+          {confirmingDiscard ? (
+            <div className="mt-2">
+              <p className="text-sm font-medium">
+                Discard them? The form goes back to {returned ? 'what you sent' : 'the customer as saved'}.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={discardRestored}
+                  className="min-h-11 rounded-md border border-red-300 bg-white px-3 text-sm font-semibold text-red-700 hover:bg-red-50"
+                >
+                  Yes, discard
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDiscard(false)}
+                  className="min-h-11 rounded-md border border-emerald-300 bg-white px-3 text-sm font-semibold text-emerald-900 hover:bg-emerald-100"
+                >
+                  Keep them
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmingDiscard(true)}
+              className="mt-2 min-h-11 rounded-md border border-emerald-300 bg-white px-3 text-sm font-semibold text-emerald-900 hover:bg-emerald-100"
+            >
+              Discard these changes
+            </button>
+          )}
         </div>
       )}
       {errors._form && (
@@ -1071,6 +1243,14 @@ export function EnrichmentForm({
         )}
         {canSubmit && !arrived && unresolved.length > 0 && (
           <p className="mb-2 text-sm font-medium text-amber-800">{UNRESOLVED_TITLE}</p>
+        )}
+        {/* Finding 5: what Submit (or Save draft) is about to send, from the
+            real difference with what the page loaded — so a change he did not
+            mean to make, or one a phone copy brought back, is seen before it goes. */}
+        {!arrived && changing.length > 0 && (
+          <p className="mb-2 text-sm text-slate-700 [overflow-wrap:anywhere]">
+            You are changing: {changing.join(', ')}.
+          </p>
         )}
         <div className="flex items-center justify-start gap-3">
           <button

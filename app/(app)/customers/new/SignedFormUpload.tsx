@@ -23,16 +23,43 @@
  * he sends them, so a wrong one is simply taken off the list; pages kept from an
  * upload the Finance Manager sent back are shown, and one he takes off is
  * released when he sends.
+ *
+ * Code review 2026-11-10, finding 4: the pages lived only in this page's memory.
+ * A reload before Send — Android dropping the tab behind the camera, a pull down
+ * at the top of the page — showed an empty list, with up to six pages already
+ * uploaded and the customer's paper perhaps handed back. This step has no Save
+ * draft, so the list is kept on the phone (lib/create-draft.ts
+ * parseSignedPagesCopy): the ids only — the pages are on the server, and Send
+ * checks every one again (services/signed-form.ts). It is put back only on the
+ * same visit of the step (the same decision token), kept seven days, and removed
+ * once the pages are sent, the request is withdrawn, or he signs out. Leaving
+ * with unsent pages asks first (lib/leave-guard.ts).
  */
-import { useRef, useState, useTransition } from 'react';
+import { useEffect, useRef, useState, useTransition } from 'react';
 import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
 import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
 import { noticeFor, postForm, type SubmitNotice } from '@/lib/submit-client';
 import { hardReplace } from '@/lib/navigate';
 import { MAX_SIGNED_FORM_PAGES } from '@/lib/credit-documents';
+import { parseSignedPagesCopy } from '@/lib/create-draft';
+import {
+  DEVICE_DRAFT_MAX_AGE_DAYS,
+  deviceDraftExpired,
+  draftAgeText,
+  onRequestClosed,
+  onSignOut,
+  signedFormDraftKey,
+} from '@/lib/device-drafts';
+import {
+  LEAVE_FORM_LOST_QUESTION,
+  LEAVE_FORM_QUESTION,
+  useLeaveGuard,
+  useNoPullToRefresh,
+} from '@/lib/leave-guard';
 
 export function SignedFormUpload({
   editId,
+  sessionUserId,
   decisionToken,
   keptPageIds,
   dueText,
@@ -40,6 +67,8 @@ export function SignedFormUpload({
   sentBackReason,
 }: {
   editId: string;
+  /** Whose phone copy of the pages this is (lib/device-drafts.ts): never another salesman's. */
+  sessionUserId: string;
   /** N01: the request as this page rendered it (lib/decision-token.ts). */
   decisionToken: string;
   /** Pages of an earlier upload still on file (after a Finance Manager send-back). */
@@ -61,6 +90,129 @@ export function SignedFormUpload({
   const busyRef = useRef(false);
   const onPhotoBusy = (b: boolean) => setUploading((n) => Math.max(0, n + (b ? 1 : -1)));
 
+  // ── The list on the phone (finding 4). ──
+  const draftKey = signedFormDraftKey(sessionUserId, editId);
+  // The list as one string: what is on file when the page loads, and now.
+  const keptKey = keptPageIds.join(',');
+  const idsKey = pages.ids.join(',');
+  // Unsent work: a page added, retaken or taken off since the page loaded.
+  const differs = idsKey !== keptKey;
+  // Nothing is written before the restore has run and its pages are in.
+  const [hydrated, setHydrated] = useState(false);
+  const [restoredNote, setRestoredNote] = useState<string | null>(null);
+  const [storageFailed, setStorageFailed] = useState(false);
+  // Sent, withdrawn or signing out: the copy is gone, and nothing writes it back.
+  const goneRef = useRef(false);
+  // The list as last written or restored, with its save time: its age runs from
+  // the last change to it.
+  const stampRef = useRef<{ content: string; savedAt: number } | null>(null);
+
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    let raw: string | null = null;
+    try {
+      raw = window.localStorage.getItem(draftKey);
+    } catch {
+      raw = null;
+    }
+    const drop = () => {
+      try {
+        window.localStorage.removeItem(draftKey);
+      } catch {
+        /* ignore */
+      }
+    };
+    const copy = parseSignedPagesCopy(raw, MAX_SIGNED_FORM_PAGES);
+    if (copy) {
+      const age = draftAgeText(copy.savedAt);
+      const content = copy.ids.join(',');
+      if (content === keptKey) {
+        // Nothing the page does not already show.
+        drop();
+      } else if (deviceDraftExpired(copy.savedAt)) {
+        drop();
+        setRestoredNote(
+          `Pages added on this phone ${age ?? 'earlier'} were removed: unsent work is kept on the phone for ${DEVICE_DRAFT_MAX_AGE_DAYS} days. Take them again.`
+        );
+      } else if (copy.token !== decisionToken) {
+        // Another visit of the step: sent back since, or its documents changed.
+        // The pages on file now are the truth.
+        drop();
+        setRestoredNote(
+          'The pages you had added on this phone were not restored, because this request changed since. Take them again.'
+        );
+      } else {
+        const added = copy.ids.filter((id) => !keptPageIds.includes(id)).length;
+        // A fresh empty slot, as after any page that came in.
+        setPages({ ids: copy.ids, emptySlot: 1 });
+        if (typeof copy.savedAt === 'number' && Number.isFinite(copy.savedAt)) {
+          stampRef.current = { content, savedAt: copy.savedAt };
+        }
+        const when = age ? ` (saved ${age})` : '';
+        setRestoredNote(
+          added > 0
+            ? `Restored ${added} page${added === 1 ? '' : 's'} you had added on this phone${when}. Check them, then send.`
+            : `Restored the pages as you left them on this phone${when}. Check them, then send.`
+        );
+      }
+    }
+    setHydrated(true);
+    // Once, on mount (the ref above).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Written with every change of the list — a page comes in one at a time, and
+  // the next thing he does is open the camera again — and removed when the list
+  // is back to what is on file.
+  useEffect(() => {
+    if (!hydrated || sent || goneRef.current) return;
+    try {
+      if (!differs) {
+        stampRef.current = null;
+        window.localStorage.removeItem(draftKey);
+      } else {
+        const savedAt = stampRef.current?.content === idsKey ? stampRef.current.savedAt : Date.now();
+        window.localStorage.setItem(
+          draftKey,
+          JSON.stringify({ v: 1, savedAt, token: decisionToken, ids: pages.ids })
+        );
+        stampRef.current = { content: idsKey, savedAt };
+      }
+      setStorageFailed(false);
+    } catch {
+      setStorageFailed(true);
+    }
+  }, [hydrated, sent, differs, idsKey, pages.ids, draftKey, decisionToken]);
+
+  // Sign out deletes the copy (lib/device-drafts.ts); a withdrawn request has no
+  // use for it. Neither is written back while the page is still on screen.
+  useEffect(() => {
+    const stop = () => {
+      goneRef.current = true;
+    };
+    const offSignOut = onSignOut(stop);
+    const offClosed = onRequestClosed(editId, () => {
+      stop();
+      try {
+        window.localStorage.removeItem(draftKey);
+      } catch {
+        /* ignore */
+      }
+    });
+    return () => {
+      offSignOut();
+      offClosed();
+    };
+  }, [editId, draftKey]);
+
+  useLeaveGuard(
+    !sent && (differs || uploading > 0),
+    storageFailed ? LEAVE_FORM_LOST_QUESTION : LEAVE_FORM_QUESTION
+  );
+  useNoPullToRefresh(!sent);
+
   const locked = pending || sent;
   const canSend = pages.ids.length > 0 && uploading === 0 && !locked;
 
@@ -74,6 +226,13 @@ export function SignedFormUpload({
       try {
         const outcome = await postForm<{ editId: string; pages: number; replayed: boolean }>('credit-form', body);
         if (outcome.kind === 'answered' && outcome.result.ok) {
+          // They are on the request now: the phone's list goes, before the page does.
+          goneRef.current = true;
+          try {
+            window.localStorage.removeItem(draftKey);
+          } catch {
+            /* ignore */
+          }
           setSent(true);
           // A document load: Work must not show it from the router cache.
           hardReplace('/work');
@@ -115,6 +274,16 @@ export function SignedFormUpload({
       {sentBackReason && (
         <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 ring-1 ring-amber-200">
           <strong className="font-semibold">Sent back by the Finance Manager:</strong> {sentBackReason}
+        </p>
+      )}
+      {restoredNote && !sent && (
+        <p className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800 ring-1 ring-emerald-200">
+          {restoredNote}
+        </p>
+      )}
+      {storageFailed && !sent && (
+        <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800 ring-1 ring-amber-200">
+          This phone could not keep a list of these pages. Keep this page open until you have sent them.
         </p>
       )}
 

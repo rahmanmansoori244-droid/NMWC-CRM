@@ -2189,25 +2189,55 @@ test.describe("the salesman's new-customer form", { tag: ['@phone'] }, () => {
     expect(await db.customerEdit.count({ where: { customerDraft: { is: { legalName: name } } } }), 'the same row, not a second one').toBe(1);
   });
 
-  test('a form never saved keeps only the typed text on the phone, and says so after a reload', async ({ browser }) => {
+  // Code review 2026-11-10, finding 4. This test used to pin the limitation: a
+  // never-saved form kept "only the typed text" on the phone and told him to add
+  // the branch details, GPS points and photos again. The phone keeps the whole
+  // form now (the photos by their ids: salesman-phone.spec.ts takes them through
+  // R2); here, without R2, the text, the shop's boxes and its GPS point.
+  test('a form never saved keeps its text, its shop and its GPS point on the phone, and brings them back after a reload', async ({ browser }) => {
     const page = await pageAs(browser, w.user('SA'), 'phone');
     await page.goto('/customers/new');
     const name = w.name('Never Saved');
     await page.getByLabel('Legal name *', { exact: true }).fill(name);
     await page.getByLabel('Primary phone *', { exact: true }).fill('+968 9123 4567');
+    const branch = formSection(page, /^Branch 1\b/);
+    await branch.getByLabel('Address *', { exact: true }).fill(ADDRESS);
+    await branch.getByRole('button', { name: /^Capture GPS/ }).click();
+    await expect(branch.getByText('23.588100, 58.382900')).toBeVisible();
     await expect
-      .poll(() => page.evaluate(() => Object.keys(localStorage).some((k) => k.startsWith('nmwc:create:') && k.endsWith(':new'))))
-      .toBe(true);
-    await page.reload();
-    await expect(
-      page.getByText(
-        'Restored the details you typed on this phone. Branch details, GPS points and photos are not kept on the phone — add them again, then tap Save draft to keep everything.',
-        { exact: true }
+      .poll(() =>
+        page.evaluate(() => {
+          const key = Object.keys(localStorage).find((k) => k.startsWith('nmwc:create:') && k.endsWith(':new'));
+          const copy = key ? (JSON.parse(localStorage.getItem(key)!) as { branches?: Array<{ gps?: unknown }> }) : null;
+          return !!copy?.branches?.[0]?.gps;
+        })
       )
+      .toBe(true);
+    // The form has unsent work on it: the browser may ask "Leave site?" before it reloads; he says leave.
+    page.on('dialog', (d) => void d.accept().catch(() => undefined));
+    await page.reload();
+    // Held until he says it is this shop (code review 2026-11-10, review of finding 4).
+    await expect(page.getByRole('heading', { name: 'You have a new customer on this phone that was never saved', exact: true })).toBeVisible();
+    await expect(page.getByLabel('Legal name *', { exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: `Continue “${name}” (saved ` }).click();
+    await expect(
+      page.getByText('Restored the details you typed on this phone — shops, GPS points and photos included.', { exact: true })
     ).toBeVisible();
+    await expect(page.getByText(`“${name}” — 1 shop, 1 GPS point, 0 photos.`)).toBeVisible();
+    await expect(page.getByText(/are not kept on the phone/)).toHaveCount(0);
     await expect(page.getByLabel('Legal name *', { exact: true })).toHaveValue(name);
     await expect(page.getByLabel('Primary phone *', { exact: true })).toHaveValue('+968 9123 4567');
+    const again = formSection(page, /^Branch 1\b/);
+    await expect(again.getByLabel('Address *', { exact: true })).toHaveValue(ADDRESS);
+    await expect(again.getByText('23.588100, 58.382900'), 'the GPS chip is back').toBeVisible();
     expect(await db.editCustomerDraft.count({ where: { legalName: name } }), 'nothing on the server').toBe(0);
+    // The way to a blank form for the next shop: the copy leaves the phone with it.
+    await page.getByRole('button', { name: 'Start a blank form', exact: true }).click();
+    await page.getByRole('button', { name: 'Yes, start blank', exact: true }).click();
+    await expect(page.getByLabel('Legal name *', { exact: true })).toHaveValue('');
+    await expect
+      .poll(() => page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('nmwc:create:') && k.endsWith(':new'))))
+      .toEqual([]);
   });
 
   test('validation: a bad phone even for a draft, ten branches at most, removing one keeps the others’ photos and GPS, a typed latitude outside Oman', async ({ browser }) => {

@@ -6,7 +6,7 @@
  * usual order in a shop and used to throw the draft away on reload.
  */
 import { describe, it, expect } from 'vitest';
-import { draftIsStale, enrichmentBase } from '@/lib/enrichment-draft';
+import { draftChangedPaths, draftIsStale, enrichmentBase, valuesOfBase } from '@/lib/enrichment-draft';
 
 const branch = (id: string, over: Record<string, unknown> = {}) => ({
   id,
@@ -152,5 +152,168 @@ describe('draftIsStale', () => {
     expect(draftIsStale({ savedAt: updatedAt + 60_000 }, base)).toBe(true);
     expect(draftIsStale({}, base)).toBe(true);
     expect(draftIsStale({ base: 42 }, base)).toBe(true);
+  });
+});
+
+// Code review 2026-11-10, finding 5: the copies the old form left on every
+// phone hold no change at all. What a copy changes is read from its own base.
+describe('valuesOfBase — the values a base was written from', () => {
+  it('is the inverse of enrichmentBase: the same base comes back out', () => {
+    const base = enrichmentBase(customer({ primaryPhone: '+96891234567', notes: 'Closed Fridays' }));
+    const values = valuesOfBase(base)!;
+    expect(values).toMatchObject({
+      legalName: 'Al Noor',
+      primaryPhone: '+96891234567',
+      status: 'ACTIVE',
+      notes: 'Closed Fridays',
+    });
+    expect(values.branches.map((b) => b.id)).toEqual(['b1', 'b2']);
+    expect(values.branches[0]).toEqual({
+      id: 'b1',
+      address: 'Way 1',
+      areaDescription: null,
+      gpsLat: 23.5,
+      gpsLng: 58.3,
+      dayOfVisit: 'SUN',
+      openingHours: null,
+      deliveryWindow: null,
+      coolersCount: 1,
+      standsCount: 0,
+      emptyBottlesCount: 2,
+    });
+    expect(enrichmentBase(values)).toBe(base);
+  });
+
+  it('reads the byte-for-byte literal of the base pinned above', () => {
+    const literal =
+      '["Al Noor Trading <LLC>","1234567","ckchannel00000000000000001",null,"+96891234567",null,"سعيد","","ACTIVE","Closed Fridays, back door",[["b1","Way 1, Ruwi","Opposite the bakery",23.588123,58.3829,"SUN",null,"10:00 – 14:00",2,1,40],["b2","Way 2, Seeb",null,null,null,null,"08:00 – 22:00",null,0,0,0]]]';
+    expect(enrichmentBase(valuesOfBase(literal)!)).toBe(literal);
+  });
+
+  it('null for anything that is not exactly a base: none, damaged, or another shape', () => {
+    const good = JSON.parse(enrichmentBase(customer())) as unknown[];
+    const row = (good[10] as unknown[][])[0]!;
+    const withRow = (r: unknown) => JSON.stringify([...good.slice(0, 10), [r]]);
+    const bad: unknown[] = [
+      undefined,
+      null,
+      42,
+      '',
+      '{oops',
+      '{}',
+      '[]',
+      JSON.stringify(good.slice(0, 10)), // a field short
+      JSON.stringify([...good, 'extra']),
+      JSON.stringify([7, ...good.slice(1)]), // the name is not text
+      JSON.stringify([...good.slice(0, 4), 96891234567, ...good.slice(5)]), // a phone as a number
+      JSON.stringify([...good.slice(0, 10), 'no branches']),
+      withRow('not a row'),
+      withRow(row.slice(0, 10)),
+      withRow([1, ...row.slice(1)]), // the branch id is not text
+      withRow([...row.slice(0, 3), '23.5', ...row.slice(4)]), // a coordinate as text
+      withRow([...row.slice(0, 8), null, ...row.slice(9)]), // a count missing
+    ];
+    for (const b of bad) expect(valuesOfBase(b), String(b)).toBeNull();
+    // …and the untouched one is read.
+    expect(valuesOfBase(JSON.stringify(good))).not.toBeNull();
+    expect(valuesOfBase(withRow(row))).not.toBeNull();
+  });
+});
+
+describe('draftChangedPaths — what a phone copy changes from the values it started from', () => {
+  const base = enrichmentBase(customer());
+  const boxes = (over: Record<string, unknown> = {}) => ({
+    address: 'Way 1',
+    areaDescription: '',
+    gps: { lat: 23.5, lng: 58.3, accuracy: 5, capturedAt: '2026-09-24T08:00:00.000Z' },
+    dayOfVisit: 'SUN',
+    openingHours: '',
+    deliveryWindow: '',
+    coolers: 1,
+    stands: 0,
+    bottles: 2,
+    confirmed: false,
+    confirmedLoaded: false,
+    ...over,
+  });
+  /** What the form before this fix wrote for a customer merely opened. */
+  const mirror = (over: Record<string, unknown> = {}) => ({
+    legalName: 'Al Noor',
+    crNumber: '',
+    channelId: 'ch',
+    subChannelId: '',
+    primaryPhone: '',
+    altPhone: '',
+    contactPerson: '',
+    contactRole: '',
+    notes: '',
+    branchStates: { b1: boxes(), b2: boxes() },
+    savedAt: 1,
+    base,
+    ...over,
+  });
+
+  it('a copy that only mirrors those values changes nothing', () => {
+    expect(draftChangedPaths(mirror())).toEqual([]);
+    expect(draftChangedPaths(mirror({ status: 'ACTIVE' }))).toEqual([]);
+    // "Counted" as it was loaded, carried along untouched.
+    expect(
+      draftChangedPaths(mirror({ branchStates: { b1: boxes({ confirmed: true, confirmedLoaded: true }), b2: boxes() } }))
+    ).toEqual([]);
+  });
+
+  it('names each box typed into', () => {
+    expect(draftChangedPaths(mirror({ notes: 'Closed Fridays', contactPerson: 'Said' }))).toEqual([
+      'customer.contactPerson',
+      'customer.notes',
+    ]);
+    expect(
+      draftChangedPaths(mirror({ branchStates: { b1: boxes(), b2: boxes({ dayOfVisit: 'MON', coolers: 2 }) } }))
+    ).toEqual(['branch.b2.dayOfVisit', 'branch.b2.coolersCount', 'branch.b2.equipmentConfirmed']);
+  });
+
+  it('a moved point is the point and its companions; the same point captured again is no change', () => {
+    const again = { lat: 23.5, lng: 58.3, accuracy: 9, capturedAt: '2026-11-09T08:00:00.000Z' };
+    expect(draftChangedPaths(mirror({ branchStates: { b1: boxes({ gps: again }), b2: boxes() } }))).toEqual([]);
+    const moved = { lat: 23.6, lng: 58.3, accuracy: 9, capturedAt: '2026-11-09T08:00:00.000Z' };
+    expect(draftChangedPaths(mirror({ branchStates: { b1: boxes({ gps: moved }), b2: boxes() } }))).toEqual([
+      'branch.b1.gpsLat',
+      'branch.b1.gpsLng',
+      'branch.b1.gpsAccuracy',
+      'branch.b1.gpsCapturedAt',
+    ]);
+  });
+
+  it('a tick of "Counted" against a loaded false is a change; an untick only for a Manager or the Steward', () => {
+    const ticked = { b1: boxes({ confirmed: true, confirmedLoaded: false }), b2: boxes() };
+    expect(draftChangedPaths(mirror({ branchStates: ticked }))).toEqual(['branch.b1.equipmentConfirmed']);
+    const unticked = { b1: boxes({ confirmed: false, confirmedLoaded: true }), b2: boxes() };
+    expect(draftChangedPaths(mirror({ branchStates: unticked }), 'SALESMAN')).toEqual([]);
+    expect(draftChangedPaths(mirror({ branchStates: unticked }), 'STEWARD')).toEqual(['branch.b1.equipmentConfirmed']);
+  });
+
+  it('the status: read as a Manager copy when it holds one, never sent as a salesman', () => {
+    expect(draftChangedPaths(mirror({ status: 'SUSPENDED' }))).toEqual(['customer.status']);
+    expect(draftChangedPaths(mirror({ status: 'SUSPENDED' }), 'MANAGER')).toEqual(['customer.status']);
+    expect(draftChangedPaths(mirror({ status: 'SUSPENDED' }), 'SALESMAN')).toEqual([]);
+  });
+
+  it('a copy of a few boxes only (no branches) is read box by box', () => {
+    expect(draftChangedPaths({ base, contactPerson: 'Said (typed offline)' })).toEqual(['customer.contactPerson']);
+    expect(draftChangedPaths({ base })).toEqual([]);
+  });
+
+  it('null when the copy has no readable base: nothing says what was typed', () => {
+    expect(draftChangedPaths({ notes: 'Typed long ago', savedAt: 1 })).toBeNull();
+    expect(draftChangedPaths(mirror({ base: 42 }))).toBeNull();
+    expect(draftChangedPaths(mirror({ base: '[1,2,3]' }))).toBeNull();
+  });
+
+  it('a branch the base does not have, and boxes of the wrong type, are ignored', () => {
+    expect(
+      draftChangedPaths(
+        mirror({ notes: 7, branchStates: { b1: boxes(), b2: 'junk', gone: boxes({ address: 'Another route now' }) } })
+      )
+    ).toEqual([]);
   });
 });

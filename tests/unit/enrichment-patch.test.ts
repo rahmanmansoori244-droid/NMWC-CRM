@@ -12,13 +12,17 @@ import { submitEditSchema, keysWithoutBase } from '@/lib/validation/edit';
 import { classifyAgainstLive } from '@/lib/edit-values';
 import {
   buildEnrichmentPatch,
+  changedFieldLabels,
   conflictsFrom,
   countedNow,
   draftBranchStates,
+  labelsForPaths,
   loadedFormState,
   openConflicts,
+  patchDifference,
   resolveConflict,
   restoreBranchStates,
+  restoreCustomerBoxes,
   restoreKept,
   sentPaths,
   type EnrichmentPatch,
@@ -745,5 +749,137 @@ describe('a phone draft, restored', () => {
       )
     ).toEqual({ customer: ['contactPerson'], branches: { [B1]: ['gpsLat', 'gpsLng'] } });
     expect(restoreKept('junk', [{ id: B1 }])).toEqual({ customer: [], branches: {} });
+  });
+});
+
+// Code review 2026-11-10, finding 5: the edit form names what a restored phone
+// copy changes, and what a submit is about to send.
+describe('what a patch changes, as a person reads it', () => {
+  const two = [{ id: B1 }, { id: B2 }];
+
+  it('customer fields by their names on the form, in the order they are sent', () => {
+    const patch = build(
+      loaded(),
+      stateOf(loaded(), { notes: 'Closed Fridays', primaryPhone: '+96890001111', contactRole: 'Owner' })
+    );
+    expect(changedFieldLabels(patch, two)).toEqual(['Primary phone', 'Contact role', 'Notes']);
+  });
+
+  it('the point is one box: coordinates, accuracy, capture time and typed-in reason are "Location", once', () => {
+    const patch = build(
+      loaded(),
+      stateOf(
+        loaded(),
+        {},
+        {
+          [B1]: {
+            gps: { lat: 23.6, lng: 58.4, accuracy: null, capturedAt: CAPTURED, isManual: true, manualReason: 'No fix inside the mall' },
+          },
+        }
+      )
+    );
+    expect(sentPaths(patch)).toEqual([
+      `branch.${B1}.gpsLat`,
+      `branch.${B1}.gpsLng`,
+      `branch.${B1}.gpsAccuracy`,
+      `branch.${B1}.gpsCapturedAt`,
+      `branch.${B1}.gpsManualReason`,
+    ]);
+    expect(changedFieldLabels(patch, [{ id: B1 }])).toEqual(['Location']);
+  });
+
+  it('a branch field says which branch only when the page shows more than one', () => {
+    const patch = build(loaded(), stateOf(loaded(), {}, { [B2]: { dayOfVisit: 'MON', coolers: 4 } }));
+    expect(changedFieldLabels(patch, two)).toEqual([
+      'Branch 2: Day of visit',
+      'Branch 2: Coolers',
+      'Branch 2: Equipment counted',
+    ]);
+    expect(changedFieldLabels(patch, [{ id: B2 }])).toEqual(['Day of visit', 'Coolers', 'Equipment counted']);
+  });
+
+  it('the same field on two branches is named for each; a branch the page does not show is "Another branch"', () => {
+    const paths = [`branch.${B1}.address`, `branch.${B2}.address`, 'branch.gone.address', 'branch.gone.gpsLat'];
+    expect(labelsForPaths(paths, two)).toEqual([
+      'Branch 1: Address',
+      'Branch 2: Address',
+      'Another branch: Address',
+      'Another branch: Location',
+    ]);
+  });
+
+  it('paths that name no field of the form are left out, and nothing is said twice', () => {
+    expect(
+      labelsForPaths(
+        ['customer.notes', 'customer.notes', 'customer.nonsense', 'draft.0.gps', `branch.${B1}.nonsense`, 'junk'],
+        two
+      )
+    ).toEqual(['Notes']);
+    expect(labelsForPaths([], two)).toEqual([]);
+  });
+
+  it('an untouched form changes nothing', () => {
+    expect(changedFieldLabels(build(loaded(), stateOf(loaded())), two)).toEqual([]);
+  });
+});
+
+describe('patchDifference — what one set of boxes changes that another does not', () => {
+  const sentBack = stateOf(loaded(), { contactRole: 'Partner' }, { [B1]: { dayOfVisit: 'MON' } });
+  const none = build(loaded(), stateOf(loaded()));
+
+  it('against an untouched form: every path sent', () => {
+    const patch = build(loaded(), sentBack);
+    expect(patchDifference(patch, none)).toEqual(sentPaths(patch));
+    expect(patchDifference(none, none)).toEqual([]);
+  });
+
+  it('against the boxes the page opened on: only what was added, changed again, or put back', () => {
+    const opened = build(loaded(), sentBack);
+    // The same boxes: nothing.
+    expect(patchDifference(build(loaded(), sentBack), opened)).toEqual([]);
+    // A note added on the phone.
+    const added = build(loaded(), {
+      ...sentBack,
+      customer: { ...sentBack.customer, notes: 'Asked for by the supervisor' },
+    });
+    expect(patchDifference(added, opened)).toEqual(['customer.notes']);
+    // The contact role changed again, and the day of visit put back to the saved one.
+    const moved = build(loaded(), stateOf(loaded(), { contactRole: 'Manager' }, {}));
+    expect(patchDifference(moved, opened)).toEqual(['customer.contactRole', `branch.${B1}.dayOfVisit`]);
+  });
+});
+
+describe('restoreCustomerBoxes — the customer boxes a phone draft puts back', () => {
+  const boxes = loadedFormState(loaded()).customer;
+
+  it('text that is text comes back; a key the draft does not have keeps what the page shows', () => {
+    const next = restoreCustomerBoxes(
+      boxes,
+      { notes: 'Closed Fridays', contactPerson: 'Said Al Harthy', altPhone: '' },
+      'SALESMAN'
+    );
+    expect(next).toEqual({ ...boxes, notes: 'Closed Fridays', contactPerson: 'Said Al Harthy', altPhone: '' });
+    expect(next).not.toBe(boxes);
+  });
+
+  it('values of the wrong type, and keys that are not boxes, are ignored', () => {
+    expect(
+      restoreCustomerBoxes(
+        boxes,
+        { notes: 7, legalName: null, primaryPhone: ['x'], paymentTerms: 'CREDIT', nmwcCode: 'X' },
+        'MANAGER'
+      )
+    ).toEqual(boxes);
+    for (const junk of [null, undefined, 'text', 3]) {
+      expect(restoreCustomerBoxes(boxes, junk, 'MANAGER')).toEqual(boxes);
+    }
+  });
+
+  it('the status comes back for a Manager and the Steward only, and only a known one (OCT-05, EL-01)', () => {
+    expect(restoreCustomerBoxes(boxes, { status: 'SUSPENDED' }, 'MANAGER').status).toBe('SUSPENDED');
+    expect(restoreCustomerBoxes(boxes, { status: 'CLOSED' }, 'STEWARD').status).toBe('CLOSED');
+    expect(restoreCustomerBoxes(boxes, { status: 'CLOSED' }, 'SALESMAN').status).toBe('ACTIVE');
+    expect(restoreCustomerBoxes(boxes, { status: 'CLOSED' }, 'SUPERVISOR').status).toBe('ACTIVE');
+    expect(restoreCustomerBoxes(boxes, { status: 'INVALID' }, 'MANAGER').status).toBe('ACTIVE');
   });
 });

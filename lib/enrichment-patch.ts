@@ -28,6 +28,8 @@
 import type { CustomerStatus, DayOfWeek, Role } from '@prisma/client';
 import type { SubmitEditInput } from './validation/edit';
 import {
+  BRANCH_FIELD_LABEL,
+  CUSTOMER_FIELD_LABEL,
   fieldSlotKey,
   parseFieldPath,
   sameEditValue,
@@ -346,6 +348,79 @@ export function sentPaths(patch: EnrichmentPatch): string[] {
   return out;
 }
 
+/**
+ * The paths on which two patches built from the same loaded values differ: sent
+ * by one and not the other, or sent with another value. Against an empty patch
+ * it is every path sent. The edit form uses it to say what a restored phone copy
+ * changes from the boxes the page opened on — the customer as it is, or what he
+ * sent when he asked for a sent-back update to be filled in (code review
+ * 2026-11-10, finding 5).
+ */
+export function patchDifference(a: EnrichmentPatch, b: EnrichmentPatch): string[] {
+  const valuesOf = (p: EnrichmentPatch) => {
+    const out = new Map<string, string>();
+    for (const [f, v] of Object.entries(p.customer)) out.set(`customer.${f}`, JSON.stringify(v ?? null));
+    for (const row of p.branches) {
+      for (const [k, v] of Object.entries(row)) {
+        if (k === 'branchId' || k === 'base' || k === 'overrides') continue;
+        out.set(`branch.${row.branchId}.${k}`, JSON.stringify(v ?? null));
+      }
+    }
+    return out;
+  };
+  const left = valuesOf(a);
+  const right = valuesOf(b);
+  const out: string[] = [];
+  for (const [path, v] of left) if (right.get(path) !== v) out.push(path);
+  for (const path of right.keys()) if (!left.has(path)) out.push(path);
+  return out;
+}
+
+/**
+ * The names a person reads for a list of sent paths, in the order given and each
+ * once: "Primary phone", "Location". The point is one box, so every gps* path of
+ * a branch (the coordinates, their accuracy, capture time and typed-in reason) is
+ * "Location", once. A branch field carries "Branch N: " only when the page shows
+ * more than one branch; a branch the page does not show is "Another branch".
+ */
+export function labelsForPaths(
+  paths: readonly string[],
+  shown: ReadonlyArray<{ id: string }>
+): string[] {
+  const out: string[] = [];
+  const add = (label: string) => {
+    if (!out.includes(label)) out.push(label);
+  };
+  for (const path of paths) {
+    if (path.startsWith('customer.')) {
+      const p = parseFieldPath(path);
+      if (p?.scope === 'customer') add(CUSTOMER_FIELD_LABEL[p.field]);
+      continue;
+    }
+    const m = /^branch\.([^.]+)\.(.+)$/.exec(path);
+    if (!m) continue;
+    const [, branchId, field] = m as unknown as [string, string, string];
+    const p = parseFieldPath(path);
+    const what = field.startsWith('gps')
+      ? BRANCH_FIELD_LABEL.gpsLat
+      : p?.scope === 'branch'
+        ? BRANCH_FIELD_LABEL[p.field]
+        : null;
+    if (!what) continue;
+    const n = shown.findIndex((b) => b.id === branchId) + 1;
+    add(n === 0 ? `Another branch: ${what}` : shown.length > 1 ? `Branch ${n}: ${what}` : what);
+  }
+  return out;
+}
+
+/** What a submit of this patch changes, as a person reads it ("You are changing: …"). */
+export function changedFieldLabels(
+  patch: EnrichmentPatch,
+  shown: ReadonlyArray<{ id: string }>
+): string[] {
+  return labelsForPaths(sentPaths(patch), shown);
+}
+
 /** A STALE_FIELDS answer's live values, by the form slot they belong to (lib/edit-values.ts fieldSlotKey). */
 export type Conflicts = Readonly<Record<string, Readonly<Record<string, BaseValue>>>>;
 
@@ -520,6 +595,42 @@ export function resolveConflict(
     state: { customer: nextCustomer, branches: nextBranches },
     kept: { customer: [...keptCustomer], branches: branchesKept },
   };
+}
+
+/** The customer text boxes a phone draft holds (lib/enrichment-draft.ts). */
+const DRAFT_TEXT_FIELDS = [
+  'legalName',
+  'crNumber',
+  'channelId',
+  'subChannelId',
+  'primaryPhone',
+  'altPhone',
+  'contactPerson',
+  'contactRole',
+  'notes',
+] as const;
+
+/**
+ * The customer boxes a phone draft restores, over the boxes the page opened on.
+ * Only text that is text; a key the draft does not have keeps what the page
+ * shows. The status only for a Manager or the Steward, and only a known one
+ * (OCT-05): a salesman's form has no status box and never sends one (EL-01).
+ */
+export function restoreCustomerBoxes(prev: FormCustomer, saved: unknown, role: Role): FormCustomer {
+  const next: FormCustomer = { ...prev };
+  if (!saved || typeof saved !== 'object') return next;
+  const d = saved as Record<string, unknown>;
+  for (const k of DRAFT_TEXT_FIELDS) {
+    const v = d[k];
+    if (typeof v === 'string') next[k] = v;
+  }
+  if (
+    (role === 'MANAGER' || role === 'STEWARD') &&
+    (d.status === 'ACTIVE' || d.status === 'CLOSED' || d.status === 'SUSPENDED')
+  ) {
+    next.status = d.status;
+  }
+  return next;
 }
 
 /** A branch as the phone draft keeps it: its boxes, and the "counted" value loaded when it was written. */

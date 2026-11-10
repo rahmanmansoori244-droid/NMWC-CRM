@@ -49,6 +49,7 @@ export default async function NewCustomerPage({
   // Owner decisions 2026-10-11: his request waiting at the signed-application step.
   let signedForm: {
     editId: string;
+    sessionUserId: string;
     decisionToken: string;
     keptPageIds: string[];
     dueText: string | null;
@@ -109,6 +110,8 @@ export default async function NewCustomerPage({
       ]);
       signedForm = {
         editId: edit.id,
+        // Whose phone copy of the pages it is (lib/device-drafts.ts).
+        sessionUserId: session.user.id,
         decisionToken: decisionTokenFor(
           edit,
           bound.map((b) => b.id)
@@ -125,6 +128,13 @@ export default async function NewCustomerPage({
     const d = edit.customerDraft;
     initial = {
       editId: edit.id,
+      // Code review 2026-11-10, finding 4: which save of the request this is.
+      // Every draft save and submit writes its submission id on the row, and
+      // nothing else does (services/creates.ts); a request saved before ids
+      // existed falls back to its last-updated time. The form puts back what was
+      // added on the phone only over the version it was added to.
+      version:
+        edit.submissionId ?? (edit.updatedAt instanceof Date ? `at:${edit.updatedAt.getTime()}` : null),
       state: edit.state,
       decisionReason: edit.decisionReason,
       // The step in words (lib/approval-chains.ts stepName): "Sales Director",
@@ -218,6 +228,9 @@ export default async function NewCustomerPage({
           initial={initial}
           sessionUserId={session.user.id}
           startedOnOtherRoute={startedOn !== null}
+          // The request waits at his signed-application step: the pages he has
+          // added on the phone are kept (SignedFormUpload), not cleared.
+          signedFormOpen={signedForm !== null}
         />
       )}
       {/* Launch fix: his own draft, or one sent back to him, can be withdrawn —
