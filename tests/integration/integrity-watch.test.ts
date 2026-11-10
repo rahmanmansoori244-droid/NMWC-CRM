@@ -47,6 +47,8 @@ describe.skipIf(!ENABLED)('gap 29: the nightly integrity checks on Postgres', ()
   const before: Record<string, number> = {};
   /** The CR number this world's customers share (normalised already). */
   let CR = '';
+  /** Finding 7: the second card and the customer holding its code as a Temix code. */
+  let crossed = { card: '', holder: '' };
 
   beforeAll(async () => {
     assertNotProductionEnv();
@@ -55,7 +57,7 @@ describe.skipIf(!ENABLED)('gap 29: the nightly integrity checks on Postgres', ()
     w = await buildWorld(prisma, 'intwatch');
     const [s] = await prisma.$queryRaw<Array<{ n: number | null }>>`SELECT max("seq") AS n FROM "SealRecord"`;
     sealsBefore = s?.n ?? -1;
-    for (const id of ['customer-status-follows-shops', 'temix-code-shared', 'cr-number-shared', 'history-unattributed-since-last-run']) {
+    for (const id of ['customer-status-follows-shops', 'temix-code-shared', 'customer-code-is-anothers-temix-code', 'cr-number-shared', 'history-unattributed-since-last-run']) {
       before[id] = await count(id);
     }
 
@@ -81,6 +83,15 @@ describe.skipIf(!ENABLED)('gap 29: the nightly integrity checks on Postgres', ()
     await expect(
       db.customer.create({ data: { nmwcCode: `${SFX}-T3`, legalName: 'ZZ shared 3', paymentTerms: 'CASH', temixCode: ` ${SFX.toLowerCase()}t ` } })
     ).rejects.toMatchObject({ code: 'P2002' });
+    // Code review 2026-11-10, finding 7: a live customer whose customer code is
+    // another live customer's Temix code (the import used to make one), and the
+    // same pair archived, which is not counted.
+    const kHolder = await db.customer.create({ data: { nmwcCode: `${SFX}-KH`, legalName: 'ZZ code holder', paymentTerms: 'CASH', temixCode: `${SFX}-K` } });
+    const kCard = await db.customer.create({ data: { nmwcCode: `${SFX.toLowerCase()}-k`, legalName: 'ZZ second card', paymentTerms: 'CASH' } });
+    const kGone = await db.customer.create({ data: { nmwcCode: `${SFX}-KG`, legalName: 'ZZ archived holder', paymentTerms: 'CASH', temixCode: `${SFX}-KX`, deletedAt: new Date() } });
+    const kOrphan = await db.customer.create({ data: { nmwcCode: `${SFX}-KX`, legalName: 'ZZ not crossed', paymentTerms: 'CASH' } });
+    w.customers.push(kHolder.id, kCard.id, kGone.id, kOrphan.id);
+    crossed = { card: kCard.id, holder: kHolder.id };
     // An archived customer on the CR is not counted.
     const archived = await db.customer.create({
       data: { nmwcCode: `${SFX}-A`, legalName: 'ZZ archived', paymentTerms: 'CASH', crNumber: CR, crNumberNorm: CR, deletedAt: new Date() },
@@ -111,6 +122,11 @@ describe.skipIf(!ENABLED)('gap 29: the nightly integrity checks on Postgres', ()
     expect((await count('customer-status-follows-shops')) - before['customer-status-follows-shops']!).toBe(1);
     // Owner decision 2026-10-25: the database refused the second holder of the code, so none is shared.
     expect((await count('temix-code-shared')) - before['temix-code-shared']!).toBe(0);
+    // Finding 7: the second card is counted once, shown beside its holder; the archived pair is not.
+    const x = await CHECK_BY_ID.get('customer-code-is-anothers-temix-code')!.run!(prisma, ctx());
+    expect(x.count - before['customer-code-is-anothers-temix-code']!).toBe(1);
+    const at = x.sampleIds.indexOf(crossed.card);
+    if (at >= 0) expect(x.sampleIds[at + 1]).toBe(crossed.holder);
     // The two real customers on the CR; the archived one and the flagged one are left out.
     const cr = await CHECK_BY_ID.get('cr-number-shared')!.run!(prisma, ctx());
     expect(cr.count - before['cr-number-shared']!).toBe(2);

@@ -47,6 +47,7 @@ describe('the registry', () => {
       'customer-status-follows-shops',
       'temix-code-shared',
       'temix-code-shape',
+      'customer-code-is-anothers-temix-code',
       'cr-number-shared',
       'test-scaffolding-mixed',
       'history-open-interval',

@@ -171,3 +171,18 @@ describe('the database half', () => {
     expect(sql[0]!.values).toEqual([null, null, 'AB_12', 'AB_12', 'AB_12', null, null, 'AB_12']);
   });
 });
+
+// Code review 2026-11-10, finding 7.
+describe('newCustomerCodeHeld — the import does not create a customer under a live customer\'s Temix code', () => {
+  it('names the live holder, and passes an archived holder, a branch code or no holder', async () => {
+    const { newCustomerCodeHeld } = await import('@/lib/temix-code');
+    expect(newCustomerCodeHeld('caa0999', { nmwcCode: 'NMWC-2026-000123', archived: false, branchCode: null })).toMatch(
+      /^cust_code CAA0999 is already the Temix code of live customer NMWC-2026-000123, so no new customer is created under it/
+    );
+    expect(newCustomerCodeHeld('CAA0999', { nmwcCode: 'OLD', archived: true, branchCode: null })).toBeNull();
+    expect(newCustomerCodeHeld('CAA0999', { nmwcCode: 'X', archived: false, branchCode: 'CAA0999' })).toBeNull();
+    expect(newCustomerCodeHeld('CAA0999', null)).toBeNull();
+    // It names no branch_code, so the batch page offers no cell to correct.
+    expect(newCustomerCodeHeld('C', { nmwcCode: 'N', archived: false, branchCode: null })).not.toMatch(/branch_?code/i);
+  });
+});

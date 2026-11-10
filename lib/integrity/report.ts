@@ -50,7 +50,7 @@ export function infoIds(r: Pick<ResultRow, 'detail'>): string[] {
  * The page shows each as its customer's NMWC code, linked (cr-number-shared:
  * never the CR number).
  */
-export const CUSTOMER_SAMPLES = new Set(['customer-status-follows-shops', 'temix-code-shared', 'temix-code-shape', 'cr-number-shared']);
+export const CUSTOMER_SAMPLES = new Set(['customer-status-follows-shops', 'temix-code-shared', 'temix-code-shape', 'customer-code-is-anothers-temix-code', 'cr-number-shared']);
 export const SHOP_SAMPLES = new Set(['shop-region-matches-route']);
 
 export async function loadIntegrityReport(db: Db, now: Date = new Date()): Promise<IntegrityReport> {

@@ -89,6 +89,22 @@ export function temixCodeTakenMessage(code: string, nmwcCode: string): string {
  */
 export type TemixCodeHolder = { nmwcCode: string; archived: boolean; branchCode: string | null };
 
+/**
+ * Code review 2026-11-10, finding 7: why the customer import does not create a
+ * NEW customer under `custCode`, or null when it may. Only a LIVE customer whose
+ * Temix code it is counts (temixCodeHolder's first answer, asked under
+ * lockTemixCode): that customer is the same shop under the code Temix knows it
+ * by, and a second card would carry a "new customer" row for a code Temix
+ * already has, which the merge then refuses as crossed codes. An archived
+ * holder or a branch code is not this finding's rule and is left as it was.
+ * Never says "branch_code": the batch page then offers no cell to correct, only
+ * Re-check and Exclude (lib/import-row-fix.ts editableColumns).
+ */
+export function newCustomerCodeHeld(custCode: string, holder: TemixCodeHolder | null): string | null {
+  if (!holder || holder.archived || holder.branchCode) return null;
+  return `cust_code ${normalizeTemixCode(custCode)} is already the Temix code of live customer ${holder.nmwcCode}, so no new customer is created under it — if this row is that shop, its customer code in the CRM is ${holder.nmwcCode}; exclude this row or correct the sheet and upload it again; steward review`;
+}
+
 /** The refusal of a code `holder` has, naming it, for the box on the approval page. */
 export function temixCodeHolderMessage(code: string, holder: TemixCodeHolder): string {
   if (holder.branchCode) {

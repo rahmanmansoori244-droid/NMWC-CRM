@@ -49,6 +49,14 @@ const fake = {
   channel: { findMany: async () => [{ id: 'ch-horeca', key: 'horeca' }] },
   customer: {
     findMany: async (args: Call['args']) => {
+      // Finding 7: the live customers whose Temix code is one of the new codes.
+      if (args.where.temixCode) {
+        calls.push({ model: 'customer.temixCode', args });
+        const wanted = (args.where.temixCode as { in: string[] }).in.map((c) => c.toUpperCase());
+        return customers.filter(
+          (c) => !c.deletedAt && typeof c.temixCode === 'string' && wanted.includes(c.temixCode.toUpperCase())
+        );
+      }
       calls.push({ model: 'customer', args });
       return customers.filter((c) => args.where.nmwcCode!.in!.includes(c.nmwcCode as string));
     },
@@ -192,6 +200,19 @@ describe('loadPromoteSummary', () => {
     expect((await load()).expectRejected.customers).toBe(0);
   });
 
+  // Code review 2026-11-10, finding 7.
+  it('a new customer code that is a live customer\'s Temix code is counted as expected to be rejected', async () => {
+    staged = [parsed({ custCode: 'CAA0999', branchCode: '01' })];
+    customers = [customer('NMWC-2026-000123', { temixCode: 'caa0999' })];
+    expect((await load()).expectRejected).toEqual({
+      customers: 1,
+      rows: 1,
+      reasons: [{ reason: "a new customer code that is already another live customer's Temix code", customers: 1 }],
+    });
+    customers = [customer('NMWC-2026-000123', { temixCode: 'caa0999', deletedAt: new Date() })];
+    expect((await load()).expectRejected.customers).toBe(0);
+  });
+
   it('with the option on the same rows are counted as replaced, not kept — the counts are the same', async () => {
     staged = [parsed({ custName: 'Older Name', address: 'Older address' })];
     customers = [customer('C1')];
@@ -209,6 +230,7 @@ describe('loadPromoteSummary', () => {
     expect(s).toMatchObject({ rows: n, customers: n, created: { customers: n, shops: n } });
     const sizes = (model: string) => calls.filter((c) => c.model === model).map((c) => Object.values(c.args.where)[0]!.in!.length);
     expect(sizes('customer')).toEqual([SUMMARY_CHUNK, 500]);
+    expect(sizes('customer.temixCode')).toEqual([SUMMARY_CHUNK, 500]);
     // n composed codes and the one bare code they share.
     expect(sizes('branch')).toEqual([SUMMARY_CHUNK, 501]);
   });

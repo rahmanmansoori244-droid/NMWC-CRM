@@ -12,6 +12,7 @@ import {
   capSamples,
   checkStatus,
   classifyTemixCodes,
+  crossedCodeFindings,
   codeSequenceFindings,
   daysBetween,
   dbRuleFindings,
@@ -403,5 +404,19 @@ describe('the day’s alert words', () => {
     expect(t.title).toBe('Nightly data check: 7 problems');
     expect(t.body).toBe('Check 0: 1; Check 1: 2; Check 2: 3; Check 3: 4; Check 4: 5 +2 more. Open Service status, Integrity, for what each means and what to do.');
     expect(alertText([{ title: 'One', count: null }]).title).toBe('Nightly data check: 1 problem');
+  });
+});
+
+
+// Code review 2026-11-10, finding 7.
+describe('customer-code-is-anothers-temix-code', () => {
+  it('counts each customer once, keeps each pair together in the samples, and counts the pairs', () => {
+    const r = crossedCodeFindings([
+      { id: 'c2', holderId: 'h2' },
+      { id: 'c1', holderId: 'h1' },
+      { id: 'c1', holderId: 'h9' },
+    ]);
+    expect(r).toEqual({ count: 2, sampleIds: ['c1', 'h1', 'h9', 'c2', 'h2'], detail: { pairs: 3 } });
+    expect(crossedCodeFindings([])).toEqual({ count: 0, sampleIds: [], detail: { pairs: 0 } });
   });
 });

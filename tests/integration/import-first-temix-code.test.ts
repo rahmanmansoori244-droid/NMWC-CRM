@@ -298,6 +298,28 @@ describe.skipIf(!ENABLED)('owner decision 2026-10-08: the first Temix code of a 
     expect(await stored(B.id)).toEqual(beforeB);
   });
 
+  // Code review 2026-11-10, finding 7: a shop created in the app, whose Temix
+  // code the Accountant typed, listed again by a Temix extract under that code
+  // with no temix_code — the import used to create a second, bare customer.
+  it('finding 7: a row whose cust_code is a live customer\'s Temix code is rejected naming it; no second customer', async () => {
+    const holder = await customer(`${APP_P}7`, { request: true, finalized: true });
+    const code = `${P}-CAA`;
+    await prisma.customer.update({ where: { id: holder.id }, data: { temixCode: code, temixSyncState: 'SYNCED' } });
+    const batchId = await upload([
+      { cust_code: code.toLowerCase(), cust_name: 'ZZ Same Shop', branch_code: '01', address: 'Way 7, Sheet', temix_code: '' },
+    ]);
+    const staged = await prisma.importRow.findMany({ where: { batchId } });
+    expect(staged.map((r) => r.state)).toEqual(['CLEAN']);
+    const totals = await promoteFully(imports, batchId);
+    expect(totals).toMatchObject({ promoted: 0, failed: 1 });
+    const [row] = await prisma.importRow.findMany({ where: { batchId } });
+    expect(row!.state).toBe('REJECTED');
+    expect((row!.issues as Array<{ message: string }>)[0]!.message).toBe(
+      `cust_code ${code} is already the Temix code of live customer ${holder.nmwcCode}, so no new customer is created under it — if this row is that shop, its customer code in the CRM is ${holder.nmwcCode}; exclude this row or correct the sheet and upload it again; steward review`
+    );
+    expect(await prisma.customer.count({ where: { nmwcCode: { equals: code, mode: 'insensitive' } } })).toBe(0);
+  });
+
   it('the next refresh of A is the ordinary one: no second acknowledgement', async () => {
     const A = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: `${APP_P}1` } });
     const batchId = await upload([

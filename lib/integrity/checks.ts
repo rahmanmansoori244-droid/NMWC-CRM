@@ -50,6 +50,7 @@ import { omanDateISO } from '../tz';
 import {
   capSamples,
   classifyTemixCodes,
+  crossedCodeFindings,
   codeSequenceFindings,
   daysBetween,
   dbRuleFindings,
@@ -274,6 +275,36 @@ export const CHECKS: IntegrityCheck[] = [
       );
       const r = classifyTemixCodes(rows);
       return { count: r.count, sampleIds: r.sampleIds, detail: r.detail };
+    },
+  },
+  {
+    // Code review 2026-11-10, finding 7: the customer import used to create a
+    // second live customer whose customer code is another live customer's Temix
+    // code (an app-made shop, listed again by a Temix extract under its Temix
+    // code). It refuses that now; this finds any made before, or by another path.
+    // Compared as the Temix-code index compares (upper case, the ends trimmed);
+    // a customer whose own Temix code equals its own customer code is not counted.
+    id: 'customer-code-is-anothers-temix-code',
+    version: 1,
+    group: 'data',
+    title: "No live customer's code is another live customer's Temix code",
+    why: "A customer whose customer code is another customer's Temix code is one shop on two cards: the salesman sees it twice, the next Temix file carries a new-customer row for a code Temix already has, and the merge refuses the pair as crossed codes.",
+    remedy:
+      'Open both customers (the samples list each pair together). The one holding the Temix code is the shop Temix knows; move what the other holds that it lacks through the normal edit, then archive the other. Tell the Data Steward which sheet created it.',
+    policy: 'alert',
+    excludesTest: true,
+    run: async (db) => {
+      const rows = await q<{ id: string; holderId: string }>(
+        db,
+        Prisma.sql`SELECT c."id", h."id" AS "holderId"
+                     FROM "Customer" c
+                     JOIN "Customer" h
+                       ON h."deletedAt" IS NULL AND NOT h."isTest" AND h."id" <> c."id"
+                      AND h."temixCode" IS NOT NULL AND btrim(h."temixCode") <> ''
+                      AND upper(btrim(h."temixCode")) = upper(btrim(c."nmwcCode"))
+                    WHERE c."deletedAt" IS NULL AND NOT c."isTest"`
+      );
+      return crossedCodeFindings(rows);
     },
   },
   {

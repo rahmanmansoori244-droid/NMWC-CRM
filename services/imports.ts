@@ -94,7 +94,13 @@ import {
 import { lockCustomerRowByCode } from '@/lib/locks';
 import { branchStatusEvents, followBranchStatus, liveBranchStatuses } from '@/lib/customer-status';
 import { archivedUncodedDeactivationWhere } from '@/lib/temix';
-import { lockTemixCode, normalizeTemixCode, temixCodeHolder, temixCodeRefusal } from '@/lib/temix-code';
+import {
+  lockTemixCode,
+  newCustomerCodeHeld,
+  normalizeTemixCode,
+  temixCodeHolder,
+  temixCodeRefusal,
+} from '@/lib/temix-code';
 import {
   branchOnlyNote,
   composeBranchCode,
@@ -2535,6 +2541,20 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               // An archived customer (whose in-flight deactivation a stale Temix
               // extract must not settle) was already refused above, before
               // any lane — N03.
+            }
+
+            // Code review 2026-11-10, finding 7: a NEW customer is never created
+            // under a customer code that is already a live customer's Temix code —
+            // the shop created in the app as NMWC-2026-… whose Temix code the
+            // Accountant typed, listed again by a Temix extract under that code with
+            // no temix_code. Asked under the lock and with the lookup the approval's
+            // finalize uses for that code (lib/temix-code.ts), whatever the row's
+            // temix_code cell says, and refused naming the customer. Only a LIVE
+            // customer's Temix code counts here (newCustomerCodeHeld).
+            if (!existing) {
+              await lockTemixCode(tx, custCode);
+              const holder = newCustomerCodeHeld(custCode, await temixCodeHolder(tx, custCode));
+              if (holder) throw new Error(`CROSSWALK:${holder}`);
             }
 
             // A refresh is an inbound update from the ERP for a customer the CRM

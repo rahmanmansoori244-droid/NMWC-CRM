@@ -1360,7 +1360,8 @@ describe('promoteCustomerBatchAction — owner decision 2026-10-08: a NEW custom
     });
     const out = await promote();
     expect(out).toMatchObject({ promoted: 1, failed: 0 });
-    expect(temixLocks).toEqual(['nmwc:temix:C0900']);
+    // Finding 7 (code review 2026-11-10): and the lock on its customer code, for the holder check.
+    expect(temixLocks).toEqual(['nmwc:temix:C0900', 'nmwc:temix:NEW1']);
     const i = (name: string) => order.indexOf(name);
     expect(i('temix.lock')).toBeGreaterThan(i('lock'));
     expect(i('temix.lock')).toBeLessThan(i('crosswalk.read'));
@@ -2113,5 +2114,59 @@ describe('finding 1 — parity: the plan the summary is built from is what the p
     // The promote's fallback address for a new shop, which the rule treats as blank.
     expect(src).toContain(`'${ADDRESS_PLACEHOLDER}',`);
     expect(ADDRESS_PLACEHOLDER).toBe('Address pending');
+  });
+});
+
+// Code review 2026-11-10, finding 7.
+describe('promoteCustomerBatchAction — a NEW customer is never created under another live customer\'s Temix code', () => {
+  underTheOverwriteOption();
+  type Holder = { nmwcCode: string; archived: boolean; branchCode: string | null };
+  function holderIs(holder: Holder | null) {
+    const lockByCode = tx.$queryRaw as Fn;
+    tx.$queryRaw = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (/UPPER\(c\."temixCode"\)/.test(strings.join('?'))) {
+        order.push('temix.holder');
+        expect(values).toContain('CAA0999');
+        return holder ? [holder] : [];
+      }
+      return lockByCode(strings, ...values);
+    });
+  }
+
+  it('a row with no temix_code whose cust_code is a live customer\'s Temix code is rejected, naming that customer', async () => {
+    setup(null, [parsed({ custCode: 'caa0999', branchCode: '01', temixCode: null })]);
+    holderIs({ nmwcCode: 'NMWC-2026-000123', archived: false, branchCode: null });
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 0, failed: 1 });
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.data.issues[0]!.message).toBe(
+      'cust_code CAA0999 is already the Temix code of live customer NMWC-2026-000123, so no new customer is created under it — if this row is that shop, its customer code in the CRM is NMWC-2026-000123; exclude this row or correct the sheet and upload it again; steward review'
+    );
+    // Under the finalize's lock on that code, asked before anything is written.
+    expect(temixLocks).toEqual(['nmwc:temix:CAA0999']);
+    expect(order.indexOf('temix.lock')).toBeLessThan(order.indexOf('temix.holder'));
+    expect(order).not.toContain('customer.upsert');
+  });
+
+  it('the same with a temix_code cell of its own: still rejected', async () => {
+    setup(null, [parsed({ custCode: 'CAA0999', branchCode: '01', temixCode: 'T-OTHER' })]);
+    holderIs({ nmwcCode: 'NMWC-2026-000123', archived: false, branchCode: null });
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 0, failed: 1 });
+    expect(order).not.toContain('customer.upsert');
+  });
+
+  it('an archived holder or a branch code is not this rule: the customer is created as before', async () => {
+    for (const holder of [
+      { nmwcCode: 'OLD-1', archived: true, branchCode: null },
+      { nmwcCode: 'SHOP-1', archived: false, branchCode: 'CAA0999' },
+      null,
+    ]) {
+      setup(null, [parsed({ custCode: 'CAA0999', branchCode: '01', temixCode: null })]);
+      holderIs(holder);
+      const out = await promote();
+      expect(out, JSON.stringify(holder)).toMatchObject({ promoted: 1, failed: 0 });
+      expect(order).toContain('customer.upsert');
+    }
   });
 });

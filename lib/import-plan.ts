@@ -39,6 +39,7 @@ import {
 } from './import-crm-rule';
 import { differingCells, sameStoredValue } from './import-lineage';
 import { composeBranchCode } from './import-row-fix';
+import { normalizeTemixCode } from './temix-code';
 
 // ── What a row gives a shop ─────────────────────────────────────────────────
 
@@ -442,6 +443,8 @@ export const REJECT_REASONS = {
   REPEATED_CODE: 'a branch_code repeated in the file',
   FOREIGN_CODE: 'a branch_code that belongs to another customer',
   ARCHIVED_SHOP: 'a row fixed in the app that names an archived shop',
+  // Code review 2026-11-10, finding 7.
+  HELD_CODE: "a new customer code that is already another live customer's Temix code",
 } as const;
 export type RejectReason = (typeof REJECT_REASONS)[keyof typeof REJECT_REASONS];
 
@@ -515,6 +518,12 @@ export function planGroup(input: {
   shopByCode: ReadonlyMap<string, PlanShop>;
   routeByCode: ReadonlyMap<string, { id: string; regionId: string }>;
   channelIdByKey: ReadonlyMap<string, string>;
+  /**
+   * Code review 2026-11-10, finding 7: the codes (as normalizeTemixCode spells
+   * them) that are a live customer's Temix code. A NEW customer is not created
+   * under one: the promote rejects it.
+   */
+  liveTemixCodes?: ReadonlySet<string>;
 }): GroupPlan {
   const { custCode, overwrite, rows, existing, shopByCode, routeByCode, channelIdByKey } = input;
   const plan = emptyPlan(rows.length);
@@ -539,6 +548,7 @@ export function planGroup(input: {
     rows,
   });
   if (lane.crosswalkChange) return reject(REJECT_REASONS.OTHER_CODE);
+  if (!existing && input.liveTemixCodes?.has(normalizeTemixCode(custCode))) return reject(REJECT_REASONS.HELD_CODE);
   const lead = rows[lane.leadIdx]!;
   const pt = lead.paymentTerms === 'CREDIT' ? 'CREDIT' : 'CASH';
   // A backup-match candidate is counted as taking it: whether its finalize wrote

@@ -104,6 +104,28 @@ export function classifyTemixCodes(rows: TemixCodeRow[], knownLegacy = KNOWN_LEG
   return { count: fail.length, sampleIds: capSamples(fail), detail: { byProblem, info: legacy } };
 }
 
+// ── customer-code-is-anothers-temix-code ───────────────────────────────────
+
+/**
+ * Code review 2026-11-10, finding 7: `rows` is one row per live customer whose
+ * customer code is ANOTHER live customer's Temix code, with that customer
+ * (`holderId`). Each is one shop on two cards — the customer import used to
+ * create such a second card. The count is the customers carrying the code; the
+ * samples keep each pair together (the customer, then the holder), so both cards
+ * are one click away; the detail counts the pairs. Ids only, never a code.
+ */
+export function crossedCodeFindings(rows: Array<{ id: string; holderId: string }>) {
+  const pairs = [...rows].sort((a, b) =>
+    a.id < b.id ? -1 : a.id > b.id ? 1 : a.holderId < b.holderId ? -1 : a.holderId > b.holderId ? 1 : 0
+  );
+  const customers = new Set(pairs.map((p) => p.id));
+  return {
+    count: customers.size,
+    sampleIds: capSamples(pairs.flatMap((p) => [p.id, p.holderId])),
+    detail: { pairs: pairs.length },
+  };
+}
+
 // ── cr-number-shared ───────────────────────────────────────────────────────
 
 /**

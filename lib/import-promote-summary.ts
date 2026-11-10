@@ -132,6 +132,18 @@ export async function loadPromoteSummary(db: Db, batchId: string, overwrite: boo
     for (const { branchCode, ...shop } of found) shopByCode.set(branchCode, shop);
   }
 
+  // Code review 2026-11-10, finding 7: of the codes no customer has as its
+  // customer code, those a live customer has as its Temix code.
+  const liveTemixCodes = new Set<string>();
+  const unknown = [...groups.keys()].filter((c) => !customers.has(c));
+  for (const codes of chunks(unknown)) {
+    const found = await db.customer.findMany({
+      where: { temixCode: { in: codes, mode: 'insensitive' }, deletedAt: null },
+      select: { temixCode: true },
+    });
+    for (const c of found) if (c.temixCode) liveTemixCodes.add(normalizeTemixCode(c.temixCode));
+  }
+
   const summary = emptySummary();
   for (const [custCode, rows] of groups) {
     addGroup(
@@ -144,6 +156,7 @@ export async function loadPromoteSummary(db: Db, batchId: string, overwrite: boo
         shopByCode,
         routeByCode,
         channelIdByKey,
+        liveTemixCodes,
       })
     );
   }

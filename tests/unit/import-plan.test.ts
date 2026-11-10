@@ -639,3 +639,26 @@ describe('addGroup and summaryLines — the counts and the words', () => {
     );
   });
 });
+
+// Code review 2026-11-10, finding 7.
+describe('planGroup — a new customer under another live customer\'s Temix code', () => {
+  const withHeld = (existing: PlanCustomer | null, codes: string[]) =>
+    planGroup({
+      custCode: 'c1',
+      overwrite: false,
+      rows: [prow({ branchCode: '01' })],
+      existing,
+      shopByCode: new Map(),
+      routeByCode: ROUTES,
+      channelIdByKey: CHANNELS,
+      liveTemixCodes: new Set(codes),
+    });
+  it('is expected to be rejected, as the promote rejects it', () => {
+    expect(withHeld(null, ['C1']).rejected).toBe(REJECT_REASONS.HELD_CODE);
+  });
+  it('a code no live customer holds is created as before', () => {
+    const p = withHeld(null, ['OTHER']);
+    expect(p.rejected).toBeNull();
+    expect(p.newCustomer).toBe(true);
+  });
+});
