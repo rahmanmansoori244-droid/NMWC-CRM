@@ -99,6 +99,46 @@ describe('customer master upload result', () => {
     submit('Upload customer master');
     expect((await screen.findByRole('status')).className).toContain('text-amber-700');
   });
+
+  // Code review 2026-11-10, finding 1: the headings the import did not read.
+  it('headings the import did not read are listed under the result, and stay out of its counts', async () => {
+    h.customer.mockResolvedValue({
+      ok: true,
+      data: { batchId: 'b-nr', clean: 3, quarantined: 0, notRead: ['Limit', 'status'] },
+    });
+    render(<UploadCustomerForm />);
+    submit('Upload customer master');
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toBe('Uploaded — 3 clean · 0 quarantined Open the batch');
+    expect(status.className).toContain('text-emerald-700');
+    const note = screen.getByTestId('upload-not-read');
+    expect(note.textContent).toBe(
+      'Not read: 2 columns in this sheet are not used by the import and were ignored — Limit, status. If one of them should have been read, check its spelling against the template.'
+    );
+    expect(note.className).toContain('text-amber-700');
+    // Not a second announcement: the result line is the status.
+    expect(note.getAttribute('role')).toBeNull();
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+  });
+
+  it('a sheet whose headings were all read shows no such line', async () => {
+    h.customer.mockResolvedValue({ ok: true, data: { batchId: 'b-ok', clean: 3, quarantined: 0, notRead: [] } });
+    render(<UploadCustomerForm />);
+    submit('Upload customer master');
+    await screen.findByRole('status');
+    expect(screen.queryByTestId('upload-not-read')).toBeNull();
+  });
+
+  it('a sheet refused for having no temix_code column says so, in red, with no batch', async () => {
+    const message =
+      'This sheet has no temix_code column, and 2 of its customers already have a Temix code in the CRM (for example A, B). Nothing was uploaded.';
+    h.customer.mockResolvedValue({ ok: false, code: 'VALIDATION_FAILED', message: 'Validation failed', fields: { file: message } });
+    render(<UploadCustomerForm />);
+    submit('Upload customer master');
+    expect((await screen.findByRole('alert')).textContent).toBe(message);
+    expect(screen.queryByRole('link', { name: 'Open the batch' })).toBeNull();
+    expect(screen.queryByTestId('upload-not-read')).toBeNull();
+  });
 });
 
 // Launch fix: a workbook bigger than Vercel lets a request carry (4.5 MB) was

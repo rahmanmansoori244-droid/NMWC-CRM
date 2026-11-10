@@ -14,6 +14,7 @@
  */
 import type { SheetRow } from '@/lib/import-row-check';
 import { normalizeCR } from '@/lib/cr';
+import { CUSTOMER_COLUMNS, readCell, readLooseCell, type CustomerColumn } from '@/lib/import-headings';
 
 export type Corrections = {
   /** Sheet column → the value the Steward entered. */
@@ -126,8 +127,9 @@ export function readCorrections(value: unknown): Corrections {
 /**
  * The row as uploaded with the Steward's cells laid over it. Corrections use
  * the template's column names, which every reader in the check tries FIRST
- * (`row.cust_name ?? row['CUST NAME'] …`), so they win over a legacy heading;
- * and an empty string clears a cell, because `??` falls through only null.
+ * (lib/import-headings.ts readCell), so they win over a legacy or differently
+ * spelt heading; and an empty string clears a cell, because the reader falls
+ * through only null.
  */
 export function correctedRow(raw: unknown, corrections: Corrections): SheetRow {
   const base = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as SheetRow) : {};
@@ -163,27 +165,17 @@ export function acceptCells(
   return { ok: true, cells };
 }
 
-/** Legacy headings each template column may have arrived under, in the order the check reads them. */
-const LEGACY: Record<string, string[]> = {
-  cust_code: ['custcode', 'CUSTCODE', 'code', 'Code'],
-  cust_name: ['CUST NAME', 'name'],
-  branch_code: ['CUST BRANCH'],
-  address: ['ADDRSS', 'ADDRESS'],
-  phone: ['PHONE', 'Primary Phone'],
-  cr_no: ['CR NO'],
-  contact_person: ['CONTACT PERSON'],
-  channel: ['CHANNEL'],
-  day_of_visit: ['DAY OF VISIT'],
-  customer_status: ['CUSTOMER STATUS'],
-};
-
-/** A cell's value as the check would read it, for pre-filling the correction form. */
+/**
+ * A cell's value as the check would read it, for pre-filling the correction
+ * form: through the same reader (lib/import-headings.ts readCell), so the form
+ * shows what the check read whatever spelling the sheet's heading had. This held
+ * its own list of legacy headings, which had to be kept in step with the check's.
+ */
 export function cellValue(row: SheetRow, column: string): string {
-  for (const key of [column, ...(LEGACY[column] ?? [])]) {
-    const v = row[key];
-    if (v !== undefined && v !== null) return String(v);
-  }
-  return '';
+  const v = (CUSTOMER_COLUMNS as readonly string[]).includes(column)
+    ? readCell(row, column as CustomerColumn)
+    : readLooseCell(row, column);
+  return v !== undefined && v !== null ? String(v) : '';
 }
 
 /**

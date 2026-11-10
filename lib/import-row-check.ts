@@ -14,6 +14,7 @@ import { normalizePhone, isValidPhoneFormat } from '@/lib/phone';
 import { normalizeCR } from '@/lib/cr';
 import { normalizeTemixCode } from '@/lib/temix-code';
 import { stripHtml as stripTags } from '@/lib/validation/fields';
+import { readCell, readLooseCell } from '@/lib/import-headings';
 
 export type SheetRow = Record<string, unknown>;
 export type RowIssue = { field: string; message: string };
@@ -106,22 +107,20 @@ export function heldBackBy(codes: string[]): string {
 }
 
 export function rowCustCode(row: SheetRow): string {
-  return stripHtml(row.cust_code ?? row.custcode ?? row.CUSTCODE ?? row.code ?? row.Code).trim();
+  return stripHtml(readCell(row, 'cust_code')).trim();
 }
 
 /** The branch_code cell as the check reads it, or null when blank. */
 export function rowBranchCode(row: SheetRow): string | null {
-  return stripHtml(row.branch_code ?? row['CUST BRANCH']) || null;
+  return stripHtml(readCell(row, 'branch_code')) || null;
 }
 
 export function rowPhoneNorm(row: SheetRow): string | null {
-  return normalizePhone(
-    String(row.phone ?? row.PHONE ?? row['Primary Phone'] ?? '').trim() || null
-  );
+  return normalizePhone(String(readCell(row, 'phone') ?? '').trim() || null);
 }
 
 export function rowCrNorm(row: SheetRow): string | null {
-  return normalizeCR(String(row.cr_no ?? row['CR NO'] ?? '').trim() || null);
+  return normalizeCR(String(readCell(row, 'cr_no') ?? '').trim() || null);
 }
 
 /**
@@ -170,11 +169,11 @@ export function checkCustomerRow(
   // F-05: stripHtml on every text field at parse time so nothing hostile
   // reaches the master. Then re-screen for spreadsheet formula prefixes.
   const custCode = rowCustCode(row);
-  const custName = stripHtml(row.cust_name ?? row['CUST NAME'] ?? row.name);
-  // Read the SAME header fallbacks as normalizePhone below — otherwise a phone
-  // supplied in the 'PHONE' or 'Primary Phone' column skipped the format check
-  // entirely (an invalid number in those columns was silently accepted).
-  const phoneRaw = String(row.phone ?? row.PHONE ?? row['Primary Phone'] ?? '').trim();
+  const custName = stripHtml(readCell(row, 'cust_name'));
+  // Read as rowPhoneNorm reads it (lib/import-headings.ts readCell) — otherwise a
+  // phone supplied in the 'PHONE' or 'Primary Phone' column skipped the format
+  // check entirely (an invalid number in those columns was silently accepted).
+  const phoneRaw = String(readCell(row, 'phone') ?? '').trim();
   const phone = rowPhoneNorm(row);
   const crNorm = rowCrNorm(row);
 
@@ -234,7 +233,7 @@ export function checkCustomerRow(
   // silently flipping CREDIT customers to CASH was an adversarial-review
   // CONFIRMED finding). Legacy create/full-upsert paths keep the CASH
   // default unchanged.
-  const ptRaw = String(row.payment_terms ?? row['PAYMENT TERMS'] ?? '')
+  const ptRaw = String(readCell(row, 'payment_terms') ?? '')
     .trim()
     .toUpperCase();
   let paymentTerms = 'CASH';
@@ -244,9 +243,15 @@ export function checkCustomerRow(
   } else if (ptRaw === 'CREDIT') {
     paymentTerms = 'CREDIT';
   }
-  // F-05: refuse formula payloads in any text field.
-  for (const field of ['cust_name', 'address', 'contact_person', 'notes']) {
-    if (isFormulaPayload(row[field])) {
+  // F-05: refuse formula payloads in any text field. Read as the fields
+  // themselves are read (lib/import-headings.ts), so a formula under `CUST NAME`
+  // or `Address` is held back as one under `cust_name` or `address` always was
+  // (code review 2026-11-10, finding 1: this screen read the exact template
+  // spelling only). `notes` is not a column the import loads; it is screened
+  // because the Steward may keep one in the sheet.
+  for (const field of ['cust_name', 'address', 'contact_person', 'notes'] as const) {
+    const cell = field === 'notes' ? readLooseCell(row, 'notes') : readCell(row, field);
+    if (isFormulaPayload(cell)) {
       issues.push({
         field,
         message: 'cell starts with a spreadsheet formula trigger; remove it',
@@ -264,11 +269,9 @@ export function checkCustomerRow(
   // upper case, ASCII digits, no invisible characters), so the promote's
   // comparisons with recorded codes, and the F11 hold-back's, read one spelling.
   const temixCode =
-    normalizeTemixCode(
-      stripHtml(row.temix_code ?? row.temixcode ?? row['TEMIX CODE'] ?? row['Temix Code'])
-    ) || null;
+    normalizeTemixCode(stripHtml(readCell(row, 'temix_code'))) || null;
   let creditLimit: number | null = null;
-  const creditRaw = String(row.credit_limit ?? row['CREDIT LIMIT'] ?? '').trim();
+  const creditRaw = String(readCell(row, 'credit_limit') ?? '').trim();
   if (creditRaw) {
     const n = Number(creditRaw);
     if (!Number.isFinite(n) || n < 0 || n > 99_999_999_999) {
@@ -281,7 +284,7 @@ export function checkCustomerRow(
     }
   }
   let paymentTermDays: number | null = null;
-  const termRaw = String(row.payment_term_days ?? row['PAYMENT TERM DAYS'] ?? '').trim();
+  const termRaw = String(readCell(row, 'payment_term_days') ?? '').trim();
   if (termRaw) {
     const n = Number(termRaw);
     if (!Number.isInteger(n) || n < 0 || n > 365) {
@@ -298,13 +301,13 @@ export function checkCustomerRow(
   // one of the accepted codes holds the row for review rather than being
   // silently dropped, since each of them changes how the field team works
   // the customer (which day it is visited, whether it is closed).
-  const channelRaw = uc(row.channel ?? row.CHANNEL ?? '');
+  const channelRaw = uc(readCell(row, 'channel') ?? '');
   let channelKey: string | null = null;
   if (channelRaw) {
     if (ctx.channelKeys.has(channelRaw)) channelKey = channelRaw;
     else issues.push({ field: 'channel', message: `unknown channel "${channelRaw}"` });
   }
-  const dayRaw = uc(row.day_of_visit ?? row['DAY OF VISIT'] ?? '');
+  const dayRaw = uc(readCell(row, 'day_of_visit') ?? '');
   let dayOfVisit: string | null = null;
   if (dayRaw) {
     if (DAY_CODES.has(dayRaw)) dayOfVisit = dayRaw;
@@ -314,7 +317,7 @@ export function checkCustomerRow(
         message: `expected SAT/SUN/MON/TUE/WED/THU/FRI, got "${dayRaw}"`,
       });
   }
-  const statusRaw = uc(row.customer_status ?? row['CUSTOMER STATUS'] ?? '');
+  const statusRaw = uc(readCell(row, 'customer_status') ?? '');
   let customerStatus: string | null = null;
   if (statusRaw) {
     if (STATUS_CODES.has(statusRaw)) customerStatus = statusRaw;
@@ -332,13 +335,13 @@ export function checkCustomerRow(
     dayOfVisit,
     customerStatus,
     branchCode: rowBranchCode(row),
-    branchName: stripHtml(row.branch_name ?? row['CUST BRANCH'] ?? row.branch) || null,
-    regionCode: stripHtml(row.sales_region ?? row['SALES REGION'] ?? row.region) || null,
-    routeCode: stripHtml(row.route ?? row['ROUTE']) || null,
-    address: stripHtml(row.address ?? row.ADDRSS ?? row.ADDRESS) || null,
+    branchName: stripHtml(readCell(row, 'branch_name')) || null,
+    regionCode: stripHtml(readCell(row, 'sales_region')) || null,
+    routeCode: stripHtml(readCell(row, 'route')) || null,
+    address: stripHtml(readCell(row, 'address')) || null,
     phone,
-    contactPerson: stripHtml(row.contact_person ?? row['CONTACT PERSON']) || null,
-    crNumber: stripHtml(row.cr_no ?? row['CR NO']) || null,
+    contactPerson: stripHtml(readCell(row, 'contact_person')) || null,
+    crNumber: stripHtml(readCell(row, 'cr_no')) || null,
     paymentTerms,
     paymentTermsPresent,
     temixCode,

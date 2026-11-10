@@ -113,6 +113,20 @@ describe('the row as uploaded, with the corrections laid over it', () => {
     expect(row).toEqual({ day_of_visit: 'SUN', cust_code: 'C1' });
   });
 
+  // Code review 2026-11-10, finding 1: the form pre-fills through the check's own
+  // reader, so it shows what the check read under any spelling of the heading.
+  it('cellValue reads a differently spelt heading as the check does, the template heading first', () => {
+    expect(cellValue({ Address: 'Way 2' }, 'address')).toBe('Way 2');
+    expect(cellValue({ 'Cust_Name': 'Spelt', 'CUST NAME': 'Legacy' }, 'cust_name')).toBe('Legacy');
+    expect(cellValue({ 'Customer Status': 'CLOSED' }, 'customer_status')).toBe('CLOSED');
+    expect(cellValue({ Phone: 99758980 }, 'phone')).toBe('99758980');
+    // A correction laid over the row (template name) wins, an empty one included.
+    expect(cellValue({ Address: 'Way 2', address: '' }, 'address')).toBe('');
+    // `notes` is not one of the 17 columns: its own heading, in any spelling.
+    expect(cellValue({ Notes: 'n' }, 'notes')).toBe('n');
+    expect(cellValue({ other: 'x' }, 'notes')).toBe('');
+  });
+
   it('cellValue falls back through the legacy headings the check reads', () => {
     expect(cellValue({ ADDRSS: 'Way 1' }, 'address')).toBe('Way 1');
     expect(cellValue({ 'DAY OF VISIT': 'SUN' }, 'day_of_visit')).toBe('SUN');

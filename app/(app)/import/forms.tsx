@@ -5,8 +5,13 @@ import Link from 'next/link';
 import { uploadAccountMasterAction, uploadCustomerMasterAction } from '@/services/imports';
 import type { ActionResult } from '@/lib/errors';
 import { MAX_IMPORT_BYTES, importFileTooLarge } from '@/lib/import-file-size';
+import { notReadNote } from '@/lib/import-headings';
 
-type UploadOk = Record<string, string | number>;
+/**
+ * What an upload action answers with: counts, the batch, and — from the customer
+ * master — `notRead`, the sheet's headings the import does not read.
+ */
+type UploadOk = Record<string, string | number | string[]>;
 
 type Tone = 'ok' | 'warn' | 'fail';
 const TONE_CLASS: Record<Tone, string> = {
@@ -25,7 +30,8 @@ const TONE_CLASS: Record<Tone, string> = {
  */
 function uploadOutcome(data: UploadOk): { tone: Tone; message: string } {
   const summary = Object.entries(data)
-    .filter(([k]) => k !== 'batchId')
+    // Counts only: the batch is linked, and the unread headings have a line of their own.
+    .filter(([k, v]) => k !== 'batchId' && !Array.isArray(v))
     .map(([k, v]) => `${v} ${k}`)
     .join(' · ');
   const clean = Number(data.clean ?? 0);
@@ -56,7 +62,13 @@ function UploadForm({
   action: (formData: FormData) => Promise<ActionResult<UploadOk>>;
 }) {
   const [pending, start] = useTransition();
-  const [result, setResult] = useState<{ message: string; tone: Tone; batchId?: string } | null>(null);
+  const [result, setResult] = useState<{
+    message: string;
+    tone: Tone;
+    batchId?: string;
+    /** Code review 2026-11-10, finding 1: the headings the import did not read. */
+    notRead?: string | null;
+  } | null>(null);
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -88,7 +100,8 @@ function UploadForm({
           return;
         }
         const batchId = typeof res.data.batchId === 'string' ? res.data.batchId : undefined;
-        setResult({ ...uploadOutcome(res.data), batchId });
+        const notRead = Array.isArray(res.data.notRead) ? notReadNote(res.data.notRead) : null;
+        setResult({ ...uploadOutcome(res.data), batchId, notRead });
         (e.target as HTMLFormElement).reset();
       } catch (err) {
         setResult({
@@ -130,6 +143,14 @@ function UploadForm({
               </Link>
             </>
           )}
+        </p>
+      )}
+      {/* Not a status or an alert of its own: the result above is the one announced,
+          and this stays on screen beside it. A column the Steward believes was
+          loaded and was not — `Temix code` once read as nothing — is listed here. */}
+      {result?.notRead && (
+        <p data-testid="upload-not-read" className="text-xs font-medium text-amber-700">
+          {result.notRead}
         </p>
       )}
     </form>

@@ -83,13 +83,22 @@ import {
 
 describe('uploadCustomerMasterAction — N05', () => {
   let staged: Array<{ rowNumber: number; raw: Record<string, unknown>; parsed: Record<string, unknown>; state: string }>;
+  /** Customers in the master, as the upload's "linked to Temix" lookup reads them. */
+  let master: Array<{ nmwcCode: string; temixCode: string | null; deletedAt: Date | null }>;
 
   beforeEach(() => {
     staged = [];
+    master = [];
     Object.assign(h.db, {
       importBatch: {
         create: vi.fn(async () => ({ id: 'batch-1' })),
         update: vi.fn(async () => ({})),
+      },
+      // Code review 2026-11-10, finding 1: lib/import-master-lookup.ts linkedCustomerCodes.
+      customer: {
+        findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+          master.filter((c) => matchesWhere(c, where)).map((c) => ({ nmwcCode: c.nmwcCode }))
+        ),
       },
       channel: { findMany: vi.fn(async () => [{ key: 'HORECA' }]) },
       importRow: {
@@ -179,6 +188,92 @@ describe('uploadCustomerMasterAction — N05', () => {
     const res = await uploadCustomerMasterAction(fd);
     expect(res.ok).toBe(true);
     expect(staged.map((r) => [r.rowNumber, r.parsed.custCode])).toEqual([[2, 'C004']]);
+  });
+
+  // ── Code review 2026-11-10, finding 1: the headings ──────────────────────
+  async function upload(headings: string[], ...rows: unknown[][]) {
+    const ExcelJS = await loadExcelJS();
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Customers');
+    ws.addRow(headings);
+    for (const r of rows) ws.addRow(r);
+    const fd = new FormData();
+    fd.set('file', new File([Buffer.from((await wb.xlsx.writeBuffer()) as ArrayBuffer)], 'sheet.xlsx'));
+    return uploadCustomerMasterAction(fd);
+  }
+  const created = () => (h.db.importBatch as { create: Fn }).create;
+
+  it('answers with the headings it did not read, and stages a `Temix code` column as the Temix code', async () => {
+    const res = await upload(
+      ['Cust Code', 'cust_name', 'Temix code', 'Limit', 'Credit_Limit', 'Helper'],
+      ['C010', 'Shop Ten', 'c010', 500, 750, 'x']
+    );
+    expect(res).toEqual({ ok: true, data: { batchId: 'batch-1', clean: 1, quarantined: 0, notRead: ['Limit', 'Helper'] } });
+    expect(staged[0].parsed).toMatchObject({ custCode: 'C010', temixCode: 'C010', creditLimit: 750 });
+    // The sheet has the column, so the master is not asked who is linked to Temix.
+    expect((h.db.customer as { findMany: Fn }).findMany).not.toHaveBeenCalled();
+  });
+
+  it('refuses a sheet with no temix_code column that names a customer linked to Temix — nothing is staged', async () => {
+    master = [
+      { nmwcCode: 'C020', temixCode: 'C020', deletedAt: null },
+      { nmwcCode: 'C021', temixCode: 'T-21', deletedAt: null },
+      { nmwcCode: 'C022', temixCode: null, deletedAt: null }, // seeded: no code on record
+      { nmwcCode: 'C023', temixCode: 'T-23', deletedAt: new Date() }, // archived
+      { nmwcCode: 'C024', temixCode: '', deletedAt: null },
+    ];
+    // The agreed daily-file shape: cust_code, branch_code, cust_name, route, terms, limit, days, status.
+    const res = await upload(
+      ['cust_code', 'branch_code', 'cust_name', 'route', 'terms', 'limit', 'days', 'status'],
+      ['C021', '01', 'Twenty-one', 'R1', 'CREDIT', 750, 30, 'ACTIVE'],
+      ['C020', '01', 'Twenty', 'R1', 'CASH', null, null, 'ACTIVE'],
+      ['C020', '02', 'Twenty', 'R1', 'CASH', null, null, 'ACTIVE'],
+      ['C022', '01', 'Seeded', 'R1', 'CASH', null, null, 'ACTIVE'],
+      ['C023', '01', 'Archived', 'R1', 'CASH', null, null, 'ACTIVE'],
+      ['C024', '01', 'Empty code', 'R1', 'CASH', null, null, 'ACTIVE'],
+      ['NEW9', '01', 'New', 'R1', 'CASH', null, null, 'ACTIVE']
+    );
+    expect(res.ok).toBe(false);
+    expect((res as { fields?: Record<string, string> }).fields).toEqual({
+      file: "This sheet has no temix_code column, and 2 of its customers already have a Temix code in the CRM (for example C020, C021). Nothing was uploaded. Without that column the import cannot tell which rows are a Temix refresh, and their credit limit and credit days would be ignored. Add a column headed temix_code holding each customer's Temix code (it is on the customer page; leave the cell blank for a customer not yet in Temix) and upload again. A Temix extract is not loaded through this screen.",
+    });
+    expect(created()).not.toHaveBeenCalled();
+    expect(staged).toEqual([]);
+    // Asked once, for the distinct codes of the sheet.
+    const asked = (h.db.customer as { findMany: Fn }).findMany.mock.calls;
+    expect(asked).toHaveLength(1);
+    expect(asked[0]![0].where.nmwcCode.in).toEqual(['C021', 'C020', 'C022', 'C023', 'C024', 'NEW9']);
+  });
+
+  it('the same sheet is accepted when none of its customers is linked to Temix, with the unread headings listed', async () => {
+    master = [{ nmwcCode: 'C022', temixCode: null, deletedAt: null }];
+    const res = await upload(
+      ['cust_code', 'branch_code', 'cust_name', 'route', 'terms', 'limit', 'days', 'status'],
+      ['C022', '01', 'Seeded', 'R1', 'CREDIT', 750, 30, 'ACTIVE'],
+      ['NEW9', '01', 'New', 'R1', 'CASH', null, null, 'ACTIVE']
+    );
+    expect(res).toEqual({
+      ok: true,
+      data: { batchId: 'batch-1', clean: 2, quarantined: 0, notRead: ['terms', 'limit', 'days', 'status'] },
+    });
+    expect(staged.map((r) => r.parsed.temixCode)).toEqual([null, null]);
+  });
+
+  it('a temix_code column with a blank cell is not refused: the column is there, and the row says so at Promote', async () => {
+    master = [{ nmwcCode: 'C020', temixCode: 'C020', deletedAt: null }];
+    const res = await upload(['cust_code', 'cust_name', 'TEMIX_CODE'], ['C020', 'Twenty', null]);
+    expect(res.ok).toBe(true);
+    expect(staged).toHaveLength(1);
+  });
+
+  it('refuses one column under two spellings, which the repeated-heading check (same letters) does not see', async () => {
+    const res = await upload(['cust_code', 'cust_name', 'Temix code', 'temix_code'], ['C030', 'Thirty', 'A', 'B']);
+    expect(res.ok).toBe(false);
+    expect((res as { fields?: Record<string, string> }).fields).toEqual({
+      file: 'Could not read .xlsx: Sheet "Customers": the headings "Temix code" and "temix_code" are both read as the temix_code column. Keep one, or rename the other.',
+    });
+    expect(created()).not.toHaveBeenCalled();
+    expect(staged).toEqual([]);
   });
 });
 

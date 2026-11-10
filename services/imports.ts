@@ -73,9 +73,16 @@ import { assertPasswordNotReused, rotatePasswordHistory } from '@/lib/password-p
 import {
   checkCustomerRow,
   fileCollisions,
+  rowCustCode,
   type SheetRow,
 } from '@/lib/import-row-check';
-import { fixTarget, masterCollisionMaps, newerUploadsCarrying } from '@/lib/import-master-lookup';
+import {
+  fixTarget,
+  linkedCustomerCodes,
+  masterCollisionMaps,
+  newerUploadsCarrying,
+} from '@/lib/import-master-lookup';
+import { headingClashIssue, missingTemixColumnIssue, reportHeadings } from '@/lib/import-headings';
 import { lockCustomerRowByCode } from '@/lib/locks';
 import { branchStatusEvents, followBranchStatus, liveBranchStatuses } from '@/lib/customer-status';
 import { archivedUncodedDeactivationWhere } from '@/lib/temix';
@@ -1289,15 +1296,21 @@ async function uploadAccountMasterCore(
 // promotes a batch when ready. v1.1 will add an inline review screen; for
 // now, we expose a "promote" action that creates customers in bulk.
 
+/** `notRead`: the sheet's headings the import does not read, in sheet order. */
+export type CustomerUploadResult = {
+  batchId: string;
+  clean: number;
+  quarantined: number;
+  notRead: string[];
+};
+
 export async function uploadCustomerMasterAction(
   formData: FormData
-): SafeAction<{ batchId: string; clean: number; quarantined: number }> {
+): SafeAction<CustomerUploadResult> {
   return runAction(() => uploadCustomerMasterCore(formData));
 }
 
-async function uploadCustomerMasterCore(
-  formData: FormData
-): Promise<{ batchId: string; clean: number; quarantined: number }> {
+async function uploadCustomerMasterCore(formData: FormData): Promise<CustomerUploadResult> {
   const me = await requireSteward();
   // F-07: rate-limit imports per Steward. Two Stewards racing the same file
   // (or a single Steward double-tapping the upload button) was previously
@@ -1327,6 +1340,26 @@ async function uploadCustomerMasterCore(
   // N05: a repeated heading refuses the file only on the sheet this upload reads.
   const repeated = duplicateHeadingIssue(sheet);
   if (repeated) throw new ValidationError({ file: `Could not read .xlsx: ${repeated}` });
+  // Code review 2026-11-10, finding 1. Headings are matched whatever their
+  // capitals, spaces or underscores (lib/import-headings.ts), so one column under
+  // two spellings — `Temix code` beside `temix_code` — is the repeated heading
+  // above in another form: the import could not say which cell it read.
+  const headings = reportHeadings(sheet.headers);
+  const clash = headingClashIssue(sheet.name, headings);
+  if (clash) throw new ValidationError({ file: `Could not read .xlsx: ${clash}` });
+  // And a sheet with NO temix_code column is refused when it names customers
+  // that have a Temix code on record — before anything is staged. Whether a row
+  // is a Temix refresh is decided by that cell alone, so without the column every
+  // such customer would be re-loaded as a plain sheet and the credit limit and
+  // credit days in it ignored, with nothing said. A sheet of customers the CRM
+  // does not know by a Temix code (new ones, the seeded ones) is not affected.
+  if (!headings.hasTemixCode) {
+    const codes = [...new Set(sheet.rows.map((r) => rowCustCode(r as SheetRow)).filter(Boolean))];
+    const linked = await linkedCustomerCodes(codes);
+    if (linked.length > 0) {
+      throw new ValidationError({ file: missingTemixColumnIssue(linked.length, linked.slice(0, 3)) });
+    }
+  }
 
   const batch = await prisma.importBatch.create({
     data: {
@@ -1386,7 +1419,9 @@ async function uploadCustomerMasterCore(
     data: { status: 'READY', cleanRows: clean, quarantinedRows: quarantined },
   });
   revalidatePath('/import');
-  return { batchId: batch.id, clean, quarantined };
+  // Every heading the import did not read, for the Steward to see at once: a
+  // column he believes was loaded and was not is the start of this finding.
+  return { batchId: batch.id, clean, quarantined, notRead: headings.unrecognised };
 }
 
 /**
