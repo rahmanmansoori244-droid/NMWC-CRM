@@ -399,12 +399,23 @@ jobs:
   # It also closes the gap the review named: every other DB-backed job builds its
   # database with `prisma migrate deploy`, so the dump-and-restore path was never
   # executed anywhere.
+  #
+  # 2026-11-10: the PostgreSQL here is pinned to production's: server 17 (Neon's
+  # major) and the postgresql-client-17 that db-backup.yml dumps with and
+  # restore-drill.yml restores with. It used to be a postgres:16 server and
+  # whatever pg_dump/psql the runner image carried. When ubuntu-latest moved to
+  # ubuntu-26.04 (PostgreSQL 18 preinstalled, where 24.04 had 16), pg_dump 18
+  # wrote `SET transaction_timeout = 0;` (a PostgreSQL 17 setting) into the
+  # header of a dump of a 16 server, and the restore into that 16 server stopped
+  # at dump line 13 with SQLSTATE 42704 before loading anything. That is a
+  # mismatch production never has, so it said nothing about the real backups;
+  # the step below now refuses a client and server of different majors outright.
   restore-chain:
     name: Backup → encrypt → restore → verify
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: postgres:17
         env:
           POSTGRES_USER: ci
           POSTGRES_PASSWORD: ci
@@ -435,8 +446,33 @@ jobs:
         run: |
           echo "AUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
           echo "NEXTAUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
-      - name: Install age
-        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends age
+      - name: Install the Postgres 17 client (as the nightly backup and the drill) and age
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 age
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+          BIN=/usr/lib/postgresql/17/bin
+          "$BIN/pg_dump" --version
+          "$BIN/psql" --version
+          # pg_dump writes a header for its OWN major (17+ always sets
+          # transaction_timeout), so a client newer than the server it restores
+          # into fails on line 13, and an older one refuses to dump at all. The
+          # three must be one major, as they are in production.
+          CLIENT=$("$BIN/pg_dump" --version | grep -o '[0-9][0-9]*' | head -1)
+          PSQL=$("$BIN/psql" --version | grep -o '[0-9][0-9]*' | head -1)
+          SERVER=$("$BIN/psql" "$DATABASE_URL" -At -c 'SHOW server_version_num')
+          SERVER=$(( SERVER / 10000 ))
+          echo "pg_dump ${CLIENT}, psql ${PSQL}, server ${SERVER}"
+          [ "$CLIENT" = "$SERVER" ] && [ "$PSQL" = "$SERVER" ] || {
+            echo "::error::pg_dump ${CLIENT} / psql ${PSQL} against a ${SERVER} server: production dumps and restores with one major (17), so this would not be testing its chain"
+            exit 1
+          }
 
       - name: Build the source database
         run: |
