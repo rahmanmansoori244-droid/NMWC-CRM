@@ -134,16 +134,17 @@ describe.skipIf(!ENABLED)('checkLimitPg — durable Postgres token bucket', () =
 
   it('a bucket never grants more than capacity + elapsed x refill, refused requests or not (the guard is as strong as before)', async () => {
     const cfg = { capacity: 5, refillPerSec: 5 / 60 };
+    const k = key; // this test's own key, whatever a later beforeEach sets
     let granted = 0;
     // Ten simulated minutes of one guess a second, the clock moved on the database.
     for (let sec = 0; sec < 600; sec++) {
-      if ((await checkLimit(key, cfg)).ok) granted++;
+      if ((await checkLimit(k, cfg)).ok) granted++;
       await prisma.$executeRaw`
-        UPDATE "RateLimit" SET "lastRefill" = "lastRefill" - INTERVAL '1 second' WHERE "key" = ${key}`;
+        UPDATE "RateLimit" SET "lastRefill" = "lastRefill" - INTERVAL '1 second' WHERE "key" = ${k}`;
     }
     expect(granted).toBeLessThanOrEqual(5 + Math.ceil(600 * cfg.refillPerSec));
     expect(granted).toBeGreaterThanOrEqual(50); // and the steady rate is reached, not a permanent lock
-  });
+  }, 120_000); // 1,200 statements: generous for a remote or busy database
 
   // Launch browser suite: PhotoCaptureSlot waits out a presign 429 of up to
   // RATE_LIMIT_MAX_WAIT_S, counting down, then tries again by itself.
