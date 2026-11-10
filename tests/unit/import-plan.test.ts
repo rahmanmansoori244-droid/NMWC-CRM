@@ -9,13 +9,23 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  REJECT_REASONS,
+  SUMMARY_ADDRESS_MIN,
+  addGroup,
   creditReason,
   creditReasonText,
   decideLane,
   differingBranchCells,
+  emptySummary,
+  planGroup,
   rowCreditNote,
   rowCreditReason,
+  summaryBranchOf,
+  summaryLines,
   type LaneExisting,
+  type PlanCustomer,
+  type PlanRow,
+  type PlanShop,
 } from '@/lib/import-plan';
 
 const existing = (over: Partial<LaneExisting> = {}): LaneExisting => ({
@@ -248,5 +258,384 @@ describe('rowCreditReason / rowCreditNote — row by row', () => {
     expect(creditReasonText('FIRST_CODE_ONLY')).toBe("this row recorded the customer's first Temix code and nothing else; the next refresh applies the figures");
     expect(creditReasonText('FIXED_ROW')).toBe('a row fixed in the app loads only its shop');
     expect(creditReasonText('NOT_FIRST_ROW')).toBe("a customer's credit figures are read from its first row in the file");
+  });
+});
+
+// ── The "Before you promote" summary ────────────────────────────────────────
+
+const ROUTES = new Map([
+  ['R1', { id: 'rt1', regionId: 'rg1' }],
+  ['R2', { id: 'rt2', regionId: 'rg2' }],
+]);
+const CHANNELS = new Map([
+  ['HORECA', 'ch-horeca'],
+  ['RETAIL', 'ch-retail'],
+]);
+const prow = (over: Partial<PlanRow> = {}): PlanRow => ({
+  custCode: 'C1',
+  custName: 'Sheet Name',
+  branchCode: '01',
+  branchName: null,
+  regionCode: null,
+  routeCode: 'R1',
+  address: 'Sheet address 1',
+  phone: '+96891111111',
+  contactPerson: null,
+  crNumber: null,
+  paymentTerms: 'CASH',
+  paymentTermsPresent: false,
+  temixCode: null,
+  creditLimit: null,
+  paymentTermDays: null,
+  channelKey: null,
+  dayOfVisit: 'MON',
+  customerStatus: 'ACTIVE',
+  ...over,
+});
+const customer = (over: Partial<PlanCustomer> = {}): PlanCustomer => ({
+  id: 'cust-1',
+  deletedAt: null,
+  temixCode: null,
+  recordedCode: null,
+  temixSyncState: 'SYNCED',
+  lastTemixUploadAt: null,
+  paymentTerms: 'CASH',
+  creditLimit: null,
+  paymentTermDays: null,
+  status: 'ACTIVE',
+  legalName: 'Sheet Name',
+  primaryPhone: '+96891111111',
+  primaryPhoneNorm: '+96891111111',
+  contactPerson: null,
+  crNumber: null,
+  crNumberNorm: null,
+  channelId: null,
+  subChannelId: null,
+  subChannelChannelId: null,
+  liveBranches: 1,
+  ...over,
+});
+const pshop = (over: Partial<PlanShop> = {}): PlanShop => ({
+  customerId: 'cust-1',
+  deletedAt: null,
+  branchName: 'Main',
+  routeId: 'rt1',
+  regionId: 'rg1',
+  address: 'Sheet address 1',
+  dayOfVisit: 'MON',
+  status: 'ACTIVE',
+  ...over,
+});
+const plan = (
+  rows: PlanRow[],
+  existing: PlanCustomer | null,
+  shops: Record<string, PlanShop> = {},
+  overwrite = false
+) =>
+  planGroup({
+    custCode: 'C1',
+    overwrite,
+    rows,
+    existing,
+    shopByCode: new Map(Object.entries(shops)),
+    routeByCode: ROUTES,
+    channelIdByKey: CHANNELS,
+  });
+
+describe('summaryBranchOf — a row’s shop, as the promote resolves it', () => {
+  it('composes a bare code under the customer, passes a composed one through, numbers a row with none', () => {
+    expect(summaryBranchOf('C1', prow({ branchCode: '03' }), 0, ROUTES).branchCode).toBe('C1-03');
+    expect(summaryBranchOf('C1', prow({ branchCode: 'c1-07' }), 0, ROUTES).branchCode).toBe('C1-07');
+    expect(summaryBranchOf('C1', prow({ branchCode: 'C1' }), 0, ROUTES).branchCode).toBe('C1');
+    const none = summaryBranchOf('C1', prow({ branchCode: null }), 2, ROUTES);
+    expect([none.sheetCode, none.branchCode]).toEqual([null, 'C1-03']);
+  });
+
+  it('resolves the route by its code, in any case; an unknown one is not resolved', () => {
+    expect(summaryBranchOf('C1', prow({ routeCode: 'r2' }), 0, ROUTES)).toMatchObject({ routeResolved: true, routeId: 'rt2', regionId: 'rg2' });
+    expect(summaryBranchOf('C1', prow({ routeCode: 'NOPE' }), 0, ROUTES).routeResolved).toBe(false);
+    expect(summaryBranchOf('C1', prow({ routeCode: null }), 0, ROUTES).routeResolved).toBe(false);
+  });
+
+  it('an address the database would refuse is qualified or replaced, as at Promote', () => {
+    expect(summaryBranchOf('C1', prow({ address: 'X', branchName: 'Seeb', regionCode: 'MCT' }), 0, ROUTES)).toMatchObject({
+      address: 'X, Seeb, MCT',
+      sheetAddress: 'X, Seeb, MCT',
+    });
+    expect(summaryBranchOf('C1', prow({ address: null }), 0, ROUTES)).toMatchObject({ address: 'Address pending', sheetAddress: null });
+    expect(summaryBranchOf('C1', prow({ address: 'X' }), 0, ROUTES)).toMatchObject({ address: 'Address pending', sheetAddress: null });
+    expect(SUMMARY_ADDRESS_MIN).toBe(3);
+  });
+});
+
+describe('planGroup — what Promote would do with one customer', () => {
+  it('a new customer: created, with each of its shops', () => {
+    const p = plan([prow(), prow({ branchCode: '02' })], null);
+    expect(p).toMatchObject({ rejected: null, newCustomer: true, shopsCreated: 2, unchanged: false });
+    expect(p.writes).toEqual({
+      customer: ['<create>'],
+      shops: [
+        { branchCode: 'C1-01', kind: 'create', fields: [] },
+        { branchCode: 'C1-02', kind: 'create', fields: [] },
+      ],
+    });
+  });
+
+  it('a customer and shop already as the sheet says: no change, nothing written', () => {
+    const p = plan([prow()], customer(), { 'C1-01': pshop() });
+    expect(p).toMatchObject({ unchanged: true, customerDiffers: false, shopsDiffer: 0, shopsCreated: 0 });
+    expect(p.writes).toEqual({ customer: [], shops: [] });
+  });
+
+  it('CRM values that differ are KEPT by default: counted, named, and nothing is written', () => {
+    const p = plan(
+      [prow({ custName: 'Older Name', phone: '+96892222222', address: 'Older address', dayOfVisit: 'SUN', customerStatus: 'CLOSED' })],
+      customer(),
+      { 'C1-01': pshop() }
+    );
+    expect(p).toMatchObject({ customerDiffers: true, shopsDiffer: 1, shopsWouldClose: 1, shopsWouldReopen: 0, unchanged: false });
+    expect(p.fields).toEqual(['name', 'phone', 'address', 'visit day', 'status']);
+    expect(p.writes).toEqual({ customer: [], shops: [] });
+  });
+
+  it('with the option on, the same sheet REPLACES them: the same counts, and the fields it writes', () => {
+    const p = plan(
+      [prow({ custName: 'Older Name', phone: '+96892222222', address: 'Older address', dayOfVisit: 'SUN', customerStatus: 'CLOSED' })],
+      customer(),
+      { 'C1-01': pshop() },
+      true
+    );
+    expect(p).toMatchObject({ customerDiffers: true, shopsDiffer: 1, shopsWouldClose: 1 });
+    expect(p.fields).toEqual(['name', 'phone', 'address', 'visit day', 'status']);
+    expect(p.writes).toEqual({
+      customer: ['legalName', 'primaryPhone', 'primaryPhoneNorm'],
+      shops: [{ branchCode: 'C1-01', kind: 'update', fields: ['address', 'dayOfVisit', 'status'] }],
+    });
+  });
+
+  it('blanks are filled, with the option off', () => {
+    const p = plan(
+      [prow({ contactPerson: 'Said', crNumber: '12 34' })],
+      customer(),
+      { 'C1-01': pshop({ address: 'Address pending', dayOfVisit: null }) }
+    );
+    expect(p).toMatchObject({ customerFilled: true, shopsFilled: 1, customerDiffers: false, shopsDiffer: 0 });
+    expect(p.writes).toEqual({
+      customer: ['contactPerson', 'crNumber', 'crNumberNorm'],
+      shops: [{ branchCode: 'C1-01', kind: 'update', fields: ['address', 'dayOfVisit'] }],
+    });
+  });
+
+  it('the route is Temix’s: a shop moves to the sheet’s route while its CRM values are kept', () => {
+    const p = plan([prow({ routeCode: 'R2', address: 'Older address' })], customer(), { 'C1-01': pshop() });
+    expect(p).toMatchObject({ shopsRouteMoved: 1, shopsDiffer: 1 });
+    expect(p.writes.shops).toEqual([{ branchCode: 'C1-01', kind: 'update', fields: ['regionId', 'routeId'] }]);
+  });
+
+  it('a sheet’s ACTIVE on a CLOSED shop would reopen it: counted, and kept', () => {
+    const p = plan([prow()], customer({ status: 'CLOSED' }), { 'C1-01': pshop({ status: 'CLOSED' }) });
+    expect(p).toMatchObject({ shopsWouldReopen: 1, shopsDiffer: 1, customerDiffers: false, reopensCustomer: false });
+    expect(p.fields).toEqual(['status']);
+    expect(p.writes.shops).toEqual([]);
+  });
+
+  it('the customer’s own status counts when no shop row carries the difference (a hold is not lifted)', () => {
+    const p = plan([prow()], customer({ status: 'SUSPENDED' }), { 'C1-01': pshop() });
+    expect(p).toMatchObject({ customerDiffers: true, shopsDiffer: 0 });
+    expect(p.fields).toEqual(['status']);
+  });
+
+  it('a new open shop on a customer that is not ACTIVE reopens it (owner decision 7)', () => {
+    const p = plan([prow({ branchCode: '02' })], customer({ status: 'CLOSED' }), { 'C1-01': pshop({ status: 'CLOSED' }) });
+    expect(p).toMatchObject({ shopsCreated: 1, reopensCustomer: true, customerDiffers: false });
+    expect(plan([prow({ branchCode: '02', customerStatus: 'CLOSED' })], customer({ status: 'CLOSED' })).reopensCustomer).toBe(false);
+  });
+
+  it('the refresh lane: Temix-owned fields refreshed; a shop that differs is counted as not changed, one not in the CRM as not added', () => {
+    const linked = customer({ temixCode: 'T1', recordedCode: 'T1', paymentTerms: 'CREDIT', creditLimit: 500 });
+    const p = plan(
+      [
+        prow({ temixCode: 'T1', paymentTerms: 'CREDIT', paymentTermsPresent: true, creditLimit: 750, routeCode: 'R2', custName: 'ERP Name' }),
+        prow({ temixCode: 'T1', branchCode: '02', creditLimit: 750 }),
+      ],
+      linked,
+      { 'C1-01': pshop() }
+    );
+    expect(p).toMatchObject({
+      onRefresh: true,
+      temixChanged: true,
+      linkedShops: 1,
+      linkedRouteNotMoved: 1,
+      linkedNotAdded: 1,
+      customerDiffers: false,
+      shopsCreated: 0,
+    });
+    expect(p.writes).toEqual({ customer: ['creditLimit'], shops: [] });
+    expect(p.credit).toEqual([]);
+  });
+
+  it('a refresh that restates the record changes nothing', () => {
+    const linked = customer({ temixCode: 'T1', recordedCode: 'T1' });
+    expect(plan([prow({ temixCode: 'T1' })], linked, { 'C1-01': pshop() })).toMatchObject({ onRefresh: true, temixChanged: false, unchanged: true });
+  });
+
+  it('credit cells that are not applied are counted row by row, with the reason', () => {
+    const seeded = plan(
+      [prow({ temixCode: 'C1', creditLimit: 750 }), prow({ branchCode: '02', temixCode: 'C1', creditLimit: 750 }), prow({ branchCode: '03', creditLimit: 900 })],
+      customer(),
+      { 'C1-01': pshop(), 'C1-02': pshop(), 'C1-03': pshop() }
+    );
+    expect(seeded.credit).toEqual(['NO_CODE_ON_RECORD', 'NO_CODE_ON_RECORD', 'NOT_FIRST_ROW']);
+    expect(seeded.unchanged).toBe(false);
+    const blank = plan([prow({ creditLimit: 750 })], customer({ temixCode: 'T1', recordedCode: 'T1' }), { 'C1-01': pshop() });
+    expect(blank.credit).toEqual(['ROW_CODE_BLANK']);
+  });
+
+  it('a row fixed in the app, for a linked customer: its own shop, by the same rule', () => {
+    const linked = customer({ temixCode: 'T1', recordedCode: 'T1' });
+    const kept = plan([prow({ fixedInApp: true, routeCode: 'R2', address: 'Older address' })], linked, { 'C1-01': pshop() });
+    expect(kept).toMatchObject({ onRefresh: false, shopsRouteMoved: 1, shopsDiffer: 1, linkedShops: 0 });
+    expect(kept.writes.shops).toEqual([{ branchCode: 'C1-01', kind: 'update', fields: ['regionId', 'routeId'] }]);
+    const made = plan([prow({ fixedInApp: true, branchCode: '09' })], linked, { 'C1-01': pshop() });
+    expect(made).toMatchObject({ shopsCreated: 1 });
+  });
+
+  it.each([
+    ['an archived customer', [prow()], customer({ deletedAt: new Date() }), {}, REJECT_REASONS.ARCHIVED],
+    ['another Temix code than the one on record', [prow({ temixCode: 'OTHER' })], customer({ temixCode: 'T1', recordedCode: 'T1' }), {}, REJECT_REASONS.OTHER_CODE],
+    ['payment terms that differ', [prow({ paymentTerms: 'CREDIT', paymentTermsPresent: true })], customer(), {}, REJECT_REASONS.TERMS],
+    ['a new CREDIT customer with no temix_code', [prow({ paymentTerms: 'CREDIT', paymentTermsPresent: true })], null, {}, REJECT_REASONS.NEW_CREDIT],
+    ['no branch_code on a customer with shops', [prow({ branchCode: null })], customer(), {}, REJECT_REASONS.NO_BRANCH_CODE],
+    ['a branch code repeated in the file', [prow(), prow()], customer(), {}, REJECT_REASONS.REPEATED_CODE],
+    ['a branch code of another customer', [prow()], customer(), { 'C1-01': pshop({ customerId: 'someone-else' }) }, REJECT_REASONS.FOREIGN_CODE],
+    ['a sheet code that is another customer’s shop', [prow({ branchCode: 'X9-01' })], customer(), { 'X9-01': pshop({ customerId: 'someone-else' }) }, REJECT_REASONS.FOREIGN_CODE],
+    ['a new customer naming an existing shop', [prow()], null, { 'C1-01': pshop() }, REJECT_REASONS.FOREIGN_CODE],
+  ] as const)('expected to be rejected: %s', (_label, rows, existing, shops, reason) => {
+    const p = plan([...rows], existing, shops);
+    expect(p.rejected).toBe(reason);
+    expect(p).toMatchObject({ newCustomer: false, shopsCreated: 0, customerDiffers: false, credit: [] });
+    expect(p.writes).toEqual({ customer: [], shops: [] });
+  });
+
+  it('a customer with no shops yet takes a row with no branch_code (numbered by position)', () => {
+    expect(plan([prow({ branchCode: null })], customer({ liveBranches: 0 }))).toMatchObject({ rejected: null, shopsCreated: 1 });
+  });
+});
+
+describe('addGroup and summaryLines — the counts and the words', () => {
+  const build = (overwrite: boolean) => {
+    const s = emptySummary();
+    const older = prow({ custName: 'Older Name', address: 'Older address', customerStatus: 'CLOSED' });
+    // Two customers whose CRM values differ, one new, one unchanged, one refreshed, one rejected.
+    addGroup(s, plan([older], customer(), { 'C1-01': pshop() }, overwrite));
+    addGroup(s, plan([{ ...older, creditLimit: 750 }], customer(), { 'C1-01': pshop() }, overwrite));
+    addGroup(s, plan([prow(), prow({ branchCode: '02' })], null, {}, overwrite));
+    addGroup(s, plan([prow()], customer(), { 'C1-01': pshop() }, overwrite));
+    addGroup(
+      s,
+      plan(
+        [prow({ temixCode: 'T1', paymentTerms: 'CREDIT', paymentTermsPresent: true, creditLimit: 750, routeCode: 'R2' })],
+        customer({ temixCode: 'T1', recordedCode: 'T1' }),
+        { 'C1-01': pshop() },
+        overwrite
+      )
+    );
+    addGroup(s, plan([prow({ paymentTerms: 'CREDIT', paymentTermsPresent: true }), prow({ branchCode: '02' })], customer(), {}, overwrite));
+    addGroup(s, plan([prow({ branchCode: '02' })], customer({ status: 'CLOSED' }), {}, overwrite));
+    return s;
+  };
+
+  it('adds each customer once, and a rejected one only as rejected', () => {
+    const s = build(false);
+    expect(s).toEqual({
+      rows: 9,
+      customers: 7,
+      created: { customers: 1, shops: 3, shopsOnExisting: 1, closedCustomersReopened: 1 },
+      temix: { customersOnRefresh: 1, customersChanged: 1, shopsRouteMoved: 0 },
+      crm: {
+        customersFilled: 0,
+        shopsFilled: 0,
+        customersDiffer: 2,
+        shopsDiffer: 2,
+        shopsWouldReopen: 0,
+        shopsWouldClose: 2,
+        byField: [
+          { field: 'name', count: 2 },
+          { field: 'address', count: 2 },
+          { field: 'status', count: 2 },
+        ],
+        linkedCustomers: 1,
+        linkedShops: 1,
+        linkedRouteNotMoved: 1,
+        linkedNotAdded: 0,
+      },
+      credit: { rows: 1, reasons: [{ reason: 'NO_CODE_ON_RECORD', rows: 1 }] },
+      expectRejected: { customers: 1, rows: 2, reasons: [{ reason: 'payment terms that differ from the record', customers: 1 }] },
+      unchangedCustomers: 1,
+    });
+  });
+
+  it('off: the sentences say what is created, refreshed, KEPT, not applied and expected to be rejected', () => {
+    expect(summaryLines(build(false), false)).toEqual([
+      { tone: 'plain', text: 'Checked 9 clean rows for 7 customers against the CRM as it is now.' },
+      { tone: 'plain', text: 'New: 1 customer(s) and 3 shop(s) will be created (1 of the shops on customers already in the CRM).' },
+      {
+        tone: 'plain',
+        text: 'Temix-owned fields: 1 customer(s) will have their Temix code, cash/credit, credit limit or credit days refreshed, and 0 shop(s) will move to the route in the sheet.',
+      },
+      {
+        tone: 'warn',
+        text: 'CRM fields kept: on 2 customer(s) and 2 shop(s) the sheet differs from the record. Their values stay as they are on record (address 2, name 2, status 2). The sheet would have reopened 0 closed shop(s) and closed 2 open shop(s); they stay as they are.',
+      },
+      {
+        tone: 'warn',
+        text: "Linked to Temix: 1 shop(s) of 1 customer(s) differ from the record and are not changed by a row that carries the customer's Temix code (1 of them a different route).",
+      },
+      {
+        tone: 'warn',
+        text: 'Credit cells not applied: 1 row(s) — 1: this customer has no Temix code on record, and credit figures are taken only from a row carrying the Temix code already recorded for the customer.',
+      },
+      { tone: 'warn', text: 'Closed customers reopened by a new open shop: 1.' },
+      {
+        tone: 'warn',
+        text: 'Expected to be rejected at Promote: 2 row(s) of 1 customer(s) (payment terms that differ from the record: 1). Each row will say why.',
+      },
+      { tone: 'plain', text: 'No change: 1 customer(s) are already as the sheet says.' },
+      { tone: 'plain', text: 'This is a check, not a lock: Promote works from the CRM as it is at that moment.' },
+    ]);
+  });
+
+  it('on: the same customers and shops are REPLACED, in red, and shops are opened or closed', () => {
+    const lines = summaryLines(build(true), true);
+    expect(lines.find((l) => l.tone === 'danger')).toEqual({
+      tone: 'danger',
+      text: "CRM fields REPLACED: on 2 customer(s) and 2 shop(s) the values on record will be replaced by this sheet's (address 2, name 2, status 2). 0 closed shop(s) will be reopened and 2 open shop(s) closed.",
+    });
+    expect(lines.some((l) => l.text.startsWith('CRM fields kept'))).toBe(false);
+    // The refresh lane is the same with the option on: it never writes a CRM field.
+    expect(lines.some((l) => l.text.startsWith('Linked to Temix: 1 shop(s) of 1 customer(s)'))).toBe(true);
+  });
+
+  it('an empty batch, and one with nothing to say, read as two plain lines', () => {
+    expect(summaryLines(emptySummary(), false)).toEqual([
+      { tone: 'plain', text: 'Checked 0 clean rows for 0 customers against the CRM as it is now.' },
+      { tone: 'plain', text: 'This is a check, not a lock: Promote works from the CRM as it is at that moment.' },
+    ]);
+    const one = addGroup(emptySummary(), plan([prow()], customer(), { 'C1-01': pshop() }));
+    expect(summaryLines(one, false).map((l) => l.text)).toEqual([
+      'Checked 1 clean row for 1 customer against the CRM as it is now.',
+      'No change: 1 customer(s) are already as the sheet says.',
+      'This is a check, not a lock: Promote works from the CRM as it is at that moment.',
+    ]);
+  });
+
+  it('a line with a shop the sheet names and the CRM does not have says it is not added', () => {
+    const s = addGroup(
+      emptySummary(),
+      plan([prow({ temixCode: 'T1', branchCode: '05' })], customer({ temixCode: 'T1', recordedCode: 'T1' }), { 'C1-01': pshop() })
+    );
+    expect(summaryLines(s, false)[1]!.text).toBe(
+      "Linked to Temix: 0 shop(s) of 1 customer(s) differ from the record and are not changed by a row that carries the customer's Temix code (0 of them a different route); 1 shop(s) in the sheet are not in the CRM and are not added."
+    );
   });
 });

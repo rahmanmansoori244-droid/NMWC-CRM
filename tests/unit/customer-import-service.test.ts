@@ -72,8 +72,17 @@ vi.mock('@/lib/import-master-lookup', async (importOriginal) => ({
 }));
 vi.mock('@/lib/db', () => ({ prisma: h.db }));
 
+import { readFileSync } from 'node:fs';
 import { matchesWhere } from '../support/where-eval';
 import { loadExcelJS } from '@/lib/excel';
+import { ADDRESS_PLACEHOLDER } from '@/lib/import-crm-rule';
+import {
+  SUMMARY_ADDRESS_MIN,
+  planGroup,
+  summaryBranchOf,
+  type PlanCustomer,
+  type PlanRow,
+} from '@/lib/import-plan';
 import {
   uploadCustomerMasterAction,
   promoteCustomerBatchAction,
@@ -1943,5 +1952,166 @@ describe('finding 1 — the batch’s overwrite option', () => {
     } finally {
       overwriteOption = false;
     }
+  });
+});
+
+// ── Finding 1: the "Before you promote" summary says what Promote then does ──
+//
+// lib/import-plan.ts planGroup mirrors three things this file's subject cannot
+// export (a 'use server' module): how a row's shop is resolved, what the refresh
+// lane writes and what the full lane writes on the customer. Each scenario below
+// runs the REAL promote on the fake and the plan over the same rows and records,
+// and compares what was written — customer fields, shops created, shop fields —
+// taken from the promote's own audit rows.
+
+type Scenario = {
+  name: string;
+  stored: Parameters<typeof setup>[0];
+  rows: Parsed[];
+  opts?: SetupOptions;
+  overwrite?: boolean;
+};
+
+const R1 = [{ id: 'rt1', code: 'R1', regionId: 'rgB' }];
+const LINKED = { ...AS_SHEET, temixCode: 'ARC1' };
+const SCENARIOS: Scenario[] = [
+  { name: 'a new customer with two shops', stored: null, rows: [parsed({ custCode: 'ARC1' }), parsed({ branchCode: 'ARC1-03' })] },
+  { name: 'everything differs, the option off: kept', stored: liveActive(), rows: [parsed({ address: 'Older', dayOfVisit: 'MON' })], opts: { branches: { 'ARC1-02': storedBranch({ dayOfVisit: 'SUN' }) } } },
+  { name: 'everything differs, the option ON: replaced', stored: liveActive(), rows: [parsed({ address: 'Older', dayOfVisit: 'MON' })], opts: { branches: { 'ARC1-02': storedBranch({ dayOfVisit: 'SUN', status: 'CLOSED' }) } }, overwrite: true },
+  { name: 'blanks filled, the name kept', stored: liveActive({ primaryPhoneNorm: null as unknown as string, contactPerson: null as unknown as string }), rows: [parsed({ crNumber: '12 34', channelKey: 'HORECA' })], opts: { branches: { 'ARC1-02': storedBranch({ address: 'Address pending' }) }, channels: CHANNELS } },
+  { name: 'a shop moved to the sheet’s route, its CRM values kept', stored: AS_SHEET, rows: [parsed({ routeCode: 'R1', address: 'Older', branchName: 'Renamed' })], opts: { routes: R1, branches: { 'ARC1-02': storedBranch() } } },
+  { name: 'a second, new shop on a customer that exists', stored: AS_SHEET, rows: [parsed(), parsed({ branchCode: 'ARC1-09', customerStatus: 'CLOSED' })], opts: { branches: { 'ARC1-02': storedBranch() } } },
+  { name: 'a channel change with the option ON clears the old sub-channel', stored: { ...AS_SHEET, channelId: 'ch-retail', subChannelId: 'sub-retail', subChannel: { channelId: 'ch-retail' } }, rows: [parsed({ channelKey: 'HORECA' })], opts: { branches: { 'ARC1-02': storedBranch() }, channels: CHANNELS }, overwrite: true },
+  { name: 'the same channel change with the option off', stored: { ...AS_SHEET, channelId: 'ch-retail', subChannelId: 'sub-retail', subChannel: { channelId: 'ch-retail' } }, rows: [parsed({ channelKey: 'HORECA' })], opts: { branches: { 'ARC1-02': storedBranch() }, channels: CHANNELS } },
+  { name: 'refresh lane: credit applied to a CREDIT customer', stored: { ...LINKED, paymentTerms: 'CREDIT' }, rows: [parsed({ temixCode: 'ARC1', paymentTerms: 'CREDIT', creditLimit: 750, paymentTermDays: 30, address: 'Older' })], opts: { branches: { 'ARC1-02': storedBranch() } } },
+  { name: 'refresh lane: a CASH customer drops the figures', stored: LINKED, rows: [parsed({ temixCode: 'ARC1', paymentTermsPresent: false, creditLimit: 750 })], opts: { branches: { 'ARC1-02': storedBranch() } } },
+  { name: 'refresh lane: the row says CREDIT for a CASH customer', stored: LINKED, rows: [parsed({ temixCode: 'ARC1', paymentTerms: 'CREDIT', creditLimit: 750 }), parsed({ temixCode: 'ARC1', branchCode: 'ARC1-05' })], opts: { branches: { 'ARC1-02': storedBranch() } } },
+  { name: 'a linked customer whose temix_code cell is blank: the full lane, fill-only', stored: LINKED, rows: [parsed({ address: 'Older', creditLimit: 750 })], opts: { branches: { 'ARC1-02': storedBranch() } } },
+  { name: 'a seeded customer whose row carries a code and credit figures', stored: AS_SHEET, rows: [parsed({ temixCode: 'ARC1', creditLimit: 750, paymentTermDays: 30 })], opts: { branches: { 'ARC1-02': storedBranch() } } },
+  { name: 'a fixed row of a linked customer: route written, address kept', stored: LINKED, rows: [parsed({ fixedInApp: true, routeCode: 'R1', address: 'Older' })], opts: { routes: R1, branches: { 'ARC1-02': storedBranch() } } },
+  { name: 'the same fixed row with the option ON', stored: LINKED, rows: [parsed({ fixedInApp: true, routeCode: 'R1', address: 'Older' })], opts: { routes: R1, branches: { 'ARC1-02': storedBranch() } }, overwrite: true },
+  { name: 'a fixed row that creates its shop, beside a plain refresh row', stored: LINKED, rows: [parsed({ temixCode: 'ARC1' }), parsed({ fixedInApp: true, branchCode: 'ARC1-07' })], opts: { branches: { 'ARC1-02': storedBranch() } } },
+  { name: 'rejected: payment terms differ', stored: AS_SHEET, rows: [parsed({ paymentTerms: 'CREDIT' })], opts: { branches: { 'ARC1-02': storedBranch() } } },
+  { name: 'rejected: a new CREDIT customer with no temix_code', stored: null, rows: [parsed({ paymentTerms: 'CREDIT' })] },
+  { name: 'rejected: another Temix code than the one on record', stored: LINKED, rows: [parsed({ temixCode: 'OTHER' })] },
+  { name: 'rejected: archived', stored: { ...AS_SHEET, deletedAt: new Date('2026-09-01T08:00:00Z') }, rows: [parsed()] },
+  { name: 'rejected: the same branch_code twice', stored: AS_SHEET, rows: [parsed(), parsed({ address: 'Way 10, Muscat' })] },
+  { name: 'rejected: a branch_code of another customer', stored: AS_SHEET, rows: [parsed()], opts: { branches: { 'ARC1-02': storedBranch({ customerId: 'someone-else', customer: { nmwcCode: 'OTH1' } }) } } },
+];
+
+describe('finding 1 — parity: the plan the summary is built from is what the promote writes', () => {
+  it.each(SCENARIOS)('$name', async ({ stored, rows, opts = {}, overwrite = false }) => {
+    h.audit.mockClear();
+    overwriteOption = overwrite;
+    let out: Awaited<ReturnType<typeof promote>>;
+    try {
+      setup(stored, rows, [], opts);
+      // A created customer comes back as it was created (the fake's default answer
+      // has no importRowId, which the promote reads as "someone else created it").
+      (tx.customer as Record<string, Fn>).upsert.mockImplementation(async (a: { create: Record<string, unknown> }) =>
+        stored ? { id: stored.id } : { id: 'new-cust', ...a.create }
+      );
+      out = await promote();
+    } finally {
+      overwriteOption = false;
+    }
+
+    // What the promote wrote, from its own audit rows (the status rows of owner
+    // decision 7 are another rule's, and are left out on both sides).
+    const written = auditRows().filter(
+      (r) =>
+        (r.entityType === 'Customer' || r.entityType === 'Branch') &&
+        (r.action === 'UPDATE' || r.action === 'CREATE') &&
+        String(r.reason).startsWith('import ')
+    );
+    const keys = (r: Record<string, unknown>) => Object.keys((r.before ?? {}) as object).sort();
+    const customerRow = written.find((r) => r.entityType === 'Customer');
+    const wroteCustomer = !customerRow ? [] : customerRow.action === 'CREATE' ? ['<create>'] : keys(customerRow);
+    const wroteShops = written
+      .filter((r) => r.entityType === 'Branch')
+      .map((r) => (r.action === 'CREATE' ? { kind: 'create', fields: [] } : { kind: 'update', fields: keys(r) }));
+
+    const custCode = String(rows[0]!.custCode);
+    const plan = planGroup({
+      custCode,
+      overwrite,
+      rows: rows as unknown as PlanRow[],
+      existing: stored
+        ? ({
+            ...stored,
+            recordedCode: stored.temixCode ? stored.temixCode.toUpperCase() : null,
+            temixSyncState: stored.temixSyncState ?? null,
+            lastTemixUploadAt: stored.lastTemixUploadAt ?? null,
+            creditLimit: stored.creditLimit ?? null,
+            paymentTermDays: stored.paymentTermDays ?? null,
+            status: stored.status ?? 'ACTIVE',
+            subChannelChannelId: stored.subChannel?.channelId ?? null,
+            // The fake counts no live shop (tx.branch.count), as the promote reads it.
+            liveBranches: 0,
+          } as PlanCustomer)
+        : null,
+      shopByCode: new Map(Object.entries(opts.branches ?? {})),
+      routeByCode: new Map<string, { id: string; regionId: string }>([
+        ['UNASSIGNED', { id: 'rtU', regionId: 'rgU' }],
+        ...(opts.routes ?? []).map((r) => [r.code, { id: r.id, regionId: r.regionId }] as const),
+      ]),
+      channelIdByKey: new Map((opts.channels ?? []).map((c) => [c.key, c.id])),
+    });
+
+    // Rejected, or not: the two agree, and a rejected customer has nothing written.
+    expect(plan.rejected !== null, plan.rejected ?? 'not rejected').toBe(out.failed === 1);
+    expect(plan.writes.customer.slice().sort()).toEqual(wroteCustomer);
+    expect(plan.writes.shops.map((s) => ({ kind: s.kind, fields: s.fields.slice().sort() }))).toEqual(wroteShops);
+    // The shops created or updated are the ones the promote addressed, by code.
+    const addressed = [
+      ...branchUpserts().map((u) => u.where.branchCode),
+      ...((tx.branch as Record<string, Fn>).create.mock.calls as Array<[{ data: { branchCode: string } }]>).map(([a]) => a.data.branchCode),
+    ];
+    for (const s of plan.writes.shops.filter((x) => x.kind === 'create')) expect(addressed).toContain(s.branchCode);
+    // The notes: every row whose credit cells were not applied, and whether a CRM value was kept or replaced.
+    const differs = plan.customerDiffers || plan.shopsDiffer > 0;
+    expect(out.notes).toEqual({
+      kept: expect.any(Number),
+      replaced: expect.any(Number),
+      creditNotApplied: plan.rejected ? 0 : plan.credit.length,
+    });
+    expect(out.notes!.kept > 0, 'a kept CRM value').toBe(!plan.rejected && !overwrite && differs);
+    expect(out.notes!.replaced > 0, 'a replaced CRM value').toBe(!plan.rejected && overwrite && differs);
+  });
+
+  it('a row’s shop is resolved by the summary exactly as the promote creates it', async () => {
+    const rows = [
+      parsed({ custCode: 'NEW1', branchCode: '05', address: 'X', branchName: 'Seeb', regionCode: 'MCT', dayOfVisit: 'MON' }),
+      parsed({ custCode: 'NEW1', branchCode: 'new1-07', address: null, branchName: null, customerStatus: 'CLOSED' }),
+      parsed({ custCode: 'NEW1', branchCode: null, address: 'Z', branchName: null, routeCode: 'R1' }),
+      parsed({ custCode: 'NEW1', branchCode: 'NEW1', address: '  Way 4, Muscat  ', routeCode: 'nope' }),
+    ];
+    setup(null, rows, [], { routes: R1 });
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 4, failed: 0 });
+    const routeByCode = new Map([['UNASSIGNED', { id: 'rtU', regionId: 'rgU' }], ['R1', { id: 'rt1', regionId: 'rgB' }]]);
+    const created = branchUpserts().map((u) => u.create);
+    expect(created).toHaveLength(4);
+    rows.forEach((p, i) => {
+      const s = summaryBranchOf('NEW1', p as unknown as PlanRow, i, routeByCode);
+      expect(created[i], `row ${i + 2}`).toMatchObject({
+        branchCode: s.branchCode,
+        branchName: s.branchName,
+        address: s.address,
+        dayOfVisit: s.dayOfVisit,
+        status: s.status ?? 'ACTIVE',
+        // A route the sheet names is the shop's; one it does not name parks the new shop in UNASSIGNED.
+        routeId: s.routeResolved ? s.routeId : 'rtU',
+        regionId: s.routeResolved ? s.regionId : 'rgU',
+      });
+    });
+  });
+
+  it('the two constants the summary copies are the promote’s own', () => {
+    const src = readFileSync('services/imports.ts', 'utf8');
+    expect(Number(/const BRANCH_ADDRESS_MIN = (\d+);/.exec(src)![1])).toBe(SUMMARY_ADDRESS_MIN);
+    // The promote's fallback address for a new shop, which the rule treats as blank.
+    expect(src).toContain(`'${ADDRESS_PLACEHOLDER}',`);
+    expect(ADDRESS_PLACEHOLDER).toBe('Address pending');
   });
 });

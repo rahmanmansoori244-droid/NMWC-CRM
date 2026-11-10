@@ -53,6 +53,7 @@ const FILES = [
   // the duplicate merge, and the dashboard's filters.
   'app/(app)/import/forms.tsx',
   'app/(app)/import/[batchId]/RowActions.tsx',
+  'app/(app)/import/[batchId]/PromoteReviewDialog.tsx',
   'app/(app)/duplicates/MergeForm.tsx',
   'app/(app)/dashboard/InsightFilters.tsx',
 ];

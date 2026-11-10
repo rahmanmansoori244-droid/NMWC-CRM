@@ -5,6 +5,8 @@ import { notFound, redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { ImportRowState, Role } from '@prisma/client';
+import { omanDateTime } from '@/lib/tz';
+import { notReadNote, reportHeadings } from '@/lib/import-headings';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { PromoteButton } from './PromoteButton';
 import { ExcludeRemaining, RowActions } from './RowActions';
@@ -153,6 +155,28 @@ export default async function ImportBatchPage({
   // timeout, network drop) — committed rows are safe, the batch just needs resuming.
   const interrupted = (batch.status === 'PROMOTING' && !leaseHeld) || batch.status === 'FAILED';
 
+  // Code review 2026-11-10, finding 1.
+  // The headings of the sheet the import did not read, from the first row as
+  // uploaded (every row carries every heading; nothing once the 90-day sweep has
+  // emptied the rows). Sorted: the stored JSON does not keep the sheet's order.
+  const firstRow =
+    batch.kind === 'CUSTOMER'
+      ? await prisma.importRow.findFirst({
+          where: { batchId },
+          orderBy: { rowNumber: 'asc' },
+          select: { raw: true },
+        })
+      : null;
+  const rawFirst = firstRow?.raw;
+  const notRead =
+    rawFirst && typeof rawFirst === 'object' && !Array.isArray(rawFirst)
+      ? notReadNote(reportHeadings(Object.keys(rawFirst)).unrecognised.sort((a, b) => a.localeCompare(b, 'en')))
+      : null;
+  // The batch's "Overwrite CRM fields from this sheet" option: changeable only
+  // while the batch is ready to promote and nobody is promoting it, as the
+  // server rules (services/import-fixes.ts setOverwriteCore).
+  const canSetOverwrite = (batch.status === 'READY' || batch.status === 'FAILED') && !leaseHeld;
+
   return (
     <main>
       <PageHeader
@@ -165,6 +189,7 @@ export default async function ImportBatchPage({
               remainingCount={remainingClean}
               resume={batch.status === 'PROMOTING' || batch.status === 'FAILED'}
               leaseHeld={leaseHeld}
+              canSetOverwrite={canSetOverwrite}
             />
           ) : null
         }
@@ -184,6 +209,30 @@ export default async function ImportBatchPage({
               <span className="font-semibold">Finish promote</span> to complete it.
             </>
           )}
+        </div>
+      )}
+      {batch.kind === 'CUSTOMER' && batch.overwriteCrmFields && (
+        <div
+          role="status"
+          className="mx-4 mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800 ring-1 ring-inset ring-red-200 sm:mx-6"
+        >
+          <strong className="font-semibold">Overwrite CRM fields from this sheet is ON for this batch</strong>
+          {batch.overwriteCrmFieldsAt ? <> (switched on {omanDateTime(batch.overwriteCrmFieldsAt)})</> : null}. Promote
+          will replace the name, phone, CR number, contact person, channel, address, visit day and open/closed
+          status of customers and shops already in the CRM wherever this sheet gives a value.
+        </div>
+      )}
+      {batch.kind === 'CUSTOMER' && !batch.overwriteCrmFields && batch.overwriteCrmFieldsAt && (
+        <div className="mx-4 mt-4 rounded-lg bg-slate-50 px-4 py-3 text-sm text-slate-700 ring-1 ring-inset ring-slate-200 sm:mx-6">
+          Overwrite CRM fields from this sheet was switched on for this batch on{' '}
+          {omanDateTime(batch.overwriteCrmFieldsAt)} and is off again. Rows promoted while it was on replaced CRM
+          values (each change is in the audit log); rows promoted from now on fill blanks only unless it is
+          switched on again.
+        </div>
+      )}
+      {notRead && (
+        <div className="mx-4 mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-inset ring-amber-200 sm:mx-6">
+          {notRead}
         </div>
       )}
       <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-6 sm:p-6">
