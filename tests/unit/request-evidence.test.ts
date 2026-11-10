@@ -37,7 +37,7 @@ describe('sentRequestAudit', () => {
         pendingRole: 'MANAGER',
         cycle: 1,
         submissionId: 's-1',
-        decisionReason: 'Reopened after renovation',
+        requestReason: 'Reopened after renovation',
         routeIdAtSubmit: 'r1',
         regionIdsAtSubmit: ['g1'],
       })
@@ -60,6 +60,33 @@ describe('sentRequestAudit', () => {
       routeIdAtSubmit: 'r1',
       regionIdsAtSubmit: ['g1'],
       requestReason: 'Reopened after renovation',
+    });
+  });
+
+  it('finding 18: the sealed reason is the REQUESTER’s column — a decisionReason on the row is never sealed as his', () => {
+    const base = {
+      process: 'UPDATE',
+      target: 'CUSTOMER',
+      state: 'SUBMITTED',
+      customerId: 'c1',
+      branchId: null,
+      isReactivation: false,
+      fieldChanges: [],
+      attachmentChanges: [],
+      submittedAt: null,
+      cycle: 1,
+    };
+    // An update has no request-level reason: no key at all.
+    expect(sentRequestAudit(base)).not.toHaveProperty('requestReason');
+    expect(sentRequestAudit({ ...base, requestReason: null })).not.toHaveProperty('requestReason');
+    expect(sentRequestAudit({ ...base, requestReason: '' })).not.toHaveProperty('requestReason');
+    // A row that carries a reviewer's or a closure note's text in decisionReason
+    // (as a whole CustomerEdit row does): it is not read.
+    const whole = { ...base, decisionReason: 'Photo is blurry, retake' };
+    expect(sentRequestAudit(whole)).not.toHaveProperty('requestReason');
+    expect(JSON.stringify(sentRequestAudit(whole))).not.toContain('blurry');
+    expect(sentRequestAudit({ ...whole, requestReason: 'Shop shut for good' })).toMatchObject({
+      requestReason: 'Shop shut for good',
     });
   });
 

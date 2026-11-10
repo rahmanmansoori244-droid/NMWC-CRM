@@ -277,6 +277,11 @@ async function submitSignedFormCore(input: unknown): Promise<SignedFormReceipt> 
             escalationLevel: 0,
             slaBreachedAt: null,
             lastEscalatedAt: null,
+            // Finding 18: a Finance Manager's send-back has been answered by
+            // this upload, so its reason is no longer current (it stays on his
+            // decision row and the REJECT audit row).
+            decisionReason: null,
+            decisionCategory: null,
           },
         });
         if (claim.count === 0) {

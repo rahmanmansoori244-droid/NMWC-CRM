@@ -375,6 +375,39 @@ describe('approving a reactivation (F10 + X-STATUS-1)', () => {
     expect(tx.branchHistory.findMany).not.toHaveBeenCalled();
   });
 
+  it('finding 18: the REACTIVATE row carries the salesman’s reason from requestReason — decisionReason only for a row an older build sent', async () => {
+    const reactivateRow = async (over: Record<string, unknown>) => {
+      audit.writeAudit.mockClear();
+      tx.customerEdit.updateMany.mockClear();
+      db.customerEdit.findUnique.mockResolvedValue(reactivation(over));
+      expect((await approveReactivationAction(form({ editId: 'e-r', reason: 'Seen open on my visit' }))).ok).toBe(true);
+      return audit.writeAudit.mock.calls.map((c) => c[2]).find((r) => r.action === 'REACTIVATE' && r.entityType === 'Branch');
+    };
+    // This build's row: his reason in its own column (decisionReason holds the rollback bridge's copy).
+    let row = await reactivateRow({ requestReason: 'Open again under a new owner', decisionReason: 'Open again under a new owner' });
+    expect(row.reason).toBe('Open again under a new owner');
+    expect(row.after).toMatchObject({ requestReason: 'Open again under a new owner', managerReason: 'Seen open on my visit' });
+    // His column is the one read: whatever decisionReason holds beside it is not.
+    row = await reactivateRow({ requestReason: 'His own words', decisionReason: 'left by some later writer' });
+    expect(row.reason).toBe('His own words');
+    expect(row.after.requestReason).toBe('His own words');
+    // A row sent by the build before this one (no requestReason): as it was read then.
+    row = await reactivateRow({ requestReason: null });
+    expect(row.reason).toBe('Shop open again under the same owner.');
+    expect(row.after.requestReason).toBe('Shop open again under the same owner.');
+    // Nothing on record: no reason, said as null.
+    row = await reactivateRow({ requestReason: null, decisionReason: null });
+    expect(row.reason).toBeUndefined();
+    expect(row.after.requestReason).toBeNull();
+    // The Manager's note is his decision's (EditApproval), and the approval writes neither reason column.
+    expect(tx.editApproval.create).toHaveBeenLastCalledWith({
+      data: expect.objectContaining({ decision: 'APPROVED', reason: 'Seen open on my visit' }),
+    });
+    const claim = tx.customerEdit.updateMany.mock.calls[0]![0].data;
+    expect(claim).not.toHaveProperty('decisionReason');
+    expect(claim).not.toHaveProperty('requestReason');
+  });
+
   it('gap 20: a request from before, with no closure time on it, finds the closure in the shop’s dated history', async () => {
     tx.branchHistory.findMany.mockResolvedValue([
       { status: 'CLOSED', changeKind: 'UPDATE', validFrom: new Date('2026-09-15T00:00:00.000Z') },
@@ -501,6 +534,18 @@ describe('approving a close request (F10)', () => {
     expect(order(tx.attachment.findMany)).toBeLessThan(order(tx.branch.updateMany));
   });
 
+  it('finding 18: approving a close writes neither reason column — a row an older build sent keeps his reason where that build reads it', async () => {
+    expect(await approveClose()).toEqual({ ok: true, data: undefined });
+    const claim = tx.customerEdit.updateMany.mock.calls[0]![0];
+    expect(claim.data).toMatchObject({ state: 'APPROVED', reviewedById: SUP });
+    // Not cleared (an update is never stepped back, so nothing stale can be on
+    // it), and never rewritten: after an Instant Rollback the approver's page
+    // still shows the salesman's reason from decisionReason.
+    expect(claim.data).not.toHaveProperty('decisionReason');
+    expect(claim.data).not.toHaveProperty('decisionCategory');
+    expect(claim.data).not.toHaveProperty('requestReason');
+  });
+
   it.each([
     ['removed', [photo({ deletedAt: new Date() })]],
     ['gone altogether', []],
@@ -560,6 +605,12 @@ describe('rejecting a reactivation (F13): the decision and its audit row are one
     // Launch fix (2026-10-07): "Keep closed" is final (REJECTED, off the salesman's
     // Needs correction lists), and his own reason for asking is no longer overwritten.
     expect(tx.customerEdit.updateMany.mock.calls[0]![0].data).not.toHaveProperty('decisionReason');
+    // Finding 18: nor is his own column (frozen by the database once sent). The
+    // Manager's reason is his decision's: the EditApproval row.
+    expect(tx.customerEdit.updateMany.mock.calls[0]![0].data).not.toHaveProperty('requestReason');
+    expect(tx.editApproval.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ decision: 'REJECTED', reason: 'Still shut — shutters down.', editId: 'e-r' }),
+    });
     expect(audit.writeAudit).toHaveBeenCalledTimes(1);
     expect(audit.writeAudit.mock.calls[0]![0]).toBe(tx);
     expect(audit.writeAudit.mock.calls[0]![2]).toEqual({

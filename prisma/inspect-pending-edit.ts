@@ -24,6 +24,7 @@ async function main() {
       isWrongRoute: true,
       createdAt: true,
       updatedAt: true,
+      requestReason: true,
       decisionReason: true,
       decisionCategory: true,
       fieldChanges: true,
@@ -53,6 +54,7 @@ async function main() {
       console.log(`  reviewedAt=${e.updatedAt.toISOString()} by=${userById.get(e.reviewedById)}`);
     console.log(`  branch=${e.branch?.branchCode} (currently ${e.branch?.status})`);
     console.log(`  isReactivation=${e.isReactivation} isWrongRoute=${e.isWrongRoute}`);
+    if (e.requestReason) console.log(`  requestReason=${e.requestReason}`);
     if (e.decisionReason) console.log(`  decisionReason=${e.decisionReason}`);
     if (e.decisionCategory) console.log(`  decisionCategory=${e.decisionCategory}`);
     if (e.fieldChanges) console.log(`  fieldChanges=${JSON.stringify(e.fieldChanges).slice(0, 300)}`);

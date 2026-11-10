@@ -512,6 +512,17 @@ model CustomerEdit {
   reviewedAt        DateTime?
   decisionReason    String?    @db.Text
   decisionCategory  String?
+  // Code review 2026-11-10, finding 18: the requester's own reason, in his words —
+  // why the shop should close, or why a closed one should reopen. Written once,
+  // with the request (services/reactivations.ts), and frozen by the evidence guard
+  // once sent: no decision ever replaces it. An approver's reason lives on his
+  // decision (EditApproval.reason); decisionReason above is now only the note on a
+  // request closed without a decision, and a copy of the latest send-back while
+  // the request stands sent back (lib/request-reasons.ts). Null on an update or
+  // new-customer request (they have no request-level reason; a typed GPS point's
+  // reason is inside fieldChanges), and on close/reactivation rows sent before
+  // 20261110110000 whose reason could not be told apart from a reviewer's.
+  requestReason     String?    @db.Text
   fieldChanges      Json
   attachmentChanges Json
   isReactivation    Boolean    @default(false)

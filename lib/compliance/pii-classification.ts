@@ -238,7 +238,16 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'CustomerEdit.submittedAt': { subject: 'employee', kind: 'behaviour' },
   'CustomerEdit.reviewedById': { subject: 'employee', kind: 'behaviour' },
   'CustomerEdit.reviewedAt': { subject: 'employee', kind: 'behaviour' },
-  'CustomerEdit.decisionReason': { subject: 'customer', kind: 'free text', note: 'approver’s words; may describe the customer or the submitting employee' },
+  'CustomerEdit.decisionReason': {
+    subject: 'customer',
+    kind: 'free text',
+    note: 'the latest send-back reason while a request stands sent back (an approver’s words, also on his decision row), or the note on a request closed without a decision; on close and reactivation requests sent before 20261110110000, the salesman’s own reason. May describe the customer or the submitting employee',
+  },
+  'CustomerEdit.requestReason': {
+    subject: 'customer',
+    kind: 'free text',
+    note: 'the requester’s own words on a close or reactivation request (finding 18): why the shop should close or reopen; frozen once sent, and copied to the request’s CREATE audit row. May describe the customer',
+  },
   'CustomerEdit.decisionCategory': { subject: 'none' },
   'CustomerEdit.fieldChanges': {
     subject: 'customer',
