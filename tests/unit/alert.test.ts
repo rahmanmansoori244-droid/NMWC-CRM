@@ -536,31 +536,35 @@ describe('sendAlert — the rate limit', () => {
  * tests/unit/alert.test.ts pinned RATE_LIMIT_BACKEND='memory' at the top of the
  * file, so the re-raise above was only ever proved against checkLimitMemory —
  * while production leaves RATE_LIMIT_BACKEND unset with DATABASE_URL set, which is
- * checkLimitPg. Those two disagree: checkLimitPg debits a token on EVERY call,
- * floors the stored value at -1 and resets "lastRefill" as it does so, so a
+ * checkLimitPg. Those two disagreed: checkLimitPg debited a token on EVERY call,
+ * floored the stored value at -1 and reset "lastRefill" as it did so, so a
  * capacity-1/4h-refill bucket re-raised NEVER there — 24 h of a permanently-true
- * condition posted one message (adversarial review, 2026-09-24).
+ * condition posted one message (adversarial review, 2026-09-24). Since the code
+ * review of 2026-11-10 (finding 10) a refused call no longer touches the row; the
+ * four-hour window stays in the key, and this proves it on the new statements.
  *
- * No test may touch a database, so the statement is simulated rather than run. The
- * simulation is written from the SQL in lib/rate-limit.ts and asserts the statement
- * still has the shape it simulates, because a fake that has silently drifted from
- * the thing it stands in for is the vacuous guard this project keeps finding.
+ * No test may touch a database, so the statements are simulated rather than run.
+ * The simulation is written from the SQL in lib/rate-limit.ts and asserts the
+ * statements still have the shape it simulates, because a fake that has silently
+ * drifted from the thing it stands in for is the vacuous guard this project keeps
+ * finding.
  */
 type PgRow = { tokens: number; lastRefill: number };
 
-/** The landmarks of checkLimitPg's statement that this simulation depends on. */
-const PG_STATEMENT = [
-  'INSERT INTO "RateLimit"',
-  // The -1 denied marker: the reason a refill-based dedup cannot re-raise here.
-  'GREATEST(',
-  '("tokens" >= 0) AS "granted"',
-  // A denied call resets the refill clock, which is the other half of it.
-  '"lastRefill" = NOW()',
-];
+/** The landmarks of checkLimitPg's three statements that this simulation depends on. */
+const PG_TAKE = ['UPDATE "RateLimit" SET', '"lastRefill" = NOW()', 'WHERE "key" = ', '>= 1', 'RETURNING "tokens"'];
+const PG_CREATE = ['INSERT INTO "RateLimit"', 'ON CONFLICT ("key") DO NOTHING', 'RETURNING "tokens"'];
+const PG_READ = ['SELECT ', 'AS "refilled" FROM "RateLimit" WHERE "key" = '];
+/** The refill expression, a nested Prisma.sql fragment. */
+const PG_REFILL = ['LEAST(', '"RateLimit"."tokens" +', '"RateLimit"."lastRefill"'];
+
+type SqlLike = { strings: readonly string[]; values: unknown[] };
+const isSql = (v: unknown): v is SqlLike =>
+  !!v && typeof v === 'object' && Array.isArray((v as SqlLike).strings) && Array.isArray((v as SqlLike).values);
 
 function simulatedPgLimiter() {
   const rows = new Map<string, PgRow>();
-  /** Anything wrong with the statement, or with this simulation of it. */
+  /** Anything wrong with the statements, or with this simulation of them. */
   const problems: string[] = [];
   let served = 0;
   const queryRaw = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -572,31 +576,41 @@ function simulatedPgLimiter() {
     // throwing assertion would quietly turn this into the memory test it exists to
     // replace, and still pass. Found by mutating one of these landmarks and watching
     // the test stay green.
-    for (const landmark of PG_STATEMENT) {
-      if (!sql.includes(landmark)) problems.push(`the statement no longer contains ${landmark}`);
-    }
-    // Parameter order in the statement: key, capacity - 1, capacity, refillPerSec.
-    if (values.length !== 4) {
-      problems.push(`expected 4 bound parameters, got ${values.length}`);
+    const has = (marks: string[]) => marks.every((m) => sql.includes(m));
+    const refill = values.find(isSql);
+    const refillOf = (row: PgRow) => {
+      if (!refill) return NaN;
+      const text = refill.strings.join('?');
+      for (const m of PG_REFILL) if (!text.includes(m)) problems.push(`the refill no longer contains ${m}`);
+      const [capacity, refillPerSec] = refill.values as [number, number];
+      return Math.min(capacity, row.tokens + ((Date.now() - row.lastRefill) / 1000) * refillPerSec);
+    };
+    const key = values.find((v) => typeof v === 'string') as string | undefined;
+    if (!key) {
+      problems.push('no key bound');
       return [];
     }
-    const [key, initial, capacity, refillPerSec] = values as [string, number, number, number];
-    const now = Date.now();
-    const existing = rows.get(key);
-    served += 1;
-    if (!existing) {
-      // INSERT: a row that does not exist starts at capacity - 1 and is granted.
-      rows.set(key, { tokens: initial, lastRefill: now });
-      return [{ tokens: initial, granted: initial >= 0 }];
+    const row = rows.get(key);
+    if (has(PG_TAKE)) {
+      // A gate check starts here, whatever it answers.
+      served += 1;
+      if (!row) return [];
+      const r = refillOf(row);
+      if (!(r >= 1)) return []; // refused: the row is left exactly as it was
+      rows.set(key, { tokens: r - 1, lastRefill: Date.now() });
+      return [{ tokens: r - 1 }];
     }
-    // ON CONFLICT DO UPDATE: refill, then ALWAYS debit, floored at -1.
-    const refilled = Math.min(
-      capacity,
-      existing.tokens + ((now - existing.lastRefill) / 1000) * refillPerSec
-    );
-    const tokens = Math.max(-1, refilled - 1);
-    rows.set(key, { tokens, lastRefill: now });
-    return [{ tokens, granted: tokens >= 0 }];
+    if (has(PG_CREATE)) {
+      if (row) return [];
+      const initial = values.find((v) => typeof v === 'number') as number;
+      rows.set(key, { tokens: initial, lastRefill: Date.now() });
+      return [{ tokens: initial }];
+    }
+    if (has(PG_READ)) {
+      return row ? [{ refilled: refillOf(row) }] : [];
+    }
+    problems.push(`a statement this simulation does not know: ${sql.slice(0, 60)}`);
+    return [];
   });
   return { queryRaw, problems, served: () => served };
 }
@@ -637,7 +651,7 @@ describe('sendAlert — the dedup on the durable backend', () => {
     expect(await alert()).toBe(true);
     // The sweep keeps asking every 30 minutes while the condition stays true: 04:45
     // through 07:45, all inside BASE's window. Each of these asks is what reset the
-    // refill clock and held the old bucket at -1 for ever.
+    // refill clock and held the old bucket at -1 for ever (before finding 10).
     for (let i = 1; i <= 7; i++) {
       vi.setSystemTime(new Date(BASE.getTime() + i * 30 * 60_000));
       expect(await alert(), `the ask at +${i * 30} minutes must be suppressed`).toBe(false);

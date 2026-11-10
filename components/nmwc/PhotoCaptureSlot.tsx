@@ -205,6 +205,11 @@ export const UPLOAD_NO_CONNECTION =
  * ran: each 429 went straight to "Wait N seconds, then tap Retry upload"
  * (launch browser suite). A try sooner than asked is refused, and charged,
  * again — by this slot or by another one (photoLimitUntil, below).
+ *
+ * Since code review 2026-11-10 (finding 10) a refused call is no longer charged
+ * (lib/rate-limit.ts), so a photo 429 asks for at most one refill (30 s), and a
+ * try sooner than asked is refused without being charged. The minute stays: it
+ * is a ceiling, and a longer one costs nothing.
  */
 export const RATE_LIMIT_MAX_WAIT_S = 60;
 /** Said on the slot while such a wait runs, second by second (below). */

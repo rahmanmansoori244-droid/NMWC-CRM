@@ -99,7 +99,8 @@ export function loginAlert(page: Page): Locator {
 }
 
 export const INVALID_LOGIN = 'Invalid username or password.';
-export const ACCOUNT_LOCKED = 'Account temporarily locked due to repeated attempts. Try again in a minute.';
+/** Code review 2026-11-10, finding 10: the lock says how long to wait. */
+export const ACCOUNT_LOCKED = /^Account temporarily locked due to repeated attempts\. Try again in (\d+)s\.$/;
 export const NETWORK_THROTTLED = /^Too many attempts from your network\. Try again in (\d+)s\.$/;
 
 /**

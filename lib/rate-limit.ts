@@ -14,6 +14,7 @@
  * retryAfterSec }`. Existing call sites continue to work; behaviour upgrades
  * automatically when DATABASE_URL is set.
  */
+import { Prisma } from '@prisma/client';
 import { prisma } from './db';
 import { logger } from './logger';
 
@@ -88,50 +89,68 @@ function checkLimitMemory(
 }
 
 /**
- * Atomic Postgres token-bucket. Single round-trip, single statement,
- * row-level lock on the bucket via UPSERT.
+ * Durable Postgres token bucket.
+ *
+ * Code review 2026-11-10, finding 10: a REFUSED request leaves the bucket
+ * exactly as it was — no token taken, refill clock not restarted. It used to be
+ * debited to a floor of -1 and re-stamped (one statement for grant and refusal
+ * alike), so while a shared address kept retrying the bucket never refilled: a
+ * room of people on one office Wi-Fi each told "try again in 24s" could lock
+ * itself out indefinitely, and the wait a refused person was told was false
+ * whenever anyone else was waiting too. Now the number of requests a bucket
+ * grants in any window of T seconds is still at most capacity + T x refill —
+ * the same ceiling as before, for any caller, however it paces itself — and the
+ * wait it answers is the real time until the next token.
+ *
+ * Three statements at most, each atomic on the row:
+ *   1. take a token from an existing bucket that holds a whole one (an UPDATE
+ *      whose WHERE Postgres re-checks on the newest row version after waiting
+ *      for a concurrent writer's lock, so two callers never share one token);
+ *   2. no row: create a full bucket less this request's token (a concurrent
+ *      creator wins the race and this caller goes round again);
+ *   3. a row with no whole token: read how long until one, write nothing.
+ * The SEC-C3 regression (a limiter that granted everything) cannot come back
+ * through here: a grant is a row returned by a statement whose WHERE demands a
+ * whole token, never a value derived from a floored count.
  */
 async function checkLimitPg(
   key: string,
   cfg: RateLimitConfig
 ): Promise<{ ok: boolean; retryAfterSec: number }> {
-  const rows = await prisma.$queryRaw<
-    Array<{ tokens: number; granted: boolean }>
-  >`
-    INSERT INTO "RateLimit" ("key", "tokens", "lastRefill", "updatedAt")
-    VALUES (${key}, ${cfg.capacity - 1}, NOW(), NOW())
-    ON CONFLICT ("key") DO UPDATE SET
-      -- SEC-C3 fix: always debit one token, flooring the result at -1 so a
-      -- DENIED request leaves a negative marker. The previous
-      -- "minus CASE ... >= 1 THEN 1 ELSE 0 END" only debited when a full token
-      -- was available, which floored the stored value at >= 0 and made the
-      -- RETURNING ("tokens" >= 0) AS granted predicate ALWAYS true -- i.e. the
-      -- durable Postgres limiter granted every request in production and never
-      -- once denied (login brute-force, form/photo throttles all silently off).
-      -- granted is now correct: it is true iff a full token was available
-      -- (refilled >= 1 => tokens = refilled - 1 >= 0). GREATEST(-1, ...) caps the
-      -- penalty at a single token so repeated denials cannot spiral into an
-      -- unbounded lockout, while still costing ~one refill interval of wait.
-      "tokens" = GREATEST(
-        -1::float,
-        LEAST(
-          ${cfg.capacity}::float,
-          "RateLimit"."tokens" +
-            EXTRACT(EPOCH FROM (NOW() - "RateLimit"."lastRefill")) * ${cfg.refillPerSec}
-        ) - 1
-      ),
-      "lastRefill" = NOW(),
-      "updatedAt" = NOW()
-    RETURNING
-      "tokens",
-      ("tokens" >= 0) AS "granted";
-  `;
-  const row = rows[0];
-  if (!row) return { ok: true, retryAfterSec: 0 };
-  if (row.granted) return { ok: true, retryAfterSec: 0 };
-  const deficit = 1 - row.tokens;
-  const retry = Math.max(1, Math.ceil(deficit / cfg.refillPerSec));
-  return { ok: false, retryAfterSec: retry };
+  const refilled = Prisma.sql`LEAST(
+    ${cfg.capacity}::float,
+    "RateLimit"."tokens" +
+      EXTRACT(EPOCH FROM (NOW() - "RateLimit"."lastRefill"))::float * ${cfg.refillPerSec}::float
+  )`;
+  for (let round = 0; round < 3; round += 1) {
+    const taken = await prisma.$queryRaw<Array<{ tokens: number }>>`
+      UPDATE "RateLimit" SET
+        "tokens" = ${refilled} - 1,
+        "lastRefill" = NOW(),
+        "updatedAt" = NOW()
+      WHERE "key" = ${key} AND ${refilled} >= 1
+      RETURNING "tokens";
+    `;
+    if (taken.length > 0) return { ok: true, retryAfterSec: 0 };
+    const created = await prisma.$queryRaw<Array<{ tokens: number }>>`
+      INSERT INTO "RateLimit" ("key", "tokens", "lastRefill", "updatedAt")
+      VALUES (${key}, ${cfg.capacity - 1}, NOW(), NOW())
+      ON CONFLICT ("key") DO NOTHING
+      RETURNING "tokens";
+    `;
+    if (created.length > 0) return { ok: true, retryAfterSec: 0 };
+    const rows = await prisma.$queryRaw<Array<{ refilled: number }>>`
+      SELECT ${refilled} AS "refilled" FROM "RateLimit" WHERE "key" = ${key};
+    `;
+    const now = rows[0]?.refilled;
+    // Gone again (a purge), or a token arrived since statement 1: go round.
+    if (now === undefined || now === null || Number(now) >= 1) continue;
+    const retry = Math.ceil((1 - Number(now)) / cfg.refillPerSec);
+    return { ok: false, retryAfterSec: Math.max(1, retry) };
+  }
+  // Three rounds without an answer means the row is being fought over: refuse
+  // for a second rather than grant on a guess.
+  return { ok: false, retryAfterSec: 1 };
 }
 
 /**
@@ -191,7 +210,40 @@ async function refundLimitPg(key: string, cfg: RateLimitConfig): Promise<void> {
   `;
 }
 
-export const LOGIN_LIMIT: RateLimitConfig = { capacity: 5, refillPerSec: 5 / 60 };
+/**
+ * The sign-in buckets (lib/auth.ts authorize()). Every number is named here so
+ * the owner can see and change them in one place (code review 2026-11-10,
+ * finding 10).
+ *
+ * Per ACCOUNT (`login:user:<name>`): the brute-force control. Every attempt
+ * costs a token, success or not, from whatever address. Unchanged by finding
+ * 10: at most LOGIN_USER_CAPACITY + LOGIN_USER_REFILL_PER_MIN password checks
+ * per minute of any window, for any attacker, however he paces himself.
+ */
+export const LOGIN_USER_CAPACITY = 5;
+export const LOGIN_USER_REFILL_PER_MIN = 5;
+/**
+ * Per NETWORK ADDRESS (`login:ip:<ip>`): counts FAILED sign-ins only (a success,
+ * or an attempt the per-account bucket refused, gives its token back). Much
+ * larger than the per-account bucket, because a whole office or depot can sit
+ * behind one address: a hand-out morning of 60 people typing new passwords on
+ * phones makes a few dozen typos in a few minutes. Its refill rate is the old
+ * one, so an address spraying guesses across many accounts is held to the same
+ * long-run rate as before; only the burst it may start with is larger.
+ */
+export const LOGIN_NETWORK_CAPACITY = 30;
+export const LOGIN_NETWORK_REFILL_PER_MIN = 5;
+
+/** The per-account sign-in bucket. */
+export const LOGIN_LIMIT: RateLimitConfig = {
+  capacity: LOGIN_USER_CAPACITY,
+  refillPerSec: LOGIN_USER_REFILL_PER_MIN / 60,
+};
+/** The per-network-address sign-in bucket (failures only). */
+export const LOGIN_NETWORK_LIMIT: RateLimitConfig = {
+  capacity: LOGIN_NETWORK_CAPACITY,
+  refillPerSec: LOGIN_NETWORK_REFILL_PER_MIN / 60,
+};
 export const FORM_LIMIT: RateLimitConfig = { capacity: 60, refillPerSec: 60 / 3600 };
 export const PHOTO_LIMIT: RateLimitConfig = { capacity: 120, refillPerSec: 120 / 3600 };
 /**

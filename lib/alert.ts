@@ -125,6 +125,10 @@ export const ALERT_RENOTIFY_SEC = 4 * 60 * 60;
  * that re-raises at all has a period set by the caller's polling interval rather
  * than by four hours.
  *
+ * (Code review 2026-11-10, finding 10: a refused call no longer debits or
+ * restarts a durable bucket, so the -1 marker described above is gone. The
+ * window stays in the key: it is still the shape that is exact on both backends.)
+ *
  * So the four-hour window goes in the key instead. Every call inside one window
  * addresses one row and the first of them takes its single token; the next window
  * addresses a row that does not exist yet, and a row that does not exist starts
