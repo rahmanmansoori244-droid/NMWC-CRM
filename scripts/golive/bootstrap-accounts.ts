@@ -28,7 +28,8 @@ import bcrypt from 'bcryptjs';
 import { readFileSync } from 'node:fs';
 import { assertNotProduction, PRODUCTION_HOST_PREFIX, withoutExpectHost } from '../lib/assert-not-production';
 import { setChangeContext, src } from '../../lib/change-context';
-import { RESERVED_USERNAME_MESSAGE, reservedUsernameRefusal } from '../../lib/demo-accounts';
+import { RESERVED_USERNAME_MESSAGE } from '../../lib/demo-accounts';
+import { bootstrapUsername, reservedInFile, reservedToCreate } from './bootstrap-reserved';
 
 type Cfg = {
   steward: { username: string; fullName: string; password: string };
@@ -59,19 +60,12 @@ async function main() {
   const cfg = JSON.parse(readFileSync(file, 'utf8')) as Cfg;
   const host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
   // Code review 2026-11-10, finding 25, second round: the same reserved-name check
-  // as /users create and the account import, before anything connects. A reserved
-  // name (the `steward` near miss in lib/demo-accounts.ts) would be created and
-  // then refused at every sign-in in production.
-  const reserved = [cfg.steward, ...(cfg.managers ?? [])]
-    .map((u) => String(u?.username ?? ''))
-    .filter((name) => reservedUsernameRefusal(name));
-  if (reserved.length > 0) {
-    throw new Error(
-      `refusing: reserved username(s) ${reserved.join(', ')} in ${file}.\n` +
-        `  ${RESERVED_USERNAME_MESSAGE}\n` +
-        '  Nothing has been written.'
-    );
-  }
+  // as /users create and the account import. A reserved name (the `steward` near
+  // miss in lib/demo-accounts.ts) would be created and then refused at every
+  // sign-in in production. Third round: checked against the database below, before
+  // anything is written. An account that already exists is skipped as it always
+  // was ("exists as ..."); only a reserved name this run would create stops it.
+  const reservedNames = reservedInFile(cfg);
 
   // The operator must NAME the database they mean; this refuses if the URL
   // disagrees.
@@ -182,6 +176,20 @@ async function main() {
       where: { role: Role.STEWARD, isActive: true },
       select: { username: true },
     });
+    if (reservedNames.length > 0) {
+      const existing = await prisma.user.findMany({
+        where: { username: { in: reservedNames.map((name) => bootstrapUsername({ username: name })) } },
+        select: { username: true },
+      });
+      const refused = reservedToCreate(cfg, new Set(existing.map((u) => u.username)), stewards.length > 0);
+      if (refused.length > 0) {
+        throw new Error(
+          `refusing: reserved username(s) ${refused.join(', ')} in ${file} would be created.\n` +
+            `  ${RESERVED_USERNAME_MESSAGE}\n` +
+            '  Nothing has been written.'
+        );
+      }
+    }
     if (stewards.length > 0) {
       skipped.push(`steward — one already exists: ${stewards.map((s) => s.username).join(', ')}`);
     } else {

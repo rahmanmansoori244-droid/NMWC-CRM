@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { retiredUsername, routeSignInName, routeSignInRefusal } from '@/lib/account-edit';
 import { RESERVED_USERNAME_MESSAGE, reservedUsernameRefusal } from '@/lib/demo-accounts';
+import { reservedInFile, reservedToCreate } from '../../scripts/golive/bootstrap-reserved';
 
 describe('the route sign-in rename refuses a reserved name', () => {
   it.each(['ADMIN', 'Steward', 'VIEWER', 'MANAGER.A', 'manager.b', 'SALESMAN.C4', ' Supervisor.Sur '])(
@@ -98,8 +99,8 @@ describe('services/users.ts sends every rename through the check', () => {
   });
 });
 
-describe('the go-live bootstrap refuses a reserved name before it connects', () => {
-  // A URL nothing listens on, and no production host: the refusal must come first.
+describe('the go-live bootstrap refuses only a reserved name it would create (third round)', () => {
+  // A URL nothing listens on, and no production host.
   const fake = ['postgresql://', 'nobody', ':', 'x', '@', '127.0.0.1:9', '/none'].join('');
   const run = (cfg: unknown) => {
     const dir = mkdtempSync(join(tmpdir(), 'bootstrap-names-'));
@@ -117,14 +118,50 @@ describe('the go-live bootstrap refuses a reserved name before it connects', () 
   };
   const person = (username: string) => ({ username, fullName: 'Test Person', password: 'Test-Pass-1', regions: [] });
 
-  it('a reserved Steward or Manager name stops the run, naming each one; nothing connects', () => {
+  it('reservedInFile lists every reserved name in the file, as spelt there', () => {
+    expect(reservedInFile({ steward: person('Steward'), managers: [person('mct-gt'), person('manager.a')] })).toEqual([
+      'Steward',
+      'manager.a',
+    ]);
+    expect(reservedInFile({ steward: person('data.steward'), managers: [person('mct-gt')] })).toEqual([]);
+  });
+
+  it('a reserved name that already exists is skipped as before, not refused — in any case or spacing', () => {
+    const cfg = { steward: person(' Steward '), managers: [person('mct-gt'), person('Manager.A')] };
+    expect(reservedToCreate(cfg, new Set(['steward', 'manager.a']), false)).toEqual([]);
+  });
+
+  it('a reserved name the run would newly create is refused, each one named', () => {
+    const cfg = { steward: person('Steward'), managers: [person('mct-gt'), person('manager.a'), person('salesman.c4')] };
+    expect(reservedToCreate(cfg, new Set(['manager.a']), false)).toEqual(['Steward', 'salesman.c4']);
+  });
+
+  it('the Steward entry is not created while an active Steward exists, so its name is not refused then', () => {
+    const cfg = { steward: person('steward'), managers: [person('manager.b')] };
+    expect(reservedToCreate(cfg, new Set(), true)).toEqual(['manager.b']);
+    expect(reservedToCreate(cfg, new Set(), false)).toEqual(['steward', 'manager.b']);
+  });
+
+  it('the script refuses after reading the database and before its first write', () => {
+    const src = readFileSync('scripts/golive/bootstrap-accounts.ts', 'utf8');
+    const banner = src.indexOf('console.log(`Target: ${host}`);');
+    const check = src.indexOf('reservedToCreate(cfg, new Set(existing.map((u) => u.username)), stewards.length > 0)');
+    const refusal = src.indexOf('would be created.', check);
+    const firstWrite = src.indexOf('await make(', check);
+    expect(banner).toBeGreaterThan(-1);
+    expect(check).toBeGreaterThan(banner);
+    expect(refusal).toBeGreaterThan(check);
+    expect(firstWrite).toBeGreaterThan(refusal);
+    // make() still skips an existing account ("exists as ...") as it always did.
+    expect(src).toContain('skipped.push(`${username} (exists as ${clash.role})`);');
+  });
+
+  it('a reserved name in the file no longer stops the run before the host guard: whether it exists is asked of the database', () => {
     const r = run({ steward: person('Steward'), managers: [person('mct-gt'), person('manager.a')] });
     expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/refusing: reserved username\(s\) Steward, manager\.a in /);
-    expect(r.stderr).toContain(RESERVED_USERNAME_MESSAGE);
+    expect(r.stderr).not.toMatch(/reserved/);
+    expect(r.stderr).toMatch(/refusing: you asked for "ep-uat-fake\.invalid"/);
     expect(r.stderr).toMatch(/Nothing has been written\./);
-    // It stopped before the target banner, so before anything connected.
-    expect(r.stdout).not.toMatch(/Target:/);
   }, 150_000);
 
   it('allowed names pass the check and reach the next guard (the host the operator named)', () => {
