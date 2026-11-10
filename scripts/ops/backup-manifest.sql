@@ -17,6 +17,19 @@ SELECT json_build_object(
   'database', current_database(),
   -- The RPO watermark: the newest thing that happened before the snapshot.
   'newestAuditAt', (SELECT to_char(max("at") AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') FROM "AuditLog"),
+  -- Is this the database the app writes to? (code review 2026-11-10, finding 14.)
+  -- After a restore to a new host, a DIRECT_URL secret left on the old host dumps a
+  -- database nobody writes to any more, and every check above stays green. The
+  -- app's scheduled jobs (vercel.json crons) stamp "CronHeartbeat" on the database
+  -- it uses many times a day, even when nobody signs in, so the newest of that and
+  -- the newest audit row is under a day old on a live database and grows without
+  -- end on a dead one. db-backup.yml fails a scheduled run when it is over a day
+  -- (scripts/ops/backup-freshness.sh). The columns hold UTC without a zone, so the
+  -- age is taken against now() in UTC whatever the session's time zone.
+  -- Printed as stored (the columns already hold UTC), so the session's zone cannot shift them.
+  'newestHeartbeatAt', (SELECT to_char(max("lastRunAt"), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') FROM "CronHeartbeat"),
+  'newestWriteAt', (SELECT to_char(greatest((SELECT max("at") FROM "AuditLog"), (SELECT max("lastRunAt") FROM "CronHeartbeat")), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')),
+  'secondsSinceNewestWrite', (SELECT floor(extract(epoch FROM (now() AT TIME ZONE 'UTC') - greatest((SELECT max("at") FROM "AuditLog"), (SELECT max("lastRunAt") FROM "CronHeartbeat"))))::bigint),
   'newestCustomerUpdate', (SELECT to_char(max("updatedAt") AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') FROM "Customer"),
   'tableCount', (SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r'),
   'indexCount', (SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'i'),

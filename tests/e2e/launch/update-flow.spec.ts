@@ -38,6 +38,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
+import { GPS_LISTEN_MS } from '../../../lib/gps-listen';
 import {
   MUSCAT,
   auditFor,
@@ -771,7 +772,8 @@ test.describe('update flow: GPS — the accuracy standard, a typed point, a move
   });
 
   test('accuracy bands: green to ±30 m, amber to ±100 m, a fresh capture over ±100 m is refused — on the phone and by the server', async ({ browser }) => {
-    test.setTimeout(240_000);
+    // Finding 19: a reading rougher than ±30 m is kept only when the listening window ends.
+    test.setTimeout(360_000);
     const c = world.customer('BANDS');
     const b = c.branch;
     const ctx = await contextAs(browser, world.user('SA'));
@@ -780,11 +782,22 @@ test.describe('update flow: GPS — the accuracy standard, a typed point, a move
     await waitHydrated(page);
     const { section, tag } = await branchSection(page, b.name);
     const advice = section.getByText(/^(Aim for ±30 m or better|Over ±100 m)/);
+    // Finding 19 (code review 2026-11-10): the button listens up to GPS_LISTEN_MS
+    // (at once at ±30 m), and a reading rougher than the point on the chip is put
+    // over it only when he taps "Use the new reading".
+    let shownBefore: number | null = null;
     const capture = async (accuracy: number, shown: number, band: 'good' | 'fair' | 'poor') => {
       await ctx.setGeolocation({ latitude: MUSCAT.lat, longitude: MUSCAT.lng, accuracy });
       await gpsButton(section).click();
-      await expect(gpsChip(section)).toContainText(`±${shown}m`);
+      if (shownBefore !== null && shown > shownBefore) {
+        await expect(section.getByText(`The new reading is ±${shown} m, rougher than the location already here (±${shownBefore} m).`)).toBeVisible({
+          timeout: GPS_LISTEN_MS + 15_000,
+        });
+        await section.getByRole('button', { name: `Use the new reading (±${shown} m)`, exact: true }).click();
+      }
+      await expect(gpsChip(section)).toContainText(`±${shown}m`, { timeout: GPS_LISTEN_MS + 15_000 });
       await expect(gpsChip(section)).toHaveAttribute('data-accuracy-band', band);
+      shownBefore = shown;
     };
 
     await capture(12, 12, 'good');
@@ -842,7 +855,8 @@ test.describe('update flow: GPS — the accuracy standard, a typed point, a move
     const capture = page.getByRole('button', { name: /^Capture GPS/ });
     await waitHydrated(capture);
     await capture.click();
-    await expect(page.locator('[data-accuracy-band="poor"]')).toContainText('±150m');
+    // Finding 19: a reading over ±30 m is kept when the listening window ends.
+    await expect(page.locator('[data-accuracy-band="poor"]')).toContainText('±150m', { timeout: GPS_LISTEN_MS + 15_000 });
     await expect(
       page.getByText('Over ±100 m: this cannot be submitted. Step outside and recapture, or enter the location by hand with a reason.')
     ).toBeVisible();

@@ -11,6 +11,7 @@
  *   RUN_CLOSE_SHOP=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/close-shop-imported.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
@@ -32,7 +33,7 @@ describe.skipIf(!ENABLED)('imported customer branch can be closed (final-hunt #1
   const ids = { region: '', route: '', sup: `ZZCS-sup-${tag}`, mgr: `ZZCS-mgr-${tag}`, sales: `ZZCS-sales-${tag}`, cust: '', branch: '', cust2: '', branch2: '' };
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     react = await import('@/services/reactivations');
     edits = await import('@/services/edits');

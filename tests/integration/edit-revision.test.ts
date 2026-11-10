@@ -15,6 +15,7 @@
  *
  *   RUN_LOSSLESS=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/edit-revision.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { createFlowFixture } from '../support/create-flow-fixture';
 
@@ -39,8 +40,8 @@ describe.skipIf(!ENABLED)('every round of a new-customer request is kept (gap 12
   const name = `ZZ Rounds ${fx.tag}`;
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DIRECT_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     creates = await import('@/services/creates');
     await fx.setup(prisma);

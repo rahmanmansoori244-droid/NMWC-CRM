@@ -26,7 +26,7 @@
 import { PrismaClient, Role } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { readFileSync } from 'node:fs';
-import { assertNotProduction, withoutExpectHost } from '../lib/assert-not-production';
+import { assertNotProduction, PRODUCTION_HOST_PREFIX, withoutExpectHost } from '../lib/assert-not-production';
 import { setChangeContext, src } from '../../lib/change-context';
 
 type Cfg = {
@@ -75,8 +75,8 @@ async function main() {
         `  This connects to ${host}.\n` +
         '  Name the database you intend, so a variable that did not take cannot\n' +
         '  silently send the first Data Steward somewhere else. For the go-live:\n' +
-        '    --expect-host ep-sweet-haze\n' +
-        '  (that string is also the PROD_DB_HOST_MARKER repository variable).'
+        `    --expect-host ${PRODUCTION_HOST_PREFIX}\n` +
+        '  (the first line of config/production-hosts.txt).'
     );
   }
   if (!host.includes(expectHost)) {
@@ -106,7 +106,7 @@ async function main() {
     );
   }
   // The shared production guard as well (data audit 2026-10-10, owner decision
-  // 2026-10-11): on production the name must start with ep-sweet-haze, not just
+  // 2026-10-11): on production the name must start with a production marker, not just
   // be some part of the host.
   const prisma = new PrismaClient({ datasourceUrl: assertNotProduction(url, args) });
   const created: string[] = [];

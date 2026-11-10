@@ -28,6 +28,7 @@
  *
  *   RUN_TEMIX_UNIQUE=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/temix-code-unique.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import ExcelJS from 'exceljs';
 import { createFlowFixture } from '../support/create-flow-fixture';
@@ -93,8 +94,8 @@ describe.skipIf(!ENABLED)('owner decisions 2026-10-25: Temix codes unique, CR nu
   };
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DIRECT_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     creates = await import('@/services/creates');
     imports = await import('@/services/imports');

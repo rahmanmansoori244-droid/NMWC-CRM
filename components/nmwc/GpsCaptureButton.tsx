@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { MapPin, Check, RotateCcw, AlertTriangle, PencilLine } from 'lucide-react';
+import { MapPin, Check, RotateCcw, AlertTriangle, PencilLine, Undo2 } from 'lucide-react';
 import { gpsAccuracyAdvice, gpsAccuracyBand } from '@/lib/gps-accuracy';
+import { GPS_LISTEN_MS, listenForBestFix, rankedAccuracy } from '@/lib/gps-listen';
 import { typedDecimal } from '@/lib/digits';
 
 export type Gps = {
@@ -24,14 +25,46 @@ const OMAN_LAT_MAX = 27;
 const OMAN_LNG_MIN = 51;
 const OMAN_LNG_MAX = 60;
 
+/** Finding 19: the first listen that heard nothing says where a fix is likely, before the typed-coordinates panel. */
+export const GPS_TRY_OUTSIDE_MESSAGE = `No GPS fix in ${Math.round(GPS_LISTEN_MS / 1000)} seconds. Step outside, away from roofs and walls, then tap “Try again outside”.`;
+
+const samePoint = (a: Gps | null | undefined, b: Gps | null | undefined) =>
+  !!a &&
+  !!b &&
+  a.lat === b.lat &&
+  a.lng === b.lng &&
+  (a.accuracy ?? null) === (b.accuracy ?? null) &&
+  !!a.isManual === !!b.isManual;
+
+/**
+ * Finding 19: whether a captured reading is rougher than the point already on
+ * the chip, so it must not replace it without asking. Against a captured point:
+ * more metres, in the whole metres every screen shows. Against a typed point or
+ * one of unknown accuracy (nothing to compare): only a reading over the ±100 m
+ * limit counts as rougher.
+ */
+function isRougher(next: Gps, current: Gps | null): boolean {
+  if (!current) return false;
+  const was = current.isManual ? Number.POSITIVE_INFINITY : rankedAccuracy(current.accuracy);
+  if (!Number.isFinite(was)) return gpsAccuracyBand(next.accuracy) === 'poor';
+  return rankedAccuracy(next.accuracy) > was;
+}
+
 export function GpsCaptureButton({
   initial,
+  saved,
   onCapture,
   required,
   disabled = false,
   enforceAccuracy = true,
 }: {
   initial?: Gps | null;
+  /**
+   * Finding 19: the location on file, which "Keep the saved location" goes back
+   * to; null when nothing is on file (a new customer), so every point on the
+   * chip is a new one the submit gate judges. Omitted: not known here.
+   */
+  saved?: Gps | null;
   onCapture: (g: Gps) => void;
   required?: boolean;
   disabled?: boolean;
@@ -72,60 +105,107 @@ export function GpsCaptureButton({
     };
   }, []);
 
+  // The point on the chip now, for the device callbacks: they run after the
+  // render that started them.
+  const gpsRef = useRef(gps);
+  gpsRef.current = gps;
+  const cancelListenRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => cancelListenRef.current?.(), []);
+  // Finding 19: the best accuracy heard so far while listening, a rougher
+  // reading waiting for his answer, and how many listens in a row heard nothing.
+  const [bestSoFar, setBestSoFar] = useState<number | null>(null);
+  const [rougher, setRougher] = useState<Gps | null>(null);
+  const [offerOutside, setOfferOutside] = useState(false);
+  const silentListensRef = useRef(0);
+
+  function take(next: Gps) {
+    setGps(next);
+    setFresh(true);
+    onCapture(next);
+    setShowManual(false);
+    setRougher(null);
+    setError(null);
+  }
+
   function capture() {
     if (disabledRef.current) return;
     const generation = ++captureGenerationRef.current;
+    cancelListenRef.current?.();
+    cancelListenRef.current = null;
+    setRougher(null);
+    setOfferOutside(false);
     if (!('geolocation' in navigator)) {
       setError('GPS not available in this browser. Use manual entry below.');
       setShowManual(true);
       return;
     }
     setPending(true);
+    setBestSoFar(null);
     setError(null);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        if (!mountedRef.current) return;
-        if (generation !== captureGenerationRef.current) return;
-        if (disabledRef.current) {
-          setPending(false);
-          setError('Location not updated — capture again');
-          return;
-        }
-        const next: Gps = {
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-          capturedAt: new Date(),
-        };
-        setGps(next);
-        setFresh(true);
-        onCapture(next);
+    const current = () => mountedRef.current && generation === captureGenerationRef.current;
+    cancelListenRef.current = listenForBestFix(
+      navigator.geolocation,
+      (outcome) => {
+        if (!current()) return;
+        cancelListenRef.current = null;
         setPending(false);
-        setShowManual(false);
-      },
-      (err) => {
-        if (!mountedRef.current) return;
-        if (generation !== captureGenerationRef.current) return;
+        setBestSoFar(null);
         if (disabledRef.current) {
-          setPending(false);
           setError('Location not updated — capture again');
           return;
         }
-        // B-07: any of timeout / denied / unavailable opens the manual fallback.
-        const reason =
-          err.code === err.PERMISSION_DENIED
+        if (outcome.kind === 'fix') {
+          silentListensRef.current = 0;
+          const next: Gps = { ...outcome.reading, capturedAt: new Date() };
+          // Never put a rougher reading over the point already here without asking.
+          if (isRougher(next, gpsRef.current)) {
+            setRougher(next);
+            return;
+          }
+          take(next);
+          return;
+        }
+        if (outcome.kind === 'timeout') {
+          silentListensRef.current += 1;
+          // Finding 19: the first time, the way out that usually works — the
+          // open sky — before the typed-coordinates panel.
+          if (silentListensRef.current === 1) {
+            setError(GPS_TRY_OUTSIDE_MESSAGE);
+            setOfferOutside(true);
+            return;
+          }
+        }
+        // B-07: denied / unavailable, or a second silent listen, opens the manual fallback.
+        setError(
+          outcome.kind === 'denied'
             ? 'Location permission denied. Tap below to enter coordinates manually.'
-            : err.code === err.POSITION_UNAVAILABLE
-              ? 'Location unavailable. Tap below to enter coordinates manually.'
-              : err.code === err.TIMEOUT
-                ? "Location took too long. Tap below to enter coordinates manually."
-                : err.message || 'Could not get GPS. Tap below to enter coordinates manually.';
-        setError(reason);
-        setPending(false);
+            : outcome.kind === 'timeout'
+              ? 'Location took too long. Tap below to enter coordinates manually.'
+              : 'Location unavailable. Tap below to enter coordinates manually.'
+        );
         setShowManual(true);
       },
-      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 0 }
+      (best) => {
+        if (current()) setBestSoFar(best.accuracy);
+      }
     );
+  }
+
+  /** Finding 19: back to the location on file, whatever was captured or typed since. */
+  function keepSaved() {
+    if (disabledRef.current || !saved) return;
+    captureGenerationRef.current += 1;
+    cancelListenRef.current?.();
+    cancelListenRef.current = null;
+    setPending(false);
+    setBestSoFar(null);
+    setRougher(null);
+    setOfferOutside(false);
+    setError(null);
+    setShowManual(false);
+    setGps(saved);
+    setFresh(false);
+    onCapture(saved);
   }
 
   function applyManual() {
@@ -152,7 +232,12 @@ export function GpsCaptureButton({
     }
     // An explicit valid choice supersedes every older device callback.
     captureGenerationRef.current += 1;
+    cancelListenRef.current?.();
+    cancelListenRef.current = null;
     setPending(false);
+    setBestSoFar(null);
+    setRougher(null);
+    setOfferOutside(false);
     const outside =
       latNum < OMAN_LAT_MIN ||
       latNum > OMAN_LAT_MAX ||
@@ -179,7 +264,14 @@ export function GpsCaptureButton({
   // better, amber up to ±100 m, red beyond, which the submit gates refuse.
   // A typed point has no accuracy and keeps its own amber "Manual" look.
   const band = gps && !gps.isManual ? gpsAccuracyBand(gps.accuracy) : 'unknown';
-  const advice = gps && !gps.isManual ? gpsAccuracyAdvice(gps.accuracy, enforceAccuracy && fresh) : null;
+  // A point the submit gate will judge: captured on this page, or (when the
+  // location on file is known) any point that is not that one — a rough point
+  // put back after a reload is held at submit, so it is said the same way.
+  const isNewPoint = fresh || (saved !== undefined && !!gps && !samePoint(gps, saved));
+  const advice = gps && !gps.isManual ? gpsAccuracyAdvice(gps.accuracy, enforceAccuracy && isNewPoint) : null;
+  // Also while listening: it stops the listen (keepSaved).
+  const canKeepSaved = !!saved && !samePoint(gps, saved);
+  const currentLabel = gps && saved && samePoint(gps, saved) ? 'the saved location' : 'the location already here';
 
   return (
     <div className="space-y-2">
@@ -236,10 +328,70 @@ export function GpsCaptureButton({
           {advice}
         </p>
       )}
+      {pending && (
+        <p role="status" className="text-sm text-slate-600">
+          {bestSoFar === null
+            ? `Looking for GPS… this can take up to ${Math.round(GPS_LISTEN_MS / 1000)} seconds.`
+            : `Looking for a better fix… best so far ±${Math.round(bestSoFar)} m.`}
+        </p>
+      )}
       {error && (
         <p role="alert" className="text-sm font-medium text-red-600">
           {error}
         </p>
+      )}
+      {offerOutside && !pending && (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={capture}
+          className="inline-flex min-h-11 items-center gap-2 rounded-md border border-brand-600 bg-white px-4 text-sm font-semibold text-brand-700 hover:bg-brand-50 disabled:opacity-60"
+        >
+          <MapPin className="h-4 w-4" />
+          Try again outside
+        </button>
+      )}
+      {/* Finding 19: a rougher reading never replaces the point here unasked. */}
+      {rougher && gps && (
+        <div role="alert" className="rounded-md border border-amber-200 bg-amber-50/70 p-3 text-sm text-amber-900">
+          <p className="font-medium">
+            {`The new reading is ±${Math.round(rougher.accuracy ?? 0)} m, rougher than ${currentLabel}${
+              gps.isManual ? ' (typed in)' : gps.accuracy != null ? ` (±${Math.round(gps.accuracy)} m)` : ''
+            }.`}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => {
+                setRougher(null);
+                setError(null);
+              }}
+              className="min-h-11 rounded-md bg-brand-600 px-3 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
+            >
+              {currentLabel === 'the saved location' ? 'Keep the saved location' : 'Keep the location already here'}
+            </button>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => !disabledRef.current && take(rougher)}
+              className="min-h-11 rounded-md border border-amber-300 bg-white px-3 text-sm font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-60"
+            >
+              {`Use the new reading (±${Math.round(rougher.accuracy ?? 0)} m)`}
+            </button>
+          </div>
+        </div>
+      )}
+      {canKeepSaved && !rougher && saved && (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={keepSaved}
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+        >
+          <Undo2 className="h-4 w-4" />
+          {`Keep the saved location${saved.isManual ? ' (typed in)' : saved.accuracy != null ? ` (±${Math.round(saved.accuracy)} m)` : ''}`}
+        </button>
       )}
 
       {/* B-07: manual fallback UI. Tertiary trigger always available so a user

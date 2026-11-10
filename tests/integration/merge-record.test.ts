@@ -14,6 +14,7 @@
  *
  *   RUN_LOSSLESS=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/merge-record.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { PrismaClient, type Prisma } from '@prisma/client';
 import { src, withChangeContext } from '@/lib/change-context';
@@ -22,7 +23,6 @@ import { purgeAuditLog, purgeCustomerEdits, purgeHistory } from '../support/audi
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 120_000 });
 
 const ENABLED = process.env.RUN_LOSSLESS === '1' && !!process.env.DATABASE_URL;
-const PROD = 'ep-sweet-haze';
 const sfx = `zzmr${Date.now().toString(36)}`;
 const SFX = sfx.toUpperCase();
 
@@ -51,7 +51,7 @@ describe.skipIf(!ENABLED)('a merge says what moved (gap 8)', () => {
 
   beforeAll(async () => {
     const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
-    if (url.includes(PROD) || (process.env.DATABASE_URL ?? '').includes(PROD)) throw new Error('ABORT: production');
+    if (pointsAtProduction(url) || pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     db = new PrismaClient({ datasourceUrl: url });
     await write(async (tx) => {
       await tx.region.create({ data: { id: ids.region, code: `G${SFX}`, name: `Merge G ${sfx}` } });

@@ -27,6 +27,7 @@
  *
  * Written with the audit-gaps branch; NOT run there (no database was used).
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { src, withChangeContext } from '@/lib/change-context';
@@ -37,7 +38,6 @@ import { temixPathCountSql } from '../../scripts/ops/db-rules-report';
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 const ENABLED = process.env.RUN_DB_RULES === '1' && !!process.env.DATABASE_URL;
-const PROD = 'ep-sweet-haze';
 const sfx = `zzdbr${Date.now().toString(36)}`;
 const SFX = sfx.toUpperCase();
 
@@ -88,7 +88,7 @@ describe.skipIf(!ENABLED)('gap 31: the NOT VALID database rules on Postgres', ()
 
   beforeAll(() => {
     const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
-    if (url.includes(PROD) || (process.env.DATABASE_URL ?? '').includes(PROD)) throw new Error('ABORT: production');
+    if (pointsAtProduction(url) || pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     db = new PrismaClient({ datasourceUrl: url });
   });
   afterAll(async () => {

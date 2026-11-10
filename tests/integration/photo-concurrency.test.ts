@@ -27,6 +27,7 @@
  *   RUN_PHOTO_CONCURRENCY=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/photo-concurrency.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { purgeAuditLog, purgeCustomerEdits } from '../support/audit';
@@ -75,7 +76,7 @@ describe.skipIf(!ENABLED)('photo attach scope under a real customer lock', () =>
   const ids = { regionA: '', regionB: '', routeA: '', routeB: '', sales: `ZZPS-sales-${tag}`, manager: `ZZPS-mgr-${tag}`, customer: '', branch: '', sibling: '' };
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     const { PrismaClient } = await import('@prisma/client');
     mover = new PrismaClient();
@@ -248,7 +249,7 @@ describe.skipIf(!ENABLED)('photo attach and Remove on real Postgres (N06, X-PHOT
   const ids = { region: '', route: '', sales: `ZZPH-sales-${tag}`, cust: '', b1: '', b2: '' };
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     photos = await import('@/services/photos');
     ({ UNWIRED_LIVE, PHOTO_TARGET_CHANGED_MESSAGE, PHOTO_GONE_MESSAGE } = await import('@/lib/photo-attach'));
@@ -556,7 +557,7 @@ describe.skipIf(!ENABLED)('Remove scope under the customer lock on real Postgres
   const ids = { sales: `ZZPR-sales-${tag}`, manager: `ZZPR-manager-${tag}`, regionA: '', regionB: '', routeA: '', routeB: '', customer: '', branch: '', sibling: '' };
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     const { PrismaClient } = await import('@prisma/client');
     mover = new PrismaClient();
@@ -705,7 +706,7 @@ describe.skipIf(!ENABLED)("a salesman's Remove of a photo on his new-customer re
   const ids = { region: '', route: '', sales: `ZZPV-sales-${tag}` };
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     const { PrismaClient } = await import('@prisma/client');
     submitter = new PrismaClient();
@@ -809,7 +810,7 @@ describe.skipIf(!ENABLED)('photos on a switched-off route', () => {
   const ids = { region: '', route: '', sales: `ZZPO-sales-${tag}`, manager: `ZZPO-mgr-${tag}`, cust: '', branch: '' };
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     photos = await import('@/services/photos');
     ({ ROUTE_INACTIVE_MESSAGE } = await import('@/lib/errors'));

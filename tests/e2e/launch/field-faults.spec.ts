@@ -54,6 +54,8 @@ import {
   GPS_MANUAL_PANEL,
   GPS_MANUAL_REASON,
   GPS_TIMEOUT,
+  GPS_TRY_OUTSIDE,
+  GPS_LISTEN_MS,
   GPS_UNAVAILABLE,
   OFFLINE_MESSAGE,
   PHOTO_TRIES,
@@ -839,7 +841,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
       await typedPointWorks(page, s.customer, world.name('No GPS fix inside the souq'));
     });
 
-    test('no fix in time: "Capturing…" until the limit, then "took too long"; the phone never waits without a limit; the typed point still goes', async ({ browser }) => {
+    test('no fix in time: "Capturing…" until the limit, then "Try again outside", then "took too long"; the phone never waits without a limit; the typed point still goes', async ({ browser }) => {
       test.setTimeout(240_000);
       const s = await addFieldSalesman(world, 'G3', { branch: { photos: ['SHOP'] } });
       await resetLimits({ users: [s.user] });
@@ -852,13 +854,19 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
       const t0 = Date.now();
       await capture.click();
       await expect(page.getByRole('button', { name: 'Capturing…', exact: true }), 'busy, and no second tap').toBeDisabled();
-      await expect(page.getByText(GPS_TIMEOUT, { exact: true })).toBeVisible({ timeout: 60_000 });
+      // Finding 19 (code review 2026-11-10): the first silent listen offers the open sky
+      // before the typed-coordinates panel; a second one opens the panel, as before.
+      await expect(page.getByText(GPS_TRY_OUTSIDE, { exact: true })).toBeVisible({ timeout: 60_000 });
       const waited = Date.now() - t0;
+      await expect(page.getByText(GPS_MANUAL_PANEL, { exact: true }), 'not the panel yet').toHaveCount(0);
+      await page.getByRole('button', { name: 'Try again outside', exact: true }).click();
+      await expect(page.getByText(GPS_TIMEOUT, { exact: true })).toBeVisible({ timeout: 60_000 });
       const calls = await geoCalls(page);
       note('waited for a fix', `${waited} ms; asked with ${JSON.stringify(calls)}`);
-      expect(calls).toHaveLength(1);
+      expect(calls).toHaveLength(2);
       expect(calls[0]!.timeout, 'a limit: he never waits for ever').not.toBeNull();
       expect(calls[0]!.timeout!, 'and a short one').toBeLessThanOrEqual(30_000);
+      expect(calls[0]!.timeout!, 'the listening window').toBe(GPS_LISTEN_MS);
       expect(waited).toBeGreaterThanOrEqual(calls[0]!.timeout! - 1_000);
       expect(calls[0]!.enableHighAccuracy, 'a shop needs the GPS chip, not the cell tower').toBe(true);
       await expect(capture).toBeEnabled();

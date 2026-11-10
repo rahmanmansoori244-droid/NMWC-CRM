@@ -13,16 +13,15 @@
  * afterwards, so nothing leaks past the purge; when `DIRECT_URL` is not set the
  * passed client is used (local set-ups that still run everything as the owner).
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { PrismaClient, type Prisma } from '@prisma/client';
 
 type Tx = Prisma.TransactionClient;
 
-const PROD_MARKER = 'ep-sweet-haze';
-
 function ownerUrl(): string | null {
   const url = process.env.DIRECT_URL;
   if (!url) return null;
-  if (url.includes(PROD_MARKER)) throw new Error('ABORT: DIRECT_URL points at production');
+  if (pointsAtProduction(url)) throw new Error('ABORT: DIRECT_URL points at production');
   return url;
 }
 

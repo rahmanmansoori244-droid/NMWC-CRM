@@ -38,6 +38,8 @@ const answer = (body: unknown) => async () =>
 /** Fixes asked for and not yet answered, oldest first: each with its success and error callbacks. */
 type Asked = { ok: (p: GeolocationPosition) => void; fail: (e: GeolocationPositionError) => void };
 let pendingFixes: Asked[] = [];
+// The points on file here are ±5 m: a fix meant to land is sharper than that,
+// or the button would ask before replacing (finding 19, gps-listen.test.tsx).
 const fix = (latitude: number, longitude: number, accuracy: number) =>
   act(async () => {
     pendingFixes.shift()!.ok({ coords: { latitude, longitude, accuracy } } as GeolocationPosition);
@@ -67,9 +69,12 @@ beforeEach(() => {
   Object.defineProperty(window.navigator, 'geolocation', {
     configurable: true,
     value: {
-      getCurrentPosition: (ok: Asked['ok'], fail: Asked['fail']) => {
+      // Finding 19: the button watches the position (lib/gps-listen.ts).
+      watchPosition: (ok: Asked['ok'], fail: Asked['fail']) => {
         pendingFixes.push({ ok, fail });
+        return pendingFixes.length;
       },
+      clearWatch: () => {},
     },
   });
 });
@@ -180,7 +185,7 @@ describe('"Use this value" on one branch\'s location', () => {
     expect(first().queryByText('23.600000, 58.350000')).toBeNull();
     expect(second().getByRole('button', { name: 'Capturing…' })).toBeTruthy();
 
-    await fix(24.1, 57.9, 6);
+    await fix(24.1, 57.9, 4);
     expect(second().getByText('24.100000, 57.900000')).toBeTruthy();
     expect(second().queryByText('23.400000, 58.200000')).toBeNull();
 
@@ -192,7 +197,7 @@ describe('"Use this value" on one branch\'s location', () => {
         branchId: 'b2',
         gpsLat: 24.1,
         gpsLng: 57.9,
-        gpsAccuracy: 6,
+        gpsAccuracy: 4,
         gpsCapturedAt: expect.any(String),
         base: { gpsLat: 23.4, gpsLng: 58.2 },
       },
@@ -239,7 +244,7 @@ describe('"Use this value" on one branch\'s location', () => {
       expect(first().getByText('23.700000, 58.450000')).toBeTruthy();
       expect(first().queryByRole('button', { name: 'Capturing…' })).toBeNull();
 
-      await fix(24.1, 57.9, 6);
+      await fix(24.1, 57.9, 4);
       expect(first().getByText('23.700000, 58.450000')).toBeTruthy();
       expect(first().queryByText('24.100000, 57.900000')).toBeNull();
 
@@ -259,7 +264,7 @@ describe('GpsCaptureButton: a fix for a button that is gone', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Capture GPS *' }));
     expect(pendingFixes).toHaveLength(1);
     view.unmount();
-    await fix(24.1, 57.9, 6);
+    await fix(24.1, 57.9, 4);
     expect(onCapture).not.toHaveBeenCalled();
 
     render(<GpsCaptureButton onCapture={onCapture} required />);
@@ -270,15 +275,21 @@ describe('GpsCaptureButton: a fix for a button that is gone', () => {
     expect(screen.getByText('23.600000, 58.350000')).toBeTruthy();
   });
 
-  it('a failure after unmount is dropped too; one while mounted opens the manual entry', async () => {
+  it('a failure after unmount is dropped too; one while mounted offers the open sky, then the manual entry', async () => {
     const view = render(<GpsCaptureButton onCapture={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Capture GPS' }));
     view.unmount();
     await timeOut();
     render(<GpsCaptureButton onCapture={vi.fn()} />);
-    expect(screen.queryByText(/took too long/)).toBeNull();
+    expect(screen.queryByText(/took too long|No GPS fix/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Capture GPS' }));
     await timeOut();
+    // Finding 19: the first silent listen offers "Try again outside" first…
+    expect(screen.getByText(/No GPS fix in/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Save manual location' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again outside' }));
+    await timeOut();
+    // …and a second one opens the typed-coordinates panel, as before.
     expect(screen.getByText(/took too long/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Save manual location' })).toBeTruthy();
   });
@@ -340,7 +351,7 @@ describe('the new-customer form: its GPS buttons unmount only with their branch'
     render(<CreateCustomerForm channels={[]} initial={initial} sessionUserId="u1" />);
     fireEvent.click(section('Branch 2: Second').getByRole('button', { name: 'Recapture GPS' }));
     fireEvent.click(section('Branch 1: Main').getByRole('button', { name: 'Remove branch 1' }));
-    await fix(24.1, 57.9, 6);
+    await fix(24.1, 57.9, 4);
     expect(section('Branch 1: Second').getByText('24.100000, 57.900000')).toBeTruthy();
     expect(await savedPoints()).toEqual([['Second', 24.1, 57.9]]);
   });
@@ -349,7 +360,7 @@ describe('the new-customer form: its GPS buttons unmount only with their branch'
     render(<CreateCustomerForm channels={[]} initial={initial} sessionUserId="u1" />);
     fireEvent.click(section('Branch 2: Second').getByRole('button', { name: 'Recapture GPS' }));
     fireEvent.click(section('Branch 2: Second').getByRole('button', { name: 'Remove branch 2' }));
-    await fix(24.1, 57.9, 6);
+    await fix(24.1, 57.9, 4);
     expect(screen.queryByText('24.100000, 57.900000')).toBeNull();
     expect(await savedPoints()).toEqual([['Main', 23.5, 58.3]]);
   });

@@ -21,6 +21,7 @@
  *
  * Written with the audit-gaps branch; NOT run there (no database was used).
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { src, withChangeContext } from '@/lib/change-context';
@@ -79,8 +80,8 @@ describe.skipIf(!ENABLED)('gap 37: open requests when a customer is archived', (
   };
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DIRECT_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     customers = await import('@/services/customers');
     locks = await import('@/lib/locks');

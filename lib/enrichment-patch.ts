@@ -166,6 +166,14 @@ function loadedBranchState(b: LoadedBranch): FormBranch {
   };
 }
 
+/**
+ * The point a branch has on file, as the form holds it (null when it has none):
+ * what the GPS chip's "Keep the saved location" goes back to (finding 19).
+ */
+export function loadedPoint(b: Pick<LoadedBranch, 'gpsLat' | 'gpsLng' | 'gpsAccuracy' | 'gpsCapturedAt'>): FormGps | null {
+  return pointOf(b.gpsLat, b.gpsLng, b.gpsAccuracy, b.gpsCapturedAt);
+}
+
 function pointOf(
   lat: unknown,
   lng: unknown,

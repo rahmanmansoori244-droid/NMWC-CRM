@@ -14,7 +14,6 @@ import { PrismaClient } from '@prisma/client';
 import { assertNotProduction, withDbParams } from './base';
 
 export {
-  PROD_MARKER,
   REGISTRY_DIR,
   REPO_ROOT,
   STATE_DIR,

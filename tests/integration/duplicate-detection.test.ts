@@ -17,6 +17,7 @@
  *   RUN_MERGE_TESTS=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/duplicate-detection.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { purgeAuditLog, purgeCustomerEdits } from '../support/audit';
@@ -142,8 +143,8 @@ describe.skipIf(!ENABLED)('duplicate detection against Postgres (item 16)', () =
     });
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DIRECT_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     dupes = await import('@/services/duplicates');
     guards = await import('@/lib/create-guards');

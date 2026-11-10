@@ -76,7 +76,7 @@ function run(args: string[], directUrl = PROD_URL) {
   }
 }
 
-describe('prod-run.cjs requires --expect-host ep-sweet-haze on every run (owner decisions 2026-10-11)', () => {
+describe('prod-run.cjs requires --expect-host <production marker> on every run (owner decisions 2026-10-11)', () => {
   it.each([
     ['no flag at all', ['<probe>']],
     ['a read-only question with no flag', ['<probe>', '--list']],
@@ -89,8 +89,8 @@ describe('prod-run.cjs requires --expect-host ep-sweet-haze on every run (owner 
     const r = run(args);
     expect(r.status).toBe(2);
     expect(r.ran).toBe(false);
-    expect(r.out).toMatch(/\[prod-run\] refusing: every run needs --expect-host ep-sweet-haze among the script's arguments/);
-    expect(r.out).toMatch(/usage: node scripts\/dev\/prod-run\.cjs <script> --expect-host ep-sweet-haze/);
+    expect(r.out).toContain(`[prod-run] refusing: every run needs --expect-host ${PRODUCTION_HOST_PREFIX} among the script's arguments`);
+    expect(r.out).toContain(`usage: node scripts/dev/prod-run.cjs <script> --expect-host ${PRODUCTION_HOST_PREFIX}`);
     expect(r.out).not.toContain('ep-uat-branch-1');
     expectNoSecrets(r.out);
   });
@@ -206,7 +206,7 @@ describe('every documented prod-run command names production (owner decisions 20
     }
   });
 
-  it('each one carries --expect-host ep-sweet-haze among the script’s arguments', () => {
+  it('each one carries --expect-host <production marker now> among the script’s arguments', () => {
     const missing = documented
       .filter((d) => {
         const at = d.args.indexOf('--expect-host');

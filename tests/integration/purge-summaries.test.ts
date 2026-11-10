@@ -14,6 +14,7 @@
  *
  * Written with the watch-and-prove branch; NOT run there (no database was used).
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import {
@@ -59,7 +60,7 @@ describe.skipIf(!ENABLED)('gap 25: every purge leaves its summary', () => {
 
   beforeAll(async () => {
     assertNotProductionEnv();
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     w = await buildWorld(prisma, 'purgesum');
   });

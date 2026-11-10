@@ -38,6 +38,7 @@
  *
  *   RUN_ACCOUNT_EDIT=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/account-edit.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
@@ -117,7 +118,7 @@ describe.skipIf(!ENABLED)(
       JSON.stringify(row, (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v));
 
     beforeAll(async () => {
-      if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze'))
+      if (pointsAtProduction(process.env.DATABASE_URL ?? ''))
         throw new Error('ABORT: production');
       ({ prisma } = await import('@/lib/db'));
       users = await import('@/services/users');

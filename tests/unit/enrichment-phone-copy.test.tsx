@@ -36,6 +36,8 @@ import { returnedPrefill } from '@/app/(app)/customers/[id]/edit/returned';
 import { enrichmentBase } from '@/lib/enrichment-draft';
 import { draftBranchStates, loadedFormState } from '@/lib/enrichment-patch';
 import { countDeviceDrafts } from '@/lib/device-drafts';
+import { GPS_LISTEN_MS } from '@/lib/gps-listen';
+import { gpsAccuracyAdvice } from '@/lib/gps-accuracy';
 
 type Customer = ComponentProps<typeof EnrichmentForm>['customer'];
 
@@ -155,7 +157,8 @@ beforeEach(() => {
   );
   Object.defineProperty(navigator, 'geolocation', {
     configurable: true,
-    value: { getCurrentPosition: (ok: PositionCallback) => gps.push({ ok }) },
+    // Finding 19: the button watches the position (lib/gps-listen.ts).
+    value: { watchPosition: (ok: PositionCallback) => gps.push({ ok }), clearWatch: () => {} },
   });
 });
 afterEach(() => {
@@ -600,5 +603,39 @@ describe('opened on a sent-back update (what he sent, filled in)', () => {
     expect(notes()).toHaveValue('');
     expect(screen.getByLabelText('Contact role')).toHaveValue('Partner');
     expect(changingLine()).toBe('You are changing: Contact role, Day of visit.');
+  });
+});
+
+describe('finding 19 (code review 2026-11-10): a rough GPS point on the edit form, and the way back', () => {
+  it('a rougher reading is asked about first; taken anyway, it comes back from the phone copy, held at submit — and "Keep the saved location" undoes it', async () => {
+    const visit = form();
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    await act(async () => {
+      gps[0]!.ok({ coords: { latitude: 24, longitude: 59, accuracy: 150 } } as GeolocationPosition);
+    });
+    await tick(GPS_LISTEN_MS);
+    // Not put over the ±5 m point on file without asking.
+    expect(screen.getByText('23.500000, 58.300000')).toBeTruthy();
+    expect(screen.getByText('The new reading is ±150 m, rougher than the saved location (±5 m).')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Use the new reading (±150 m)' }));
+    expect(screen.getByText('24.000000, 59.000000')).toBeTruthy();
+    expect(submitBtn().getAttribute('title')).toContain('Branch 1 GPS within 100 m');
+    await tick();
+    visit.unmount();
+
+    // Reopened: the point comes back from the copy, and is said as held at submit.
+    form();
+    expect(screen.getByText('24.000000, 59.000000')).toBeTruthy();
+    expect(screen.getByText(gpsAccuracyAdvice(150, true)!)).toBeTruthy();
+    expect(submitBtn().getAttribute('title')).toContain('Branch 1 GPS within 100 m');
+    fireEvent.click(screen.getByRole('button', { name: 'Keep the saved location (±5 m)' }));
+    expect(screen.getByText('23.500000, 58.300000')).toBeTruthy();
+    expect(submitBtn().getAttribute('title') ?? '').not.toContain('GPS within');
+
+    fireEvent.change(notes(), { target: { value: 'Closed Fridays' } });
+    fireEvent.click(submitBtn());
+    await tick(0);
+    // The saved location is not a change: nothing is sent for it.
+    expect(sent[0]).toMatchObject({ customer: { notes: 'Closed Fridays' }, branches: [] });
   });
 });

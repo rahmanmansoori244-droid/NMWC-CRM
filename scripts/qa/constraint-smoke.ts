@@ -7,14 +7,14 @@
  */
 import { readFileSync } from 'node:fs';
 import { PrismaClient } from '@prisma/client';
-import { assertNotProduction } from '../lib/assert-not-production';
+import { assertNotProduction, pointsAtProduction } from '../lib/assert-not-production';
 import { DB_RULES } from '../../lib/db-rules';
 
 for (const line of readFileSync('.env', 'utf8').split(/\r?\n/)) {
   const m = /^([A-Z0-9_]+)=(.*)$/.exec(line);
   if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
 }
-if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) {
+if (pointsAtProduction(process.env.DATABASE_URL ?? '')) {
   console.error('ABORT: production endpoint'); process.exit(2);
 }
 // The shared guard too (data audit 2026-10-10), on the same URL the client gets:

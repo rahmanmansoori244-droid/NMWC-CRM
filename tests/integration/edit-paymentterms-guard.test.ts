@@ -9,6 +9,7 @@
  *   RUN_EDIT_GUARD=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/edit-paymentterms-guard.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { editPayload } from '../support/edit-payload';
@@ -31,7 +32,7 @@ describe.skipIf(!ENABLED)('customer edit cannot flip CASH↔CREDIT (final-hunt #
   let creditId = '';
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     edits = await import('@/services/edits');
     await prisma.user.create({ data: { id: stewardId, username: stewardId, passwordHash: 'x', fullName: 'ZZ PT Steward', role: 'STEWARD' } });

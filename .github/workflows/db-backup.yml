@@ -79,10 +79,6 @@ jobs:
       # easy: every path that honours it also writes a line into the run summary
       # saying the dump is not encrypted. Unset it again afterwards.
       ALLOW_PLAINTEXT_BACKUP: ${{ vars.ALLOW_PLAINTEXT_BACKUP }}
-      # Optional guard: a fragment of the production endpoint host. When set, the
-      # job refuses to dump any other database — a DIRECT_URL quietly repointed
-      # at UAT used to back up the wrong data, green, forever.
-      PROD_DB_HOST_MARKER: ${{ vars.PROD_DB_HOST_MARKER }}
       # Minimum acceptable size of the compressed dump. A real dump of this
       # database is ~megabytes; anything under this is an empty or broken one.
       # Measured: the real production dump is ~327 KB compressed (2026-09-15).
@@ -176,14 +172,29 @@ jobs:
           # Diagnose without leaking anything: length only. The previous version
           # echoed the first 13 and last 25 characters into the public run log.
           echo "::notice::DIRECT_URL parsed, length=${#CLEAN}"
-          if [ -n "${PROD_DB_HOST_MARKER:-}" ]; then
-            case "$CLEAN" in
-              *"${PROD_DB_HOST_MARKER}"*) echo "::notice::host matches PROD_DB_HOST_MARKER";;
-              *) echo "::error::DIRECT_URL does not point at the expected production host (PROD_DB_HOST_MARKER). Refusing to back up the wrong database."; exit 1;;
-            esac
-          else
-            echo "::warning::PROD_DB_HOST_MARKER repository variable is not set — this job cannot tell which database it is dumping."
-          fi
+          # Which database is production NOW: the first line of config/production-hosts.txt,
+          # the list every guard shares (code review 2026-11-10, finding 14; it replaces the
+          # PROD_DB_HOST_MARKER repository variable, which nothing reads any more). The job
+          # dumps that host and nothing else: a DIRECT_URL quietly repointed at UAT, or
+          # left on the OLD host after a restore, used to back up the wrong data, green,
+          # forever. A list that cannot be read refuses.
+          . scripts/ops/production-hosts.sh
+          production_hosts_load || exit 1
+          case "$CLEAN" in
+            *[?\&]host=*|*[?\&]hostaddr=*)
+              echo "::error::DIRECT_URL carries a host parameter, which would override its host. Refusing: paste the plain connection string from the Neon console."; exit 1;;
+          esac
+          HOST="$(pg_url_host "$CLEAN")"
+          case "$HOST" in
+            "${PRODUCTION_HOSTS[0]}"*) echo "::notice::host is production now (the first line of config/production-hosts.txt)";;
+            *)
+              if production_marker_in "$HOST" >/dev/null; then
+                echo "::error::DIRECT_URL points at an OLD production host, not the one on the first line of config/production-hosts.txt. After a restore the GitHub DIRECT_URL secret must be changed to the new host too (docs/OPERATIONS.md, Runbooks A, B and C). Refusing to back up a database the app no longer uses."
+              else
+                echo "::error::DIRECT_URL does not point at the production host on the first line of config/production-hosts.txt. Refusing to back up the wrong database."
+              fi
+              exit 1;;
+          esac
           echo "PGURL=${CLEAN}" >> "$GITHUB_ENV"
 
       - name: Row-count manifest (before the dump)
@@ -194,7 +205,7 @@ jobs:
           /usr/lib/postgresql/17/bin/psql "$PGURL" -At -f scripts/ops/backup-manifest.sql > "${STAMP}.manifest.json" \
             || { echo "::warning::manifest query failed — continuing without row counts; the restore verifier will fall back to its schema checks"; rm -f "${STAMP}.manifest.json"; }
           if [ -s "${STAMP}.manifest.json" ]; then
-            jq -r '"source: \(.tableCount) tables, \(.triggerCount) triggers, newest audit \(.newestAuditAt // "none")"' "${STAMP}.manifest.json"
+            jq -r '"source: \(.tableCount) tables, \(.triggerCount) triggers, newest audit \(.newestAuditAt // "none"), newest record \(.newestWriteAt // "none")"' "${STAMP}.manifest.json"
             # An UNLOGGED table would have its DATA silently omitted by the dump.
             UNLOGGED=$(jq '.unloggedTables | length' "${STAMP}.manifest.json")
             if [ "$UNLOGGED" != "0" ]; then
@@ -332,6 +343,28 @@ jobs:
             --endpoint-url "$ENDPOINT" > /dev/null
           echo "::notice::uploaded ${DUMP_KEY} (${BYTES} bytes, encrypted=${ENCRYPTED})"
 
+      # Code review 2026-11-10, finding 14: after a restore to a new host, a DIRECT_URL
+      # secret left on the old host dumps a database the app no longer writes to, and
+      # every check above stays green. The newest record (an audit row, or a heartbeat
+      # the app's scheduled jobs write many times a day even when nobody signs in) is
+      # under a day old on the live database. A SCHEDULED run fails when it is older;
+      # a run by hand only warns, so the runbooks' hand run after a restore can read
+      # the age without a red run. After the upload (nothing is lost) and before the
+      # dead-man report, which then says the backup failed. The rule and why it does
+      # not cry wolf on a quiet database: scripts/ops/backup-freshness.sh.
+      - name: Is this the database the app writes to? (newest record within a day)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          SINCE=''
+          if [ -s "${STAMP}.manifest.json" ]; then
+            SINCE="$(jq -r '.secondsSinceNewestWrite // empty' "${STAMP}.manifest.json")"
+            NEWEST="$(jq -r '.newestWriteAt // "none"' "${STAMP}.manifest.json")"
+            echo "NEWEST_WRITE_AT=${NEWEST}" >> "$GITHUB_ENV"
+          fi
+          bash scripts/ops/backup-freshness.sh "$SINCE" "$EVENT_NAME"
+
       - name: Report the outcome to the app (dead man)
         if: always()
         env:
@@ -379,6 +412,7 @@ jobs:
             echo "- manifest: \`${BASE_KEY:-?}.manifest.json\`"
             echo "- size: ${BYTES:-?} bytes"
             echo "- encrypted: ${ENCRYPTED:-unknown}"
+            echo "- newest record in the dumped database (UTC): ${NEWEST_WRITE_AT:-unknown}"
             echo "- job status: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"
 

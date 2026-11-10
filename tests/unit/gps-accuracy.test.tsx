@@ -7,8 +7,9 @@
  * gates themselves are tested where they live: tests/unit/edit-service.test.ts
  * (an update) and tests/unit/create-flow.test.ts (a new customer).
  */
-import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
+import { GPS_LISTEN_MS } from '@/lib/gps-listen';
 import {
   GPS_MAX_ACCURACY_M,
   GPS_TARGET_ACCURACY_M,
@@ -101,27 +102,38 @@ describe('the capture chip the salesman sees', () => {
       Object.defineProperty(navigator, 'geolocation', {
         configurable: true,
         value: {
-          getCurrentPosition: (ok: PositionCallback) =>
-            ok({ coords: { latitude: 23.588, longitude: 58.3829, accuracy } } as unknown as GeolocationPosition),
+          // Finding 19: the button watches the position, and a reading rougher
+          // than ±30 m is kept only once the listening window has run out.
+          watchPosition: (ok: PositionCallback) => {
+            ok({ coords: { latitude: 23.588, longitude: 58.3829, accuracy } } as unknown as GeolocationPosition);
+            return 1;
+          },
+          clearWatch: () => {},
         },
       });
+    const listenOut = () => act(() => void vi.advanceTimersByTime(GPS_LISTEN_MS));
     afterEach(() => {
+      vi.useRealTimers();
       if (realGeo) Object.defineProperty(navigator, 'geolocation', realGeo);
       else delete (navigator as unknown as Record<string, unknown>).geolocation;
     });
 
     it('±150 m for a salesman: says it cannot be submitted and what to do', () => {
+      vi.useFakeTimers();
       fixAt(150);
       render(<GpsCaptureButton onCapture={() => {}} />);
       fireEvent.click(screen.getByRole('button', { name: /Capture GPS/ }));
+      listenOut();
       expect(chip().dataset.accuracyBand).toBe('poor');
       expect(screen.getByText(/cannot be submitted/).textContent).toBe(gpsAccuracyAdvice(150));
     });
 
     it('±150 m for a Manager (not held to the rule): advice, no refusal', () => {
+      vi.useFakeTimers();
       fixAt(150);
       render(<GpsCaptureButton onCapture={() => {}} enforceAccuracy={false} />);
       fireEvent.click(screen.getByRole('button', { name: /Capture GPS/ }));
+      listenOut();
       expect(screen.queryByText(/cannot be submitted/)).toBeNull();
       expect(screen.getByText(gpsAccuracyAdvice(150, false)!)).toBeTruthy();
     });

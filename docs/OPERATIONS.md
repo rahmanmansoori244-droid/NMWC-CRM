@@ -616,6 +616,23 @@ These are measured, not aspirational. Two different RPOs apply and conflating th
 2. **Photographs** — see above.
 3. **Configuration.** Before a restored database can serve the application, all of this must also exist: `DATABASE_URL` (the `nmwc_app` pooled URL), `DIRECT_URL` (owner), `AUTH_SECRET` + `NEXTAUTH_SECRET` (rotating these logs everyone out), `CRON_SECRET`, `HEALTH_BEARER`, the four `R2_*` variables, the Sentry DSN, and the working-hours and SLA variables. `.env.example` is the checklist.
 
+### 6.3a Point the guards and the backup at the new host
+
+Runbooks A, B and C all end with production on a **new database host** (a new Neon branch has its own endpoint id; a new provider, a new host). Two things do not follow by themselves, and both fail silently (code review 2026-11-10, finding 14):
+
+- **The safety guards** recognise production only by the markers in `config/production-hosts.txt`. Until the new host is listed, the seeds, test suites and clean-up scripts no longer see the real production as production, and `scripts/dev/prod-run.cjs` refuses to run anything on it.
+- **The nightly backup** reads the GitHub repository secret `DIRECT_URL`, not Vercel's. Left on the old host it dumps the old, dead database every night. Since this review it refuses a host that is not on the first line of the list, and a nightly run fails when the newest record in what it dumped is more than a day old — but fix it here rather than wait for the red run.
+
+Do these steps, in this order, as soon as the new host serves production:
+
+1. **Update the list.** On GitHub, open `config/production-hosts.txt` on `main` and edit it in the browser: put the new host's marker on the **first** line — the start of its host name: for Neon the endpoint id's words **without** its random ending (`ep-<word>-<word>`, as `ep-sweet-haze` is today; this repository is public and the full endpoint id stays out of it), at least 6 characters, and **keep** the old marker on a line below it — the old database still holds real customers, and listed it stays protected. Commit to `main`. Remove a marker only when its database has been deleted. From now on operators type the new marker after `--expect-host`.
+1a. **Pull the new list onto every computer.** Every guard on a computer reads the list from **its own copy** of the repository, not from GitHub, so the edit in step 1 protects nothing on a computer until it is pulled there. On every computer, in every clone and worktree of this repository, run `git pull` on `main` before running anything else — **first** the clone whose `.env` holds the production connection strings (the one Vercel's values were copied into). Then, in that clone, run `node scripts/dev/env-check.cjs`: its "production list" line must name the new marker first, and it must say `PRODUCTION` for the variables that now point at the new host (and end with `STOP` — expected here, it means the guards see production). If it says `not production` for them, that clone still has the old list: pull again before running anything there. Until a clone has pulled, its seeds, test suites, clean-up scripts and `env-check` do not treat the new host as production, and `prod-run.cjs` refuses it.
+2. **Update the GitHub `DIRECT_URL` secret** (Settings → Secrets and variables → Actions) to the new host's owner connection string — the same value as Vercel Production's `DIRECT_URL`.
+3. **Run the backup by hand:** Actions → **DB Backup** → Run workflow.
+4. **Check its newest-record time is today.** Open the run's summary: "newest record in the dumped database (UTC)" must be today's date (UTC). If it is older, the app has not written to the new database since the switch: sign in to the app once (a sign-in writes an audit row), or wait for the next scheduled job (keep-warm runs every 4 minutes from 03:00 to 15:00 UTC), and run the backup again. If it is still old, `DIRECT_URL` (the secret) and Vercel's `DATABASE_URL` name different databases — stop and compare them. A run by hand only warns about an old record; the nightly run fails on it.
+
+The repository variable `PROD_DB_HOST_MARKER` is no longer read by any workflow (the list replaced it); it can be deleted.
+
 ### 6.4 Runbook A — Neon point-in-time recovery
 
 Use when the damage is recent and the database itself is healthy.
@@ -626,6 +643,7 @@ Use when the damage is recent and the database itself is healthy.
 4. Re-create the runtime role on it: `ALLOW_PRODUCTION=1 DIRECT_URL='<branch owner URL>' NMWC_APP_PASSWORD='<new>' npx tsx scripts/ops/app-role.ts create` then `grant`, then `verify` with `NMWC_APP_URL`.
 5. Verify the restore properly: `npx tsx scripts/ops/restore-verify.ts --url '<branch owner URL>' --expect-app-role`.
 6. Promote the branch to the primary in the Neon console, or repoint Vercel Production `DATABASE_URL` / `DIRECT_URL` at it and redeploy.
+6a. **Point the guards and the backup at the new host — §6.3a, every step:** the new marker first in `config/production-hosts.txt` (the old one kept), `git pull` of that list into every clone and worktree on every computer (the production `.env` clone first, then `env-check` there), the GitHub `DIRECT_URL` secret to the new host, the backup run by hand, and its newest-record time checked to be today. Do it before anything else runs on the new production: until then `prod-run.cjs` refuses it and the other guards do not see it as production.
 7. **Revoke sessions.** Set `sessionsRevokedAt = now()` on every user, or rotate `AUTH_SECRET`; otherwise a JWT issued before the restore still authenticates against the restored user table.
 8. Confirm: `curl -H "Authorization: Bearer $HEALTH_BEARER" https://nmwc-cm.vercel.app/api/health` — `checks.db: ok` and no cron alarms.
 
@@ -638,7 +656,7 @@ Use when the damage predates the PITR window, or PITR cannot reach a good state.
 3. Fetch the newest dump and its manifest from `nmwc-backups`, decrypt with the age identity, and load it with `BACKUP_AGE_RECIPIENTS="$(age-keygen -y <identity file>)" RESTORE_TARGET_URL='<branch owner URL>' RESTORE_DUMP=./dump.sql.gz bash scripts/ops/restore-load.sh` from the repository root (it needs `psql`, `age` and `shred`; it refuses a production URL, owner decisions 2026-10-11). Set `BACKUP_AGE_RECIPIENTS` as shown — it is a repository variable, not in your shell — or the script keeps no log at all, and the summary is all you will have. It runs `psql -f - -v ON_ERROR_STOP=1 -v VERBOSITY=verbose --echo-errors` (`-f -` is what makes psql number the dump line on every error), prints a summary of phase, dump line, SQLSTATE and table, keeps the full log only as `restore.log.age` encrypted to `BACKUP_AGE_RECIPIENTS`, and shreds the plaintext. **The full log can quote customer rows** — a failed COPY or constraint prints the row it failed on — so decrypt it (`age -d -i <identity> restore.log.age`) only on your own machine, and never paste it into an issue, a chat, a CI log or anything else in this public repository.
 4. Re-create the runtime role (Runbook A step 4).
 5. `npx tsx scripts/ops/restore-verify.ts --url '<branch owner URL>' --manifest manifest.json --expect-app-role`. This is the step that catches the dangerous failure: pg_dump writes triggers **after** the data, so a truncated restore comes back with every customer row present and the append-only audit triggers missing.
-6. Steps 6–8 from Runbook A.
+6. Steps 6–8 from Runbook A — **including step 6a** (§6.3a: the marker list, `git pull` of it into every clone, the GitHub `DIRECT_URL` secret, the backup by hand, its newest-record time today).
 
 The monthly drill (`.github/workflows/restore-drill.yml`) performs exactly steps 2–5 against a throw-away branch, with the same load script, and publishes the timings. Run it on demand before you ever need it for real: **Actions → Restore drill → Run workflow**.
 
@@ -647,6 +665,7 @@ The monthly drill (`.github/workflows/restore-drill.yml`) performs exactly steps
 1. Provision PostgreSQL 17 anywhere, with the `pg_trgm` extension available.
 2. Runbook B steps 3–5 against it.
 3. Repoint Vercel Production at the new host and redeploy. The build runs `prisma migrate deploy`, which will be a no-op on a correctly restored database.
+3a. **Point the guards and the backup at the new host — §6.3a, every step** (the new host's marker first in `config/production-hosts.txt`, the old kept; `git pull` of it into every clone and worktree, the production `.env` clone first; the GitHub `DIRECT_URL` secret; the backup by hand; its newest-record time today). On another provider the marker is the start of the new host name, at least 6 characters.
 4. Runbook A steps 7–8.
 5. Photographs: if R2 is also gone, they are gone. Record what was lost.
 
@@ -680,6 +699,7 @@ Until `BACKUP_AGE_RECIPIENTS` is set the nightly workflow **fails** at its encry
 - **The dead man lives inside the thing it watches.** The `db-backup` heartbeat is a row in the production database. If that database is unreachable the bearer health probe reports `checks.db: fail` and answers 503 — so an outage still alarms — but the backup-specific alarm is silent in exactly that case.
 - **`PROD_CRON_SECRET` may be stale.** The backup reports its outcome using that repository secret; the route validates against `CRON_SECRET` in Vercel. If they have drifted the POST returns 401, the workflow warns, and the heartbeat goes stale. Check both after any secret rotation.
 - **Rotating `neondb_owner` breaks the backup** unless the GitHub `DIRECT_URL` secret is updated in the same change. Since 2026-09-14 that failure alarms within 40 hours instead of silently; it is still a manual pairing.
+- **A backup of the wrong database** (finding 14, 2026-11-10). After a restore the GitHub `DIRECT_URL` secret is easy to leave on the old host. The nightly run now refuses any host but the first line of `config/production-hosts.txt`, records the newest write (audit row or scheduled-job heartbeat) in the manifest (`newestWriteAt`, `secondsSinceNewestWrite`), and a scheduled run fails when that is more than a day old (`scripts/ops/backup-freshness.sh`). A quiet database does not trip it: the app's scheduled jobs write heartbeats to its database many times a day even when nobody signs in. It does trip if every scheduled job has stopped for a day — which `/api/health` reports too. The dump has been uploaded before the check fails, so nothing is lost.
 
 ### 6.9 Retention of the backups themselves
 
@@ -713,9 +733,9 @@ The bottom two rows read "on demand" until 2026-09-24, and on demand meant never
 ### 6.11 Other backup notes
 
 - **Manual logical dump:** `npx prisma db pull` exports the schema; for data, `pg_dump` against `DIRECT_URL`.
-- **Required GitHub secrets:** `DIRECT_URL`, `BACKUP_R2_ACCESS_KEY_ID`, `BACKUP_R2_SECRET_ACCESS_KEY`, `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET`, `PROD_CRON_SECRET`. For the drill also `NEON_API_KEY`, `NEON_PROJECT_ID`, `BACKUP_AGE_IDENTITY` (§6.12). For the daily **R2 bucket settings** workflow also **two** Admin Read & Write R2 tokens, one per bucket and neither of them account-wide — `BACKUP_R2_ADMIN_ACCESS_KEY_ID` + `BACKUP_R2_ADMIN_SECRET_ACCESS_KEY` scoped to `nmwc-backups`, and `R2_ADMIN_ACCESS_KEY_ID` + `R2_ADMIN_SECRET_ACCESS_KEY` scoped to `nmwc-photos`; add `R2_ACCOUNT_ID` only if the photographs live in a different Cloudflare account from the backups (§6.13). Repository variables: `BACKUP_AGE_RECIPIENTS`, optionally `PROD_DB_HOST_MARKER`, `MIN_DUMP_BYTES` and `R2_BUCKET`.
+- **Required GitHub secrets:** `DIRECT_URL`, `BACKUP_R2_ACCESS_KEY_ID`, `BACKUP_R2_SECRET_ACCESS_KEY`, `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET`, `PROD_CRON_SECRET`. For the drill also `NEON_API_KEY`, `NEON_PROJECT_ID`, `BACKUP_AGE_IDENTITY` (§6.12). For the daily **R2 bucket settings** workflow also **two** Admin Read & Write R2 tokens, one per bucket and neither of them account-wide — `BACKUP_R2_ADMIN_ACCESS_KEY_ID` + `BACKUP_R2_ADMIN_SECRET_ACCESS_KEY` scoped to `nmwc-backups`, and `R2_ADMIN_ACCESS_KEY_ID` + `R2_ADMIN_SECRET_ACCESS_KEY` scoped to `nmwc-photos`; add `R2_ACCOUNT_ID` only if the photographs live in a different Cloudflare account from the backups (§6.13). Repository variables: `BACKUP_AGE_RECIPIENTS`, optionally `MIN_DUMP_BYTES` and `R2_BUCKET`. Which host is production is not a variable: it is `config/production-hosts.txt` (§6.3a).
 - **Two admin tokens, not one.** An admin token is the strongest credential a bucket has. One token covering both buckets would mean a leaked photographs credential also reaches every database dump — undoing the separation this whole design rests on, stated in `.github/workflows/db-backup.yml` and again under "R2 backup & versioning" below. `npm run ops:print-secrets` names all four.
-- **`PROD_DB_HOST_MARKER` is not optional for the drill.** It is the only interlock in front of the drill's `DROP SCHEMA public CASCADE`, and the drill refuses to start without it. Optional only for the nightly dump, which merely warns.
+- **The production host list is the interlock.** The drill's `DROP SCHEMA public CASCADE` refuses a URL carrying any marker in `config/production-hosts.txt`, and the drill stops before it creates a branch when the list cannot be read; the nightly dump refuses any host but the list's first line. Both read it with `scripts/ops/production-hosts.sh` (the `PROD_DB_HOST_MARKER` repository variable they used is no longer read — finding 14, 2026-11-10).
 
 ### 6.12 Turning the restore drill on (owner: Neon console)
 

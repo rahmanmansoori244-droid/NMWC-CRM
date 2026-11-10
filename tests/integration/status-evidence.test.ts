@@ -21,6 +21,7 @@
  *   RUN_STATUS_EVIDENCE=1 DATABASE_URL=… DIRECT_URL=… \
  *     npx vitest run tests/integration/status-evidence.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
@@ -68,7 +69,7 @@ describe.skipIf(!ENABLED)('status evidence at decision time (F10, X-STATUS-1, F1
 
   beforeAll(async () => {
     for (const url of [process.env.DATABASE_URL, process.env.DIRECT_URL]) {
-      if ((url ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+      if (pointsAtProduction(url ?? '')) throw new Error('ABORT: production');
     }
     ({ prisma } = await import('@/lib/db'));
     edits = await import('@/services/edits');

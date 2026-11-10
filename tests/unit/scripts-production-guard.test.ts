@@ -36,6 +36,7 @@ import ts from 'typescript';
 import { stripComments } from '../support/strip-comments';
 import { callArguments } from '../support/call-args';
 import {
+  PRODUCTION_HOSTS,
   PRODUCTION_HOST_PREFIX,
   ProductionGuardRefusal,
   assertNotProduction,
@@ -44,6 +45,7 @@ import {
   withoutExpectHost,
 } from '../../scripts/lib/assert-not-production';
 import { OperatorRefusal, operatorErrorLabel } from '../../scripts/ops/error-label';
+import { loadProductionHosts } from '../../scripts/lib/production-hosts.cjs';
 import { GUIDE_ACCOUNT_VARS, guideAccountsFromEnv } from '../../scripts/lib/guide-accounts';
 
 // Built from pieces so no connection-string-shaped literal sits in the source. All
@@ -51,6 +53,8 @@ import { GUIDE_ACCOUNT_VARS, guideAccountsFromEnv } from '../../scripts/lib/guid
 const PASSWORD = 'synthetic-pw-zq81';
 const USER = 'synthetic_owner_zq';
 const PROD_ENDPOINT = `${PRODUCTION_HOST_PREFIX}-fake9q7`;
+// The production marker percent-escaped, as libpq would decode it (built from the shared list).
+const ESCAPED_MARKER = PRODUCTION_HOST_PREFIX.replace(/-/g, '%2D');
 const urlFor = (host: string, query = '') =>
   ['postgresql://', USER, ':', PASSWORD, '@', host, '/neondb', query].join('');
 const PROD_URL = urlFor(`${PROD_ENDPOINT}.us-east-1.aws.neon.invalid`);
@@ -132,7 +136,7 @@ describe('assertNotProduction: what it refuses', () => {
     // Review of d02cb27: libpq, node-postgres and Prisma decode the query, and a
     // `host` parameter overrides the URL's host, so this reached production while
     // the guard printed "localhost".
-    const escaped = urlFor('localhost:5432', '?host=ep%2Dsweet%2Dhaze-fake9q7.neon.invalid');
+    const escaped = urlFor('localhost:5432', `?host=${ESCAPED_MARKER}-fake9q7.neon.invalid`);
     for (const args of [[], ['--expect-host', PRODUCTION_HOST_PREFIX]]) {
       const r = run(escaped, args);
       expect(r.thrown, JSON.stringify(args)).toBeInstanceOf(ProductionGuardRefusal);
@@ -148,7 +152,7 @@ describe('assertNotProduction: what it refuses', () => {
   it('refuses a named host that is not the one in the connection string, on UAT too', () => {
     const r = run(UAT_URL, ['--expect-host', PRODUCTION_HOST_PREFIX]);
     expect(r.thrown).toBeInstanceOf(ProductionGuardRefusal);
-    expect(r.printed).toMatch(/you asked for "ep-sweet-haze…" but this connection points at ep-uat-branch-1/);
+    expect(r.printed).toContain(`you asked for "${PRODUCTION_HOST_PREFIX}…" but this connection points at ep-uat-branch-1`);
     expectNoSecrets(r.printed);
   });
 
@@ -157,7 +161,7 @@ describe('assertNotProduction: what it refuses', () => {
     // the guard never prints the endpoint id anywhere else.
     const r = run(UAT_URL, ['--expect-host', PROD_ENDPOINT]);
     expect(r.thrown).toBeInstanceOf(ProductionGuardRefusal);
-    expect(r.printed).toMatch(/you asked for "ep-sweet-haze…"/);
+    expect(r.printed).toContain(`you asked for "${PRODUCTION_HOST_PREFIX}…"`);
     expectNoSecrets(r.printed);
     // A value that does not name production is the operator's own words: shown.
     expect(run(UAT_URL, ['--expect-host', 'ep-other-branch']).printed).toMatch(/you asked for "ep-other-branch"/);
@@ -899,7 +903,7 @@ describe('scripts/qa/run-with-env.mjs refuses production', () => {
 
   it.each([
     ['DIRECT_URL in .env', `DIRECT_URL=${PROD_URL}\n`, {}],
-    ['DATABASE_URL in .env, percent-escaped', `DATABASE_URL=${urlFor('localhost:5432', '?host=ep%2Dsweet%2Dhaze-x.invalid')}\n`, {}],
+    ['DATABASE_URL in .env, percent-escaped', `DATABASE_URL=${urlFor('localhost:5432', `?host=${ESCAPED_MARKER}-x.invalid`)}\n`, {}],
     ['DATABASE_URL set in the shell, which wins over .env', `DATABASE_URL=${UAT_URL}\n`, { DATABASE_URL: PROD_URL }],
     ['another connection string in the shell', `DATABASE_URL=${UAT_URL}\n`, { NMWC_APP_URL: PROD_URL }],
   ])('%s', (_label, envFile, env) => {
@@ -944,7 +948,7 @@ describe('prisma/seed.ts never runs on production and never changes an existing 
       PROD_URL,
       urlFor(`${PROD_ENDPOINT.toUpperCase()}.neon.invalid`),
       urlFor('localhost:5432', `?host=${PROD_ENDPOINT}.neon.invalid`),
-      urlFor('localhost:5432', '?host=ep%2Dsweet%2Dhaze-fake9q7.neon.invalid'),
+      urlFor('localhost:5432', `?host=${ESCAPED_MARKER}-fake9q7.neon.invalid`),
     ]) {
       const out = { log: vi.fn(), error: vi.fn() };
       expect(() => refuseProductionSeed(url, out), url.replace(PASSWORD, '…')).toThrow(ProductionGuardRefusal);
@@ -1082,11 +1086,11 @@ describe('prisma/seed.ts never runs on production and never changes an existing 
 
   it.each([
     ['DIRECT_URL, no flag', { DIRECT_URL: PROD_URL }, []],
-    ['DIRECT_URL, --expect-host ep-sweet-haze', { DIRECT_URL: PROD_URL }, ['--expect-host', PRODUCTION_HOST_PREFIX]],
+    ['DIRECT_URL, --expect-host <production marker>', { DIRECT_URL: PROD_URL }, ['--expect-host', PRODUCTION_HOST_PREFIX]],
     ['DIRECT_URL, --expect-host naming the endpoint', { DIRECT_URL: PROD_URL }, ['--expect-host', PROD_ENDPOINT]],
     [
-      'a percent-escaped host parameter, --expect-host ep-sweet-haze',
-      { DIRECT_URL: urlFor('localhost:5432', '?host=ep%2Dsweet%2Dhaze-fake9q7.neon.invalid') },
+      'a percent-escaped host parameter, --expect-host <production marker>',
+      { DIRECT_URL: urlFor('localhost:5432', `?host=${PRODUCTION_HOST_PREFIX.replace(/-/g, '%2D')}-fake9q7.neon.invalid`) },
       ['--expect-host', PRODUCTION_HOST_PREFIX],
     ],
   ] as const)('npm run db:seed on production refuses: %s', (_label, env, args) => {
@@ -1119,5 +1123,89 @@ describe('the scripts the owner deleted on 2026-10-11 stay deleted', () => {
 
   it('prisma/test-*.ts', () => {
     expect(readdirSync('prisma').filter((f) => /^test-.*\.ts$/.test(f))).toEqual([]);
+  });
+});
+
+
+describe('production is recognised from ONE shared list (code review 2026-11-10, finding 14)', () => {
+  // Production was a fixed host name written into about a hundred files; after a
+  // disaster-recovery restore to a new host every guard was blind to it. Now every
+  // guard reads config/production-hosts.txt — Node through scripts/lib/production-hosts.cjs,
+  // shell through scripts/ops/production-hosts.sh — and this pins that no guard
+  // carries a marker of its own again. (tests/unit/production-hosts.test.ts pins
+  // the list's rules, the two readers' agreement and the guards with several hosts.)
+  const CODE = /\.(ts|tsx|js|cjs|mjs|sh|bash|yml|yaml)$/;
+  const tracked = spawnSync('git', ['ls-files'], { encoding: 'utf8' })
+    .stdout.split('\n')
+    .filter((f) => CODE.test(f) && !f.startsWith('docs/') && !f.startsWith('qa/'));
+  const isComment = (line: string) => /^\s*(\/\/|\/\*|\*|#)/.test(line);
+  const carriesMarker = (line: string) => {
+    const lower = line.toLowerCase();
+    return PRODUCTION_HOSTS.some((m) => lower.includes(m) || lower.includes(m.replace(/-/g, '%2d')));
+  };
+
+  it("the guard's list is the file's list, and production now is its first line", () => {
+    expect(PRODUCTION_HOSTS.length).toBeGreaterThan(0);
+    expect([...PRODUCTION_HOSTS]).toEqual(loadProductionHosts());
+    expect(PRODUCTION_HOST_PREFIX).toBe(PRODUCTION_HOSTS[0]);
+  });
+
+  it('finds the files it scans (the walk is not silently empty)', () => {
+    expect(tracked).toEqual(
+      expect.arrayContaining([
+        'scripts/lib/assert-not-production.ts',
+        'scripts/dev/prod-run.cjs',
+        'scripts/ops/restore-load.sh',
+        '.github/workflows/db-backup.yml',
+        'tests/support/audit.ts',
+        'tests/integration/db-rules.test.ts',
+      ])
+    );
+  });
+
+  it('no code file outside config/production-hosts.txt writes a production marker (comments aside)', () => {
+    const offenders: string[] = [];
+    for (const file of tracked) {
+      if (!existsSync(file)) continue;
+      readFileSync(file, 'utf8')
+        .split(/\r?\n/)
+        .forEach((line, i) => {
+          if (!isComment(line) && carriesMarker(line)) offenders.push(`${file}:${i + 1}`);
+        });
+    }
+    expect(offenders, 'read the marker from the shared list (pointsAtProduction, PRODUCTION_HOSTS) instead').toEqual([]);
+  });
+
+  it('the scan would see one, plain or percent-escaped (a guard that can only pass passes for the wrong reason)', () => {
+    const plain = `if (url.includes('${PRODUCTION_HOST_PREFIX}')) throw new Error('x');`;
+    const escaped = `const u = '?host=${PRODUCTION_HOST_PREFIX.replace(/-/g, '%2D')}-x';`;
+    for (const probe of [plain, escaped]) {
+      expect(isComment(probe)).toBe(false);
+      expect(carriesMarker(probe)).toBe(true);
+    }
+    expect(isComment(`  // --expect-host ${PRODUCTION_HOST_PREFIX}`)).toBe(true);
+    expect(isComment(`  # ${PRODUCTION_HOST_PREFIX}`)).toBe(true);
+  });
+
+  it.each([
+    ['scripts/lib/assert-not-production.ts', /from '\.\/production-hosts\.cjs'/],
+    ['scripts/dev/prod-run.cjs', /require\('\.\.\/lib\/production-hosts\.cjs'\)/],
+    ['scripts/dev/env-check.cjs', /require\('\.\.\/lib\/production-hosts\.cjs'\)/],
+    ['scripts/qa/run-with-env.mjs', /from '\.\.\/lib\/production-hosts\.cjs'/],
+    ['scripts/ops/restore-load.sh', /\. "\$SELF_DIR\/production-hosts\.sh"\s*\nproduction_hosts_load \|\| exit 2/],
+    ['.github/workflows/db-backup.yml', /\. scripts\/ops\/production-hosts\.sh\s*\n\s*production_hosts_load \|\| exit 1/],
+    ['.github/workflows/restore-drill.yml', /\. scripts\/ops\/production-hosts\.sh\s*\n\s*production_hosts_load \|\| exit 1/],
+  ])('%s reads the shared list', (file, reads) => {
+    expect(readFileSync(file, 'utf8').replace(/\r\n/g, '\n')).toMatch(reads);
+  });
+
+  it('no workflow reads the old single-host repository variable any more', () => {
+    for (const file of tracked.filter((f) => f.startsWith('.github/workflows/'))) {
+      const code = readFileSync(file, 'utf8')
+        .split(/\r?\n/)
+        .filter((l) => !isComment(l))
+        .join('\n');
+      expect(code, file).not.toMatch(/vars\.PROD_DB_HOST_MARKER|\$\{?PROD_DB_HOST_MARKER/);
+    }
   });
 });

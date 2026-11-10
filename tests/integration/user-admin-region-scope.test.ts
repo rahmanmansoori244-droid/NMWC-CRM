@@ -13,6 +13,7 @@
  *
  *   RUN_USER_ADMIN_SCOPE=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/user-admin-region-scope.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog } from '../support/audit';
 import bcrypt from 'bcryptjs';
@@ -54,7 +55,7 @@ describe.skipIf(!ENABLED)('B2 / SEC-02: Manager user administration is region-sc
   };
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     users = await import('@/services/users');
     const hash = await bcrypt.hash(PASSWORD, 12);

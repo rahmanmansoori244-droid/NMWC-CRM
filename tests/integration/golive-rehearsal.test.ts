@@ -17,6 +17,7 @@
  *   node scripts/qa/run-with-env.mjs tsx prisma/synthetic.ts --clear-only
  *   RUN_GOLIVE_REHEARSAL=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/golive-rehearsal.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { isDemoAccount } from '@/lib/demo-accounts';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -48,7 +49,7 @@ describe.skipIf(!ENABLED)('GO-LIVE REHEARSAL on the UAT branch with the real mas
   let stewardId = '';
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze'))
+    if (pointsAtProduction(process.env.DATABASE_URL ?? ''))
       throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     imports = await import('@/services/imports');

@@ -37,7 +37,7 @@
  * handler below prints only the class of an error it did not raise).
  */
 import { PrismaClient } from '@prisma/client';
-import { assertNotProduction } from '../lib/assert-not-production';
+import { assertNotProduction, pointsAtProduction } from '../lib/assert-not-production';
 import { readFileSync, readdirSync, writeFileSync } from 'fs';
 import { parsePrismaSchema, implicitJoinTables } from '../../lib/compliance/prisma-schema';
 import { describeError } from './describe-error';
@@ -52,7 +52,6 @@ import {
   HISTORY_TRIGGERS,
 } from '../../lib/history-tables';
 
-const PROD_MARKER = 'ep-sweet-haze';
 
 /**
  * The functional probes' transaction limits. Prisma's defaults (5 s to finish,
@@ -124,7 +123,7 @@ type Manifest = {
 async function main() {
   const url = arg('url') ?? process.env.RESTORE_VERIFY_URL ?? process.env.DATABASE_URL;
   if (!url) throw new VerifyError('no database URL: pass --url or set RESTORE_VERIFY_URL');
-  if (url.includes(PROD_MARKER) && process.env.ALLOW_PRODUCTION !== '1') {
+  if (pointsAtProduction(url) && process.env.ALLOW_PRODUCTION !== '1') {
     throw new VerifyError('Refusing to run against production without ALLOW_PRODUCTION=1');
   }
   assertNotProduction(url, process.argv.slice(2));

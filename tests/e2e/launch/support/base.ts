@@ -8,9 +8,9 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-
-/** The production Neon endpoint. Any URL containing it aborts the run. */
-export const PROD_MARKER = 'ep-sweet-haze';
+// The shared production host list (config/production-hosts.txt; code review
+// 2026-11-10, finding 14): any URL carrying one of its markers aborts the run.
+import { pointsAtProduction } from '../../../../scripts/lib/assert-not-production';
 
 /** The repository root (this file is tests/e2e/launch/support/base.ts). */
 export const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
@@ -26,7 +26,7 @@ export const REGISTRY_DIR = path.join(STATE_DIR, 'registry');
 /** Throws when any database URL points at production, or the checkout is the production clone. */
 export function assertNotProduction(): void {
   for (const k of ['DATABASE_URL', 'DIRECT_URL'] as const) {
-    if ((process.env[k] ?? '').includes(PROD_MARKER)) {
+    if (pointsAtProduction(process.env[k] ?? '')) {
       throw new Error(`ABORT: ${k} points at the PRODUCTION database. The launch suite runs on UAT only.`);
     }
   }

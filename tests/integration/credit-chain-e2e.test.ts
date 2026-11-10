@@ -50,6 +50,7 @@
  *   RUN_CREDIT_CHAIN=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/credit-chain-e2e.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals, purgeHistory, withAuditMaintenance } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
@@ -122,7 +123,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
   }
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     creates = await import('@/services/creates');
     edits = await import('@/services/edits');

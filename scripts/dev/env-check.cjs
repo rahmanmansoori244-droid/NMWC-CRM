@@ -8,6 +8,18 @@
 // variable already set in the environment win over the file.
 const fs = require('fs');
 const path = require('path');
+const { loadProductionHosts, hostMarker, productionMarkerIn } = require('../lib/production-hosts.cjs');
+
+// Production is what config/production-hosts.txt lists (code review 2026-11-10,
+// finding 14); a list that cannot be read stops the check, it does not pass it.
+let HOSTS;
+try {
+  HOSTS = loadProductionHosts();
+} catch (e) {
+  console.log(e.message);
+  console.log('STOP: cannot tell whether anything here points at production.');
+  process.exit(1);
+}
 
 const envFile = path.resolve(process.argv[2] || '.env');
 const fromFile = {};
@@ -17,16 +29,27 @@ if (fs.existsSync(envFile)) {
     if (m) fromFile[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
   }
 }
+// The host's own marker, or the marker anywhere in the value (a `host` parameter,
+// percent-escaped or not), as every guard reads it.
 const isProduction = (value) => {
+  let host = '';
   try {
-    return new URL(value).hostname.startsWith('ep-sweet-haze');
+    host = new URL(value).hostname;
   } catch {
-    return String(value).includes('ep-sweet-haze');
+    /* read as text below */
   }
+  return !!hostMarker(host, HOSTS) || !!productionMarkerIn(value, HOSTS);
 };
 
 let production = false;
 console.log(`env file: ${fs.existsSync(envFile) ? envFile : `${envFile} (missing)`}`);
+// The list is read from THIS checkout. After a restore moves production, a clone that
+// has not pulled the new list does not see the new host as production (code review
+// 2026-11-10, finding 14; docs/OPERATIONS.md §6.3a step 1a), so say which list counted.
+console.log(
+  `production list: ${HOSTS.length} host marker(s) from this checkout's config/production-hosts.txt ` +
+    `(production first: ${HOSTS[0]}). If production moved to a new host, run \`git pull\` here first.`
+);
 for (const name of ['DATABASE_URL', 'DIRECT_URL']) {
   for (const [where, value] of [
     ['file', fromFile[name]],

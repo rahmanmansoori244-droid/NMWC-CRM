@@ -25,6 +25,7 @@
  *   RUN_MERGE_TESTS=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/merge-temix-shared-code.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { purgeAuditLog } from '../support/audit';
@@ -90,8 +91,8 @@ describe.skipIf(!ENABLED)('F11: a same-code merge keeps the surviving Temix iden
   };
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DIRECT_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     dups = await import('@/services/duplicates');
     temix = await import('@/lib/temix');

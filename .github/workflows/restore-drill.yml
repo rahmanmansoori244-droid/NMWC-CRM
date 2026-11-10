@@ -74,21 +74,20 @@ jobs:
       # restore log, which can quote customer rows and may only be uploaded
       # encrypted: the Actions logs and artifacts of this repository are public.
       BACKUP_AGE_RECIPIENTS: ${{ vars.BACKUP_AGE_RECIPIENTS }}
-      PROD_DB_HOST_MARKER: ${{ vars.PROD_DB_HOST_MARKER }}
     steps:
       - name: Check the drill can run at all
         run: |
           set -euo pipefail
           MISSING=''
-          # PROD_DB_HOST_MARKER belongs here, not only at the drop step: without it the
-          # drill would otherwise create a Neon branch — a copy-on-write copy of the
-          # production customer data — and only then discover it cannot proceed.
+          # Which hosts are production is no longer a repository variable: it is
+          # config/production-hosts.txt, checked right after the checkout below and
+          # still before any Neon branch is created (code review 2026-11-10, finding 14).
           #
           # Written as `if` rather than `[ … ] && MISSING=…`: under `set -e` the
           # AND-list returns non-zero on every variable that IS set, and whether that
           # aborts the step is a question the next reader should not have to settle.
           # (It does not in bash 5. The `if` form does not depend on that.)
-          for V in NEON_API_KEY NEON_PROJECT_ID BACKUP_R2_ACCOUNT_ID BACKUP_R2_BUCKET PROD_DB_HOST_MARKER; do
+          for V in NEON_API_KEY NEON_PROJECT_ID BACKUP_R2_ACCOUNT_ID BACKUP_R2_BUCKET; do
             if [ -z "${!V:-}" ]; then MISSING="${MISSING} ${V}"; fi
           done
           # The R2 credentials reach this job under their AWS_* names, so they are
@@ -110,7 +109,6 @@ jobs:
               echo "- \`NEON_API_KEY\` — **secret**. Neon console → Account settings → API keys → Create new API key. Prefer a key scoped to this project if your account offers one; a personal key can reach every project you can."
               echo "- \`NEON_PROJECT_ID\` — **secret**. Neon console → this project → Settings → General → Project ID."
               echo "- \`BACKUP_R2_ACCESS_KEY_ID\` / \`BACKUP_R2_SECRET_ACCESS_KEY\` — **secrets**. The same R2 token the nightly backup uses; it only needs to READ objects."
-              echo "- \`PROD_DB_HOST_MARKER\` — a **variable**, not a secret: a fragment of the production endpoint host. It is the only interlock in front of \`DROP SCHEMA CASCADE\`."
               echo ""
               echo "Full owner steps, and how to confirm the first run really restored: \`docs/OPERATIONS.md\` §6.12."
             } >> "$GITHUB_STEP_SUMMARY"
@@ -119,6 +117,16 @@ jobs:
           fi
 
       - uses: actions/checkout@v7
+
+      # The interlock in front of DROP SCHEMA CASCADE needs to know every production
+      # host: read here, before a Neon branch (a copy of production's customer data)
+      # is created. A list that cannot be read stops the drill (finding 14).
+      - name: Read the production host list
+        run: |
+          set -euo pipefail
+          . scripts/ops/production-hosts.sh
+          production_hosts_load || exit 1
+          echo "production host list: ${#PRODUCTION_HOSTS[@]} host(s)"
 
       - uses: actions/setup-node@v7
         with:
@@ -247,15 +255,18 @@ jobs:
           # looks like production, whatever the API returned.
           # FAIL CLOSED. This was `if [ -n "$PROD_DB_HOST_MARKER" ]`, so with the
           # variable unset — which it is — the only interlock in front of
-          # DROP SCHEMA CASCADE evaluated to nothing at all.
-          if [ -z "${PROD_DB_HOST_MARKER:-}" ]; then
-            echo "::error::PROD_DB_HOST_MARKER is not set. This step drops a schema; it will not run without knowing which host is production. Create the repository variable (Settings → Secrets and variables → Actions → Variables) with a fragment of the production Neon endpoint, e.g. ep-sweet-haze."
-            exit 1
+          # DROP SCHEMA CASCADE evaluated to nothing at all. Since the code review of
+          # 2026-11-10 (finding 14) it is every host in config/production-hosts.txt —
+          # production now and every earlier production host kept there — read by the
+          # shared shell reader: a list that cannot be read, or a URL carrying any of
+          # its markers (in any case, percent-escaped or not), stops here.
+          . scripts/ops/production-hosts.sh
+          production_hosts_load || exit 1
+          MARKER_STATUS=0
+          production_marker_in "$DRILL_URL" >/dev/null || MARKER_STATUS=$?
+          if [ "$MARKER_STATUS" -ne 1 ]; then
+            echo "::error::the drill URL points at a production host (config/production-hosts.txt) — refusing to drop anything"; exit 1
           fi
-          case "$DRILL_URL" in
-            *"${PROD_DB_HOST_MARKER}"*)
-              echo "::error::the drill URL points at the production host — refusing to drop anything"; exit 1;;
-          esac
           # There WAS a second interlock here comparing the drill host against
           # DIRECT_URL. It was dead code: this job has never had DIRECT_URL in its
           # env, so `[ -n "${DIRECT_URL:-}" ]` was always false and the comparison

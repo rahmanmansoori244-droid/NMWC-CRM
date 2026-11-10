@@ -13,6 +13,7 @@
  *
  *   RUN_REGION_TOGGLE=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/region-route-toggle.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog } from '../support/audit';
 
@@ -46,7 +47,7 @@ describe.skipIf(!ENABLED)(
     const audits = (entityId: string) => prisma.auditLog.count({ where: { entityId } });
 
     beforeAll(async () => {
-      if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze'))
+      if (pointsAtProduction(process.env.DATABASE_URL ?? ''))
         throw new Error('ABORT: production');
       ({ prisma } = await import('@/lib/db'));
       routes = await import('@/services/routes');

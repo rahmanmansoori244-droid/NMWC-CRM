@@ -5,7 +5,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { PrismaClient } from '@prisma/client';
-import { assertNotProduction } from '../lib/assert-not-production';
+import { assertNotProduction, pointsAtProduction } from '../lib/assert-not-production';
 
 // self-load .env (no dependency) so PrismaClient sees DATABASE_URL/DIRECT_URL
 for (const line of readFileSync('.env', 'utf8').split(/\r?\n/)) {
@@ -15,8 +15,8 @@ for (const line of readFileSync('.env', 'utf8').split(/\r?\n/)) {
 
 // hard safety gate: refuse to run against the known production endpoint
 const url = process.env.DATABASE_URL ?? '';
-if (url.includes('ep-sweet-haze')) {
-  console.error('ABORT: DATABASE_URL points at the production endpoint (ep-sweet-haze).');
+if (pointsAtProduction(url)) {
+  console.error('ABORT: DATABASE_URL points at a production endpoint (config/production-hosts.txt).');
   process.exit(2);
 }
 const host = /@([^/]+)\//.exec(url)?.[1] ?? '?';
@@ -60,7 +60,7 @@ async function main() {
   const nonEmpty = Object.entries(counts).filter(([, n]) => n > 0).map(([t]) => t);
   const missing = Object.entries(counts).filter(([, n]) => n < 0).map(([t]) => t);
   console.log('VERDICT:', {
-    isolated_endpoint: !url.includes('ep-sweet-haze'),
+    isolated_endpoint: !pointsAtProduction(url),
     schema_present: missing.length === 0,
     data_empty: nonEmpty.length === 0,
     nonEmptyTables: nonEmpty,

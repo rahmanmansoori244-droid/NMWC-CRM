@@ -19,6 +19,7 @@
  *   RUN_PROMOTE_RELEASE=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/promote-release-on-abort.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog } from '../support/audit';
 import { randomUUID } from 'node:crypto';
@@ -70,7 +71,7 @@ describe.skipIf(!ENABLED)('promote releases its lease on an unexpected abort (#2
   let accountBatchId = '';
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze'))
+    if (pointsAtProduction(process.env.DATABASE_URL ?? ''))
       throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     imports = await import('@/services/imports');

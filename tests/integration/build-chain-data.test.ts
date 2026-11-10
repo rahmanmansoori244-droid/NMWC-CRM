@@ -8,6 +8,7 @@
  *
  *   RUN_BUILD_CHAIN=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/build-chain-data.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 60_000 });
@@ -27,7 +28,7 @@ describe.skipIf(!ENABLED)('UAT: build cash + credit CREATE chain data', () => {
   let subChannelId = '';
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     creates = await import('@/services/creates');
     const sm = await prisma.user.findFirst({

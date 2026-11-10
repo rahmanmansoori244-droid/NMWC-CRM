@@ -24,6 +24,7 @@
  *
  *   RUN_SCOPE_GATE=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/scope-gate.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
@@ -110,7 +111,7 @@ describe.skipIf(!ENABLED)('owner decisions 2–4: the submit gate, the approval 
     });
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     // The CORE gate (the default): the fixtures below are complete for it.
     process.env.SALESMAN_SUBMIT_GATE = 'CORE';
     ({ prisma } = await import('@/lib/db'));

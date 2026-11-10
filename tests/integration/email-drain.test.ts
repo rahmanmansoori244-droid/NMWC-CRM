@@ -32,6 +32,7 @@
  *
  *   RUN_EMAIL_DRAIN=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/email-drain.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { EditProcess, PaymentTerms } from '@prisma/client';
@@ -88,7 +89,7 @@ describe.skipIf(!ENABLED)('F1: the e-mail drain on Postgres', () => {
 
   beforeAll(async () => {
     for (const v of ['DATABASE_URL', 'DIRECT_URL']) {
-      if ((process.env[v] ?? '').includes('ep-sweet-haze')) throw new Error(`ABORT: ${v} points at production`);
+      if (pointsAtProduction(process.env[v] ?? '')) throw new Error(`ABORT: ${v} points at production`);
     }
     ({ prisma } = await import('@/lib/db'));
     drain = await import('@/lib/email/drain');
