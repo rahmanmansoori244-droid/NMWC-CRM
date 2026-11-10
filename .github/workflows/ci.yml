@@ -73,35 +73,47 @@ jobs:
       # advisories) went from 14 (1 critical, 7 high, 6 moderate) to 11
       # (0 critical, 5 high, 6 moderate).
       #
-      # The 11 trace back to five packages that carry advisories of their own;
-      # the other six are flagged only because they depend on one of them.
-      # Four need a major upgrade that is its own project: next 16 (for the
+      # The 11 traced back to five packages that carry advisories of their own;
+      # the other six were flagged only because they depend on one of them.
+      # Four needed a major upgrade that is its own project: next 16 (for the
       # postcss 8.4.31 that next pins; flags next), prisma 7 (for deepmerge-ts;
       # flags @prisma/config and prisma), zod 4, and an exceljs change (for
       # uuid; flags exceljs).
       #
-      # 2026-10-25: prisma 7 is in, pinned to 7.10.0, the newest 7.x that was two
-      # weeks old. It does NOT close the prisma line yet: its @prisma/config still
-      # takes deepmerge-ts 7.1.5 (GHSA-ggr8-5vv4-36mx, fixed in 8.0), and its CLI
-      # adds mysql2 3.15.3 (GHSA-3f6p-5ww8-9rcr high, GHSA-rgwj-5xj2-c3m3
-      # moderate; the CLI's MySQL driver, never loaded by this Postgres app). So
-      # the count is 12 (0 critical, 6 high, 6 moderate). 7.10.1 (published
-      # 2026-10-15) moves them to deepmerge-ts 8.0.2 and mysql2 3.24.4, which
-      # takes prisma, @prisma/config, deepmerge-ts and mysql2 off this list
-      # (8: 2 high, 6 moderate); it is taken once it is two weeks old.
-      # The fifth is nodemailer (moderate, addressparser;
-      # flags @auth/core and next-auth): it is KEPT on 10.0.14 on purpose. The
-      # advisories are fixed from 10.1.4, and `npm audit fix` picked 10.2.1, a
-      # minor release published on 2026-10-22 (two days old when this was
-      # decided). E-mail is off in production (nothing is sent until
-      # NOTIFY_EMAIL_ENABLED=on), so the upgrade waits for a release with some
-      # time behind it and the advisory stays listed until then.
-      # None of the four is a dependency bump and the fifth waits on purpose, so
-      # the gate is set at `critical`, which is 0 today — a NEW critical
+      # 2026-10-25: prisma 7 went in on 7.10.0, the newest 7.x that was two weeks
+      # old. That did not close the prisma line: its @prisma/config still took
+      # deepmerge-ts 7.1.5 (GHSA-ggr8-5vv4-36mx, fixed in 8.0), and its CLI added
+      # mysql2 3.15.3 (GHSA-3f6p-5ww8-9rcr high, GHSA-rgwj-5xj2-c3m3 moderate;
+      # the CLI's MySQL driver, never loaded by this Postgres app).
+      #
+      # 2026-11-10: prisma, @prisma/client and @prisma/adapter-pg are on 7.10.1
+      # (deepmerge-ts 8.0.2, mysql2 3.24.4) and zod is on 4.6.7
+      # (GHSA-mrhx-c7xc-m3w5, fixed in 4.6.6). That takes zod, prisma,
+      # @prisma/config and deepmerge-ts off the list: main's lockfile read 17
+      # that day (0 critical, 5 high, 12 moderate), this one 13 (0 critical,
+      # 1 high, 12 moderate). What is left:
+      #   - postcss 8.4.31, which next pins (high; flags next): needs next 16;
+      #   - uuid (moderate; flags exceljs): needs an exceljs change;
+      #   - nodemailer (moderate, addressparser; flags @auth/core and
+      #     next-auth): KEPT on 10.0.14 on purpose. The advisories are fixed
+      #     from 10.1.4, and `npm audit fix` picked 10.2.1, a minor release
+      #     published on 2026-10-22 (two days old when this was decided). E-mail
+      #     is off in production (nothing is sent until NOTIFY_EMAIL_ENABLED=on),
+      #     so the upgrade waits for a release with some time behind it and the
+      #     advisory stays listed until then;
+      #   - glob and minimatch (moderate; GHSA-3g3m-2fjr-6pw4 and
+      #     GHSA-g3hv-75wg-m249, both published after 2026-10-25), in the build
+      #     plugins @sentry/nextjs brings (flags @sentry/bundler-plugin-core,
+      #     @sentry/bundler-plugins, @sentry/webpack-plugin and @sentry/nextjs).
+      #     `npm audit fix` (never --force) offers patched versions inside
+      #     their ranges; that is a change of its own, not taken with the zod
+      #     and prisma one.
+      # The first two are not a dependency bump and the third waits on purpose,
+      # so the gate is set at `critical`, which is 0 today — a NEW critical
       # advisory against a production dependency fails the build rather than
       # printing into a log nobody reads.
       #
-      # The full report still runs, unfiltered, so the 12 stay visible and the
+      # The full report still runs, unfiltered, so the 13 stay visible and the
       # list cannot quietly grow.
       - name: npm audit (production dependencies)
         run: |
@@ -158,9 +170,10 @@ jobs:
       # the partial unique index on upper(btrim("temixCode")) for live customers
       # (20261025120000_temix_code_unique, owner decision 2026-10-25), an index on an
       # expression with a WHERE clause. The diff would drop them, so they are allowed
-      # by name; any other difference fails. (Prisma 6.19 leaves partial indexes out of
-      # the diff, so the last one does not appear today: it is named for a Prisma that
-      # reports it.)
+      # by name; any other difference fails. (Prisma 7.10.1, like 6.19 before it,
+      # leaves partial indexes out of the diff, so the last one does not appear
+      # today — on 2026-11-10 the diff held the other four and nothing else. It is
+      # named for a Prisma that reports it.)
       #
       # Prisma 7: --to-schema-datamodel became --to-schema, and the shadow database
       # is no longer a flag but prisma.config.ts's datasource.shadowDatabaseUrl,
