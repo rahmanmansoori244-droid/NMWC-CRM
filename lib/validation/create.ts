@@ -13,7 +13,17 @@
  *     finalize), so the payload has *AttachmentId fields the edit schema
  *     never needed.
  */
-import { z } from 'zod';
+import {
+  coerceNumber3,
+  cuid3,
+  int3,
+  nativeEnum3,
+  number3,
+  object3,
+  stopUnless3,
+  string3,
+  z,
+} from '../zod';
 import { submissionIdSchema } from '../submission';
 import { DayOfWeek, PaymentTerms } from '@prisma/client';
 import { gpsManualReasonSchema } from '../gps-manual';
@@ -64,7 +74,7 @@ export const INVALID_CUSTOMER_EMAIL_MESSAGE = 'Enter a valid e-mail address, lik
 export const CUSTOMER_EMAIL_MISSING_MESSAGE = "The customer's e-mail is required for credit.";
 export const GUARANTEE_MISSING_MESSAGE = 'At least one guarantee / security document is required for credit.';
 
-const optionalStr = <T extends z.ZodTypeAny>(schema: T) =>
+const optionalStr = <T extends z.ZodType>(schema: T) =>
   schema.optional().or(z.literal('').transform(() => undefined));
 
 /**
@@ -77,8 +87,7 @@ const optionalStr = <T extends z.ZodTypeAny>(schema: T) =>
  */
 const customerEmail = z.preprocess(
   (v) => (typeof v === 'string' ? v.trim().toLowerCase() : v),
-  z
-    .string()
+  string3()
     .max(254, INVALID_CUSTOMER_EMAIL_MESSAGE)
     .refine((v) => isEmailAddress(v), INVALID_CUSTOMER_EMAIL_MESSAGE)
 );
@@ -87,16 +96,16 @@ export const createCustomerDraftSchema = z.object({
   legalName: strippedStr(2, 200, 'Legal name must be at least 2 characters.'),
   // Routing key: CASH → Supervisor → Accountant; CREDIT → the credit chain
   // (lib/approval-chains.ts resolveChain; 6 steps since owner decisions 2026-10-11).
-  paymentTerms: z.nativeEnum(PaymentTerms),
-  crNumber: optionalStr(z.string().max(50).transform((v) => v.trim())),
-  channelId: optionalStr(z.string().cuid()),
-  subChannelId: optionalStr(z.string().cuid()),
+  paymentTerms: nativeEnum3(PaymentTerms),
+  crNumber: optionalStr(string3().max(50).transform((v) => v.trim())),
+  channelId: optionalStr(string3().check(cuid3())),
+  subChannelId: optionalStr(string3().check(cuid3())),
   primaryPhone: optionalStr(createPhone),
   altPhone: optionalStr(createPhone),
   contactPerson: optionalStr(strippedStr(2, 200, 'Contact person must be at least 2 characters.')),
   contactRole: optionalText(200),
   notes: optionalText(5000),
-  crPhotoAttachmentId: optionalStr(z.string().cuid()),
+  crPhotoAttachmentId: optionalStr(string3().check(cuid3())),
   email: optionalStr(customerEmail),
 });
 
@@ -104,60 +113,75 @@ export const createCustomerDraftSchema = z.object({
  * One credit document's pages: unbound attachments of its kind, like the
  * guarantee documents (owner decisions 2026-10-11). Its length is checked before
  * any element is read (cappedArray).
+ *
+ * `.prefault` is zod 3's `.default`: the stand-in is parsed like a value sent.
+ * Zod 4's `.default` hands it back unparsed, so `creditDocuments: {}` would have
+ * stayed `{}`, without its four empty lists.
  */
 const documentPages = (kind: CreditDocumentKind) =>
-  cappedArray(z.array(z.string().cuid()), MAX_PAGES_PER_DOCUMENT, tooManyDocumentPagesMessage(kind)).default([]);
+  cappedArray(
+    z.array(string3().check(cuid3())),
+    MAX_PAGES_PER_DOCUMENT,
+    tooManyDocumentPagesMessage(kind)
+  ).prefault([]);
 
 /** The four credit documents, 0..MAX_PAGES_PER_DOCUMENT pages each (the submit gate asks for ≥1 of each on CREDIT). */
-const creditDocumentsSchema = z
-  .object({
+const creditDocumentsSchema = object3(
+  z.object({
     ID_CARD: documentPages('ID_CARD'),
     MEMBERSHIP_CERT: documentPages('MEMBERSHIP_CERT'),
     VAT_CERT: documentPages('VAT_CERT'),
     TAX_CARD: documentPages('TAX_CARD'),
-  } satisfies Record<CreditDocumentKind, z.ZodTypeAny>)
-  .default({});
+  } satisfies Record<CreditDocumentKind, z.ZodType>)
+).prefault({});
 
 export const createBranchDraftSchema = z.object({
   branchName: strippedStr(1, 200, 'Branch name is required.'),
   address: optionalText(500),
   areaDescription: optionalText(500),
   // PROD-005 Oman envelope — same bounds as branchEditSchema.
-  gpsLat: z
-    .number()
-    .min(16, 'Latitude must be inside Oman (≥16°N).')
-    .max(27, 'Latitude must be inside Oman (≤27°N).')
+  gpsLat: number3()
+    .check(
+      z.gte(16, 'Latitude must be inside Oman (≥16°N).'),
+      z.lte(27, 'Latitude must be inside Oman (≤27°N).')
+    )
     .optional(),
-  gpsLng: z
-    .number()
-    .min(51, 'Longitude must be inside Oman (≥51°E).')
-    .max(61, 'Longitude must be inside Oman (≤61°E).')
+  gpsLng: number3()
+    .check(
+      z.gte(51, 'Longitude must be inside Oman (≥51°E).'),
+      z.lte(61, 'Longitude must be inside Oman (≤61°E).')
+    )
     .optional(),
-  gpsAccuracy: z.number().min(0).max(10000).optional(),
+  gpsAccuracy: number3().check(z.gte(0), z.lte(10000)).optional(),
   gpsCapturedAt: z.coerce.date().optional(),
   // Item 41: present only when the point was typed in. Not an EditBranchDraft
   // column — services/creates.ts stores it as a marker in fieldChanges.
   gpsManualReason: gpsManualReasonSchema.optional(),
-  dayOfVisit: z.nativeEnum(DayOfWeek).optional(),
+  dayOfVisit: nativeEnum3(DayOfWeek).optional(),
   openingHours: optionalText(100),
   deliveryWindow: optionalText(100),
-  coolersCount: z.coerce.number().int().min(0).max(100).default(0),
-  standsCount: z.coerce.number().int().min(0).max(100).default(0),
-  emptyBottlesCount: z.coerce.number().int().min(0).max(1000).default(0),
-  shopPhotoAttachmentId: optionalStr(z.string().cuid()),
-  signboardPhotoAttachmentId: optionalStr(z.string().cuid()),
+  coolersCount: coerceNumber3().check(int3(), z.gte(0), z.lte(100)).prefault(0),
+  standsCount: coerceNumber3().check(int3(), z.gte(0), z.lte(100)).prefault(0),
+  emptyBottlesCount: coerceNumber3().check(int3(), z.gte(0), z.lte(1000)).prefault(0),
+  shopPhotoAttachmentId: optionalStr(string3().check(cuid3())),
+  signboardPhotoAttachmentId: optionalStr(string3().check(cuid3())),
   extraPhotoAttachmentIds: cappedArray(
-    z.array(z.string().cuid()),
+    z.array(string3().check(cuid3())),
     MAX_CREATE_ATTACHMENTS,
     TOO_MANY_EXTRA_PHOTOS_MESSAGE
-  ).default([]),
+  ).prefault([]),
 });
 
-export const submitCreateSchema = z.object({
+/**
+ * The CREATE body. Each object in it goes through object3 (lib/zod.ts), so a Date
+ * or a Map sent for one is refused as zod 3 refused it; `submitCreateShape` keeps
+ * the object's own keys reachable (services/creates.ts reads `editId` alone).
+ */
+export const submitCreateShape = z.object({
   /** Present when resuming a DRAFT or re-submitting after NEEDS_CORRECTION. */
-  editId: z.string().cuid().optional(),
-  isDraft: z.boolean().default(false),
-  customer: createCustomerDraftSchema,
+  editId: string3().check(cuid3()).optional(),
+  isDraft: z.boolean().prefault(false),
+  customer: object3(createCustomerDraftSchema),
   /** Item 22: the phone's id for this payload, so a retry is never written twice. */
   submissionId: submissionIdSchema.optional(),
   /**
@@ -170,26 +194,28 @@ export const submitCreateSchema = z.object({
    * the Arabic decimal mark are folded before it is read (lib/digits.ts), as
    * phones and CR numbers are. Coerced as '٥٠٠' it was NaN, and refused.
    */
-  credit: z
-    .object({
+  credit: object3(
+    z.object({
       requestedCreditLimit: z
         .preprocess(
           foldNumberInput,
-          z.coerce
-            .number()
-            .positive('Credit limit must be greater than zero.')
-            .max(99_999_999_999)
+          coerceNumber3()
+            .check(z.gt(0, 'Credit limit must be greater than zero.'), z.lte(99_999_999_999))
             .transform((v) => Math.round(v * 1000) / 1000)
         )
         .optional(),
       requestedPaymentTermDays: z
         .preprocess(
           foldNumberInput,
-          z.coerce.number().int().min(1, 'Payment term must be at least 1 day.').max(365)
+          coerceNumber3().check(
+            int3(),
+            z.gte(1, 'Payment term must be at least 1 day.'),
+            z.lte(365)
+          )
         )
         .optional(),
     })
-    .optional(),
+  ).optional(),
   /**
    * Guarantee / security documents (CREDIT): unbound GUARANTEE attachments.
    * Owner decisions 2026-10-11: no longer required (GUARANTEE_REQUIRED_FOR_CREDIT
@@ -198,10 +224,10 @@ export const submitCreateSchema = z.object({
    * release step never deletes that evidence.
    */
   guaranteeAttachmentIds: cappedArray(
-    z.array(z.string().cuid()),
+    z.array(string3().check(cuid3())),
     MAX_CREATE_ATTACHMENTS,
     TOO_MANY_GUARANTEES_MESSAGE
-  ).default([]),
+  ).prefault([]),
   /**
    * Owner decisions 2026-10-11: the owner's ID card, the membership
    * certificate, the VAT registration certificate and the tax card, each as
@@ -211,11 +237,16 @@ export const submitCreateSchema = z.object({
    */
   creditDocuments: creditDocumentsSchema,
   branches: cappedArray(
-    z.array(createBranchDraftSchema).min(1, 'At least one branch is required.'),
+    // stopUnless3: a `branches` that is not an array is told so, not also "At least one branch".
+    z
+      .array(object3(createBranchDraftSchema))
+      .check(stopUnless3(Array.isArray))
+      .min(1, 'At least one branch is required.'),
     MAX_CREATE_BRANCHES,
     TOO_MANY_CREATE_BRANCHES_MESSAGE
   ),
 });
+export const submitCreateSchema = object3(submitCreateShape);
 
 export type SubmitCreateInput = z.input<typeof submitCreateSchema>;
 export type ParsedSubmitCreate = z.output<typeof submitCreateSchema>;

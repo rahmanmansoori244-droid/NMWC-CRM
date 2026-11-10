@@ -3,7 +3,7 @@
 import { prisma } from '@/lib/db';
 import { src, withChangeContext } from '@/lib/change-context';
 import { Role } from '@prisma/client';
-import { z } from 'zod';
+import { cuid3, string3, z } from '@/lib/zod';
 import {
   ForbiddenError,
   NotFoundError,
@@ -54,16 +54,16 @@ function assertRegionInScope(scope: string[] | null, regionId: string) {
   }
 }
 
-const codeRule = z.string().min(2).max(20).regex(/^[A-Z0-9_-]+$/, 'uppercase + digits + - or _');
+const codeRule = string3().min(2).max(20).regex(/^[A-Z0-9_-]+$/, 'uppercase + digits + - or _');
 
 const regionSchema = z.object({
   code: codeRule,
-  name: z.string().min(2).max(100),
+  name: string3().min(2).max(100),
 });
 const routeSchema = z.object({
   code: codeRule,
-  name: z.string().min(2).max(100),
-  regionId: z.string().cuid(),
+  name: string3().min(2).max(100),
+  regionId: string3().check(cuid3()),
 });
 
 /**

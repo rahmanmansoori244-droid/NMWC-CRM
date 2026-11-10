@@ -403,7 +403,7 @@ describe('the GPS group travels whole (ruling 7)', () => {
 describe('the envelope', () => {
   it('the patch schemas carry exactly the fields lib/edit-values.ts lists', () => {
     expect(Object.keys(customerPatchSchema.shape).sort()).toEqual([...CUSTOMER_EDIT_FIELDS].sort());
-    expect(Object.keys(branchPatchSchema.innerType().shape).sort()).toEqual(
+    expect(Object.keys(branchPatchSchema.shape).sort()).toEqual(
       [...BRANCH_EDIT_FIELDS, 'branchId', 'gpsManualReason', 'base', 'overrides'].sort()
     );
   });

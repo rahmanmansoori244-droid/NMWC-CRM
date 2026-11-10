@@ -30,7 +30,7 @@
  * Pure: no database access. lib/access.ts imports salesmanBranches from here
  * (not the other way round), because lib/access.ts imports the database client.
  */
-import { z } from 'zod';
+import { string3, z } from './zod';
 import { Role, type Customer } from '@prisma/client';
 import { isFieldLocked } from './permissions';
 import { parseFieldPath } from './edit-values';
@@ -58,7 +58,7 @@ export function salesmanBranches<B extends { routeId: string }>(
 export type SubmitGateRecord = { v: 1; branchIds: string[] };
 
 const submitGateSchema = z
-  .object({ v: z.literal(1), branchIds: z.array(z.string().min(1)) })
+  .object({ v: z.literal(1), branchIds: z.array(string3().min(1)) })
   .strict();
 
 /** The value to store on a salesman's SUBMITTED row: his gated branches' ids, each once. */

@@ -10,10 +10,10 @@
  * This module is shared by the browser and the server: the id, the receipt a
  * retry gets back, and the words the salesman reads. No database access here.
  */
-import { z } from 'zod';
+import { string3, uuid3 } from './zod';
 
 /** A submission id: a v4 UUID minted on the phone for one payload. */
-export const submissionIdSchema = z.string().uuid();
+export const submissionIdSchema = string3().check(uuid3());
 
 /**
  * What a submit answers with. `replayed` is true when this submission id had

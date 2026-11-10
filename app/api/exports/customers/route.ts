@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { z } from 'zod';
+import { coerceNumber3, enum3, string3, z } from '@/lib/zod';
 import { checkActor } from '@/lib/session';
 import { buildCustomerExport, type ExportFilters } from '@/services/exports';
 import { ForbiddenError } from '@/lib/errors';
@@ -11,20 +11,20 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const filterSchema = z.object({
-  regionIds: z.array(z.string()).optional(),
-  routeIds: z.array(z.string()).optional(),
-  statuses: z.array(z.enum(['ACTIVE', 'CLOSED', 'SUSPENDED'])).optional(),
-  paymentTerms: z.array(z.enum(['CASH', 'CREDIT'])).optional(),
-  minCompleteness: z.coerce.number().min(0).max(100).optional(),
-  maxCompleteness: z.coerce.number().min(0).max(100).optional(),
+  regionIds: z.array(string3()).optional(),
+  routeIds: z.array(string3()).optional(),
+  statuses: z.array(enum3(['ACTIVE', 'CLOSED', 'SUSPENDED'])).optional(),
+  paymentTerms: z.array(enum3(['CASH', 'CREDIT'])).optional(),
+  minCompleteness: coerceNumber3().check(z.gte(0), z.lte(100)).optional(),
+  maxCompleteness: coerceNumber3().check(z.gte(0), z.lte(100)).optional(),
   // `updatedSince=2026-09-30` means from the start of that OMAN day, as the
   // field-update report reads its window. A bare date parses as UTC midnight,
   // 04:00 in Oman, which left out a customer updated before 04:00 that day.
   // A day and only a day ("YYYY-MM-DD", a real one): a full timestamp's UTC
   // date can be the Oman day before the one it names.
-  updatedSince: z.string().date().transform((d) => startOfOmanDay(new Date(d))).optional(),
+  updatedSince: z.iso.date().transform((d) => startOfOmanDay(new Date(d))).optional(),
   // Gap 30: the Steward's "Include test records" box (honoured for him only).
-  includeTest: z.enum(['1', '0']).transform((v) => v === '1').optional(),
+  includeTest: enum3(['1', '0']).transform((v) => v === '1').optional(),
 });
 
 export async function GET(req: NextRequest) {

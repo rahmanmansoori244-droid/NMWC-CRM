@@ -83,4 +83,35 @@ export default [
       ],
     },
   },
+  {
+    // zod 4 is reached through lib/zod.ts only: it installs zod 3's messages and
+    // jitless mode (the CSP allows no 'unsafe-eval') before anything is parsed,
+    // and holds the zod 3 rules users' messages depend on (number3, string3,
+    // nativeEnum3, array3, …). A schema built from 'zod' directly would answer in
+    // zod 4's words wherever it was the first module to load zod.
+    // tests/unit/validation-messages.test.ts holds those messages.
+    files: [
+      'app/**/*.{ts,tsx}',
+      'components/**/*.{ts,tsx}',
+      'lib/**/*.{ts,tsx}',
+      'services/**/*.{ts,tsx}',
+    ],
+    ignores: ['lib/zod.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'zod',
+              message: "Import z (and the zod 3 helpers) from '@/lib/zod', not from 'zod'.",
+            },
+          ],
+          patterns: [
+            { group: ['zod/*'], message: "Import z from '@/lib/zod', not from a zod subpath." },
+          ],
+        },
+      ],
+    },
+  },
 ];

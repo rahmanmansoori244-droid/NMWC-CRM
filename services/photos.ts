@@ -1,6 +1,6 @@
 'use server';
 
-import { z } from 'zod';
+import { cuid3, enum3, string3, z } from '@/lib/zod';
 import { prisma } from '@/lib/db';
 import { src, withChangeContext } from '@/lib/change-context';
 import { requireActor } from '@/lib/session';
@@ -39,15 +39,15 @@ import { lockCustomerRow } from '@/lib/locks';
 import { isConfidentialKind, isDecisionBoundKind } from '@/lib/credit-documents';
 
 const customerAttach = z.object({
-  attachmentId: z.string().cuid(),
-  customerId: z.string().cuid(),
+  attachmentId: string3().check(cuid3()),
+  customerId: string3().check(cuid3()),
   slot: z.literal('CR'),
 });
 
 const branchAttach = z.object({
-  attachmentId: z.string().cuid(),
-  branchId: z.string().cuid(),
-  slot: z.enum(['SHOP', 'SIGNBOARD', 'FREE']),
+  attachmentId: string3().check(cuid3()),
+  branchId: string3().check(cuid3()),
+  slot: enum3(['SHOP', 'SIGNBOARD', 'FREE']),
 });
 
 const attachSchema = z.union([customerAttach, branchAttach]);
@@ -137,7 +137,7 @@ async function assertOnRequestedSlot(
   if (!holds) throw new ConflictError('PHOTO_CONFLICT', PHOTO_CONFLICT_MESSAGE);
 }
 
-const detachSchema = z.object({ attachmentId: z.string().cuid() });
+const detachSchema = z.object({ attachmentId: string3().check(cuid3()) });
 
 /**
  * Wire a freshly-uploaded Attachment to a customer or branch slot.

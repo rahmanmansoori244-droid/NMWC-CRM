@@ -14,7 +14,7 @@
  */
 import { prisma } from '@/lib/db';
 import { src, withChangeContext } from '@/lib/change-context';
-import { z } from 'zod';
+import { string3, z } from '@/lib/zod';
 import bcrypt from 'bcryptjs';
 import { ValidationError, runAction, type SafeAction } from '@/lib/errors';
 import { requireActor } from '@/lib/session';
@@ -35,7 +35,7 @@ import {
  * this browser a new session that carries the change (renewOwnSession, below).
  */
 const changePasswordSchema = z.object({
-  currentPassword: z.string().min(1).max(200),
+  currentPassword: string3().min(1).max(200),
   newPassword: passwordRule,
 });
 

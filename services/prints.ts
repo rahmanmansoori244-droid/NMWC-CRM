@@ -19,7 +19,7 @@
  * outside the printer's scope and a credit application outside its window are
  * refused here exactly as the page refuses them.
  */
-import { z } from 'zod';
+import { cuid3, enum3, string3, z } from '@/lib/zod';
 import { prisma } from '@/lib/db';
 import { src, withChangeContext } from '@/lib/change-context';
 import { requireActor } from '@/lib/session';
@@ -41,8 +41,8 @@ import { loadCreditApplicationPrint, loadCustomerFormPrint } from '@/lib/print-l
 export type PrintReceipt = { printout: Printout; id: string };
 
 const inputSchema = z.object({
-  printout: z.enum(PRINTOUTS),
-  id: z.string().cuid(),
+  printout: enum3(PRINTOUTS),
+  id: string3().check(cuid3()),
 });
 
 export async function recordPrintAction(input: { printout: Printout; id: string }): SafeAction<PrintReceipt> {

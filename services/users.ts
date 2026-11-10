@@ -3,7 +3,7 @@
 import { prisma } from '@/lib/db';
 import { src, withChangeContext } from '@/lib/change-context';
 import { EditProcess, EditState, Role, type Prisma } from '@prisma/client';
-import { z } from 'zod';
+import { array3, cuid3, email3, nativeEnum3, string3, z } from '@/lib/zod';
 import bcrypt from 'bcryptjs';
 import {
   ForbiddenError,
@@ -87,38 +87,35 @@ const usernameRule = z
 
 const createUserSchema = z.object({
   username: usernameRule,
-  fullName: z.string().min(2).max(200),
-  role: z.nativeEnum(Role),
+  fullName: string3().min(2).max(200),
+  role: nativeEnum3(Role),
   // Launch fix: trimmed and lower-cased, as the F1 e-mail edit stores it
   // (contactAddressRule below). User.email's unique index is case-sensitive, so
   // "A.Name@x" and "a.name@x" were two accounts sharing one mailbox.
-  email: z
-    .string()
+  email: string3()
     .trim()
     .toLowerCase()
-    .email()
+    .check(email3())
     .max(200)
     .optional()
     .or(z.literal('').transform(() => undefined)),
-  phone: z
-    .string()
+  phone: string3()
     .max(50)
     .optional()
     .or(z.literal('').transform(() => undefined)),
   password: passwordRule,
-  supervisorId: z
-    .string()
-    .cuid()
+  supervisorId: string3()
+    .check(cuid3())
     .optional()
     .or(z.literal('').transform(() => undefined)),
-  ownedRouteId: z
-    .string()
-    .cuid()
+  ownedRouteId: string3()
+    .check(cuid3())
     .optional()
     .or(z.literal('').transform(() => undefined)),
   // Owner decision 8: a new Manager or Accountant is created with his regions,
-  // one `regionId` entry per ticked box.
-  regionIds: z.array(z.string().cuid()).max(50),
+  // one `regionId` entry per ticked box. zod 3's order (array3, lib/zod.ts): the
+  // count, then each id — the form shows the last issue under "regionIds".
+  regionIds: array3(string3().check(cuid3()), { max: { value: 50 } }),
 });
 
 /**
@@ -835,11 +832,10 @@ async function resetPasswordCore(formData: FormData) {
  *     the next freshness check, not 8h later.
  */
 const updateRoleSchema = z.object({
-  userId: z.string().cuid(),
-  newRole: z.nativeEnum(Role),
-  ownedRouteId: z
-    .string()
-    .cuid()
+  userId: string3().check(cuid3()),
+  newRole: nativeEnum3(Role),
+  ownedRouteId: string3()
+    .check(cuid3())
     .optional()
     .or(z.literal('').transform(() => undefined)),
 });
@@ -1037,26 +1033,24 @@ async function updateUserRoleCore(formData: FormData) {
  *     could withdraw them himself (withdrawCreateAction).
  */
 const editAccountSchema = z.object({
-  userId: z.string().cuid(),
-  role: z.nativeEnum(Role),
-  ownedRouteId: z
-    .string()
-    .cuid()
+  userId: string3().check(cuid3()),
+  role: nativeEnum3(Role),
+  ownedRouteId: string3()
+    .check(cuid3())
     .optional()
     .or(z.literal('').transform(() => undefined)),
-  supervisorId: z
-    .string()
-    .cuid()
+  supervisorId: string3()
+    .check(cuid3())
     .optional()
     .or(z.literal('').transform(() => undefined)),
-  regionIds: z.array(z.string().cuid()).max(50),
+  regionIds: array3(string3().check(cuid3()), { max: { value: 50 } }),
   // An empty box keeps the stored number; clearPhone removes it. The stored
   // number never reaches the page (RBAC-05-023).
-  phone: z.string().trim().max(50),
+  phone: string3().trim().max(50),
   clearPhone: z.boolean(),
   // The e-mail, the same way, under the name the e-mail edit uses (an `email`
   // field invites the browser's autofill: users-autofill-guard).
-  contactAddress: z.string().trim().max(200),
+  contactAddress: string3().trim().max(200),
   clearContactAddress: z.boolean(),
   routeSignIn: z.boolean(),
   withdrawCreates: z.boolean(),
@@ -1579,7 +1573,7 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
  * The form field is called contactAddress, not email: a browser's password
  * manager keys its autofill off names like that (users-autofill-guard).
  */
-const contactAddressRule = z.string().toLowerCase().email().max(200);
+const contactAddressRule = string3().toLowerCase().check(email3()).max(200);
 
 export async function updateUserEmailAction(formData: FormData): SafeAction<void> {
   return runAction(() => updateUserEmailCore(formData));

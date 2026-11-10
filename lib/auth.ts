@@ -1,7 +1,7 @@
 import NextAuth, { type DefaultSession } from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
-import { z } from 'zod';
+import { z } from './zod';
 import { headers } from 'next/headers';
 import { cache } from 'react';
 import { prisma } from '@/lib/db';

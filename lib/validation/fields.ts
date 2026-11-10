@@ -21,7 +21,7 @@
  * normalized form. The edit service used to call normalizePhone(x) ?? undefined,
  * which dropped an invalid number without a word and reported success.
  */
-import { z } from 'zod';
+import { legacy, string3, z, type ZodIssue } from '../zod';
 import { INVALID_PHONE_MESSAGE, isValidPhoneFormat, normalizePhone } from '../phone';
 
 /**
@@ -49,14 +49,19 @@ export const stripHtml = (s: string): string => {
  * of 4.5 MB holding 1.5 million `{}` branches took 52 s to parse into 3 million
  * issues, and 16 s more to turn them into the error (review of the fix for the
  * adversarial pass after phase 2, finding 4). Here a longer array is refused
- * with `message` alone, and none of its elements is parsed: the gate's issue is
- * fatal, and a pipeline whose first stage fails never runs its second. A value
- * that is not an array passes the gate, and `array` refuses it as before. Every
- * array in the CREATE and UPDATE payloads goes through this;
- * tests/unit/submit-body-bounds.test.ts holds them to it.
+ * with `message` alone, and none of its elements is parsed: the gate's issue
+ * stops the parse (`abort`, as zod 3's z.custom was fatal, so an enclosing
+ * refinement does not run either), and a pipe whose first stage fails never
+ * runs its second. A value that is not an array passes the gate, and `array`
+ * refuses it as before. Every array in the CREATE and UPDATE payloads goes
+ * through this; tests/unit/submit-body-bounds.test.ts holds them to it. `array`
+ * carries no `.max()` of its own, so zod 4.6.6's count-first check (the
+ * GHSA-mrhx-c7xc-m3w5 fix) changes nothing here.
  */
-export function cappedArray<A extends z.ZodTypeAny>(array: A, max: number, message: string) {
-  return z.custom<z.input<A>>((v) => !Array.isArray(v) || v.length <= max, { message }).pipe(array);
+export function cappedArray<A extends z.ZodType>(array: A, max: number, message: string) {
+  return z
+    .custom<z.input<A>>((v) => !Array.isArray(v) || v.length <= max, { message, abort: true })
+    .pipe(array as unknown as z.ZodType<z.output<A>, z.input<A>>);
 }
 
 /**
@@ -69,7 +74,7 @@ export function cappedArray<A extends z.ZodTypeAny>(array: A, max: number, messa
  */
 export const MAX_REPORTED_ISSUES = 200;
 export const MAX_REPORTED_MESSAGE = 500;
-export function reportedIssues(issues: readonly z.ZodIssue[]): z.ZodIssue[] {
+export function reportedIssues(issues: readonly ZodIssue[]): ZodIssue[] {
   return issues
     .slice(0, MAX_REPORTED_ISSUES)
     .map((i) =>
@@ -84,13 +89,18 @@ export function reportedIssues(issues: readonly z.ZodIssue[]): z.ZodIssue[] {
  * `min` before `transform` would let '<Shop>' (6 raw chars, empty after
  * strip) reach the DB as an empty legal name. The raw bound (twice the stored
  * one) only stops an absurd payload before the regex runs over it.
+ *
+ * `abort` on a bound that a transform follows: zod 3 never ran a transform over
+ * a value that had failed a check, and treated the field as unreadable — an
+ * enclosing refinement (a branch patch's GPS rules, the duplicate-branch check)
+ * did not run, and `optionalStr` answered "Invalid input". Zod 4 skips the
+ * transform too but lets the issue carry on; `abort` keeps zod 3's stop.
  */
 export const strippedStr = (min: number, max: number, msg?: string) =>
-  z
-    .string()
-    .max(max * 2)
+  string3()
+    .max(max * 2, { abort: true })
     .transform(stripHtml)
-    .pipe(z.string().min(min, msg).max(max));
+    .pipe(string3().min(min, msg).max(max));
 
 /**
  * A text field that must keep a value once it has one (legal name, contact
@@ -98,11 +108,10 @@ export const strippedStr = (min: number, max: number, msg?: string) =>
  * to remove it, refused with `clearMsg`; a string is stripped, then checked.
  */
 export const requiredText = (min: number, max: number, minMsg: string, clearMsg: string) =>
-  z
-    .string({ invalid_type_error: clearMsg, required_error: clearMsg })
-    .max(max * 2)
+  string3({ error: legacy({ invalid_type_error: clearMsg, required_error: clearMsg }) })
+    .max(max * 2, { abort: true })
     .transform(stripHtml)
-    .pipe(z.string().min(min, minMsg).max(max));
+    .pipe(string3().min(min, minMsg).max(max));
 
 /**
  * A text field that may be emptied (notes, contact role, landmark, hours,
@@ -112,11 +121,10 @@ export const requiredText = (min: number, max: number, minMsg: string, clearMsg:
  * "Invalid input".
  */
 export const clearableText = (max: number) =>
-  z
-    .string()
-    .max(max * 2)
+  string3()
+    .max(max * 2, { abort: true })
     .transform(stripHtml)
-    .pipe(z.string().max(max))
+    .pipe(string3().max(max, { abort: true }))
     .nullable()
     .transform((v) => (v === '' ? null : v));
 
@@ -130,11 +138,10 @@ export const clearableText = (max: number) =>
  * (collectMissingForCreate), so a draft can leave it out.
  */
 export const optionalText = (max: number) =>
-  z
-    .string()
-    .max(max * 2)
+  string3()
+    .max(max * 2, { abort: true })
     .transform(stripHtml)
-    .pipe(z.string().max(max))
+    .pipe(string3().max(max, { abort: true }))
     .optional()
     .transform((v) => (v === '' ? undefined : v));
 
@@ -142,12 +149,18 @@ export const optionalText = (max: number) =>
  * The UPDATE phone rule: null when blank (the caller decides what blank means),
  * false when it is not a phone (the issue is already added), otherwise the
  * normalized number. Validated first, then normalized — never normalized alone.
+ *
+ * An issue added in a transform does not stop the parse (`continue`), as in
+ * zod 3; zod 4's transform issues stop it unless told otherwise.
  */
-function checkPhone(v: string, ctx: z.RefinementCtx): string | null | false {
+type TransformCtx = {
+  addIssue: (issue: { code: 'custom'; message: string; continue: true }) => void;
+};
+function checkPhone(v: string, ctx: TransformCtx): string | null | false {
   const t = v.trim();
   if (!t) return null;
   if (!isValidPhoneFormat(t)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: INVALID_PHONE_MESSAGE });
+    ctx.addIssue({ code: 'custom', message: INVALID_PHONE_MESSAGE, continue: true });
     return false;
   }
   return normalizePhone(t) as string;
@@ -159,19 +172,20 @@ function checkPhone(v: string, ctx: z.RefinementCtx): string | null | false {
  * ('+968XXXXXXXX'), so what is compared and written is what the master holds.
  */
 export const requiredPhone = (clearMsg: string) =>
-  z.string({ invalid_type_error: clearMsg, required_error: clearMsg }).transform((v, ctx) => {
-    const p = checkPhone(v, ctx);
-    if (p === false) return z.NEVER;
-    if (p === null) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: clearMsg });
-      return z.NEVER;
+  string3({ error: legacy({ invalid_type_error: clearMsg, required_error: clearMsg }) }).transform(
+    (v, ctx) => {
+      const p = checkPhone(v, ctx);
+      if (p === false) return z.NEVER;
+      if (p === null) {
+        ctx.addIssue({ code: 'custom', message: clearMsg, continue: true });
+        return z.NEVER;
+      }
+      return p;
     }
-    return p;
-  });
+  );
 
 /** UPDATE, a phone that may be emptied (alt phone): null or blank clears it. */
-export const clearablePhone = z
-  .string()
+export const clearablePhone = string3()
   .nullable()
   .transform((v, ctx) => {
     if (v === null) return null;
@@ -184,7 +198,6 @@ export const clearablePhone = z
  * services/creates.ts normalizes it and stores both, so what CREATE writes does
  * not change. Blank is "not given" there (optionalStr), never reaching this.
  */
-export const createPhone = z
-  .string()
+export const createPhone = string3()
   .max(40, INVALID_PHONE_MESSAGE)
   .refine(isValidPhoneFormat, INVALID_PHONE_MESSAGE);

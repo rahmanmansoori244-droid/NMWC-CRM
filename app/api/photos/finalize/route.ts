@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { z } from 'zod';
+import { int3, nativeEnum3, number3, string3, z } from '@/lib/zod';
 import { checkActor } from '@/lib/session';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { HeadObjectCommand } from '@aws-sdk/client-s3';
@@ -55,13 +55,13 @@ const refuseRole = () =>
   NextResponse.json({ error: 'FORBIDDEN_ROLE', message: PHOTO_ROLE_REFUSED_MESSAGE }, { status: 403 });
 
 const finalizeSchema = z.object({
-  key: z.string().min(1).max(500),
-  kind: z.nativeEnum(AttachmentKind),
-  hash: z.string().regex(/^[a-f0-9]{64}$/, 'sha256 hex required'),
-  width: z.number().int().min(1).max(20000).optional(),
-  height: z.number().int().min(1).max(20000).optional(),
-  capturedLat: z.number().min(-90).max(90).optional(),
-  capturedLng: z.number().min(-180).max(180).optional(),
+  key: string3().min(1).max(500),
+  kind: nativeEnum3(AttachmentKind),
+  hash: string3().regex(/^[a-f0-9]{64}$/, 'sha256 hex required'),
+  width: number3().check(int3(), z.gte(1), z.lte(20000)).optional(),
+  height: number3().check(int3(), z.gte(1), z.lte(20000)).optional(),
+  capturedLat: number3().check(z.gte(-90), z.lte(90)).optional(),
+  capturedLng: number3().check(z.gte(-180), z.lte(180)).optional(),
   capturedAt: z.coerce.date().optional(),
 });
 
