@@ -32,10 +32,12 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 import { EXPECTED_FUNCTIONS } from '@/lib/integrity/expected';
 import { mergeClosedReason } from '@/lib/request-reasons';
 
@@ -44,6 +46,8 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 300_000 });
 const ENABLED = process.env.RUN_REQUEST_REASON_MIGRATION === '1' && !!process.env.DATABASE_URL;
 const NAME = '20261110110000_request_reason';
 const PRISMA_CLI = resolve('node_modules/prisma/build/index.js');
+/** The repository's own Prisma config: prisma/schema.prisma and prisma/migrations. */
+const REPO_CONFIG = resolve('prisma.config.ts');
 const REFUSED = /cannot change once the request was sent|evidence, append-only/;
 
 /** What each row should hold after the migration; null = left for a person, never guessed. */
@@ -103,8 +107,12 @@ describe.skipIf(!ENABLED)('migration 20261110110000_request_reason against exist
   let secondDeploy = '';
   const before = new Map<string, string | null>();
 
-  const migrate = (schema: string) =>
-    execFileSync(process.execPath, [PRISMA_CLI, 'migrate', 'deploy', '--schema', schema], {
+  // Prisma 7: the migrations folder is the config's (migrations.path), not the
+  // one beside --schema, so `migrate deploy --schema <copy>` would apply the
+  // repository's folder — this migration included — and there would be no
+  // "before". Each deploy names its config instead; the copy gets its own.
+  const migrate = (config: string) =>
+    execFileSync(process.execPath, [PRISMA_CLI, 'migrate', 'deploy', '--config', config], {
       env: { ...process.env, DATABASE_URL: scratchUrl, DIRECT_URL: scratchUrl },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -115,7 +123,8 @@ describe.skipIf(!ENABLED)('migration 20261110110000_request_reason against exist
     if (!['localhost', '127.0.0.1', '[::1]'].includes(base.hostname)) {
       throw new Error(`ABORT: this suite creates and drops a database, so it runs only against this machine (got ${base.hostname})`);
     }
-    admin = new PrismaClient({ datasourceUrl: base.toString() });
+    // Prisma 7: the Postgres driver adapter, as every client outside the app is built.
+    admin = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(base.toString())) });
     await admin.$executeRawUnsafe(`CREATE DATABASE "${scratchDb}"`);
     const scratch = new URL(base.toString());
     scratch.pathname = `/${scratchDb}`;
@@ -128,9 +137,23 @@ describe.skipIf(!ENABLED)('migration 20261110110000_request_reason against exist
     const earlier = readdirSync('prisma/migrations').filter((m) => /^\d{14}_/.test(m) && m < NAME);
     expect(earlier.length).toBeGreaterThan(20);
     for (const m of earlier) cpSync(join('prisma/migrations', m), join(tmp, 'migrations', m), { recursive: true });
-    migrate(join(tmp, 'schema.prisma'));
+    // Its paths are read from the config's own folder. A plain object: 'prisma/config'
+    // cannot be resolved from a folder outside the repository, and defineConfig
+    // only types it.
+    writeFileSync(
+      join(tmp, 'prisma.config.ts'),
+      [
+        'export default {',
+        "  schema: 'schema.prisma',",
+        "  migrations: { path: 'migrations' },",
+        "  datasource: { url: process.env.DIRECT_URL ?? '' },",
+        '};',
+        '',
+      ].join('\n')
+    );
+    migrate(join(tmp, 'prisma.config.ts'));
 
-    db = new PrismaClient({ datasourceUrl: scratchUrl });
+    db = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(scratchUrl)) });
     const cols = await db.$queryRaw<{ column_name: string }[]>`
       SELECT column_name FROM information_schema.columns WHERE table_name = 'CustomerEdit' AND column_name = 'requestReason'`;
     expect(cols, 'the column must not exist yet').toEqual([]);
@@ -174,8 +197,8 @@ describe.skipIf(!ENABLED)('migration 20261110110000_request_reason against exist
     });
 
     // 3. The real migration (and anything after it), from the repository's own folder.
-    migrate('prisma/schema.prisma');
-    secondDeploy = migrate('prisma/schema.prisma');
+    migrate(REPO_CONFIG);
+    secondDeploy = migrate(REPO_CONFIG);
   });
 
   afterAll(async () => {
