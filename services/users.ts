@@ -41,6 +41,7 @@ import {
   routeHandover,
   routeMoveNotes,
   routeSignInName,
+  routeSignInRefusal,
   signedFormDisableIssue,
   strandedCreatesIssue,
   supervisorCoverIssue,
@@ -340,6 +341,15 @@ async function freeRetiredUsername(username: string): Promise<string> {
   const day = omanDateISO();
   for (let attempt = 1; attempt <= 20; attempt++) {
     const name = retiredUsername(username, day, attempt);
+    // Code review 2026-11-10, finding 25, second round: every name this app gives
+    // an account goes through the one reserved-name check. A retired name keeps
+    // the leaver's prefix, and the joiner taking a reserved code is refused before
+    // this runs, so this does not fire today; it keeps the rule if either changes.
+    if (reservedUsernameRefusal(name)) {
+      throw new ValidationError({
+        ownedRouteId: `${username}'s sign-in name cannot be retired as ${name}: that name is reserved for the old demo accounts. Nothing was saved.`,
+      });
+    }
     const taken = await prisma.user.findUnique({ where: { username: name }, select: { id: true } });
     if (!taken) return name;
   }
@@ -1369,6 +1379,10 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
       });
     }
     if (wanted !== target.username) {
+      // Code review 2026-11-10, finding 25, second round: the same reserved-name
+      // check as create and the account import (lib/demo-accounts.ts).
+      const reserved = routeSignInRefusal(route.code, target.username);
+      if (reserved) throw new ValidationError({ routeSignIn: reserved });
       const holder = await prisma.user.findUnique({
         where: { username: wanted },
         select: { id: true, fullName: true },
