@@ -947,7 +947,8 @@ not built yet (item D).
      Steward presses "I have read this"** — also after a reload or on a later visit. The acknowledgement
      is stored on the batch (`shopNotChangedAckRows`, `shopNotChangedAckAt`, `shopNotChangedAckById`)
      and audited (an UPDATE row on the batch: how many). Rows a later load of the same batch adds bring
-     the notice back for those rows only (second round, finding 28). The refresh
+     the notice back for those rows only (second round, finding 28). Batches loaded before this
+     release show no 'shop NOT changed' notice, because the count starts at this release. The refresh
      also flips the customer from UPLOADED to **SYNCED**, as though Temix had confirmed the last
      batch — do not re-import the full master while a Temix batch is waiting for its
      acknowledgement. A row with a *different* non-blank `temix_code` is rejected. The credit
