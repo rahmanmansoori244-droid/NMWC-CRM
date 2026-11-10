@@ -1087,7 +1087,8 @@ an interrupted one with no question — weeks later it would write its older val
   (`lib/import-batch-guard.ts` `STAGED_BATCH_MAX_AGE_DAYS`; a default awaiting the owner). The
   batch page and Work say "too old to promote"; a fix that would bring a row back to load is
   refused. Upload the sheet again, and discard the old batch. (A run already under way may
-  finish its next slice.) The limit is on a **staged** batch: one never loaded, or one whose
+  finish its next slice — only while its lease is live: a tab that went quiet long enough for
+  the lease to run out is asked again, like any resume.) The limit is on a **staged** batch: one never loaded, or one whose
   first load stopped with rows of the sheet still waiting. A batch **already loaded** keeps the
   90-day fix window above for its held-back and rejected rows: they can still be fixed and
   loaded after 7 days, judged by the newest-upload rule (`stagedLoadExpired`,
@@ -1097,7 +1098,8 @@ an interrupted one with no question — weeks later it would write its older val
   Steward ticks "Leave out these … customer(s)". Their rows in the older batch are then
   REJECTED ("Customer … was loaded since from a newer upload …, so this older row was not loaded
   over it. Exclude it.") and the rest loads. Rows fixed in the app keep their own newest-upload
-  rule (above).
+  rule (above). A run whose lease lapsed (a weak signal, a long pause) is checked again when its
+  tab comes back, so a newer upload loaded in the meantime is not overwritten (second round).
 - **Discard batch** (Data Steward only): on a staged batch, or one whose promote stopped
   part-way, with a reason. It asks first. The batch becomes `DISCARDED` (migration
   `20261111100000_import_batch_discarded`, one enum value), leaves Work, and can never be

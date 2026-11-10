@@ -1978,7 +1978,15 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
   // NEWER upload has already loaded are not loaded again from this one unless
   // the Steward confirmed leaving them out (their rows are then rejected, below).
   // All read before the claim, so a refusal touches nothing.
-  const continuing = !!formData.get('leaseToken') && preflight.promoteLeaseBy === String(formData.get('leaseToken'));
+  // Continuing means this run's own token AND its lease still live (second
+  // round): a tab whose lease lapsed — a weak signal, a long pause — may find
+  // that another batch promoted in the meantime, so it is asked the age limit
+  // and the newer-loads question again, like any resume.
+  const continuing =
+    !!formData.get('leaseToken') &&
+    preflight.promoteLeaseBy === String(formData.get('leaseToken')) &&
+    !!preflight.promoteLeaseUntil &&
+    preflight.promoteLeaseUntil > new Date();
   if (preflight.status === 'DISCARDED') {
     throw new ValidationError({ batchId: DISCARDED_BATCH_MESSAGE }, DISCARDED_BATCH_MESSAGE);
   }
@@ -1994,7 +2002,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     throw new ValidationError({ batchId: why }, why);
   }
   // A run that is continuing rejected these in its first slice; no other
-  // promote can have loaded anything since (one runs at a time, under the lease).
+  // promote can have loaded anything since (one runs at a time, under the lease
+  // — which is why `continuing` requires that lease to be live).
   const newerLoads = continuing ? [] : await newerLoadsOfBatch(prisma, batchId, preflight.uploadedAt);
   if (newerLoads.length > 0 && String(formData.get(SKIP_NEWER_FIELD) ?? '') !== '1') {
     const why = newerLoadsRefusal(newerLoads);

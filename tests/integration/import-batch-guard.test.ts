@@ -163,6 +163,32 @@ describe.skipIf(!ENABLED)('finding 6: an old staged customer batch is not loaded
     expect(await batchOf(older)).toMatchObject({ status: 'PROMOTED', rejectedRows: 1 });
   });
 
+  // Second round: a run is "continuing" only while its lease is live. A tab
+  // whose lease lapsed (a weak signal, a long pause) while a newer upload was
+  // loaded comes back with its old token; it is asked the newer-loads question
+  // again, and nothing of the older batch is loaded over the newer values.
+  it('a run whose lease lapsed cannot load older values over a newer upload with its old token', async () => {
+    const older = await upload([
+      { cust_code: `${P}-L1`, cust_name: 'ZZ Lapsed Older', address: 'Way L1, Older' },
+      { cust_code: `${P}-L2`, cust_name: 'ZZ Lapsed Two', address: 'Way L2, Older' },
+    ]);
+    // Its run took the batch, then its tab went quiet and the lease ran out.
+    await prisma.importBatch.update({
+      where: { id: older },
+      data: { status: 'PROMOTING', promoteLeaseBy: `${steward}:tab`, promoteLeaseUntil: new Date(Date.now() - 60_000) },
+    });
+    const newer = await upload([{ cust_code: `${P}-L1`, cust_name: 'ZZ Lapsed Newer', address: 'Way L1, Newer' }]);
+    await promoteFully(imports, newer);
+    expect(await nameOf(`${P}-L1`)).toBe('ZZ Lapsed Newer');
+
+    const res = await promoteOnce(older, { leaseToken: `${steward}:tab` });
+    expect(res.ok).toBe(false);
+    expect(msg(res)).toMatch(/^1 customer\(s\) in this batch \(for example .+-L1\) were loaded since from a newer upload/);
+    expect(await nameOf(`${P}-L1`)).toBe('ZZ Lapsed Newer');
+    expect((await rowsOf(older)).map((r) => r.state)).toEqual(['CLEAN', 'CLEAN']);
+    expect(await batchOf(older)).toMatchObject({ status: 'PROMOTING', promoteLeaseBy: `${steward}:tab` });
+  });
+
   it('a batch staged more than 7 days ago is not promoted, and a fix cannot bring a row of it back', async () => {
     const id = await upload([
       { cust_code: `${P}-3`, cust_name: 'ZZ Three', address: 'Way 3, Old' },
