@@ -236,6 +236,24 @@ describe('isDbConflict / isTransientDbError / mayHaveCommitted on Prisma 7 shape
     ['P2010 23514: the same rule from a raw query', p2010('23514', 'new row for relation "Branch" violates check constraint "Branch_gps_pair"', { detail: 'Failing row contains (x).' }), 'P2010', false, false, 'DATA_RULE'],
     ['P2039 42501: the append-only trigger', p2039('AuditLog', '42501', 'B4: UPDATE on "AuditLog" is forbidden — the audit trail is append-only.'), 'P2039', false, false, 'RETHROWN'],
     ['P1000: wrong password', known('P1000', 'Authentication failed against the database server', { driverAdapterError: adapterError({ kind: 'AuthenticationFailed', originalCode: '28P01' }) }), 'P1000', false, false, 'RETHROWN'],
+    // A failure of COMMIT itself: the adapter's own error, with no Prisma code and
+    // no meta (the real runtime produces these in prisma7-commit-errors.test.ts).
+    // '' is what a caller reading err.code passes; 'UNKNOWN' the customer promote's
+    // old placeholder. Each is answered as the same fault on a statement is.
+    ['COMMIT lost to a reset (ECONNRESET): bare ConnectionClosed', adapterError({ kind: 'ConnectionClosed' }), '', true, true, 'DB_INTERRUPTED'],
+    ['COMMIT lost to a socket timeout (ETIMEDOUT): bare SocketTimeout', adapterError({ kind: 'SocketTimeout' }), '', true, true, 'DB_INTERRUPTED'],
+    ['the same, under the promote\'s placeholder for "no code"', adapterError({ kind: 'ConnectionClosed' }), 'UNKNOWN', true, true, 'DB_INTERRUPTED'],
+    ['COMMIT refused by a deadlock (40P01): bare TransactionWriteConflict', adapterError({ kind: 'TransactionWriteConflict', originalCode: '40P01', originalMessage: 'deadlock detected' }), '', true, false, 'DB_UNAVAILABLE'],
+    ['COMMIT refused by a serialization failure (40001)', adapterError({ kind: 'TransactionWriteConflict', originalCode: '40001', originalMessage: 'could not serialize access due to concurrent update' }), 'UNKNOWN', true, false, 'DB_UNAVAILABLE'],
+    ['COMMIT that could not reach the server: bare DatabaseNotReachable', adapterError({ kind: 'DatabaseNotReachable', host: 'ep-fake.neon.invalid', port: 5432 }), '', true, false, 'DB_UNAVAILABLE'],
+    ['COMMIT refused by a CHECK that is a database rule (a trigger\'s write at commit)', adapterError({ kind: 'postgres', code: '23514', severity: 'ERROR', message: 'new row for relation "Branch" violates check constraint "Branch_gps_pair"', detail: 'Failing row contains (x).', originalCode: '23514', originalMessage: 'new row for relation "Branch" violates check constraint "Branch_gps_pair"' }), '', false, false, 'DATA_RULE'],
+    ['COMMIT refused by a foreign key that is a database rule', adapterError({ kind: 'ForeignKeyConstraintViolation', constraint: { index: 'Branch_createdById_fkey' }, originalCode: '23503', originalMessage: 'insert or update on table "Branch" violates foreign key constraint "Branch_createdById_fkey"' }), '', false, false, 'DATA_RULE'],
+    ['COMMIT refused by a trigger\'s own exception: still a programmer error', adapterError({ kind: 'postgres', code: 'P0001', severity: 'ERROR', message: 'nmwc: an effective time may not be in the future', originalCode: 'P0001', originalMessage: 'nmwc: an effective time may not be in the future' }), '', false, false, 'RETHROWN'],
+    ['COMMIT refused because the backend was terminated (57P01): as on a statement', adapterError({ kind: 'postgres', code: '57P01', severity: 'FATAL', message: 'terminating connection due to administrator command', originalCode: '57P01', originalMessage: 'terminating connection due to administrator command' }), '', false, false, 'RETHROWN'],
+    // Only the adapter's error is read this way: its name AND an object cause.
+    ['an error merely named DriverAdapterError, with no cause', Object.assign(new Error('ConnectionClosed'), { name: 'DriverAdapterError' }), '', false, false, 'RETHROWN'],
+    ['another error whose cause looks like the adapter\'s', Object.assign(new Error('ConnectionClosed'), { cause: { kind: 'ConnectionClosed' } }), '', false, false, 'RETHROWN'],
+    ['the adapter\'s error with a kind this code does not know', adapterError({ kind: 'SomethingNew' }), '', false, false, 'RETHROWN'],
   ] as const)('%s', async (_label, err, code, transient, committed, told) => {
     expect(isTransientDbError(err, code)).toBe(transient);
     expect(mayHaveCommitted(err, code)).toBe(committed);

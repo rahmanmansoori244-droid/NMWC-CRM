@@ -7,7 +7,7 @@
  * tests/unit/account-import-rules.test.ts. Nothing here reads the database.
  */
 import type { Role } from '@prisma/client';
-import { isTransientDbError, mayHaveCommitted, uniqueTargetFields } from './db-errors';
+import { dbErrorCode, isTransientDbError, mayHaveCommitted, uniqueTargetFields } from './db-errors';
 import { scrubAndTruncate } from './scrub';
 
 /** Roles an import may neither mint nor change; the Users UI owns them. */
@@ -220,8 +220,8 @@ export type RowFailure = {
  * identifiers and safe to show.
  */
 export function accountRowFailure(err: unknown, subject: string): RowFailure {
-  const rawCode = (err as { code?: unknown } | null)?.code;
-  const code = typeof rawCode === 'string' ? rawCode : '';
+  // A failed COMMIT's bare adapter error is read as the code its kind has on a statement.
+  const code = dbErrorCode(err) ?? '';
   if (isTransientDbError(err, code)) {
     return mayHaveCommitted(err, code)
       ? {

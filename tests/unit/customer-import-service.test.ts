@@ -414,7 +414,9 @@ describe('promoteCustomerBatchAction — N03: an archived customer is refused be
     expect(out).toMatchObject({ promoted: 0, failed: 1 });
     expect(order.filter((o) => WRITES.includes(o))).toEqual([]);
     expect(rejected).toHaveLength(1);
-    expect(rejected[0].where).toEqual({ id: { in: rows.map((_, i) => `row-${i}`) } });
+    // Only rows still CLEAN: this write must never overwrite a row the group's own
+    // transaction made PROMOTED (review of the Prisma 7 upgrade, 2026-11-10).
+    expect(rejected[0].where).toEqual({ id: { in: rows.map((_, i) => `row-${i}`) }, state: 'CLEAN' });
     const message = rejected[0].data.issues[0].message;
     expect(message).toBe(
       'customer is archived in the CRM, and an import does not bring an archived customer back — exclude the row; steward review'
@@ -464,6 +466,62 @@ describe('promoteCustomerBatchAction — the lock on the lanes that do write (N0
     expect(order[0]).toBe('lock');
     expect(order).not.toContain('customer.read');
     expect(order).toContain('customer.upsert');
+  });
+});
+
+/**
+ * Review of the Prisma 7 upgrade, 2026-11-10. When COMMIT itself fails, Prisma 7
+ * hands back the driver adapter's own error — no Prisma code, the kind's name
+ * for a message (tests/unit/prisma7-commit-errors.test.ts produces it with the
+ * real client). The promote read it as "promote failed (UNKNOWN)" and marked the
+ * group REJECTED with a write that did not look at the rows' state: if the
+ * commit HAD landed, the customer was loaded and its rows said REJECTED.
+ */
+describe('promoteCustomerBatchAction — a group whose COMMIT failed is not a rejected customer', () => {
+  const bare = (cause: Record<string, unknown>) =>
+    Object.assign(new Error(String(cause.kind)), { name: 'DriverAdapterError', cause });
+  /** The group's writes all run, then the transaction itself rejects — as when COMMIT fails. */
+  function failAtCommit(err: Error) {
+    (h.db as unknown as { $transaction: Fn }).$transaction = vi.fn(async (fn: (t: unknown) => Promise<unknown>) => {
+      await fn(tx);
+      throw err;
+    });
+  }
+
+  it.each([
+    ['the connection reset while COMMIT was on the wire', bare({ kind: 'ConnectionClosed' })],
+    ['the socket timed out on COMMIT', bare({ kind: 'SocketTimeout' })],
+    ['a deadlock raised at COMMIT', bare({ kind: 'TransactionWriteConflict', originalCode: '40P01', originalMessage: 'deadlock detected' })],
+  ])('%s: the rows are left as they are for the next slice, never REJECTED', async (_label, err) => {
+    setup({ ...STORED, deletedAt: null }, [parsed()]);
+    failAtCommit(err);
+    const out = await promote();
+    expect(order).toContain('importRow.promoted');
+    expect(out).toMatchObject({ promoted: 0, failed: 0, deferred: 1 });
+    expect(rejected).toEqual([]);
+  });
+
+  it('a failure that IS recorded finds rows no longer CLEAN: nothing is rejected, and it is not counted as failed', async () => {
+    setup({ ...STORED, deletedAt: null }, [parsed()]);
+    failAtCommit(new Error('something else, after the commit landed'));
+    // The rows left CLEAN when the group committed: the guarded write matches none.
+    (h.db.importRow as Record<string, Fn>).updateMany = vi.fn(async (args: (typeof rejected)[number]) => {
+      if (args.data?.state === 'REJECTED') rejected.push(args);
+      return { count: 0 };
+    });
+    const out = await promote();
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].where).toEqual({ id: { in: ['row-0'] }, state: 'CLEAN' });
+    expect(out).toMatchObject({ promoted: 0, failed: 0, deferred: 0 });
+  });
+
+  it('a failure that is the fault of the row, with its rows still CLEAN, is REJECTED and counted, as before', async () => {
+    setup({ ...STORED, deletedAt: null }, [parsed()]);
+    failAtCommit(new Error('new row for relation "Branch" violates check constraint "Branch_address_minlength"'));
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 0, failed: 1, deferred: 0 });
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].data.issues[0].message).toBe('the database refused this row: Branch_address_minlength — steward review');
   });
 });
 

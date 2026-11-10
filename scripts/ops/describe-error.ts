@@ -16,19 +16,28 @@
  * Prisma 7 keeps the SQLSTATE in meta.driverAdapterError.cause.originalCode
  * (Prisma 6: meta.code). Only that code is read from it: the adapter's error also
  * carries Postgres's message and DETAIL, which quote the row.
+ *
+ * A failed COMMIT reaches a script as the adapter's own error (lib/db-errors.ts
+ * bareAdapterCause): no Prisma code, the SQLSTATE in cause.originalCode and the
+ * kind of fault in cause.kind ("ConnectionClosed", "TransactionWriteConflict" —
+ * a fixed name from the adapter, never data). Both are read, shape-checked, so
+ * it is not described by its class name alone.
  */
 export function describeError(err: unknown): string {
   const e = (err ?? {}) as {
     name?: unknown;
     code?: unknown;
     meta?: { code?: unknown; driverAdapterError?: { cause?: { originalCode?: unknown } | null } | null };
+    cause?: { originalCode?: unknown; kind?: unknown } | null;
     message?: unknown;
   };
   const name = typeof e.name === 'string' && /^[A-Za-z]{1,40}$/.test(e.name) ? e.name : 'Error';
-  const original = e.meta?.driverAdapterError?.cause?.originalCode;
+  const bare = name === 'DriverAdapterError' && e.cause !== null && typeof e.cause === 'object' ? e.cause : null;
+  const original = e.meta?.driverAdapterError?.cause?.originalCode ?? bare?.originalCode;
   const codes = [e.code, e.meta?.code, original].filter(
     (c): c is string => typeof c === 'string' && /^[0-9A-Z_]{1,32}$/.test(c)
   );
+  if (typeof bare?.kind === 'string' && /^[A-Za-z]{1,40}$/.test(bare.kind)) codes.unshift(bare.kind);
   // Prisma's raw-query error spells the SQLSTATE into its text, as Code: followed
   // by the five characters in backticks, ahead of the message it quotes.
   const quoted = typeof e.message === 'string' ? /Code: `([0-9A-Z]{5})`/.exec(e.message)?.[1] : undefined;

@@ -1,4 +1,4 @@
-import { dbRuleViolated, isDbConflict, isTransientDbError, mayHaveCommitted, temixCodeIndexViolated } from './db-errors';
+import { dbErrorCode, dbRuleViolated, isDbConflict, isTransientDbError, mayHaveCommitted, temixCodeIndexViolated } from './db-errors';
 import { TEMIX_CODE_UNIQUE_MESSAGE } from './temix-code';
 
 /**
@@ -337,7 +337,10 @@ export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T
     // Special-case Prisma P2002 unique-constraint as a generic conflict so
     // a forgotten-to-translate Prisma error doesn't blow up as a 500. Caller
     // should still translate to a friendly ConflictError where it matters.
-    const code = (err as { code?: string })?.code;
+    // The error's code, or — for the adapter's own error, which is what a failed
+    // COMMIT hands back on Prisma 7 — the code its kind has on a statement
+    // (lib/db-errors.ts dbErrorCode), so both are answered alike below.
+    const code = dbErrorCode(err);
     if (code === 'P2002') {
       return {
         ok: false,

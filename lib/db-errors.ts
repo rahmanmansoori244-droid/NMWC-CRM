@@ -23,7 +23,10 @@
  *   - node-postgres's own failures pass through unwrapped, as plain Errors: a
  *     connection that closed mid-request ("Connection terminated
  *     unexpectedly"), no free pool connection in time ("timeout exceeded when
- *     trying to connect"), and the socket codes the adapter does not map.
+ *     trying to connect"), and the socket codes the adapter does not map;
+ *   - a failure of COMMIT itself arrives as the adapter's own error, with no
+ *     Prisma code and no meta at all (bareAdapterCause below): it is read as
+ *     the code the same fault has on a statement.
  */
 import { DB_RULE_BY_NAME, type DbRule } from './db-rules';
 
@@ -78,10 +81,92 @@ const metaOf = (err: unknown): PrismaMeta | null => {
   const meta = (err as { meta?: unknown } | null)?.meta;
   return meta && typeof meta === 'object' ? (meta as PrismaMeta) : null;
 };
+/**
+ * The adapter's own error, handed to the application as it is. Prisma 7 turns an
+ * adapter error into a coded one (PrismaClientKnownRequestError, the adapter's
+ * error under meta.driverAdapterError) for a statement and for BEGIN, but NOT
+ * for COMMIT: when COMMIT fails — the connection reset or timed out while it
+ * was on the wire, or the deferred constraint trigger that runs at commit
+ * (managerregions_history_capture) hit a deadlock — the caller of $transaction
+ * gets the bare DriverAdapterError. It has no `code` and no `meta`, its message
+ * is only the kind's name ("ConnectionClosed"), and its `cause` is the object a
+ * coded error carries at meta.driverAdapterError.cause. Seen on 7.10.1 with a
+ * real client over a pool whose COMMIT fails (review of the upgrade,
+ * 2026-11-10; tests/unit/prisma7-commit-errors.test.ts produces it that way on
+ * every run, and prisma7-error-shapes.test.ts pins the shapes), the array and
+ * the interactive form alike. Unread, every rule below answered "not mine", so
+ * a lost COMMIT — the one moment where it is unknown whether the save landed
+ * (item 22) — was a 500 instead of "may or may not have been saved", and the
+ * customer import marked the group REJECTED.
+ * Told by its name and an object cause, as the adapter's own isDriverAdapterError tells it.
+ */
+function bareAdapterCause(err: unknown): AdapterCause | null {
+  if (!err || typeof err !== 'object') return null;
+  const e = err as { name?: unknown; cause?: unknown };
+  return e.name === 'DriverAdapterError' && e.cause !== null && typeof e.cause === 'object' ? (e.cause as AdapterCause) : null;
+}
 const causeOf = (err: unknown): AdapterCause | null => {
   const cause = metaOf(err)?.driverAdapterError?.cause;
-  return cause && typeof cause === 'object' ? cause : null;
+  return cause && typeof cause === 'object' ? cause : bareAdapterCause(err);
 };
+
+/**
+ * The Prisma code each adapter kind is given when Prisma does convert it — its
+ * runtime's own table (7.10.1), a database's own error (kind "postgres") being
+ * P2039. A bare adapter error is read as that code, so a fault at COMMIT and the
+ * same fault on a statement are one decision in every rule here.
+ */
+const BARE_ADAPTER_KIND_CODES: Readonly<Record<string, string>> = {
+  AuthenticationFailed: 'P1000',
+  DatabaseNotReachable: 'P1001',
+  DatabaseDoesNotExist: 'P1003',
+  SocketTimeout: 'P1008',
+  DatabaseAlreadyExists: 'P1009',
+  DatabaseAccessDenied: 'P1010',
+  TlsConnectionError: 'P1011',
+  ConnectionClosed: 'P1017',
+  TransactionAlreadyClosed: 'P1018',
+  LengthMismatch: 'P2000',
+  UniqueConstraintViolation: 'P2002',
+  ForeignKeyConstraintViolation: 'P2003',
+  RestrictViolation: 'P2003',
+  InvalidInputValue: 'P2007',
+  NullConstraintViolation: 'P2011',
+  ValueOutOfRange: 'P2020',
+  TableDoesNotExist: 'P2021',
+  ColumnNotFound: 'P2022',
+  TransactionWriteConflict: 'P2034',
+  TooManyConnections: 'P2037',
+  postgres: 'P2039',
+};
+function bareAdapterCode(err: unknown): string | null {
+  const kind = bareAdapterCause(err)?.kind;
+  return typeof kind === 'string' && Object.hasOwn(BARE_ADAPTER_KIND_CODES, kind) ? BARE_ADAPTER_KIND_CODES[kind]! : null;
+}
+
+const isPrismaCode = (code: unknown): code is string => typeof code === 'string' && /^P\d{4}$/.test(code);
+
+/**
+ * The error's own `code` (Prisma's, or a socket code node-postgres left on a
+ * plain Error), or for a bare adapter error the code Prisma gives its kind;
+ * undefined when it has none. What a caller passes on to the rules below, and
+ * compares with 'P2002' itself.
+ */
+export function dbErrorCode(err: unknown): string | undefined {
+  const own = (err as { code?: unknown } | null)?.code;
+  if (typeof own === 'string' && own !== '') return own;
+  return bareAdapterCode(err) ?? undefined;
+}
+
+/**
+ * The code a rule decides by: the caller's when it is a Prisma code; otherwise —
+ * '' or whatever placeholder stood in for "none" ('UNKNOWN' in the customer
+ * promote) — a bare adapter error's, so a caller that reads `err.code` itself
+ * is answered the same.
+ */
+function codeFor(err: unknown, code: string): string {
+  return isPrismaCode(code) ? code : (bareAdapterCode(err) ?? code);
+}
 
 /**
  * The SQLSTATE behind a Prisma error, or null: Prisma 6's `meta.code` (raw
@@ -142,7 +227,7 @@ export function uniqueTargetFields(err: unknown): string[] {
   if (typeof target === 'string' && target !== '') return columnsOfConstraint(target, table);
   // Only a model query's P2002 had a target in Prisma 6; a raw query's clash
   // (P2010) never did, so it has none here either.
-  const constraint = (err as { code?: unknown } | null)?.code === 'P2002' ? cause?.constraint : null;
+  const constraint = dbErrorCode(err) === 'P2002' ? cause?.constraint : null;
   if (constraint && typeof constraint === 'object') {
     if (Array.isArray(constraint.fields)) return strings(constraint.fields);
     if (typeof constraint.index === 'string' && constraint.index !== '') return columnsOfConstraint(constraint.index, table);
@@ -159,7 +244,8 @@ export function uniqueTargetFields(err: unknown): string[] {
  * The aborted transaction rolled back whole and the same request run again
  * normally succeeds: not the data's fault, and not a programmer error.
  */
-export function isDbConflict(err: unknown, code: string): boolean {
+export function isDbConflict(err: unknown, given: string): boolean {
+  const code = codeFor(err, given);
   if (code === 'P2034') return true;
   const msg = messageOf(err);
   if (code === 'P2010' || code === 'P2039') {
@@ -168,7 +254,7 @@ export function isDbConflict(err: unknown, code: string): boolean {
   }
   // No Prisma code at all — whatever placeholder the caller passed for it ('',
   // 'UNKNOWN' in the customer promote) — leaves only Postgres's own words.
-  return !/^P\d{4}$/.test(code) && /deadlock detected|could not serialize access/i.test(msg);
+  return !isPrismaCode(code) && /deadlock detected|could not serialize access/i.test(msg);
 }
 
 /**
@@ -184,7 +270,8 @@ const ADAPTER_KIND_CODES: Readonly<Record<string, string>> = {
   TlsConnectionError: 'P1011',
   ConnectionClosed: 'P1017',
 };
-function effectiveCode(err: unknown, code: string): string {
+function effectiveCode(err: unknown, given: string): string {
+  const code = codeFor(err, given);
   if (code !== 'P2010' && code !== 'P2039') return code;
   const kind = causeOf(err)?.kind;
   return typeof kind === 'string' && Object.hasOwn(ADAPTER_KIND_CODES, kind) ? ADAPTER_KIND_CODES[kind]! : code;
@@ -288,7 +375,8 @@ function constraintNamed(err: object, message: string, meta: string): string | n
  */
 export function dbRuleViolated(err: unknown): DbRule | null {
   if (!err || typeof err !== 'object') return null;
-  const code = (err as { code?: unknown }).code;
+  // A bare adapter error (a rule refused at COMMIT) is read as the code its kind has on a statement.
+  const code = dbErrorCode(err) ?? (err as { code?: unknown }).code;
   const message = err instanceof Error ? err.message : String((err as { message?: unknown }).message ?? '');
   let meta = '';
   try {
@@ -347,7 +435,7 @@ const TEMIX_CODE_INDEX_KEY = /upper\(btrim\(temixCode(::text)?\)\)/i;
  */
 export function temixCodeIndexViolated(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
-  const code = (err as { code?: unknown }).code;
+  const code = dbErrorCode(err) ?? (err as { code?: unknown }).code;
   const message = err instanceof Error ? err.message : String((err as { message?: unknown }).message ?? '');
   let meta = '';
   try {

@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/db';
 import { setChangeContext, src, withChangeContext, type ImportLane } from '@/lib/change-context';
-import { isTransientDbError, uniqueTargetFields } from '@/lib/db-errors';
+import { dbErrorCode, isTransientDbError, uniqueTargetFields } from '@/lib/db-errors';
 import {
   Role,
   ImportRowState,
@@ -1198,12 +1198,12 @@ async function uploadAccountMasterCore(
   } catch (err) {
     recorded = false;
     const rawCode = (err as { code?: unknown } | null)?.code;
-    const code = typeof rawCode === 'string' ? rawCode : '';
+    const code = dbErrorCode(err) ?? '';
     const fields = errorLogFields(err);
     const transient = isTransientDbError(err, code);
     logger.error(
       {
-        code: rawCode,
+        code: code || rawCode,
         ...fields,
         transient,
         batchId: batch.id,
@@ -3389,7 +3389,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         // that triggered the constraint (phone, CR number) and would leak PII
         // into pino/Sentry. Log a structured short code + safe identifier
         // only.
-        const code = (err as { code?: string })?.code ?? 'UNKNOWN';
+        // A failed COMMIT's bare adapter error is read as the code its kind has on
+        // a statement (lib/db-errors.ts dbErrorCode).
+        const code = dbErrorCode(err) ?? 'UNKNOWN';
         // The unique columns (Prisma 6's meta.target, or the constraint Prisma 7
         // names). meta.target used to be joined as it came, which threw a TypeError
         // here when an engine reported it as a string.
@@ -3455,9 +3457,16 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             : constraintName
               ? `the database refused this row: ${constraintName} — steward review`
               : `promote failed (${code})`);
+        //
+        // Only rows still CLEAN. The group's transaction marks its rows PROMOTED,
+        // and an error can arrive AFTER that commit landed — a COMMIT whose answer
+        // was lost reached here as "promote failed (UNKNOWN)" on Prisma 7 until
+        // lib/db-errors.ts read it (review of the upgrade, 2026-11-10). Unguarded,
+        // this write turned a customer that WAS loaded back into REJECTED rows.
+        let marked: number | null = null;
         try {
-          await prisma.importRow.updateMany({
-            where: { id: { in: g.rowIds } },
+          const res = await prisma.importRow.updateMany({
+            where: { id: { in: g.rowIds }, state: ImportRowState.CLEAN },
             data: {
               state: ImportRowState.REJECTED,
               issues: [{ field: '_promote', message: reason }] as Prisma.InputJsonValue,
@@ -3465,8 +3474,15 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               reviewedAt: new Date(),
             },
           });
+          marked = res.count;
         } catch (e) {
           logger.error({ err: (e as Error).message?.slice(0, 80), batchId }, 'import.mark_failed');
+        }
+        if (marked === 0) {
+          // None was left to reject: the rows' own state says what became of them,
+          // and the totals below are counted from those states.
+          logger.warn({ code, custCode, batchId }, 'import.promote.rows_not_clean');
+          continue;
         }
         failures.push({ custCode, rowIds: g.rowIds, reason });
       }
