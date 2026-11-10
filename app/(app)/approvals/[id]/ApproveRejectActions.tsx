@@ -159,17 +159,36 @@ export function rejectFormCopy(outcome: RejectOutcome): {
   };
 }
 
+/**
+ * Code review 2026-11-10, finding 18: when this rejection reaches the salesman
+ * (sent back to correct, or back to his signed-application step) and the round
+ * already has rejections, he is told those reasons too — so the reviewer need
+ * not retype an Accountant's or a GM's reason, and knows his own is not the
+ * only one the salesman reads. Null when there is nothing earlier, or when the
+ * rejection only steps back to another approver.
+ */
+export function earlierReasonsHint(outcome: RejectOutcome, earlierSendBacks: number): string | null {
+  const reachesSalesman = outcome.kind === 'TO_SALESMAN' || outcome.toRole === 'SALESMAN';
+  if (!reachesSalesman || earlierSendBacks <= 0) return null;
+  return earlierSendBacks === 1
+    ? 'He will also see the 1 earlier reason given in this round.'
+    : `He will also see the ${earlierSendBacks} earlier reasons given in this round.`;
+}
+
 export function ApproveRejectActions({
   editId,
   decisionToken,
   outcome,
   rejectOutcome,
+  earlierSendBacks = 0,
 }: {
   editId: string;
   /** N01: the request as this page rendered it (lib/decision-token.ts). Sent with every decision. */
   decisionToken: string;
   outcome: ApproveOutcome;
   rejectOutcome: RejectOutcome;
+  /** Finding 18: how many rejections this round already has (see earlierReasonsHint). */
+  earlierSendBacks?: number;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -294,6 +313,7 @@ export function ApproveRejectActions({
   const templates = REJECT_TEMPLATES[category] ?? [];
   const confirm = approveConfirmCopy(outcome, needsTemixCode ? temixCode : undefined);
   const rejectCopy = rejectFormCopy(rejectOutcome);
+  const earlierHint = earlierReasonsHint(rejectOutcome, earlierSendBacks);
 
   return (
     <div>
@@ -413,9 +433,18 @@ export function ApproveRejectActions({
               required
               placeholder={rejectCopy.placeholder}
               aria-invalid={errors.reason ? true : undefined}
-              aria-describedby={errors.reason ? `${uid}-reason-error` : undefined}
+              aria-describedby={
+                [earlierHint ? `${uid}-reason-earlier` : null, errors.reason ? `${uid}-reason-error` : null]
+                  .filter(Boolean)
+                  .join(' ') || undefined
+              }
               className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500"
             />
+            {earlierHint && (
+              <p id={`${uid}-reason-earlier`} className="mt-0.5 text-xs text-slate-500">
+                {earlierHint}
+              </p>
+            )}
             {errors.reason && (
               <p id={`${uid}-reason-error`} role="alert" className="mt-0.5 text-xs text-red-600">
                 {errors.reason}

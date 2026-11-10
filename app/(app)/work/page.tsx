@@ -13,6 +13,7 @@ import { inIdOrder, openReturnedIds } from '@/lib/returned-work';
 import { managerQueueWhere, SUPERVISOR_STEP_OR } from '@/lib/manager-queue';
 import { stepName } from '@/lib/approval-chains';
 import { omanDateTime } from '@/lib/tz';
+import { DECISION_TRAIL, earlierCountText, sentBackTrail } from '@/lib/request-reasons';
 
 export const metadata = { title: 'Work items · NMWC' };
 
@@ -119,19 +120,28 @@ export default async function WorkPage() {
         take: 50,
       }),
     ]);
+    // Finding 18: with each one's decisions, so the row says the LATEST reason of
+    // its round and how many came before it (the full list is on /rejected).
     const rejected = inIdOrder(
       returnedIds,
       returnedIds.length > 0
-        ? await prisma.customerEdit.findMany({ where: { id: { in: returnedIds } }, include })
+        ? await prisma.customerEdit.findMany({
+            where: { id: { in: returnedIds } },
+            include: { ...include, steps: DECISION_TRAIL },
+          })
         : []
     );
+    const whyReturned = (e: (typeof rejected)[number]) => {
+      const { latest, earlier } = sentBackTrail(e, e.steps);
+      return [latest.reason ?? 'Needs correction', earlierCountText(earlier.length)].filter(Boolean).join(' · ');
+    };
     returnedCount = rejected.length;
     items = [
       ...rejected.map((e) => ({
         id: e.id,
         category: e.process === 'CREATE' ? 'New customer — needs correction' : 'Needs correction',
         title: editTitle(e),
-        subtitle: e.decisionReason ?? 'Needs correction',
+        subtitle: whyReturned(e),
         href: returnedHref(e),
         state: e.state,
         when: e.reviewedAt,

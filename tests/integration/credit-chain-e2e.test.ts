@@ -896,6 +896,13 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       const st = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editC }, select: { state: true, currentStepIndex: true, pendingRole: true } });
       return [st.state, st.currentStepIndex, st.pendingRole];
     };
+    // Code review 2026-11-10, finding 18: the request row carries a send-back's
+    // reason only while it stands sent back; every move forward clears it.
+    const REASON_C = 'The stamp on the signed application is not readable.';
+    const reasonOnRow = async () => {
+      const st = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editC }, select: { decisionReason: true, decisionCategory: true } });
+      return [st.decisionReason, st.decisionCategory];
+    };
 
     it('C is submitted and reaches the Sales Director, who sends it back to the Supervisor', async () => {
       asUser(ids.salesman, 'SALESMAN');
@@ -925,6 +932,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       asUser(ids.sd, 'SALES_DIRECTOR');
       expect((await decideC('reject')).ok).toBe(true);
       expect(await at()).toEqual(['SUBMITTED', 0, 'SUPERVISOR']);
+      expect(await reasonOnRow()).toEqual([REASON_C, 'other']);
       // The Supervisor is told it is back on his step.
       expect(await prisma.notification.count({ where: { editId: editC, userId: ids.supervisor, title: 'Request returned to your step', readAt: null } })).toBe(1);
     });
@@ -932,6 +940,8 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     it('sent on again; the salesman uploads two pages; the Finance Manager sends it back to him', async () => {
       asUser(ids.supervisor, 'SUPERVISOR');
       expect((await decideC('approve')).ok).toBe(true);
+      // Finding 18: sent on again, so the Sales Director's reason is no longer current.
+      expect(await reasonOnRow()).toEqual([null, null]);
       asUser(ids.sd, 'SALES_DIRECTOR');
       expect((await decideC('approve')).ok).toBe(true);
       asUser(ids.salesman, 'SALESMAN');
@@ -954,6 +964,11 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       });
       expect(asked.title).toBe('Signed application sent back');
       expect(asked.body).toMatch(/sent back by the Finance Manager: The stamp on the signed application is not readable./);
+      // Finding 18: he cannot open the approver's page, so his alert ends with the
+      // round's earlier send-backs, by step — here the Sales Director's, from before
+      // the Supervisor sent it on again.
+      expect(asked.body).toMatch(/ — upload the signed credit application again by [^.]+\. \(Earlier in this round — Sales Director step: The stamp on the signed application is not readable\.\)$/);
+      expect(await reasonOnRow()).toEqual([REASON_C, 'other']);
       // Not the contradictory "not returned to you" ping.
       expect(await notReturnedPings()).toBe(pingsBefore);
     });
@@ -963,6 +978,8 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       pageC.three = await mkAtt('CREDIT_FORM');
       expect((await sendSignedForm(editC, [pageC.two, pageC.three])).ok).toBe(true);
       expect(await at()).toEqual(['SUBMITTED', 3, 'FINANCE_MANAGER']);
+      // Finding 18: his upload answered the Finance Manager's send-back.
+      expect(await reasonOnRow()).toEqual([null, null]);
       const live = await prisma.attachment.findMany({ where: { editId: editC, kind: 'CREDIT_FORM', deletedAt: null }, select: { id: true } });
       expect(live.map((a) => a.id).sort()).toEqual([pageC.two, pageC.three].sort());
       const dropped = await prisma.attachment.findUniqueOrThrow({ where: { id: pageC.one } });
@@ -988,9 +1005,11 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       asUser(ids.gm, 'GM');
       expect((await decideC('reject')).ok).toBe(true);
       expect(await at()).toEqual(['SUBMITTED', 3, 'FINANCE_MANAGER']);
+      expect(await reasonOnRow()).toEqual([REASON_C, 'other']);
       // Re-deciding his own step after a send-back is allowed.
       asUser(ids.fm, 'FINANCE_MANAGER');
       expect((await decideC('approve')).ok).toBe(true);
+      expect(await reasonOnRow()).toEqual([null, null]);
       asUser(ids.gm, 'GM');
       expect((await decideC('approve')).ok).toBe(true);
       expect(await at()).toEqual(['SUBMITTED', 5, 'ACCOUNTANT']);
@@ -998,6 +1017,16 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       const done = await decideC('approve', `ZTC${tag}`.toUpperCase());
       expect(done.ok, JSON.stringify(done)).toBe(true);
       expect((await at())[0]).toBe('APPROVED');
+      // Finding 18: three send-backs on the way, none shown as current on the approved
+      // request — and all three still in the trail, each with its reason.
+      expect(await reasonOnRow()).toEqual([null, null]);
+      expect(
+        (await prisma.editApproval.findMany({ where: { editId: editC, decision: 'REJECTED' }, orderBy: { at: 'asc' }, select: { role: true, reason: true } }))
+      ).toEqual([
+        { role: 'SALES_DIRECTOR', reason: REASON_C },
+        { role: 'FINANCE_MANAGER', reason: REASON_C },
+        { role: 'GM', reason: REASON_C },
+      ]);
       expect(await prisma.customer.count({ where: { legalName: nameC } })).toBe(1);
       // Part B: the documents, the guarantee and the pages he kept are bound; the page he dropped is not.
       const cust = await prisma.customer.findFirstOrThrow({ where: { legalName: nameC }, select: { id: true, email: true } });

@@ -123,6 +123,7 @@ import { normalizeTemixCode, temixCodeProblem, temixCodeRefusal } from '@/lib/te
 import { salesmanSubmitGate, isRequired, type SubmitGate } from '@/lib/submit-gate';
 import { PRINT_REQUEST_TITLE } from '@/lib/print';
 import { openReturnedIds, RETURNED_CLEARED_REASON } from '@/lib/returned-work';
+import { earlierInRoundText, needsCorrectionBody, roundSendBacks, type SendBack } from '@/lib/request-reasons';
 
 async function requireUser() {
   return requireActor(); // F15: refuses a session that must change its password
@@ -157,6 +158,12 @@ async function notifySignedFormRequested(
     dueAt: Date;
     /** A Finance Manager's send-back: who, and why. */
     sentBack?: { by: string; reason: string };
+    /**
+     * Finding 18: the round's rejections before this send-back (the GM's reason
+     * a Finance Manager is relaying), oldest first. The salesman cannot open the
+     * approver's page, so his alert carries them.
+     */
+    earlier?: readonly SendBack[];
   }
 ): Promise<void> {
   const due = omanDayTime(input.dueAt);
@@ -164,7 +171,7 @@ async function notifySignedFormRequested(
     kind: 'SIGNED_FORM_REQUESTED',
     title: input.sentBack ? 'Signed application sent back' : 'Signed credit application needed',
     body: input.sentBack
-      ? `${input.requestName} — sent back by the ${input.sentBack.by}: ${input.sentBack.reason} — upload the signed credit application again by ${due}.`
+      ? `${input.requestName} — sent back by the ${input.sentBack.by}: ${input.sentBack.reason} — upload the signed credit application again by ${due}.${earlierInRoundText(input.earlier ?? [])}`
       : `${input.requestName} — get the credit application signed and stamped by the customer, and upload it by ${due}.`,
     editId: input.editId,
   });
@@ -1761,6 +1768,11 @@ async function approveEditCore(formData: FormData) {
             escalationLevel: 0,
             slaBreachedAt: null,
             lastEscalatedAt: null,
+            // Finding 18: the request moved on, so the reason of a step-back
+            // that brought it here is no longer current. It stays on its
+            // decision row (EditApproval) and its REJECT audit row.
+            decisionReason: null,
+            decisionCategory: null,
           },
         });
         if (claim.count === 0) {
@@ -1883,6 +1895,10 @@ async function approveEditCore(formData: FormData) {
             pendingRole: null,
             reviewedById: session.id,
             reviewedAt: finalizedAt,
+            // Finding 18: an approved request carries no send-back reason (see
+            // the advance claim above); the trail keeps every one.
+            decisionReason: null,
+            decisionCategory: null,
           },
         });
         if (claim.count === 0) {
@@ -2557,10 +2573,30 @@ async function rejectEditCore(formData: FormData) {
   // decided here; reactivations were refused above) is refused for good, not sent
   // back. Nothing on it can be corrected — a new close request is a new row — so
   // as NEEDS_CORRECTION it sat on the salesman's Needs correction lists for ever.
-  // It ends REJECTED, and the row below tells him why. Its decisionReason is HIS
-  // reason for asking and is kept; the reviewer's reason is on the decision row
-  // (EditApproval), the audit row and his notification.
+  // It ends REJECTED, and the row below tells him why. HIS reason for asking is
+  // not touched (requestReason, frozen once sent — finding 18 — and the copy an
+  // older row keeps in decisionReason); the reviewer's reason is on the decision
+  // row (EditApproval), the audit row and his notification.
   const isCloseRequest = edit.target === EditTarget.BRANCH;
+  // Finding 18: when this rejection reaches the salesman — sent back to correct,
+  // or back to his signed-application step — he is told the round's earlier
+  // reasons too (an Accountant's, relayed by the Supervisor; a GM's, relayed by
+  // the Finance Manager): he cannot open the page that lists them. Read before
+  // the transaction, like priorRejectsHere: any decision in between moves the
+  // stage, and the claim below then misses and nothing is sent.
+  const reachesSalesman =
+    (target.kind === 'TO_SALESMAN' && !isCloseRequest) ||
+    (target.kind === 'STEP_BACK' && isSignedFormStep(rejectChain[target.toStepIndex]));
+  const earlierSendBacks: SendBack[] = reachesSalesman
+    ? roundSendBacks(
+        edit.cycle,
+        await prisma.editApproval.findMany({
+          where: { editId, cycle: edit.cycle, decision: 'REJECTED' },
+          orderBy: [{ at: 'asc' }, { id: 'asc' }],
+          select: { cycle: true, stepIndex: true, role: true, decision: true, reason: true, at: true },
+        })
+      )
+    : [];
 
   // DG-06: envelope outside the transaction; `session.id` is the rejecting actor.
   const env = await getAuditEnvelope(session.id);
@@ -2670,6 +2706,7 @@ async function rejectEditCore(formData: FormData) {
         regionIds: rejectRegionIds,
         dueAt: stepDeadline(rejectedAt, rejectChain[target.toStepIndex]!.slaHours),
         sentBack: { by: stepName(rejectStep), reason },
+        earlier: earlierSendBacks,
       });
     } else if (target.kind === 'STEP_BACK') {
       // The request went back to the previous approver step; tell that step's
@@ -2704,7 +2741,7 @@ async function rejectEditCore(formData: FormData) {
         title: isCloseRequest ? 'Close-shop request refused' : 'Needs correction',
         body: isCloseRequest
           ? `${rejectRequestName} — your close-shop request was refused, so the branch is not closed: ${reason}`
-          : `${rejectRequestName} — returned to you: ${reason}`,
+          : needsCorrectionBody(rejectRequestName, reason, earlierSendBacks),
         editId,
         customerId: edit.customerId ?? undefined,
       });

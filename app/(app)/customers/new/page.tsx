@@ -7,11 +7,13 @@ import { manualGpsReasonForPoint } from '@/lib/gps-manual';
 import { CreateCustomerForm, type CreateFormInitial } from './CreateCustomerForm';
 import { WithdrawRequest } from './WithdrawRequest';
 import { SignedFormUpload } from './SignedFormUpload';
-import { DECISION_REJECTED, isSignedFormStep, parseChain, stepName } from '@/lib/approval-chains';
+import { isSignedFormStep, parseChain, stepName } from '@/lib/approval-chains';
 import { decisionBoundWhere, decisionTokenFor } from '@/lib/decision-token';
 import { CREDIT_DOCUMENT_KINDS, SIGNED_FORM_KIND, type CreditDocumentKind } from '@/lib/credit-documents';
 import { minutesRemaining } from '@/lib/working-hours';
 import { omanDateTime } from '@/lib/tz';
+import { DECISION_TRAIL, currentReason, type SendBack } from '@/lib/request-reasons';
+import { EarlierSendBacks, SendBackWho } from '@/components/nmwc/SendBackTrail';
 
 export const metadata = { title: 'New customer · NMWC' };
 // UXI-005 posture: never serve a stale cached form (same as the edit page).
@@ -56,12 +58,23 @@ export default async function NewCustomerPage({
     overdue: boolean;
     sentBackReason: string | null;
   } | null = null;
+  // Finding 18: why the request is back with him, read from its decisions
+  // (EditApproval) — the latest send-back of the round with who, at which step
+  // and when, and the ones before it. He cannot open the approver's page, so
+  // this page is where he reads an Accountant's reason a Manager relayed.
+  let sentBack: { latest: SendBack; earlier: SendBack[] } | null = null;
+  // At the signed-application step: what was said before the Finance Manager's send-back.
+  let relayedBefore: SendBack[] = [];
   if (editParam) {
     const edit = await prisma.customerEdit.findUnique({
       where: { id: editParam },
       include: {
         customerDraft: true,
         branchDrafts: { orderBy: { id: 'asc' }, include: { route: { select: { code: true } } } },
+        // The one trail every reason on this page is read from (lib/request-reasons.ts).
+        steps: DECISION_TRAIL,
+        // A request sent back before decisions were recorded names its reviewer here only.
+        reviewedBy: { select: { fullName: true } },
       },
     });
     // Ownership: a create request is private to its submitter.
@@ -73,6 +86,11 @@ export default async function NewCustomerPage({
     }
     const chain = parseChain(edit.approvalChain);
     const atSignedForm = edit.state === 'SUBMITTED' && isSignedFormStep(chain[edit.currentStepIndex]);
+    // Nothing is current on a request moving forward or approved; a withdrawn
+    // one says so on the form. Never from decisionReason alone on a row that has
+    // decisions: an earlier round or step may have left it.
+    const reason = currentReason(edit, edit.steps);
+    if (reason?.kind === 'SENT_BACK') sentBack = { latest: reason.latest, earlier: reason.earlier };
     // At the signed-application step too (owner decisions 2026-10-11): the
     // signed form is refused from a route he has left, as a resubmit is.
     if (me.ownedRoute && (edit.state === 'DRAFT' || edit.state === 'NEEDS_CORRECTION' || atSignedForm)) {
@@ -93,21 +111,17 @@ export default async function NewCustomerPage({
     if (atSignedForm) {
       // The documents his confirm is bound to, read by the server's own rule
       // (lib/decision-token.ts), and the pages an earlier upload left on file.
-      const [bound, latest] = await Promise.all([
-        prisma.attachment.findMany({
-          where: decisionBoundWhere(edit.id),
-          select: { id: true, kind: true },
-          orderBy: { createdAt: 'asc' },
-        }),
-        // The Finance Manager's reason: the latest decision of this round, when it
-        // is his send-back to this step — never decisionReason, which an earlier
-        // round or step may have left.
-        prisma.editApproval.findFirst({
-          where: { editId: edit.id, cycle: edit.cycle },
-          orderBy: { at: 'desc' },
-          select: { decision: true, stepIndex: true, reason: true },
-        }),
-      ]);
+      const bound = await prisma.attachment.findMany({
+        where: decisionBoundWhere(edit.id),
+        select: { id: true, kind: true },
+        orderBy: { createdAt: 'asc' },
+      });
+      // The Finance Manager's reason: the latest decision of this round, when it
+      // is his send-back to this step — never decisionReason, which an earlier
+      // round or step may have left.
+      const returnedHere =
+        reason?.kind === 'RETURNED_TO_STEP' && reason.latest.stepIndex === edit.currentStepIndex + 1 ? reason : null;
+      relayedBefore = returnedHere?.earlier ?? [];
       signedForm = {
         editId: edit.id,
         // Whose phone copy of the pages it is (lib/device-drafts.ts).
@@ -119,10 +133,7 @@ export default async function NewCustomerPage({
         keptPageIds: bound.filter((b) => b.kind === SIGNED_FORM_KIND).map((b) => b.id),
         dueText: edit.slaDueAt ? omanDateTime(edit.slaDueAt) : null,
         overdue: edit.slaDueAt ? minutesRemaining(edit.slaDueAt) < 0 : false,
-        sentBackReason:
-          latest?.decision === DECISION_REJECTED && latest.stepIndex === edit.currentStepIndex + 1
-            ? latest.reason
-            : null,
+        sentBackReason: returnedHere ? returnedHere.latest.reason : null,
       };
     }
     const d = edit.customerDraft;
@@ -136,7 +147,10 @@ export default async function NewCustomerPage({
       version:
         edit.submissionId ?? (edit.updatedAt instanceof Date ? `at:${edit.updatedAt.getTime()}` : null),
       state: edit.state,
-      decisionReason: edit.decisionReason,
+      // Finding 18: the reason is shown by this page, above the form, from the
+      // decision rows — with who sent it back, at which step, and the earlier
+      // reasons of the round. The form's own one-line banner is never fed.
+      decisionReason: null,
       // The step in words (lib/approval-chains.ts stepName): "Sales Director",
       // "Signed application" — never the enum the form would print.
       pendingRole: edit.pendingRole ? stepName(edit.pendingRole) : null,
@@ -215,7 +229,29 @@ export default async function NewCustomerPage({
           of route {startedOn} adds the shop afresh.
         </div>
       )}
-      {signedForm && me.ownedRoute?.isActive && !startedOn && <SignedFormUpload {...signedForm} />}
+      {sentBack && (
+        <div className="mx-4 mt-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 ring-1 ring-amber-200 [overflow-wrap:anywhere] sm:mx-6 sm:mt-6">
+          <p>
+            <strong className="font-semibold">Returned for correction:</strong>{' '}
+            {sentBack.latest.reason ?? 'No reason was recorded.'}
+          </p>
+          <SendBackWho entry={sentBack.latest} when={omanDateTime} className="mt-1" />
+          <EarlierSendBacks earlier={sentBack.earlier} when={omanDateTime} className="mt-2" />
+        </div>
+      )}
+      {signedForm && me.ownedRoute?.isActive && !startedOn && (
+        <>
+          {/* What a Finance Manager's send-back was relaying (a GM's reason): the
+              card below says his own. */}
+          <EarlierSendBacks
+            earlier={relayedBefore}
+            when={omanDateTime}
+            heading="Before that, in this round:"
+            className="mx-4 mt-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 ring-1 ring-amber-200 [overflow-wrap:anywhere] sm:mx-6 sm:mt-6"
+          />
+          <SignedFormUpload {...signedForm} />
+        </>
+      )}
       {!me.ownedRoute || !me.ownedRoute.isActive ? (
         <div className="m-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 sm:m-6">
           {me.ownedRoute

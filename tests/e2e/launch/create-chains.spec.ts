@@ -1669,9 +1669,22 @@ test.describe('rejections step back one approver at a time', { tag: ['@desktop']
       await page.getByRole('button', { name: 'Cancel', exact: true }).click();
       await approveHere(page, 'Send on to Accountant?', 'Approve and send on');
       await expect(page).toHaveURL(/\/approvals$/);
+      // Code review 2026-11-10, finding 18: sent on again, so the Accountant's
+      // reason is no longer current on the request (it stays on his decision row).
+      expect(await stageOf(X.id)).toMatchObject({
+        state: 'SUBMITTED',
+        currentStepIndex: 1,
+        pendingRole: 'ACCOUNTANT',
+        decisionReason: null,
+        decisionCategory: null,
+      });
 
       const acc = await accCtx.newPage();
       await openApproval(acc, X.id);
+      // The reject form says the salesman will also read the round's first reason.
+      await acc.getByRole('button', { name: '✗ Reject', exact: true }).click();
+      await expect(acc.getByText('He will also see the 1 earlier reason given in this round.', { exact: true })).toBeVisible();
+      await acc.getByRole('button', { name: 'Cancel', exact: true }).click();
       const before = await rowIds(X.id);
       await rejectHere(acc, {
         label: 'Reason for the salesman *',
@@ -1690,8 +1703,15 @@ test.describe('rejections step back one approver at a time', { tag: ['@desktop']
         reviewedById: acc1.id,
       });
       const fresh = await newRows(X.id, before);
+      // Finding 18: his alert carries the round's earlier reason too, by step — he
+      // cannot open the approver's page, the only place it was shown.
       expect(fresh.map((r) => [r.userId, r.kind, r.title, r.body])).toEqual([
-        [sa.id, 'EDIT_NEEDS_CORRECTION', 'Needs correction', `${X.legalName} — returned to you: Phone number format is incorrect`],
+        [
+          sa.id,
+          'EDIT_NEEDS_CORRECTION',
+          'Needs correction',
+          `${X.legalName} — returned to you: Phone number format is incorrect (Earlier in this round — Accountant step: CR number does not match the photo)`,
+        ],
       ]);
     });
 
@@ -1709,10 +1729,17 @@ test.describe('rejections step back one approver at a time', { tag: ['@desktop']
       const item = page.getByRole('link').filter({ hasText: X.legalName });
       await expect(item).toContainText('New customer — needs correction');
       await expect(item).toContainText('Phone number format is incorrect');
+      await expect(item).toContainText('and 1 earlier reason in this round');
       await item.click();
       await expect(page).toHaveURL(new RegExp(`/customers/new\\?edit=${X.id}$`));
       await expect(page.getByText(RETURNED_PREFIX, { exact: true }).locator('xpath=..')).toContainText(
         `${RETURNED_PREFIX} Phone number format is incorrect`
+      );
+      // Finding 18: who sent it back and at which step, and the round's earlier reason.
+      await expect(page.getByText(new RegExp(`^Sent back by ${escapeRe(acc1.fullName)} at the Accountant step, `))).toBeVisible();
+      await expect(page.getByText('Earlier in this round:', { exact: true })).toBeVisible();
+      await expect(page.locator('main li').filter({ hasText: 'CR number does not match the photo' })).toContainText(
+        `Accountant step — ${acc1.fullName}, `
       );
       await expect(page.getByLabel('Legal name *', { exact: true })).toHaveValue(X.legalName);
       await expect(photoSlot(formSection(page, 'Identity'), 'CR document').locator('label[aria-label="Retake photo"]')).toBeVisible();
@@ -1776,6 +1803,15 @@ test.describe('rejections step back one approver at a time', { tag: ['@desktop']
       await openApproval(fresh, X.id);
       await createHere(fresh, X.id, temixCodeFor(w));
       expect(await stageOf(X.id)).toMatchObject({ state: 'APPROVED' });
+      // Finding 18: the approved request carries no reason, and its decision box
+      // shows none — an old rejection sentence used to sit there in italics. The
+      // chain list below it still has both rejections of round 1.
+      expect(await stageOf(X.id)).toMatchObject({ decisionReason: null, decisionCategory: null });
+      const decision = fresh.getByText(/^Decision:/);
+      await expect(decision).toContainText('APPROVED');
+      await expect(decision).not.toContainText('Phone number format is incorrect');
+      await expect(decision).not.toContainText('CR number does not match the photo');
+      await expect(fresh.locator('li').filter({ hasText: 'REJECTED at Accountant step' })).toHaveCount(2);
     });
   });
 

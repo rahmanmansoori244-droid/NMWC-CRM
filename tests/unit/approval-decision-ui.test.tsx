@@ -70,6 +70,7 @@ vi.mock('next/link', () => ({
 import {
   ApproveRejectActions,
   approveConfirmCopy,
+  earlierReasonsHint,
   type ApproveOutcome,
   type RejectOutcome,
 } from '@/app/(app)/approvals/[id]/ApproveRejectActions';
@@ -491,6 +492,72 @@ describe('the reject form says where rejecting this step sends the request', () 
     expect(f.send.textContent).toBe('✗ Send back to salesman');
     expect(f.label).toBe('Reason for the salesman *');
     expect(f.placeholder).toBe('Be specific so the salesman knows what to fix.');
+  });
+
+  // Code review 2026-11-10, finding 18: a Manager relaying an Accountant's
+  // rejection typed "Please re-verify and resubmit", and that was all the
+  // salesman read. The earlier reasons now reach him with the rejection, and the
+  // form says so where the reason is typed.
+  describe('finding 18: the form says the salesman will also read the round’s earlier reasons', () => {
+    const hintIn = (form: HTMLElement) => within(form).queryByText(/^He will also see /);
+    const open = (rejectOutcome: RejectOutcome, earlierSendBacks?: number) => {
+      render(
+        <ApproveRejectActions
+          editId="e1"
+          decisionToken={TOKEN}
+          outcome={{ kind: 'APPLY' }}
+          rejectOutcome={rejectOutcome}
+          earlierSendBacks={earlierSendBacks}
+        />
+      );
+      fireEvent.click(screen.getByRole('button', { name: '✗ Reject' }));
+      return screen.getByRole('textbox').closest('form')!;
+    };
+
+    it('to the salesman, with one earlier reason, then with several', () => {
+      expect(hintIn(open({ kind: 'TO_SALESMAN' }, 1))!.textContent).toBe(
+        'He will also see the 1 earlier reason given in this round.'
+      );
+      cleanup();
+      expect(hintIn(open({ kind: 'TO_SALESMAN' }, 3))!.textContent).toBe(
+        'He will also see the 3 earlier reasons given in this round.'
+      );
+    });
+
+    it('back to his signed-application step: he reads them there too', () => {
+      expect(hintIn(open({ kind: 'STEP_BACK', toRole: 'SALESMAN' }, 1))!.textContent).toBe(
+        'He will also see the 1 earlier reason given in this round.'
+      );
+    });
+
+    it('nothing earlier, or the count not given: no line', () => {
+      expect(hintIn(open({ kind: 'TO_SALESMAN' }, 0))).toBeNull();
+      cleanup();
+      expect(hintIn(open({ kind: 'TO_SALESMAN' }))).toBeNull();
+    });
+
+    it('a step back to another approver does not reach the salesman: no line, whatever the round holds', () => {
+      expect(hintIn(open({ kind: 'STEP_BACK', toRole: 'SUPERVISOR' }, 2))).toBeNull();
+      expect(earlierReasonsHint({ kind: 'STEP_BACK', toRole: 'FINANCE_MANAGER' }, 5)).toBeNull();
+    });
+
+    it('the line describes the reason box, and stays beside an error', async () => {
+      h.reject.mockResolvedValue({
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        message: 'Validation failed',
+        fields: { reason: 'Reason must be 5–1000 characters.' },
+      });
+      open({ kind: 'TO_SALESMAN' }, 1);
+      const box = screen.getByLabelText('Reason for the salesman *');
+      expect(box).toHaveAccessibleDescription('He will also see the 1 earlier reason given in this round.');
+      fireEvent.change(box, { target: { value: 'Credit figures need rework.' } });
+      fireEvent.click(screen.getByRole('button', { name: /Send back/ }));
+      expect((await screen.findByRole('alert')).textContent).toBe('Reason must be 5–1000 characters.');
+      expect(box).toHaveAccessibleDescription(
+        'He will also see the 1 earlier reason given in this round. Reason must be 5–1000 characters.'
+      );
+    });
   });
 
   it('a step back still sends the same decision', async () => {

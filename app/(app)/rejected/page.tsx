@@ -7,6 +7,8 @@ import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import Link from 'next/link';
 import { inIdOrder, openReturnedIds } from '@/lib/returned-work';
+import { DECISION_TRAIL, sentBackTrail } from '@/lib/request-reasons';
+import { EarlierSendBacks, atStepText } from '@/components/nmwc/SendBackTrail';
 import { ClearReturned } from './ClearReturned';
 
 export const metadata = { title: 'Needs correction · NMWC' };
@@ -30,9 +32,14 @@ export default async function RejectedPage() {
             // and are revised on the create form, not the customer profile.
             customerDraft: { select: { legalName: true } },
             reviewedBy: { select: { fullName: true } },
+            // Finding 18: who sent it back, at which step and why, and the
+            // round's earlier reasons, from the decision rows (EditApproval).
+            steps: DECISION_TRAIL,
           },
         });
-  const items = inIdOrder(ids, rows);
+  // Each row stands sent back (lib/returned-work.ts reads only those): its
+  // latest send-back, and the ones before it in the same round.
+  const items = inIdOrder(ids, rows).map((e) => ({ e, ...sentBackTrail(e, e.steps) }));
 
   return (
     <main>
@@ -48,7 +55,7 @@ export default async function RejectedPage() {
         ) : (
           // grid-cols-1: one column no wider than the phone, whatever a card holds.
           <ul className="grid grid-cols-1 gap-3">
-            {items.map((e) => (
+            {items.map(({ e, latest, earlier }) => (
               <li key={e.id} className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200 hover:shadow-md">
                 <Link
                   // A sent-back update opens on the edit form, with the reason and
@@ -68,13 +75,21 @@ export default async function RejectedPage() {
                   <p className="text-xs text-slate-500">
                     {e.process === 'CREATE' ? 'New customer request' : e.customer?.nmwcCode}
                   </p>
-                  <p className="mt-2 rounded-md bg-amber-50 p-2 text-xs text-amber-800 ring-1 ring-amber-200">
-                    {e.decisionReason ?? 'Needs correction'}
+                  <p className="mt-2 rounded-md bg-amber-50 p-2 text-xs text-amber-800 ring-1 ring-amber-200 [overflow-wrap:anywhere]">
+                    {latest.reason ?? 'Needs correction'}
                   </p>
+                  {/* Finding 18: an Accountant's reason a Manager relayed, a GM's a
+                      Finance Manager relayed — he cannot open the page that lists them. */}
+                  <EarlierSendBacks
+                    earlier={earlier}
+                    when={omanDate}
+                    className="mt-1 text-[11px] text-slate-600 [overflow-wrap:anywhere]"
+                  />
                   <p className="mt-1 text-[11px] text-slate-500">
-                    Sent back by {e.reviewedBy?.fullName} ·{' '}
-                    {e.reviewedAt && omanDate(e.reviewedAt)}
+                    Sent back by {latest.by} ·{' '}
+                    {latest.at && omanDate(latest.at)}
                   </p>
+                  {atStepText(latest) && <p className="text-[11px] text-slate-500">{atStepText(latest)}</p>}
                 </Link>
                 {/* Launch fix: one he will not send again can be cleared here — even
                     a customer no longer on his route, whose page he cannot open. A

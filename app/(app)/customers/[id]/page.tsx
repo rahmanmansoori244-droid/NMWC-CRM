@@ -14,6 +14,8 @@ import { BranchStatusActions } from '@/components/nmwc/BranchStatusActions';
 import { LocationLinks, PhoneLink } from '@/components/nmwc/ContactLinks';
 import { activityLine } from './activity';
 import { openReturnedIds } from '@/lib/returned-work';
+import { DECISION_TRAIL, sentBackTrail } from '@/lib/request-reasons';
+import { atStepText } from '@/components/nmwc/SendBackTrail';
 import { omanWhen } from '@/lib/submission';
 import { ArchiveCustomerButton } from './ArchiveCustomerButton';
 import { ROUTE_INACTIVE_MESSAGE } from '@/lib/errors';
@@ -147,9 +149,17 @@ export default async function CustomerProfilePage({
   const returned = returnedId
     ? await prisma.customerEdit.findUnique({
         where: { id: returnedId },
-        select: { decisionReason: true, reviewedAt: true, reviewedBy: { select: { fullName: true } } },
+        select: {
+          cycle: true,
+          decisionReason: true,
+          reviewedAt: true,
+          reviewedBy: { select: { fullName: true } },
+          // Finding 18: who, at which step and why, from the decision row.
+          steps: DECISION_TRAIL,
+        },
       })
     : null;
+  const sentBack = returned ? sentBackTrail(returned, returned.steps).latest : null;
 
   return (
     <main>
@@ -207,16 +217,17 @@ export default async function CustomerProfilePage({
         }
       />
 
-      {returnedId && returned && (
+      {returnedId && sentBack && (
         <div className="mx-4 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 [overflow-wrap:anywhere] sm:mx-6">
           <p>
             <strong className="font-semibold">
               Your changes were sent back
-              {returned.reviewedBy ? ` by ${returned.reviewedBy.fullName}` : ''}
-              {returned.reviewedAt ? `, ${omanWhen(returned.reviewedAt)}` : ''}:
+              {sentBack.by ? ` by ${sentBack.by}` : ''}
+              {sentBack.at ? `, ${omanWhen(sentBack.at)}` : ''}:
             </strong>{' '}
-            {returned.decisionReason ?? 'Needs correction.'}
+            {sentBack.reason ?? 'Needs correction.'}
           </p>
+          {atStepText(sentBack) && <p className="mt-1">{atStepText(sentBack)}.</p>}
           <Link
             href={`/customers/${customer.id}/edit?returned=${returnedId}`}
             className="mt-1 inline-flex min-h-11 items-center font-medium underline underline-offset-2"

@@ -13,6 +13,8 @@ import { salesmanSubmitGate } from '@/lib/submit-gate';
 import { ownPendingBanner, pendingReplacesDraft, requestKindOf } from '@/lib/submission-replay';
 import { omanWhen } from '@/lib/submission';
 import { openReturnedIds } from '@/lib/returned-work';
+import { DECISION_TRAIL, sentBackTrail } from '@/lib/request-reasons';
+import { atStepText } from '@/components/nmwc/SendBackTrail';
 import { returnedPrefill } from './returned';
 import { ClearReturned } from '../../../rejected/ClearReturned';
 import { ROUTE_INACTIVE_MESSAGE } from '@/lib/errors';
@@ -183,12 +185,16 @@ export default async function EditCustomerPage({
         where: { id: returnedId },
         select: {
           fieldChanges: true,
+          cycle: true,
           decisionReason: true,
           reviewedAt: true,
           reviewedBy: { select: { fullName: true } },
+          // Finding 18: who, at which step and why, from the decision row.
+          steps: DECISION_TRAIL,
         },
       })
     : null;
+  const sentBack = returnedEdit ? sentBackTrail(returnedEdit, returnedEdit.steps).latest : null;
   const fillIn = !!returnedEdit && asked === returnedId;
   const returned =
     returnedEdit && fillIn ? returnedPrefill(customer, returnedEdit.fieldChanges, { lockName, lockCr }) : null;
@@ -213,16 +219,17 @@ export default async function EditCustomerPage({
         </div>
       )}
 
-      {returnedId && returnedEdit && (
+      {returnedId && returnedEdit && sentBack && (
         <div className="mx-4 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 [overflow-wrap:anywhere] sm:mx-6">
           <p>
             <strong className="font-semibold">
               Sent back to you
-              {returnedEdit.reviewedBy ? ` by ${returnedEdit.reviewedBy.fullName}` : ''}
-              {returnedEdit.reviewedAt ? `, ${omanWhen(returnedEdit.reviewedAt)}` : ''}:
+              {sentBack.by ? ` by ${sentBack.by}` : ''}
+              {sentBack.at ? `, ${omanWhen(sentBack.at)}` : ''}:
             </strong>{' '}
-            {returnedEdit.decisionReason ?? 'Needs correction.'}
+            {sentBack.reason ?? 'Needs correction.'}
           </p>
+          {atStepText(sentBack) && <p className="mt-1">{atStepText(sentBack)}.</p>}
           {returned ? (
             <>
               <p className="mt-1">

@@ -45,6 +45,7 @@ import { notifyUsers, settleRequestAlerts } from '@/lib/notifications';
 import { UNWIRED_LIVE } from '@/lib/photo-attach';
 import { closureFromHistory, evidenceEntry, readEvidenceEntry, sentRequestAudit } from '@/lib/request-evidence';
 import { requestScopeAtSubmit } from '@/lib/scope-at-submit';
+import { REQUEST_REASON_LEGACY_COPY, requestReasonOf } from '@/lib/request-reasons';
 
 async function require(role?: Role[]) {
   const user = await requireActor(); // F15: refuses a session that must change its password
@@ -315,7 +316,11 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
         submittedById: me.id,
         submittedAt: reactSubmittedAt,
         isReactivation: true,
-        decisionReason: reason,
+        // Finding 18: HIS reason, in the column no decision ever writes (frozen
+        // once sent). The copy in decisionReason is the rollback bridge only
+        // (lib/request-reasons.ts): the build before this one reads it there.
+        requestReason: reason,
+        ...(REQUEST_REASON_LEGACY_COPY ? { decisionReason: reason } : {}),
         // Gap 18: where it was raised — his route, and the shop's region.
         ...requestScopeAtSubmit({
           branches: [branch],
@@ -477,7 +482,10 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
         state: EditState.SUBMITTED,
         submittedById: me.id,
         submittedAt: closeSubmittedAt,
-        decisionReason: reason,
+        // Finding 18: as for a reactivation — his reason in its own column, and
+        // the rollback bridge's copy.
+        requestReason: reason,
+        ...(REQUEST_REASON_LEGACY_COPY ? { decisionReason: reason } : {}),
         // Gap 18: where it was raised — his route, and the shop's region.
         ...requestScopeAtSubmit({
           branches: [branch],
@@ -581,6 +589,10 @@ async function approveReactivationCore(formData: FormData) {
   // throwing, so any loss of request context inside the callback would be
   // silent; keeping the call out here makes that impossible.
   const env = await getAuditEnvelope(me.id);
+  // Finding 18: the salesman's reason for asking, from the column that is only
+  // his; a request sent by the build before this one has it in decisionReason
+  // (lib/request-reasons.ts requestReasonOf). Nothing is written to the request.
+  const requestReason = requestReasonOf(edit);
 
   await withChangeContext(prisma, { actorId: me.id, source: src.edit(editId) }, async (tx) => {
     // QA-C12: claim the edit atomically FIRST (PROD-001 pattern, mirroring
@@ -716,7 +728,7 @@ async function approveReactivationCore(formData: FormData) {
       action: 'REACTIVATE',
       entityType: 'Branch',
       entityId: edit.branchId!,
-      reason: edit.decisionReason ?? undefined,
+      reason: requestReason ?? undefined,
       // Gap 20 (lossless paths): the request, its evidence and what the evidence
       // was checked against, so the reopening is a linked, complete record.
       // Acceptance is unchanged: these are recorded, not newly enforced.
@@ -727,7 +739,7 @@ async function approveReactivationCore(formData: FormData) {
         branchLastStatusChangeAtAtRequest: atRequest.branchLastStatusChangeAt ?? null,
         closedAt,
         closureReference,
-        requestReason: edit.decisionReason ?? null,
+        requestReason,
         managerReason,
       } as Prisma.InputJsonValue,
     });
@@ -806,9 +818,10 @@ async function rejectReactivationCore(formData: FormData) {
     // can't double-decide — the loser aborts before writing an audit row.
     // Launch fix (2026-10-07): "Keep closed" is final, so it ends REJECTED, not
     // NEEDS_CORRECTION — nothing on it can be corrected, and it used to sit on the
-    // salesman's Needs correction lists for ever. decisionReason keeps HIS reason
-    // for asking (it was overwritten, and lost); the Manager's is on the REJECT
-    // audit row below and in the salesman's notification.
+    // salesman's Needs correction lists for ever. HIS reason for asking is not
+    // touched (it was overwritten, and lost; since finding 18 it is requestReason,
+    // which the database freezes); the Manager's is on the decision row
+    // (EditApproval), the REJECT audit row below and the salesman's notification.
     const decidedAt = new Date();
     const claim = await tx.customerEdit.updateMany({
       where: { id: editId, state: EditState.SUBMITTED, isReactivation: true },

@@ -336,11 +336,14 @@ describe('the review page', () => {
   });
 
   // Launch fix (2026-10-07): a refused close keeps the salesman's reason for
-  // asking in decisionReason (the reviewer's is on the decision row), so the
-  // decision box must not present it as the reviewer's words.
+  // asking (the reviewer's is on the decision row), so the decision box must not
+  // present it as the reviewer's words. Finding 18 (code review 2026-11-10): the
+  // fixture is the row a refusal really leaves — it has always written its
+  // REJECTED decision row — and the reviewer's reason is now shown beside the
+  // salesman's, each under its own label.
   it('a decided close request names its kept reason as the salesman’s; a sent-back update does not', async () => {
     const { default: Page } = await import('@/app/(app)/approvals/[id]/page');
-    const decided = (target: 'BRANCH' | 'CUSTOMER', state: string, decisionReason: string) =>
+    const decided = (target: 'BRANCH' | 'CUSTOMER', state: string, decisionReason: string, over: Record<string, unknown> = {}) =>
       createRow('CASH', 0, {
         process: 'UPDATE',
         target,
@@ -352,16 +355,233 @@ describe('the review page', () => {
         decisionReason,
         reviewedBy: { fullName: 'Manager B' },
         reviewedAt: new Date('2026-10-07T06:00:00.000Z'),
+        ...over,
       });
+    const refusal = {
+      id: 's-refused',
+      stepIndex: 0,
+      cycle: 2,
+      role: 'SUPERVISOR',
+      decision: 'REJECTED',
+      reason: 'The shop is open, I passed it today.',
+      at: new Date('2026-10-07T06:00:00.000Z'),
+      actor: { fullName: 'Manager B' },
+    };
     h.role = 'GM';
-    h.edit = decided('BRANCH', 'REJECTED', 'Shop shut, seen today.');
+    // A row the build before finding 18 left: his reason in decisionReason only.
+    h.edit = decided('BRANCH', 'REJECTED', 'Shop shut, seen today.', { steps: [refusal] });
     render(await Page({ params: Promise.resolve({ id: 'e1' }) }));
     expect(screen.getByText(/Salesman.s reason:/).parentElement!.textContent).toContain('Shop shut, seen today.');
+    // …and never inside the decision box, where it would read as the reviewer's.
+    const box = screen.getByText(/^Decision:/);
+    expect(box.textContent).toContain('Decision: REJECTED by Manager B');
+    expect(box.textContent).not.toContain('Shop shut, seen today.');
+    expect(box.textContent).toContain('Refused at the Supervisor step: “The shop is open, I passed it today.”');
     cleanup();
     h.edit = decided('CUSTOMER', 'NEEDS_CORRECTION', 'Phone number is wrong.');
     render(await Page({ params: Promise.resolve({ id: 'e1' }) }));
     expect(screen.getByText(/Phone number is wrong\./)).toBeTruthy();
     expect(screen.queryByText(/Salesman.s reason:/)).toBeNull();
+  });
+});
+
+describe('finding 18 (code review 2026-11-10): whose reason is on the review page, and whether it is still current', () => {
+  type Row = Record<string, unknown>;
+  const at = (min: number) => new Date(Date.UTC(2026, 10, 9, 6, min, 0));
+  const step = (
+    stepIndex: number,
+    role: string,
+    decision: 'APPROVED' | 'REJECTED',
+    actor: string,
+    min: number,
+    reason: string | null = null,
+    cycle = 2
+  ) => ({ id: `s-${stepIndex}-${decision}-${min}`, stepIndex, cycle, role, decision, reason, at: at(min), actor: { fullName: actor } });
+  const closeRequest = (over: Row = {}) =>
+    createRow('CASH', 0, {
+      process: 'UPDATE',
+      target: 'BRANCH',
+      isReactivation: false,
+      customerId: 'c1',
+      customer: { id: 'c1', legalName: 'Muscat Pearl', nmwcCode: 'NMWC-000123', crPhotoId: null, branches: [] },
+      approvalChain: resolveChain(EditProcess.UPDATE, PaymentTerms.CASH),
+      customerDraft: null,
+      // As the submit writes it now: his reason in its own column, and the rollback bridge's copy.
+      requestReason: 'The owner has left the country.',
+      decisionReason: 'The owner has left the country.',
+      ...over,
+    });
+  const show = async (row: unknown) => {
+    cleanup();
+    h.actionProps = [];
+    h.edit = row;
+    const { default: Page } = await import('@/app/(app)/approvals/[id]/page');
+    render(await Page({ params: Promise.resolve({ id: 'e1' }) }));
+  };
+  /** The "Decision: …" box of a decided request (the state is also a word in the chain list). */
+  const decisionBox = (state: string) => {
+    const box = screen.getByText(/^Decision:/);
+    expect(box.textContent).toContain(`Decision: ${state}`);
+    return box;
+  };
+  const salesmanNote = () => screen.queryByText(/Salesman.s reason:/)?.parentElement?.textContent ?? null;
+
+  beforeEach(() => {
+    h.role = 'GM';
+  });
+
+  it('a PENDING close request shows the salesman’s reason to its approver (it was shown only once decided)', async () => {
+    await show(closeRequest({ state: 'SUBMITTED' }));
+    expect(salesmanNote()).toBe("Salesman's reason: “The owner has left the country.”");
+    // Still pending: there is no decision box, and the buttons are there.
+    expect(screen.queryByText(/^Decision:/)).toBeNull();
+    expect(h.actionProps).toHaveLength(1);
+  });
+
+  it('a pending reactivation, opened here by its link, shows it too — also one an older build sent', async () => {
+    await show(closeRequest({ state: 'SUBMITTED', isReactivation: true, requestReason: 'Open again under a new owner.' }));
+    expect(salesmanNote()).toContain('“Open again under a new owner.”');
+    await show(closeRequest({ state: 'SUBMITTED', isReactivation: true, requestReason: null, decisionReason: 'Open again.' }));
+    expect(salesmanNote()).toContain('“Open again.”');
+  });
+
+  it('an update or a new-customer request has no salesman’s reason line, whatever decisionReason holds', async () => {
+    await show(createRow('CASH', 1, { decisionReason: 'CR number does not match the photo' }));
+    expect(salesmanNote()).toBeNull();
+  });
+
+  it('an APPROVED request shows no reason in its decision box — the step-back’s reason stays in the chain list only', async () => {
+    const steps = [
+      step(0, 'SUPERVISOR', 'APPROVED', 'Manager B', 10),
+      step(1, 'ACCOUNTANT', 'REJECTED', 'Accountant A', 20, 'CR number does not match the photo'),
+      step(0, 'SUPERVISOR', 'APPROVED', 'Manager B', 30),
+      step(1, 'ACCOUNTANT', 'APPROVED', 'Accountant A', 40),
+    ];
+    await show(
+      createRow('CASH', 1, {
+        state: 'APPROVED',
+        customerId: 'c9',
+        customer: { id: 'c9', legalName: 'Al Noor Trading', nmwcCode: 'NMWC-2026-000900', temixCode: 'CAA0367', crPhotoId: null, deletedAt: null, branches: [] },
+        // A row an older build approved: the step-back's reason was never cleared.
+        decisionReason: 'CR number does not match the photo',
+        reviewedBy: { fullName: 'Accountant A' },
+        reviewedAt: at(40),
+        steps,
+      })
+    );
+    const box = decisionBox('APPROVED');
+    expect(box.textContent).toContain('Decision: APPROVED by Accountant A');
+    expect(box.textContent).toContain('Created as customer NMWC-2026-000900.');
+    expect(box.textContent).not.toContain('CR number does not match the photo');
+    expect(box.textContent).not.toMatch(/Sent back|Refused|“/);
+    // The trail is complete: the rejection, with its reason, is one of the four decisions.
+    const trail = screen.getAllByRole('list').find((l) => l.textContent!.includes('REJECTED'))!;
+    expect(within(trail).getAllByRole('listitem')).toHaveLength(4);
+    expect(trail.textContent).toContain('REJECTED at Accountant step by Accountant A — “CR number does not match the photo”');
+  });
+
+  it('a request sent back to the salesman says at which step, with the LATEST reason of the round', async () => {
+    const steps = [
+      step(0, 'SUPERVISOR', 'APPROVED', 'Manager B', 10),
+      step(1, 'ACCOUNTANT', 'REJECTED', 'Accountant A', 20, 'CR number does not match the photo'),
+      step(0, 'SUPERVISOR', 'REJECTED', 'Manager B', 30, 'Phone number format is incorrect'),
+      // Another round's rejection is not this round's.
+      step(0, 'SUPERVISOR', 'REJECTED', 'Manager B', 5, 'from round 1', 1),
+    ];
+    await show(
+      createRow('CASH', 0, {
+        state: 'NEEDS_CORRECTION',
+        decisionReason: 'Phone number format is incorrect',
+        reviewedBy: { fullName: 'Manager B' },
+        reviewedAt: at(30),
+        steps,
+      })
+    );
+    const box = decisionBox('NEEDS_CORRECTION');
+    expect(box.textContent).toContain('Sent back at the Supervisor step: “Phone number format is incorrect”');
+    expect(box.textContent).not.toContain('CR number does not match the photo');
+    expect(box.textContent).not.toContain('from round 1');
+  });
+
+  it('a close refused by its reviewer shows both reasons, each under its own label', async () => {
+    await show(
+      closeRequest({
+        state: 'REJECTED',
+        reviewedBy: { fullName: 'Manager B' },
+        reviewedAt: at(20),
+        steps: [step(0, 'SUPERVISOR', 'REJECTED', 'Manager B', 20, 'The shop is open, I passed it today.')],
+      })
+    );
+    expect(salesmanNote()).toContain('“The owner has left the country.”');
+    const box = decisionBox('REJECTED');
+    expect(box.textContent).toContain('Refused at the Supervisor step: “The shop is open, I passed it today.”');
+    expect(box.textContent).not.toContain('The owner has left the country.');
+  });
+
+  it('a close auto-closed by a merge keeps the salesman’s reason beside the merge’s note', async () => {
+    await show(
+      closeRequest({
+        state: 'REJECTED',
+        decisionReason: 'Auto-closed: customer NMWC-000007 merged into NMWC-000003.',
+        reviewedBy: { fullName: 'Steward S' },
+        reviewedAt: at(20),
+      })
+    );
+    expect(salesmanNote()).toContain('“The owner has left the country.”');
+    const box = decisionBox('REJECTED');
+    expect(box.textContent).toContain('“Auto-closed: customer NMWC-000007 merged into NMWC-000003.”');
+    expect(box.textContent).not.toMatch(/Refused|Sent back/);
+  });
+
+  it('an older row that cannot be told apart is not guessed: no salesman’s line, and the box points to the audit log', async () => {
+    // REJECTED with no decision row and no requestReason: a reactivation kept
+    // closed before decisions were recorded — or a merge. The text is shown as nobody's.
+    await show(
+      closeRequest({
+        state: 'REJECTED',
+        isReactivation: true,
+        requestReason: null,
+        decisionReason: 'Open again.',
+        reviewedBy: { fullName: 'Manager B' },
+        reviewedAt: at(20),
+      })
+    );
+    expect(salesmanNote()).toBeNull();
+    const box = decisionBox('REJECTED');
+    expect(box.textContent).toContain("The reviewer's reason is in the audit log.");
+    expect(box.textContent).not.toContain('Open again.');
+  });
+
+  it('a withdrawn new-customer request shows its closure note, and not a rejection from its round', async () => {
+    await show(
+      createRow('CASH', 0, {
+        state: 'REJECTED',
+        decisionReason: 'Withdrawn by the salesman who sent it.',
+        decisionCategory: 'withdrawn',
+        reviewedBy: { fullName: 'Salesman One' },
+        reviewedAt: at(50),
+        steps: [step(0, 'SUPERVISOR', 'REJECTED', 'Manager B', 30, 'Phone number format is incorrect')],
+      })
+    );
+    const box = decisionBox('REJECTED');
+    expect(box.textContent).toContain('“Withdrawn by the salesman who sent it.”');
+    expect(box.textContent).not.toMatch(/Refused|Sent back/);
+    expect(box.textContent).not.toContain('Phone number format is incorrect');
+  });
+
+  it('the reject form is told how many reasons this round already has — this round only', async () => {
+    await show(
+      createRow('CASH', 0, {
+        steps: [
+          step(0, 'SUPERVISOR', 'APPROVED', 'Manager B', 10),
+          step(1, 'ACCOUNTANT', 'REJECTED', 'Accountant A', 20, 'CR number does not match the photo'),
+          step(1, 'ACCOUNTANT', 'REJECTED', 'Accountant A', 5, 'from round 1', 1),
+        ],
+      })
+    );
+    expect(h.actionProps[0]).toMatchObject({ earlierSendBacks: 1, rejectOutcome: { kind: 'TO_SALESMAN' } });
+    await show(createRow('CASH', 0));
+    expect(h.actionProps[0]).toMatchObject({ earlierSendBacks: 0 });
   });
 });
 
@@ -418,7 +638,9 @@ describe('the review page of a customer update — phase 2 (F06, F20, F21, rulin
     // The value it holds now is not on the page (the approver may not see every branch).
     expect(banner.parentElement!.textContent).not.toMatch(/Omar/);
     expect(banner.parentElement!.textContent).toMatch(/it will be refused — reject it/);
-    expect(Object.keys(props).sort()).toEqual(['decisionToken', 'editId', 'outcome', 'rejectOutcome']);
+    // Finding 18 added a count of this round's earlier rejections (a number, nothing of the customer's).
+    expect(Object.keys(props).sort()).toEqual(['decisionToken', 'earlierSendBacks', 'editId', 'outcome', 'rejectOutcome']);
+    expect(props.earlierSendBacks).toBe(0);
   });
 
   it('ruling 8: judged after the QA-013 re-check, as the approval judges it — a CR number it would drop does not warn', async () => {

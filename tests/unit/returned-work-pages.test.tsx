@@ -107,6 +107,26 @@ const returned = (over: Record<string, unknown>) => ({
   ...over,
 });
 
+/** One REJECTED EditApproval row (or another decision), as the pages' trail selects it. */
+const decisionRow = (
+  stepIndex: number,
+  role: string,
+  reason: string | null,
+  by: string,
+  min: number,
+  cycle = 1,
+  decision = 'REJECTED'
+) => ({
+  id: `d-${cycle}-${stepIndex}-${min}`,
+  cycle,
+  stepIndex,
+  role,
+  decision,
+  reason,
+  at: new Date(Date.UTC(2026, 10, 9, 6, min, 0)),
+  actor: { fullName: by },
+});
+
 beforeEach(() => {
   h.role = 'SALESMAN';
   h.openIds = [];
@@ -161,6 +181,59 @@ describe('Work, for a salesman', () => {
     expect(screen.getByRole('link', { name: 'Sent back to you (3) — see why' }).getAttribute('href')).toBe('/rejected');
   });
 
+  // Code review 2026-11-10, finding 18: the row said only the LAST approver's
+  // words. It is read from the decisions now: the latest reason of the round,
+  // and how many came before it (the list itself is on /rejected).
+  it('finding 18: a relayed send-back shows the latest reason and counts the earlier ones; the queries carry the decisions', async () => {
+    h.rows = [
+      returned({
+        id: 'e-new',
+        process: 'CREATE',
+        customerId: null,
+        customer: null,
+        customerDraft: { legalName: 'New Shop' },
+        cycle: 1,
+        decisionReason: 'Please re-verify and resubmit',
+        steps: [
+          decisionRow(1, 'ACCOUNTANT', 'CR number does not match the photo', 'Accountant Aisha', 20),
+          decisionRow(0, 'SUPERVISOR', 'Please re-verify and resubmit', 'Manager Muna', 30),
+        ],
+      }),
+      returned({
+        id: 'e-three',
+        process: 'CREATE',
+        customerId: null,
+        customer: null,
+        customerDraft: { legalName: 'Thrice Shop' },
+        cycle: 2,
+        decisionReason: 'Third reason',
+        steps: [
+          decisionRow(0, 'SUPERVISOR', 'from round 1', 'Manager Muna', 5, 1),
+          decisionRow(4, 'GM', 'First reason', 'GM Ghalib', 10, 2),
+          decisionRow(3, 'FINANCE_MANAGER', 'Second reason', 'Finance Faisal', 20, 2),
+          decisionRow(3, 'FINANCE_MANAGER', 'Third reason', 'Finance Faisal', 40, 2),
+        ],
+      }),
+      // One send-back: the reason alone, from its decision row.
+      returned({ id: 'e-upd', cycle: 1, steps: [decisionRow(0, 'SUPERVISOR', 'Contact role looks wrong.', 'Manager Muna', 30)] }),
+    ];
+    h.openIds = ['e-new', 'e-three', 'e-upd'];
+    await renderWork();
+    const card = (name: string) => screen.getByText(name).closest('a')!;
+    expect(within(card('New Shop')).getByText('Please re-verify and resubmit · and 1 earlier reason in this round')).toBeTruthy();
+    expect(within(card('Thrice Shop')).getByText('Third reason · and 2 earlier reasons in this round')).toBeTruthy();
+    expect(within(card('Al Noor Trading')).getByText('Contact role looks wrong.')).toBeTruthy();
+    // The sent-back rows are read with their decisions, oldest first; his other lists are not.
+    const byId = h.findManyArgs.filter((a) => (a.where as { id?: unknown }).id);
+    expect(byId).toHaveLength(1);
+    expect((byId[0] as unknown as { include: { steps: unknown } }).include.steps).toMatchObject({
+      orderBy: [{ at: 'asc' }, { id: 'asc' }],
+    });
+    for (const a of h.findManyArgs.filter((x) => !(x.where as { id?: unknown }).id)) {
+      expect((a as unknown as { include: Record<string, unknown> }).include).not.toHaveProperty('steps');
+    }
+  });
+
   it('a pending reactivation is with a Manager, not "your supervisor"', async () => {
     h.rows = [
       returned({ id: 'e-react', state: 'SUBMITTED', target: 'BRANCH', isReactivation: true }),
@@ -187,6 +260,62 @@ describe('/rejected', () => {
     expect(card.getAttribute('href')).toBe('/customers/c1/edit?returned=e-upd');
     expect(within(card).getByText(/^Sent back by Manager Muna/)).toBeTruthy();
     expect(within(card).queryByText(/Rejected by/)).toBeNull();
+  });
+
+  // Finding 18: he cannot open the approver's page, so this card is where he
+  // reads an Accountant's reason that a Manager relayed as "Please re-verify".
+  it('finding 18: a relayed send-back lists the round’s earlier reasons, and says at which step it was sent back', async () => {
+    h.rows = [
+      returned({
+        id: 'e-new',
+        process: 'CREATE',
+        customerId: null,
+        customer: null,
+        customerDraft: { legalName: 'New Shop' },
+        cycle: 1,
+        decisionReason: 'Please re-verify and resubmit',
+        // On the row: whoever decided last. The card reads the decision row itself.
+        reviewedBy: { fullName: 'Manager Muna' },
+        reviewedAt: new Date('2026-11-09T06:30:00Z'),
+        steps: [
+          decisionRow(0, 'SUPERVISOR', null, 'Manager Muna', 10, 1, 'APPROVED'),
+          decisionRow(1, 'ACCOUNTANT', 'CR number does not match the photo', 'Accountant Aisha', 20),
+          decisionRow(0, 'SUPERVISOR', 'Please re-verify and resubmit', 'Manager Muna', 30),
+        ],
+      }),
+    ];
+    h.openIds = ['e-new'];
+    const { default: RejectedPage } = await import('@/app/(app)/rejected/page');
+    render(await RejectedPage());
+    const card = screen.getByText('New Shop').closest('a')!;
+    // The latest reason in its own element, as before.
+    expect(within(card).getByText('Please re-verify and resubmit')).toBeTruthy();
+    expect(within(card).getByText('Earlier in this round:')).toBeTruthy();
+    expect(within(card).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      'Accountant step — Accountant Aisha, 09/11/2026: CR number does not match the photo',
+    ]);
+    // The line he already knows, unchanged, and the step on a line of its own.
+    expect(within(card).getByText('Sent back by Manager Muna · 09/11/2026')).toBeTruthy();
+    expect(within(card).getByText('At the Supervisor step')).toBeTruthy();
+  });
+
+  it('finding 18: one send-back shows no "Earlier" list; a row with no decision rows shows no step', async () => {
+    h.rows = [
+      returned({ id: 'e-upd', cycle: 1, steps: [decisionRow(0, 'SUPERVISOR', 'Contact role looks wrong.', 'Manager Muna', 30)] }),
+      // The step-less fixture every other test here uses: an older row.
+      returned({ id: 'e-old', customer: { id: 'c5', legalName: 'Older Shop', nmwcCode: 'N5' }, customerId: 'c5' }),
+    ];
+    h.openIds = ['e-upd', 'e-old'];
+    const { default: RejectedPage } = await import('@/app/(app)/rejected/page');
+    render(await RejectedPage());
+    expect(screen.queryByText('Earlier in this round:')).toBeNull();
+    const fresh = screen.getByText('Al Noor Trading').closest('a')!;
+    expect(within(fresh).getByText('Contact role looks wrong.')).toBeTruthy();
+    expect(within(fresh).getByText('At the Supervisor step')).toBeTruthy();
+    const older = screen.getByText('Older Shop').closest('a')!;
+    expect(within(older).getByText('Contact role looks wrong.')).toBeTruthy();
+    expect(within(older).getByText(/^Sent back by Manager Muna · 04\/10\/2026$/)).toBeTruthy();
+    expect(within(older).queryByText(/^At the /)).toBeNull();
   });
 
   it('each one he can clear is cleared beside its card, not inside its link; a new-customer request is not', async () => {

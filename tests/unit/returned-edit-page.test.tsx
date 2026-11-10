@@ -21,6 +21,9 @@ import type { ReactNode } from 'react';
 
 const h = vi.hoisted(() => ({
   openIds: [] as string[],
+  /** Finding 18: the sent-back request's decisions, when a test gives it any (an older row has none). */
+  decided: null as null | { cycle: number; steps: Array<Record<string, unknown>> },
+  returnedSelects: [] as Array<Record<string, unknown>>,
   formProps: null as null | { returned?: { id: string; prefill: { customer: Record<string, unknown> } } },
   formKey: null as string | null,
   cleared: [] as Array<{ editId: string; then: string }>,
@@ -125,13 +128,17 @@ vi.mock('@/lib/db', () => ({
     channel: { findMany: async () => [] },
     customerEdit: {
       findFirst: async () => null,
-      findUnique: async () => ({
-        // He sent a new phone; the Supervisor said the one on file is right.
-        fieldChanges: [{ field: 'customer.primaryPhone', before: '+96891234567', after: '+96899999999' }],
-        decisionReason: 'The phone on file is right — do not change it.',
-        reviewedAt: new Date('2026-10-04T08:00:00Z'),
-        reviewedBy: { fullName: 'Manager Muna' },
-      }),
+      findUnique: async (args: { select: Record<string, unknown> }) => {
+        h.returnedSelects.push(args.select);
+        return {
+          // He sent a new phone; the Supervisor said the one on file is right.
+          fieldChanges: [{ field: 'customer.primaryPhone', before: '+96891234567', after: '+96899999999' }],
+          decisionReason: 'The phone on file is right — do not change it.',
+          reviewedAt: new Date('2026-10-04T08:00:00Z'),
+          reviewedBy: { fullName: 'Manager Muna' },
+          ...(h.decided ?? {}),
+        };
+      },
     },
   },
 }));
@@ -140,7 +147,26 @@ beforeEach(() => {
   h.openIds = ['e1'];
   h.formProps = null;
   h.cleared = [];
+  h.decided = null;
+  h.returnedSelects = [];
 });
+
+/** The Supervisor step's rejection, as its decision row: who, when (10:30 in Oman on 9 Nov) and why. */
+const DECISION = {
+  cycle: 1,
+  steps: [
+    {
+      id: 'd1',
+      cycle: 1,
+      stepIndex: 0,
+      role: 'SUPERVISOR',
+      decision: 'REJECTED',
+      reason: 'From the decision row: keep the phone on file.',
+      at: new Date('2026-11-09T06:30:00Z'),
+      actor: { fullName: 'Manager Majid' },
+    },
+  ],
+};
 afterEach(cleanup);
 
 async function editPage(returned?: string) {
@@ -163,6 +189,30 @@ describe('the edit page, with an update sent back to him', () => {
     expect(screen.getByText('Fill in what I sent').closest('a')!.getAttribute('href')).toBe('/customers/c1/edit?returned=e1');
     expect(screen.queryByText(/What you sent is filled in/)).toBeNull();
     expect(h.cleared).toEqual([{ editId: 'e1', then: '/customers/c1/edit' }]);
+  });
+
+  // Code review 2026-11-10, finding 18: who, when and why come from the decision
+  // row (EditApproval), with the step it was decided at; the request row's own
+  // copy is only the fallback the tests above exercise.
+  it('finding 18: reads who sent it back, when, why and at which step from the decision row', async () => {
+    h.decided = DECISION;
+    await editPage();
+    const said = screen.getByText(/^Sent back to you by Manager Majid, /);
+    expect(said.textContent).toMatch(/^Sent back to you by Manager Majid, .*10:30.*:$/);
+    expect(said.parentElement!.textContent).toContain('From the decision row: keep the phone on file.');
+    expect(screen.getByText('At the Supervisor step.')).toBeTruthy();
+    // The row's own copy is not printed beside it.
+    expect(screen.queryByText(/The phone on file is right/)).toBeNull();
+    expect(screen.queryByText(/Manager Muna/)).toBeNull();
+    // Read with the request, in the one query the banner already made.
+    expect(h.returnedSelects).toHaveLength(1);
+    expect(h.returnedSelects[0]).toMatchObject({ cycle: true, steps: { orderBy: [{ at: 'asc' }, { id: 'asc' }] } });
+  });
+
+  it('finding 18: an older row, with no decision rows, names no step', async () => {
+    await editPage();
+    expect(screen.getByText(/Sent back to you by Manager Muna/)).toBeTruthy();
+    expect(screen.queryByText(/^At the /)).toBeNull();
   });
 
   it('?returned= that request fills it in, and offers the way back to the customer as it is', async () => {
@@ -195,6 +245,17 @@ describe('the customer profile, where his "Correction" notification lands', () =
     expect(screen.getByText('Open the form to fix it').closest('a')!.getAttribute('href')).toBe(
       '/customers/c1/edit?returned=e1'
     );
+  });
+
+  it('finding 18: from the decision row there too — who, why, and at which step', async () => {
+    h.decided = DECISION;
+    const { default: Profile } = await import('@/app/(app)/customers/[id]/page');
+    render(await Profile({ params: Promise.resolve({ id: 'c1' }) }));
+    const said = screen.getByText(/^Your changes were sent back by Manager Majid, /);
+    expect(said.parentElement!.textContent).toContain('From the decision row: keep the phone on file.');
+    expect(screen.getByText('At the Supervisor step.')).toBeTruthy();
+    expect(screen.queryByText(/The phone on file is right/)).toBeNull();
+    expect(h.returnedSelects[0]).toMatchObject({ cycle: true, steps: { orderBy: [{ at: 'asc' }, { id: 'asc' }] } });
   });
 
   it('says nothing when nothing waits on him', async () => {
