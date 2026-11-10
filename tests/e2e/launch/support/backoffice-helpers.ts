@@ -167,7 +167,10 @@ export function newSecretPassword(): string {
  */
 export async function resetStewardLimits(u: FixtureUser): Promise<void> {
   if (!/^c[0-9a-z]{24}$/.test(u.id)) throw new Error(`resetStewardLimits: ${u.key} has no fixture id`);
-  await db.rateLimit.deleteMany({ where: { key: { in: [`import:${u.id}`, `temix:${u.id}`, `temix-download:${u.id}`] } } });
+  await db.rateLimit.deleteMany({
+    // import-summary: the "Before you promote" check (services/import-review.ts).
+    where: { key: { in: [`import:${u.id}`, `import-summary:${u.id}`, `temix:${u.id}`, `temix-download:${u.id}`] } },
+  });
 }
 
 /** Empties a fixture Steward's import bucket now (the next upload is told to wait). */

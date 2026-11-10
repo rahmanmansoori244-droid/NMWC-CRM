@@ -12,9 +12,11 @@ Two Excel files to fill and hand back. They are generated to match **exactly** t
 2. **Import the Account master** (regions → routes → people; the app auto-orders supervisors before salesmen).
 3. **Import the Customer master** → review the staged rows → **Promote**.
 
-Re-importing is safe (idempotent): existing users keep their password/role/supervisor unless you explicitly say otherwise, and a blank `email`, `phone` or `region_codes` cell keeps what is on record. A row whose `role` differs from the account's current role is held back unless `change_role` is `yes` (see below), so re-importing an old sheet after someone's role was changed in `/users` lists that row instead of undoing half the change. Each account, region and route the import creates or changes is recorded in the audit log, with the batch; an unchanged row records nothing.
+Re-importing the **account master** is safe (idempotent; for customers see "Re-loading customers that are already in the CRM" below): existing users keep their password/role/supervisor unless you explicitly say otherwise, and a blank `email`, `phone` or `region_codes` cell keeps what is on record. A row whose `role` differs from the account's current role is held back unless `change_role` is `yes` (see below), so re-importing an old sheet after someone's role was changed in `/users` lists that row instead of undoing half the change. Each account, region and route the import creates or changes is recorded in the audit log, with the batch; an unchanged row records nothing.
 
 **Column headings.** The importer finds each column by its heading in row 1, wherever the column sits. A column with no heading is ignored. The same heading in two columns — in any letter case, e.g. `phone` and `PHONE` — refuses the file when it is on a sheet the import reads (the first sheet of a customer master; Regions, Routes or Users of an account master), naming the sheet and both columns: keep one, or rename the other. On any other sheet (instructions, notes) it is ignored. Rows are numbered as Excel shows them, blank lines included, on every sheet of both masters.
+
+**Customer master headings (since 2026-11-10).** A heading is matched whatever its capitals, spaces, underscores or dashes: `TEMIX_CODE`, `Temix code` and `TemixCode` are all `temix_code`, and the same holds for every column. After the upload the result line, and the batch page, list every heading the import did **not** read ("Not read: …") — check that list before you promote. Two headings that are one column in two spellings (`Temix code` and `temix_code`) refuse the file. **A sheet with no `temix_code` column is refused when it names a customer that already has a Temix code in the CRM**: nothing is uploaded, and the message names the column. Add it (each customer's Temix code is on the customer page; leave the cell blank for a customer not yet in Temix) and upload again.
 
 ### What Promote looks like on a full-size master
 A real master (thousands of rows) is **far too big to load in one request**, so Promote works through it in passes and shows live progress — *"Promoting… 1,200 done, 2,100 left"*. Leave the tab open; it drives the passes for you.
@@ -98,7 +100,19 @@ One sheet named **Customers** (must stay the first sheet) + an Instructions tab.
 > the batch still loads, and you can fix the sheet and re-upload.
 | `channel` | optional | the CRM channel **code**: `HORECA`, `MODERN_TRADE`, `GENERAL_TRADE`, `CONVENIENCE_AND_GAS`, `ECOMMERCE`, `HOME_OFFICE_DELIVERY`, `INSTITUTIONS`. Anything else → held for review. |
 | `day_of_visit` | optional | the journey-plan visit day for this branch: `SAT` `SUN` `MON` `TUE` `WED` `THU` `FRI`. Drives the salesman's **Today** list. |
-| `customer_status` | optional | `ACTIVE` (default) or `CLOSED`. A customer with any ACTIVE branch stays ACTIVE. |
+| `customer_status` | optional | `ACTIVE` (default) or `CLOSED`. A customer with any ACTIVE branch stays ACTIVE. Read only for a customer or shop the load **creates** — see below. |
+
+### Re-loading customers that are already in the CRM
+
+The CRM is master for a customer's name, phone, CR number, contact person and channel, for a shop's name, address and visit day, and for whether a customer or shop is open or closed. Temix is master for the route, cash/credit, credit limit, credit days and the Temix code. The import follows that:
+
+- **It fills blanks; it never replaces a value on record.** For a customer or shop that already exists, a blank phone, contact person, CR number, channel, visit day or address (blank, or still "Address pending") is filled from the sheet. A value on record stays, whatever the sheet says.
+- **It never opens or closes.** `customer_status` does not change a customer or shop that exists. A shop closed by an approved request stays closed.
+- **Temix-owned fields are as before.** The shop moves to the sheet's `route`. Cash/credit, credit limit and credit days are refreshed only from a row whose `temix_code` is the code already recorded for the customer.
+- **Each row says what happened to it.** After Promote, a row whose value was kept is under **Loaded with a warning**, labelled "CRM value kept"; a row whose `credit_limit` or `payment_term_days` were not applied is labelled "Credit not applied", with the reason.
+- **Before Promote you see a summary** ("Before you promote"): what will be created, refreshed, filled, kept, not applied and rejected.
+- **"Overwrite CRM fields from this sheet"** (in that summary; Data Steward only; off by default; needs a reason; recorded in the audit log) makes the sheet replace those values for one batch — for a deliberate bulk correction. It switches itself off when the batch finishes.
+- **Never load a Temix extract through this screen.** Its headings are not this template's.
 
 > **An archived customer is not brought back by an import.** A row whose `cust_code`
 > belongs to a customer archived in the CRM is rejected at Promote — with or without

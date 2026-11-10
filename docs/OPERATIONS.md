@@ -863,8 +863,46 @@ COMMIT;
 The next night's `test-flags-changed` check reports the change (that is expected: it is how an unexpected one is caught). Whether the Steward should have a screen for this instead is an open owner question.
 
 ### Re-import the master after a bulk fix
+
+**The rule (code review 2026-11-10, finding 1; the owner's field-ownership rule).** The CRM is
+master for a customer's name, phone, CR number, contact person and channel, for a shop's name,
+address and visit day, and for whether a customer or shop is open or closed. Temix is master for
+the route, cash/credit, credit limit, credit days and the Temix code. So, for a customer or shop
+that is **already in the CRM**, an import **fills a blank CRM field, never replaces a value on
+record, and never opens or closes anything.** Temix-owned fields behave as they always did (the
+lanes below). New customers and new shops are created from the sheet as before.
+
+**Never load a Temix extract through `/import`.** That screen loads the customer-master template.
+A Temix extract has other headings, so its credit columns would not be read, and its rows would be
+taken as a plain re-load of every customer in it. The daily Temix file is a separate lane that is
+not built yet (item D).
+
 1. Sign in as Steward.
 2. `/import` → upload xlsx → review batch → Promote.
+   - **At upload, read the "Not read" line.** It lists every heading of the sheet the import does
+     not use; the batch page keeps the list. Headings are matched whatever their capitals, spaces
+     or underscores: `TEMIX_CODE`, `Temix code` and `TemixCode` are all `temix_code` (until
+     2026-11-10 they were ignored without a word). One column under two spellings in the same
+     sheet refuses the file.
+   - **A sheet with no `temix_code` column is refused when it names a customer that has a Temix
+     code on record.** Nothing is staged. Add a column headed `temix_code` holding each customer's
+     Temix code (it is on the customer page), blank for a customer not yet in Temix. The `/export`
+     workbook has no such column, so it is refused the same way once it names such a customer.
+   - **Promote opens "Before you promote".** It counts, against the CRM as it is at that moment:
+     customers and shops that will be created; Temix-owned fields refreshed and shops moved to
+     the sheet's route; blank CRM fields filled; customers and shops where the sheet differs
+     from the record (kept); rows whose credit cells will not be applied, and why; and rows
+     expected to be rejected. It is a check, not a lock. Resume and Finish skip it.
+   - **"Overwrite CRM fields from this sheet"** is in that dialog. Steward only, off by default,
+     needs a reason (10+ characters), and can be changed only while the batch is ready to
+     promote — not part-way through a load. Switched on, the sheet's name, phone, CR number,
+     contact person, channel, shop name, address, visit day and status **replace** what is on
+     record wherever the sheet gives a value, as every re-import did before 2026-11-10. Use it
+     only for a deliberate bulk correction — for example a master load that is meant to put the
+     master's names and addresses over the seeded ones. While it is on, the batch page shows a red
+     banner. The switch is an `UPDATE` audit row on the batch with the reason; every customer and
+     shop audit row of that load carries `overwriteCrmFields: true` with the value before and
+     after; and it switches itself off when the batch finishes.
 3. Existing customers (matching by `cust_code`) are upserted — but not all in the same way.
    **The lane is decided by each ROW, not by the customer** (checked against `services/imports.ts`
    on 2026-09-26, item 20):
@@ -876,17 +914,35 @@ The next night's `test-flags-changed` check reports the change (that is expected
      branch is missing or differs; change an existing branch on the customer's page. The refresh
      also flips the customer from UPLOADED to **SYNCED**, as though Temix had confirmed the last
      batch — do not re-import the full master while a Temix batch is waiting for its
-     acknowledgement. A row with a *different* non-blank `temix_code` is rejected.
+     acknowledgement. A row with a *different* non-blank `temix_code` is rejected. The credit
+     limit and credit days apply only while the customer is, or becomes, CREDIT; for a CASH
+     customer they are dropped, and the row now says so ("Credit not applied"). The overwrite
+     option changes nothing on this lane: it never writes a CRM field.
    - **Every other file row takes the full lane — including a row with a blank `temix_code` for a
-     customer that has one.** It overwrites the legal name, and the phone, CR, contact, channel and
+     customer that has one.** It creates a customer or shop the CRM does not have, from every
+     value the row gives. **On a customer or shop that exists (the option off, the default):** it
+     fills a blank phone, contact person, CR number or channel, a blank visit day, and a shop
+     address that is blank or still the importer's own "Address pending"; it moves the shop to the
+     sheet's route; and it **keeps every CRM value on record and writes no status**, so an older
+     sheet no longer undoes an approved correction or reopens a shop that an approved request
+     closed. A row whose value was kept is listed under **Loaded with a warning**, labelled
+     "CRM value kept" — the fields are named, never the values — and nothing is written or audited
+     for a kept value. It never writes the credit limit or credit days of a customer that exists;
+     a row carrying them says so ("Credit not applied": the customer has no Temix code on record,
+     or the row's `temix_code` is blank). **With the option on** it overwrites the legal name, and
+     the phone, CR, contact, channel and
      status wherever the row gives them, and the branch cells it gives; it adds no warning (but for
-     the sub-channel note below), and it
+     the sub-channel note below). Either way it
      does **not** queue the customer for Temix, so the ERP keeps the old values. For a customer
      that has a Temix code, always fill `temix_code` with its stored code (it is on the customer
-     page). The /export workbook and template rows with a blank `temix_code` take this lane.
+     page). Template rows with a blank `temix_code` take this lane.
      Most customers created by the go-live load carry a Temix code; the ~3,300 pilot-seeded ones
      do not, and always take this lane.
-   - On the full lane a customer's status follows all its live branches, not only the file's rows:
+   - **Status.** With the option off, a sheet's `customer_status` is read only for a customer or
+     shop the load creates; a new open shop under a customer that is not ACTIVE still makes the
+     customer ACTIVE (owner decision 7), and the summary counts it. The rest of this bullet is
+     what the full lane does **with the option on**.
+     On the full lane a customer's status follows all its live branches, not only the file's rows:
      it is settled after the branches are written, and a blank `customer_status` cell says nothing
      (its branch keeps its stored status, and a branch it creates is ACTIVE). On every lane, a load that
      closes a customer's last open shop closes the customer and one that reopens a shop opens it (owner
@@ -897,7 +953,9 @@ The next night's `test-flags-changed` check reports the change (that is expected
      — it would be numbered by its position in the file and could overwrite a sibling. **Always
      include `branch_code`.**
    - **A full-lane row that moves a customer to another channel clears its sub-channel when the
-     stored one belongs to the old channel** (owner decision 2026-09-29, auditor recheck F16): the
+     stored one belongs to the old channel** (owner decision 2026-09-29, auditor recheck F16) —
+     **only with the overwrite option on**; by default the channel on record is kept, so nothing
+     is cleared: the
      pair would otherwise be one that creating a customer refuses, and reports and Temix read it.
      The sheet has no sub-channel column, so the new one is picked on the customer page; the
      customer's first row in the file says so under **Loaded with a warning**, labelled
@@ -941,7 +999,10 @@ The next night's `test-flags-changed` check reports the change (that is expected
    promote** and can be taken back with **Withdraw fix** until the batch is promoted.
    - **A row fixed in the app for a customer linked to Temix is always "branch only"** (owner
      decision 2026-09-25), whatever its `temix_code` cell says and whatever rows are beside it in
-     the promote — decided per row: it creates its branch, or updates it from the cells it gave,
+     the promote — decided per row: it creates its branch, or updates it from the cells it gave
+     (a shop that exists: its blank name, address or visit day and its route by default, and
+     every cell it gave only with the batch's overwrite option on — the row says "CRM value
+     kept" otherwise),
      changes nothing else about the customer (not the name, phone, CR, contact or channel, and
      not the credit figures) — except that its phone fills the customer's phone when the customer
      has none (owner decision 2026-09-27; never over an existing phone) — and queues the customer

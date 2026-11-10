@@ -149,7 +149,14 @@ importer enforces most of the order, but not all of it.
    Wait for staging. Expect roughly **all rows CLEAN**; a handful QUARANTINED at most.
    Open every quarantined row — the reason is shown. (The rehearsal quarantine picture
    is in `golive-data/REHEARSAL-RESULT.md`.)
-5. **Promote**. It runs in passes and shows *"Promoting… N done, M left"*. Production
+5. **Promote**. Since 2026-11-10 the button first opens **Before you promote**: read it. It
+   counts what this sheet will create, refresh, fill and keep, against the CRM as it is. For a
+   customer already in the CRM (the ~3,300 seeded ones) the load **fills blank fields only** and
+   keeps the name, phone, address, visit day and open/closed status on record. If this load is
+   meant to put the master's values over them, switch on **Overwrite CRM fields from this
+   sheet** in that dialog, with a reason, before promoting — the owner's call, recorded in the
+   audit log (`docs/OPERATIONS.md`, "Re-import the master after a bulk fix").
+   Then it runs in passes and shows *"Promoting… N done, M left"*. Production
    is co-located with the database, so expect the whole master in roughly 10–20
    minutes. **Leave the tab open.** If it is interrupted, the page shows *Promote
    interrupted* — click **Resume promote**; nothing is lost or repeated.
