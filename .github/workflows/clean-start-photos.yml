@@ -1,0 +1,187 @@
+name: Clean start photos
+
+# Go-live clean start, the LAST step (design section 6): delete the test
+# period's photos from the photo bucket, at least 7 days after the reset, once
+# the real customer file is loaded and checked. IT CANNOT BE UNDONE, so it is a
+# separate run with its own approval (environment production-reset) and its
+# own phrase, DELETE TEST PHOTOS.
+#
+# It refuses unless:
+#   - the reset row cleanstart-<run_id> exists in production and is at least
+#     7 days old;
+#   - the sha256 of the stored key list (cleanstart/<run_id>/apply/photo-keys.txt.age)
+#     = the typed list_sha256 = the value recorded in the reset row;
+#   - NO production Attachment row references a listed key (one hit means
+#     production was rolled back, so everything is refused).
+# Then: the Neon safety branch of that reset is deleted (no rollback may point
+# at missing files), keys without the photo shape are skipped, keys the test
+# environment references are kept (when the read-only UAT_DATABASE_URL_RO
+# secret is set), the rest are deleted in batches of at most 1000 and each is
+# HEAD-checked gone, and ONE AuditLog row cleanstart-photos-<run> records it.
+# Nothing is listed by prefix; an upload no record points to is never touched.
+#
+# Public log: yes/no lines only (scripts/ops/clean-start/photo-delete.sh); the
+# counts are in the encrypted report and the in-app audit row. No artifacts.
+
+run-name: Clean start photos
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'The number of the clean-start apply run (from its summary)'
+        type: string
+        required: true
+      list_sha256:
+        description: 'list_sha256 from that run''s summary'
+        type: string
+        required: true
+      confirm_host:
+        description: 'The production host marker, typed'
+        type: string
+        required: true
+      confirm_phrase:
+        description: 'Exactly: DELETE TEST PHOTOS'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clean-start
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  photos:
+    name: Delete the test photos (the owner's approval)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production-reset
+    env:
+      CS_DIR: ${{ runner.temp }}/clean-start
+      TARGET_RUN: ${{ inputs.run_id }}
+      LIST_SHA256: ${{ inputs.list_sha256 }}
+      CONFIRM_HOST: ${{ inputs.confirm_host }}
+      CONFIRM_PHRASE: ${{ inputs.confirm_phrase }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      PROD_URL_RAW: ${{ secrets.DIRECT_URL }}
+      UAT_URL: ${{ secrets.UAT_DATABASE_URL_RO }}
+      CLEANSTART_ACTOR_USERNAME: ${{ secrets.CLEANSTART_ACTOR_USERNAME }}
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+      BACKUP_R2_ACCOUNT_ID: ${{ secrets.BACKUP_R2_ACCOUNT_ID }}
+      BACKUP_R2_BUCKET: ${{ secrets.BACKUP_R2_BUCKET }}
+      BACKUP_R2_ACCESS_KEY_ID: ${{ secrets.BACKUP_R2_ACCESS_KEY_ID }}
+      BACKUP_R2_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_R2_SECRET_ACCESS_KEY }}
+      BACKUP_AGE_RECIPIENTS: ${{ vars.BACKUP_AGE_RECIPIENTS }}
+      BACKUP_AGE_IDENTITY: ${{ secrets.BACKUP_AGE_IDENTITY }}
+      PHOTOS_R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || secrets.BACKUP_R2_ACCOUNT_ID }}
+      PHOTOS_BUCKET: ${{ vars.R2_BUCKET || 'nmwc-photos' }}
+      CLEANSTART_R2_RW_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RW_ACCESS_KEY_ID }}
+      CLEANSTART_R2_RW_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RW_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install the Postgres 17 client and age
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
+      - name: Preflight, production named with the phrase, the stored list
+        run: |
+          set -euo pipefail
+          bash scripts/ops/clean-start/run.sh step "photos: preflight"
+          bash scripts/ops/clean-start/run.sh preflight photos
+          bash scripts/ops/clean-start/run.sh check-run-id "$TARGET_RUN"
+          bash scripts/ops/clean-start/run.sh prod-target photos
+          bash scripts/ops/clean-start/run.sh fetch-decrypt "cleanstart/$TARGET_RUN/apply/photo-keys.txt.age" "$CS_DIR/photo-keys.txt"
+
+      - name: What production holds now (read-only)
+        env:
+          PGOPTIONS: -c default_transaction_read_only=on
+        run: |
+          set -euo pipefail
+          rc=0
+          psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+            -v fact=reset-row -v run_id="$TARGET_RUN" > "$CS_DIR/reset-row.txt" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "reset row read" "$rc" "$CS_DIR/reset-row.txt"
+          rc=0
+          psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+            -v fact=attachment-keys > "$CS_DIR/prod-keys.txt" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "production photo keys read" "$rc" "$CS_DIR/prod-keys.txt"
+
+      - name: What the test environment uses (read-only, when its secret is set)
+        env:
+          PGOPTIONS: -c default_transaction_read_only=on
+        run: |
+          set -euo pipefail
+          if [ -z "${UAT_URL:-}" ]; then
+            bash scripts/ops/clean-start/run.sh record "read-only test environment connection set" 1
+            exit 0
+          fi
+          bash scripts/ops/clean-start/run.sh rehearse-target UAT_URL
+          rc=0
+          psql "$UAT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+            -v fact=attachment-keys > "$CS_DIR/uat-keys.txt" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "test environment photo keys read" "$rc" "$CS_DIR/uat-keys.txt"
+
+      - name: The refusals (7 days, the list's sha256, no production reference)
+        run: bash scripts/ops/clean-start/photo-delete.sh check "$CS_DIR/photo-keys.txt" "$CS_DIR/reset-row.txt" "$CS_DIR/prod-keys.txt"
+
+      - name: Delete the reset's Neon safety branch first
+        run: bash scripts/ops/clean-start/run.sh neon-delete-safety "$TARGET_RUN"
+
+      - name: Delete the photos, and confirm each is gone
+        id: delete
+        run: |
+          set -euo pipefail
+          if [ -f "$CS_DIR/uat-keys.txt" ]; then
+            bash scripts/ops/clean-start/photo-delete.sh delete "$CS_DIR/photo-keys.txt" "$CS_DIR/uat-keys.txt"
+          else
+            bash scripts/ops/clean-start/photo-delete.sh delete "$CS_DIR/photo-keys.txt"
+          fi
+
+      - name: Record it in production's audit log
+        if: always() && (steps.delete.outcome == 'success' || steps.delete.outcome == 'failure')
+        run: |
+          set -euo pipefail
+          [ -f "$CS_DIR/photo-delete.counts" ] || { bash scripts/ops/clean-start/run.sh record "photo deletion recorded" 1; exit 1; }
+          read -r LISTED SKIP_SHAPE SKIP_UAT DELETED < "$CS_DIR/photo-delete.counts"
+          rc=0
+          psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/photos-record.sql \
+            -v run_id="$GITHUB_RUN_ID" -v reset_run_id="$TARGET_RUN" -v actor_username="$CLEANSTART_ACTOR_USERNAME" \
+            -v list_sha256="$LIST_SHA256" -v listed="$LISTED" -v skipped_shape="$SKIP_SHAPE" \
+            -v skipped_uat="$SKIP_UAT" -v deleted="$DELETED" > "$CS_DIR/record.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "photo deletion recorded in the audit log" "$rc" "$CS_DIR/record.out"
+
+      - name: The encrypted report
+        if: always()
+        run: |
+          set -uo pipefail
+          FILES=()
+          for f in photo-delete.report record.out; do
+            if [ -f "$CS_DIR/$f" ]; then FILES+=("$CS_DIR/$f"); fi
+          done
+          if [ "${#FILES[@]}" -gt 0 ] && [[ ${TARGET_RUN:-} =~ ^[0-9]{1,20}$ ]]; then
+            bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$TARGET_RUN/photos" "${FILES[@]}"
+          fi
+
+      - name: Remove the plaintext
+        if: always()
+        run: bash scripts/ops/clean-start/run.sh shred

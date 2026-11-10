@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stand-in for jq in the clean-start tests: see jq-standin.cjs beside this file.
+exec node "$(dirname "$0")/jq-standin.cjs" "$@"

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stand-in for curl in the clean-start tests: see curl-standin.cjs beside this file.
+exec node "$(dirname "$0")/curl-standin.cjs" "$@"

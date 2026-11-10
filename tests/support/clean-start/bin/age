@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Copied for the clean-start tests from the earlier restore-chain stand-in (age is not installed on every machine).
+# Local stand-in for age: -r <age1hex> [-r ...] [-o out] [in]  encrypts;  -d -i <keyfile> [-o out] [in]  decrypts.
+# AES-256-CBC (openssl, pbkdf2) under the key the matching age-keygen stub wrote.
+set -euo pipefail
+DEC=0; ID=; OUT=; IN=; R=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -d) DEC=1; shift;;
+    -i) ID="$2"; shift 2;;
+    -r) [ -z "$R" ] && R="$2"; shift 2;;
+    -o) OUT="$2"; shift 2;;
+    -*) echo "age stub: unsupported $1" >&2; exit 2;;
+    *) IN="$1"; shift;;
+  esac
+done
+if [ "$DEC" = 1 ]; then
+  K=$(grep -o 'AGE-SECRET-KEY-1[0-9a-f]*' "$ID" | head -1 | sed 's/AGE-SECRET-KEY-1//')
+  ARGS=(-d)
+else
+  case "$R" in age1*) K="${R#age1}";; *) echo "age stub: bad recipient" >&2; exit 1;; esac
+  ARGS=(-e)
+fi
+[ -n "$K" ] || { echo "age stub: no key" >&2; exit 1; }
+CMD=(openssl enc "${ARGS[@]}" -aes-256-cbc -pbkdf2 -pass "pass:$K")
+[ -n "$IN" ] && CMD+=(-in "$IN")
+[ -n "$OUT" ] && CMD+=(-out "$OUT")
+"${CMD[@]}"

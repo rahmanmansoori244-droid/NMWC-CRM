@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# The REAL pg_dump of FAKE_PG_BIN for the clean-start tests, line ends normalised to LF.
+real="$FAKE_PG_BIN/pg_dump"
+[ -x "$real.exe" ] && real="$real.exe"
+"$real" "$@" | tr -d '\r'
+exit "${PIPESTATUS[0]}"

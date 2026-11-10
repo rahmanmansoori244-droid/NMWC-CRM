@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stand-in for aws in the clean-start tests: see aws-standin.cjs beside this file.
+exec node "$(dirname "$0")/aws-standin.cjs" "$@"

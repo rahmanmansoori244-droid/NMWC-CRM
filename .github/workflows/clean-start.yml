@@ -1,0 +1,941 @@
+name: Clean start
+
+# Go-live clean start (owner decision, November 2026): remove the test period's
+# customer data, requests, imports, exports, notifications, logs and history
+# from production in ONE owner-approved transaction, keep every account, route
+# and region, restart the seal chain. The design and its reasons:
+# scripts/ops/clean-start/ (reset.sql and its checks) and docs/OPERATIONS.md,
+# "Go-live clean start". The owner presses every button; nothing here runs on a
+# schedule.
+#
+# Modes (workflow_dispatch):
+#   dry-run         PLAN (read-only checks and encrypted exports) + REHEARSE (the
+#                   fresh backup restored in this runner, reset there, verified,
+#                   the watch run twice). Changes nothing on production.
+#   neon-rehearsal  PLAN + the reset on a temporary Neon branch of production,
+#                   then a Neon point-in-time restore of that branch proven to
+#                   return the exact fingerprint; the branch is always deleted.
+#                   Approval-gated (environment production-reset).
+#   apply           PLAN + REHEARSE + APPLY. APPLY waits for the owner's Approve
+#                   on environment production-reset: that click is the yes.
+#   finish          Steps e-j of an earlier apply (input run_id): settles a
+#                   COMMIT whose answer was lost, then verifies, retires the old
+#                   seal files, runs the first watch, smokes, reports.
+#   seal-restore    After the owner restored production in the Neon console
+#                   (rollback route 1 or 2): the old seal files back, the new
+#                   chain's moved aside, the watch once (input run_id).
+#
+# PUBLIC LOG (the repository is public): every database command writes to a
+# file under CS_DIR; scripts/ops/clean-start/run.sh prints only step names,
+# yes/no lines, SQLSTATE codes, check ids with statuses, durations and hashes.
+# Counts, names and keys exist only in the age-encrypted copies under
+# cleanstart/<run>/ in the backups bucket and in the reset's AuditLog row.
+# No artifacts are uploaded. tests/unit/clean-start-workflows.test.ts pins
+# this file; tests/integration/clean-start-flow.test.ts runs it end to end.
+#
+# Never write ${{ … }} inside a run: block: inputs and outputs reach the shell
+# through env: only (restore-drill.yml's rule).
+
+run-name: Clean start ${{ inputs.mode }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run (changes nothing) | neon-rehearsal | apply | finish | seal-restore'
+        type: choice
+        required: true
+        default: dry-run
+        options: [dry-run, neon-rehearsal, apply, finish, seal-restore]
+      confirm_host:
+        description: 'The production host marker, typed (the first part of the database host)'
+        type: string
+        required: true
+      confirm_phrase:
+        description: 'apply only: REMOVE ALL TEST DATA followed by today''s date in Oman (YYYY-MM-DD)'
+        type: string
+        required: false
+      run_id:
+        description: 'finish and seal-restore only: the number of the apply run'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clean-start
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ─────────────────────────────────────────────────────────────── PLAN ──
+  plan:
+    name: Plan (read-only)
+    if: inputs.mode == 'dry-run' || inputs.mode == 'neon-rehearsal' || inputs.mode == 'apply'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      plan_id: ${{ steps.plan.outputs.plan_id }}
+      old_chain: ${{ steps.plan.outputs.old_chain }}
+      backup_key: ${{ steps.backup.outputs.backup_key }}
+    env:
+      CS_DIR: ${{ runner.temp }}/clean-start
+      MODE: ${{ inputs.mode }}
+      CONFIRM_HOST: ${{ inputs.confirm_host }}
+      CONFIRM_PHRASE: ${{ inputs.confirm_phrase }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      PROD_URL_RAW: ${{ secrets.DIRECT_URL }}
+      CLEANSTART_ACTOR_USERNAME: ${{ secrets.CLEANSTART_ACTOR_USERNAME }}
+      HEALTH_BEARER: ${{ secrets.HEALTH_BEARER }}
+      APP_BASE_URL: ${{ vars.APP_BASE_URL || 'https://nmwc-cm.vercel.app' }}
+      GH_TOKEN: ${{ github.token }}
+      BACKUP_R2_ACCOUNT_ID: ${{ secrets.BACKUP_R2_ACCOUNT_ID }}
+      BACKUP_R2_BUCKET: ${{ secrets.BACKUP_R2_BUCKET }}
+      BACKUP_R2_ACCESS_KEY_ID: ${{ secrets.BACKUP_R2_ACCESS_KEY_ID }}
+      BACKUP_R2_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_R2_SECRET_ACCESS_KEY }}
+      BACKUP_AGE_RECIPIENTS: ${{ vars.BACKUP_AGE_RECIPIENTS }}
+      PHOTOS_R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || secrets.BACKUP_R2_ACCOUNT_ID }}
+      PHOTOS_BUCKET: ${{ vars.R2_BUCKET || 'nmwc-photos' }}
+      CLEANSTART_R2_RO_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RO_ACCESS_KEY_ID }}
+      CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RO_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install the Postgres 17 client and age
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
+      - name: Preflight
+        run: |
+          bash scripts/ops/clean-start/run.sh step "plan: preflight"
+          bash scripts/ops/clean-start/run.sh preflight plan
+          if [ "$MODE" = apply ]; then bash scripts/ops/clean-start/run.sh window; fi
+
+      - name: Production, named by the owner (and in mode apply the phrase, before the rehearsal)
+        run: |
+          bash scripts/ops/clean-start/run.sh prod-target read
+          if [ "$MODE" = apply ]; then bash scripts/ops/clean-start/run.sh prod-target apply; fi
+
+      - name: Release, approval rule and backups idle
+        run: |
+          bash scripts/ops/clean-start/run.sh health
+          bash scripts/ops/clean-start/run.sh github-env
+          bash scripts/ops/clean-start/run.sh backup-idle
+          if [ "$MODE" = apply ]; then bash scripts/ops/clean-start/run.sh neon-green; fi
+
+      - name: Newest backup
+        id: backup
+        run: bash scripts/ops/clean-start/run.sh backup-pick 4
+
+      - name: Migrations of this checkout
+        run: |
+          set -euo pipefail
+          M="$(for d in prisma/migrations/[0-9]*_*/; do n=$(basename "$d"); printf '%s %s\n' "$n" "$(sha256sum "$d/migration.sql" | cut -d' ' -f1)"; done | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
+          echo "EXPECTED_MIGRATIONS=$M" >> "$GITHUB_ENV"
+
+      - name: Plan checks and exports (read-only)
+        id: plan
+        env:
+          PGOPTIONS: -c default_transaction_read_only=on
+        run: |
+          set -euo pipefail
+          mkdir -p "$CS_DIR/plan"
+          rc=0
+          psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/plan.sql \
+            -v out_dir="$CS_DIR/plan" -v actor_username="$CLEANSTART_ACTOR_USERNAME" \
+            -v expected_migrations="$EXPECTED_MIGRATIONS" > "$CS_DIR/plan.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "plan checks" "$rc" "$CS_DIR/plan.out"
+          bash scripts/ops/clean-start/run.sh exports "$CS_DIR/plan"
+
+      - name: The backup's heartbeat is fresh (read-only)
+        env:
+          PGOPTIONS: -c default_transaction_read_only=on
+        run: |
+          set -euo pipefail
+          rc=0
+          psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+            -v fact=heartbeat -v hours=4 > "$CS_DIR/fact.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "heartbeat read" "$rc" "$CS_DIR/fact.out"
+          bash scripts/ops/clean-start/run.sh bool "DB Backup heartbeat ok within 4 h" "$CS_DIR/fact.out"
+
+      - name: Old seal copies (read-only storage)
+        env:
+          OLD_CHAIN: ${{ steps.plan.outputs.old_chain }}
+        run: bash scripts/ops/clean-start/seal-archive.sh verify "$CS_DIR/plan/seals.jsonl" "$OLD_CHAIN"
+
+      - name: Store the exports, encrypted
+        run: |
+          set -euo pipefail
+          cp "$CS_DIR/seal-keys-foreign.txt" "$CS_DIR/plan/seal-keys-foreign.txt"
+          bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$GITHUB_RUN_ID/plan" \
+            "$CS_DIR/plan/photo-keys.txt" "$CS_DIR/plan/seals.jsonl" "$CS_DIR/plan/plan.json" \
+            "$CS_DIR/plan/plan-id.txt" "$CS_DIR/plan/seal-keys-foreign.txt"
+
+      - name: Remove the plaintext
+        if: always()
+        run: bash scripts/ops/clean-start/run.sh shred
+
+  # ─────────────────────────────────────────────────────────── REHEARSE ──
+  rehearse:
+    name: Rehearse on the restored backup
+    needs: plan
+    if: inputs.mode == 'dry-run' || inputs.mode == 'apply'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ci -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    outputs:
+      backup_sha256: ${{ steps.fetch.outputs.backup_sha256 }}
+    env:
+      CS_DIR: ${{ runner.temp }}/clean-start
+      CS_PG_ADMIN_URL: postgresql://ci:ci@localhost:5432/postgres
+      REHEARSE_URL: postgresql://ci:ci@localhost:5432/cs_restore
+      PGPASSWORD: ci
+      NODE_ENV: test
+      PLAN_ID: ${{ needs.plan.outputs.plan_id }}
+      OLD_CHAIN: ${{ needs.plan.outputs.old_chain }}
+      BACKUP_KEY: ${{ needs.plan.outputs.backup_key }}
+      CLEANSTART_ACTOR_USERNAME: ${{ secrets.CLEANSTART_ACTOR_USERNAME }}
+      BACKUP_R2_ACCOUNT_ID: ${{ secrets.BACKUP_R2_ACCOUNT_ID }}
+      BACKUP_R2_BUCKET: ${{ secrets.BACKUP_R2_BUCKET }}
+      BACKUP_R2_ACCESS_KEY_ID: ${{ secrets.BACKUP_R2_ACCESS_KEY_ID }}
+      BACKUP_R2_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_R2_SECRET_ACCESS_KEY }}
+      BACKUP_AGE_IDENTITY: ${{ secrets.BACKUP_AGE_IDENTITY }}
+      BACKUP_AGE_RECIPIENTS: ${{ vars.BACKUP_AGE_RECIPIENTS }}
+      PHOTOS_R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || secrets.BACKUP_R2_ACCOUNT_ID }}
+      PHOTOS_BUCKET: ${{ vars.R2_BUCKET || 'nmwc-photos' }}
+      CLEANSTART_R2_RO_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RO_ACCESS_KEY_ID }}
+      CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RO_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install the Postgres 17 client and age
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: |
+          npm ci --no-audit --no-fund --loglevel=error > /dev/null
+          npx prisma generate > /dev/null
+
+      - name: Throw-away environment for the watch
+        run: |
+          echo "AUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+          echo "NEXTAUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+
+      - name: The rehearsal database is not production
+        run: |
+          bash scripts/ops/clean-start/run.sh step "rehearse: target"
+          bash scripts/ops/clean-start/run.sh rehearse-target REHEARSE_URL
+
+      - name: Download and decrypt the backup
+        id: fetch
+        run: bash scripts/ops/clean-start/run.sh backup-fetch "$BACKUP_KEY"
+
+      - name: Restore it into an empty database, and verify the restore
+        run: |
+          set -euo pipefail
+          rc=0
+          psql "$CS_PG_ADMIN_URL" -X -q -v ON_ERROR_STOP=1 -c 'CREATE DATABASE cs_restore' > "$CS_DIR/create.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "empty rehearsal database" "$rc" "$CS_DIR/create.out"
+          t0=$(date -u +%s)
+          rc=0
+          (cd "$CS_DIR" && RESTORE_TARGET_URL="$REHEARSE_URL" RESTORE_DUMP="$CS_DIR/dump.sql.gz" GITHUB_STEP_SUMMARY="$CS_DIR/restore-summary.md" \
+            bash "$GITHUB_WORKSPACE/scripts/ops/restore-load.sh") > "$CS_DIR/restore.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh result "backup restored with no error" "$rc"
+          bash scripts/ops/clean-start/run.sh took "restore" "$t0"
+          rc=0
+          npx tsx scripts/ops/restore-verify.ts --url "$REHEARSE_URL" --manifest "$CS_DIR/manifest.json" > "$CS_DIR/restore-verify.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh result "restored backup passes restore-verify against its manifest" "$rc"
+
+      - name: Migrations of this checkout
+        run: |
+          set -euo pipefail
+          M="$(for d in prisma/migrations/[0-9]*_*/; do n=$(basename "$d"); printf '%s %s\n' "$n" "$(sha256sum "$d/migration.sql" | cut -d' ' -f1)"; done | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
+          echo "EXPECTED_MIGRATIONS=$M" >> "$GITHUB_ENV"
+
+      - name: The backup holds exactly what production holds (plan id)
+        id: fingerprint
+        run: |
+          set -euo pipefail
+          mkdir -p "$CS_DIR/rplan"
+          rc=0
+          PGOPTIONS='-c default_transaction_read_only=on' psql "$REHEARSE_URL" -X -q -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/plan.sql \
+            -v out_dir="$CS_DIR/rplan" -v actor_username="$CLEANSTART_ACTOR_USERNAME" \
+            -v expected_migrations="$EXPECTED_MIGRATIONS" > "$CS_DIR/rplan.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "plan checks on the restored backup" "$rc" "$CS_DIR/rplan.out"
+          bash scripts/ops/clean-start/run.sh exports "$CS_DIR/rplan" "$PLAN_ID" "backup equals production"
+
+      - name: The old seal chain on the restored backup (recorded)
+        run: |
+          rc=0
+          DIRECT_URL="$REHEARSE_URL" npx tsx scripts/ops/verify-seals.ts --all --no-offsite > "$CS_DIR/verify-seals.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh record "old seal chain verifies on the restored backup" "$rc"
+
+      - name: Reset the restored backup (timed)
+        run: |
+          set -euo pipefail
+          bash scripts/ops/clean-start/run.sh rehearse-target REHEARSE_URL
+          t0=$(date -u +%s)
+          rc=0
+          psql "$REHEARSE_URL" -X -q -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/reset.sql \
+            -v run_id="$GITHUB_RUN_ID" -v plan_id="$PLAN_ID" -v actor_username="$CLEANSTART_ACTOR_USERNAME" \
+            -v expected_migrations="$EXPECTED_MIGRATIONS" -v commit="$GITHUB_SHA" -v backup_key="$BACKUP_KEY" \
+            -v backup_sha256="$CS_BACKUP_SHA256" > "$CS_DIR/reset.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh took "reset on the restored backup" "$t0"
+          bash scripts/ops/clean-start/run.sh sql "reset on the restored backup" "$rc" "$CS_DIR/reset.out"
+          rc=0
+          psql "$REHEARSE_URL" -X -q -v ON_ERROR_STOP=1 -v run_id="$GITHUB_RUN_ID" -f scripts/ops/clean-start/verify.sql > "$CS_DIR/verify.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "verify on the restored backup" "$rc" "$CS_DIR/verify.out"
+
+      - name: Objects under seals/ that are not production's chain (read-only storage)
+        run: bash scripts/ops/clean-start/seal-archive.sh verify "$CS_DIR/rplan/seals.jsonl" "$OLD_CHAIN"
+
+      - name: The first two nights of the integrity watch
+        run: |
+          rc=0
+          RUN_CLEAN_START_WATCH=1 DATABASE_URL="$REHEARSE_URL" DIRECT_URL="$REHEARSE_URL" \
+            CLEAN_START_FOREIGN_KEYS="$CS_DIR/seal-keys-foreign.txt" CLEAN_START_WATCH_OUT="$CS_DIR/watch.json" \
+            npx vitest run tests/integration/clean-start-watch.test.ts > "$CS_DIR/watch.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh watch-lines "$CS_DIR/watch.out" "$rc"
+
+      - name: The first nightly backup after the reset (db-backup.yml's gates)
+        run: |
+          set -euo pipefail
+          pg_dump --no-owner --no-privileges --format=plain --no-unlogged-table-data "$REHEARSE_URL" 2> "$CS_DIR/dump.err" \
+            | gzip --best > "$CS_DIR/after.sql.gz"
+          bash scripts/ops/clean-start/run.sh dump-gates "$CS_DIR/after.sql.gz"
+
+      - name: The next customer code
+        run: |
+          set -euo pipefail
+          rc=0
+          psql "$REHEARSE_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/counter.sql > "$CS_DIR/counter.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "counter statement, rolled back" "$rc" "$CS_DIR/counter.out"
+          bash scripts/ops/clean-start/run.sh counter "$CS_DIR/counter.out"
+
+      - name: Remove the plaintext
+        if: always()
+        run: bash scripts/ops/clean-start/run.sh shred
+
+  # ───────────────────────────────────────────────────── NEON REHEARSAL ──
+  neon_rehearsal:
+    name: Neon rehearsal
+    needs: plan
+    if: inputs.mode == 'neon-rehearsal'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production-reset
+    env:
+      CS_DIR: ${{ runner.temp }}/clean-start
+      NODE_ENV: test
+      PLAN_ID: ${{ needs.plan.outputs.plan_id }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      CLEANSTART_ACTOR_USERNAME: ${{ secrets.CLEANSTART_ACTOR_USERNAME }}
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+      PHOTOS_R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || secrets.BACKUP_R2_ACCOUNT_ID }}
+      PHOTOS_BUCKET: ${{ vars.R2_BUCKET || 'nmwc-photos' }}
+      CLEANSTART_R2_RO_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RO_ACCESS_KEY_ID }}
+      CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RO_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install the Postgres 17 client
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: |
+          npm ci --no-audit --no-fund --loglevel=error > /dev/null
+          npx prisma generate > /dev/null
+
+      - name: Throw-away environment for the watch
+        run: |
+          echo "AUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+          echo "NEXTAUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+
+      - name: Preflight
+        run: |
+          bash scripts/ops/clean-start/run.sh step "neon rehearsal: preflight"
+          bash scripts/ops/clean-start/run.sh preflight neon-rehearsal
+
+      - name: A temporary Neon branch of production, never production itself
+        run: |
+          set -euo pipefail
+          bash scripts/ops/clean-start/run.sh neon-create "cleanstart-rehearsal-$GITHUB_RUN_ID" compute
+          bash scripts/ops/clean-start/run.sh neon-uri
+
+      - name: The branch is not production (target guard)
+        run: bash scripts/ops/clean-start/run.sh rehearse-target CS_BRANCH_URL
+
+      - name: Migrations of this checkout
+        run: |
+          set -euo pipefail
+          M="$(for d in prisma/migrations/[0-9]*_*/; do n=$(basename "$d"); printf '%s %s\n' "$n" "$(sha256sum "$d/migration.sql" | cut -d' ' -f1)"; done | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
+          echo "EXPECTED_MIGRATIONS=$M" >> "$GITHUB_ENV"
+
+      - name: Fingerprint the branch, and note the time
+        id: fp0
+        run: |
+          set -euo pipefail
+          mkdir -p "$CS_DIR/nplan0"
+          rc=0
+          PGOPTIONS='-c default_transaction_read_only=on' psql "$CS_BRANCH_URL" -X -q -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/plan.sql \
+            -v out_dir="$CS_DIR/nplan0" -v actor_username="$CLEANSTART_ACTOR_USERNAME" \
+            -v expected_migrations="$EXPECTED_MIGRATIONS" > "$CS_DIR/nplan0.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "plan checks on the branch" "$rc" "$CS_DIR/nplan0.out"
+          bash scripts/ops/clean-start/run.sh exports "$CS_DIR/nplan0" "$PLAN_ID" "branch equals production's plan" record
+          echo "CS_F0=$(cat "$CS_DIR/nplan0/.plan_id")" >> "$GITHUB_ENV"
+          sleep 3
+          echo "CS_RESTORE_TO=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          sleep 3
+          bash scripts/ops/clean-start/run.sh say-noted
+
+      - name: Reset the branch (timed), verify
+        run: |
+          set -euo pipefail
+          bash scripts/ops/clean-start/run.sh rehearse-target CS_BRANCH_URL
+          t0=$(date -u +%s)
+          rc=0
+          psql "$CS_BRANCH_URL" -X -q -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/reset.sql \
+            -v run_id="$GITHUB_RUN_ID" -v plan_id="$CS_F0" -v actor_username="$CLEANSTART_ACTOR_USERNAME" \
+            -v expected_migrations="$EXPECTED_MIGRATIONS" -v commit="$GITHUB_SHA" > "$CS_DIR/reset.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh took "reset on the Neon branch" "$t0"
+          bash scripts/ops/clean-start/run.sh sql "reset on the Neon branch" "$rc" "$CS_DIR/reset.out"
+          rc=0
+          psql "$CS_BRANCH_URL" -X -q -v ON_ERROR_STOP=1 -v run_id="$GITHUB_RUN_ID" -f scripts/ops/clean-start/verify.sql > "$CS_DIR/verify.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "verify on the Neon branch" "$rc" "$CS_DIR/verify.out"
+
+      - name: The first two nights of the integrity watch on the branch
+        env:
+          OLD_CHAIN: ${{ steps.fp0.outputs.old_chain }}
+        run: |
+          set -euo pipefail
+          bash scripts/ops/clean-start/seal-archive.sh verify "$CS_DIR/nplan0/seals.jsonl" "$OLD_CHAIN"
+          rc=0
+          RUN_CLEAN_START_WATCH=1 DATABASE_URL="$CS_BRANCH_URL" DIRECT_URL="$CS_BRANCH_URL" \
+            CLEAN_START_FOREIGN_KEYS="$CS_DIR/seal-keys-foreign.txt" \
+            npx vitest run tests/integration/clean-start-watch.test.ts > "$CS_DIR/watch.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh watch-lines "$CS_DIR/watch.out" "$rc"
+
+      - name: Neon restores the branch to the noted time, and the fingerprint returns
+        run: |
+          set -euo pipefail
+          bash scripts/ops/clean-start/run.sh neon-restore "$CS_RESTORE_TO" "cleanstart-rehearsal-$GITHUB_RUN_ID-after"
+          bash scripts/ops/clean-start/run.sh neon-uri
+          bash scripts/ops/clean-start/run.sh rehearse-target CS_BRANCH_URL
+          mkdir -p "$CS_DIR/nplan1"
+          rc=0
+          psql "$CS_BRANCH_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql -v fact=no-reset-row > "$CS_DIR/fact.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "reset row read after the restore" "$rc" "$CS_DIR/fact.out"
+          bash scripts/ops/clean-start/run.sh bool "the reset row is gone after the restore" "$CS_DIR/fact.out"
+          rc=0
+          PGOPTIONS='-c default_transaction_read_only=on' psql "$CS_BRANCH_URL" -X -q -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/plan.sql \
+            -v out_dir="$CS_DIR/nplan1" -v actor_username="$CLEANSTART_ACTOR_USERNAME" \
+            -v expected_migrations="$EXPECTED_MIGRATIONS" > "$CS_DIR/nplan1.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "plan checks after the restore" "$rc" "$CS_DIR/nplan1.out"
+          bash scripts/ops/clean-start/run.sh exports "$CS_DIR/nplan1" "$CS_F0" "the Neon restore returned the exact fingerprint"
+
+      - name: Delete the temporary branches
+        if: always()
+        run: bash scripts/ops/clean-start/run.sh neon-cleanup
+
+      - name: Remove the plaintext
+        if: always()
+        run: bash scripts/ops/clean-start/run.sh shred
+
+  # ────────────────────────────────────────────────────────────── APPLY ──
+  apply:
+    name: Apply (the owner's approval)
+    needs: [plan, rehearse]
+    if: inputs.mode == 'apply'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: production-reset
+    env:
+      CS_DIR: ${{ runner.temp }}/clean-start
+      MODE: ${{ inputs.mode }}
+      CONFIRM_HOST: ${{ inputs.confirm_host }}
+      CONFIRM_PHRASE: ${{ inputs.confirm_phrase }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      PLAN_ID: ${{ needs.plan.outputs.plan_id }}
+      OLD_CHAIN: ${{ needs.plan.outputs.old_chain }}
+      BACKUP_KEY: ${{ needs.plan.outputs.backup_key }}
+      BACKUP_SHA256: ${{ needs.rehearse.outputs.backup_sha256 }}
+      PROD_URL_RAW: ${{ secrets.DIRECT_URL }}
+      CLEANSTART_ACTOR_USERNAME: ${{ secrets.CLEANSTART_ACTOR_USERNAME }}
+      HEALTH_BEARER: ${{ secrets.HEALTH_BEARER }}
+      PROD_CRON_SECRET: ${{ secrets.PROD_CRON_SECRET }}
+      APP_BASE_URL: ${{ vars.APP_BASE_URL || 'https://nmwc-cm.vercel.app' }}
+      GH_TOKEN: ${{ github.token }}
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+      BACKUP_R2_ACCOUNT_ID: ${{ secrets.BACKUP_R2_ACCOUNT_ID }}
+      BACKUP_R2_BUCKET: ${{ secrets.BACKUP_R2_BUCKET }}
+      BACKUP_R2_ACCESS_KEY_ID: ${{ secrets.BACKUP_R2_ACCESS_KEY_ID }}
+      BACKUP_R2_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_R2_SECRET_ACCESS_KEY }}
+      BACKUP_AGE_RECIPIENTS: ${{ vars.BACKUP_AGE_RECIPIENTS }}
+      PHOTOS_R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || secrets.BACKUP_R2_ACCOUNT_ID }}
+      PHOTOS_BUCKET: ${{ vars.R2_BUCKET || 'nmwc-photos' }}
+      CLEANSTART_R2_RO_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RO_ACCESS_KEY_ID }}
+      CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RO_SECRET_ACCESS_KEY }}
+      CLEANSTART_R2_RW_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RW_ACCESS_KEY_ID }}
+      CLEANSTART_R2_RW_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RW_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install the Postgres 17 client and age
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund --loglevel=error > /dev/null
+
+      - name: a. The plan checks again (window, phrase, release, approval rule, rehearsal, backup)
+        run: |
+          set -euo pipefail
+          bash scripts/ops/clean-start/run.sh step "apply: a. checks again"
+          bash scripts/ops/clean-start/run.sh preflight apply
+          bash scripts/ops/clean-start/run.sh prod-target read
+          bash scripts/ops/clean-start/run.sh health
+          bash scripts/ops/clean-start/run.sh github-env
+          bash scripts/ops/clean-start/run.sh backup-idle
+          bash scripts/ops/clean-start/run.sh neon-green
+          bash scripts/ops/clean-start/run.sh backup-pick 6 "$BACKUP_KEY"
+
+      - name: Migrations of this checkout
+        run: |
+          set -euo pipefail
+          M="$(for d in prisma/migrations/[0-9]*_*/; do n=$(basename "$d"); printf '%s %s\n' "$n" "$(sha256sum "$d/migration.sql" | cut -d' ' -f1)"; done | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
+          echo "EXPECTED_MIGRATIONS=$M" >> "$GITHUB_ENV"
+
+      - name: a. Production unchanged since the plan (read-only), exports stored encrypted
+        env:
+          PGOPTIONS: -c default_transaction_read_only=on
+        run: |
+          set -euo pipefail
+          mkdir -p "$CS_DIR/aplan"
+          rc=0
+          psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/plan.sql \
+            -v out_dir="$CS_DIR/aplan" -v actor_username="$CLEANSTART_ACTOR_USERNAME" \
+            -v expected_migrations="$EXPECTED_MIGRATIONS" > "$CS_DIR/aplan.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "plan checks again" "$rc" "$CS_DIR/aplan.out"
+          bash scripts/ops/clean-start/run.sh exports "$CS_DIR/aplan" "$PLAN_ID" "production unchanged since the plan"
+          rc=0
+          psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+            -v fact=heartbeat -v hours=6 > "$CS_DIR/fact.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "heartbeat read" "$rc" "$CS_DIR/fact.out"
+          bash scripts/ops/clean-start/run.sh bool "DB Backup heartbeat ok within 6 h" "$CS_DIR/fact.out"
+          bash scripts/ops/clean-start/seal-archive.sh verify "$CS_DIR/aplan/seals.jsonl" "$OLD_CHAIN"
+          cp "$CS_DIR/seal-keys-foreign.txt" "$CS_DIR/aplan/seal-keys-foreign.txt"
+          bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$GITHUB_RUN_ID/apply" \
+            "$CS_DIR/aplan/photo-keys.txt" "$CS_DIR/aplan/seals.jsonl" "$CS_DIR/aplan/plan.json" \
+            "$CS_DIR/aplan/plan-id.txt" "$CS_DIR/aplan/seal-keys-foreign.txt"
+
+      - name: b. Neon safety branch of production (no compute)
+        run: |
+          set -euo pipefail
+          NAME="$(bash scripts/ops/clean-start/run.sh safety-name)"
+          echo "CS_SAFETY_BRANCH=$NAME" >> "$GITHUB_ENV"
+          bash scripts/ops/clean-start/run.sh neon-create "$NAME" none
+          bash scripts/ops/clean-start/run.sh neon-retention
+
+      - name: c. Archive the old seal files (additive)
+        run: bash scripts/ops/clean-start/seal-archive.sh archive "$CS_DIR/aplan/seals.jsonl" "$OLD_CHAIN" "$GITHUB_RUN_ID"
+
+      - name: d. THE RESET (one transaction on production)
+        run: |
+          set -euo pipefail
+          bash scripts/ops/clean-start/run.sh step "apply: d. reset"
+          bash scripts/ops/clean-start/run.sh prod-target apply
+          bash scripts/ops/clean-start/run.sh started
+          # From here on the reset may have reached the server: the cleanup keeps the safety branch.
+          echo "CS_RESET_RC=started" >> "$GITHUB_ENV"
+          t0=$(date -u +%s)
+          rc=0
+          psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/reset.sql \
+            -v run_id="$GITHUB_RUN_ID" -v plan_id="$PLAN_ID" -v actor_username="$CLEANSTART_ACTOR_USERNAME" \
+            -v expected_migrations="$EXPECTED_MIGRATIONS" -v commit="$GITHUB_SHA" -v backup_key="$BACKUP_KEY" \
+            -v backup_sha256="$BACKUP_SHA256" -v safety_branch="$CS_SAFETY_BRANCH" \
+            -v archive_prefix="cleanstart/$GITHUB_RUN_ID/seal-archive/" > "$CS_DIR/reset.out" 2>&1 || rc=$?
+          echo "CS_RESET_RC=$rc" >> "$GITHUB_ENV"
+          bash scripts/ops/clean-start/run.sh took "reset on production" "$t0"
+          if [ "$rc" -eq 2 ]; then
+            bash scripts/ops/clean-start/run.sh sql "reset" "$rc" "$CS_DIR/reset.out" || true
+            exit 0
+          fi
+          bash scripts/ops/clean-start/run.sh sql "reset" "$rc" "$CS_DIR/reset.out"
+
+      - name: e-f. Did it commit? Verify (read-only)
+        env:
+          PGOPTIONS: -c default_transaction_read_only=on
+        run: |
+          set -euo pipefail
+          rc=0
+          psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -v run_id="$GITHUB_RUN_ID" -f scripts/ops/clean-start/verify.sql > "$CS_DIR/verify.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh settle "$rc" "$CS_DIR/verify.out"
+
+      - name: g. Remove the old seal files from the live folder (each archived first)
+        run: bash scripts/ops/clean-start/seal-archive.sh retire "$CS_DIR/aplan/seals.jsonl" "$OLD_CHAIN" "$GITHUB_RUN_ID"
+
+      - name: h. The first integrity watch on production
+        run: |
+          set -euo pipefail
+          bash scripts/ops/clean-start/run.sh app-watch
+          rc=0
+          PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+            -v fact=watch-results > "$CS_DIR/watch-results.tsv" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "first watch results read" "$rc" "$CS_DIR/watch-results.tsv"
+          bash scripts/ops/clean-start/run.sh compare-watch "$CS_DIR/watch-results.tsv" "$CS_DIR/aplan/seal-keys-foreign.txt"
+
+      - name: i. Smoke
+        run: |
+          rc=0
+          SHORT="${GITHUB_SHA:0:7}"
+          npm run smoke -- "$APP_BASE_URL" --expect-commit "$SHORT" > "$CS_DIR/smoke.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh result "smoke ok" "$rc"
+
+      - name: j. The encrypted report
+        if: always()
+        run: |
+          set -uo pipefail
+          [ -d "$CS_DIR" ] || exit 0
+          if [ "${CS_COMMITTED:-}" = yes ]; then
+            PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+              -v fact=reset-report -v run_id="$GITHUB_RUN_ID" > "$CS_DIR/reset-report.json" 2>&1 || true
+          fi
+          FILES=()
+          for f in reset.out verify.out reset-report.json watch-results.tsv compare.out smoke.out seal-archive.report; do
+            if [ -f "$CS_DIR/$f" ]; then FILES+=("$CS_DIR/$f"); fi
+          done
+          if [ "${#FILES[@]}" -gt 0 ]; then
+            bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$GITHUB_RUN_ID/report" "${FILES[@]}"
+          fi
+          if [ -f "$CS_DIR/aplan/plan-id.txt" ]; then
+            bash scripts/ops/clean-start/run.sh for-the-owner "$CS_DIR/aplan/plan-id.txt"
+          fi
+
+      - name: Safety branch kept only when the reset committed (or may have)
+        if: always()
+        run: |
+          set -uo pipefail
+          # Deleted only when it is CERTAIN the reset did not commit: it never
+          # started, Postgres refused it (exit 3, rolled back), or the settle
+          # step read that its row is not there. Otherwise it is the rollback.
+          if [ "${CS_COMMITTED:-}" = no ] || [ -z "${CS_RESET_RC:-}" ] || [ "${CS_RESET_RC:-}" = 3 ]; then
+            bash scripts/ops/clean-start/run.sh neon-cleanup
+          else
+            bash scripts/ops/clean-start/run.sh neon-forget
+          fi
+
+      - name: Remove the plaintext
+        if: always()
+        run: bash scripts/ops/clean-start/run.sh shred
+
+  # ───────────────────────────────────────────────────────────── FINISH ──
+  finish:
+    name: Finish an apply (steps e-j)
+    if: inputs.mode == 'finish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-reset
+    env:
+      CS_DIR: ${{ runner.temp }}/clean-start
+      TARGET_RUN: ${{ inputs.run_id }}
+      CONFIRM_HOST: ${{ inputs.confirm_host }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      PROD_URL_RAW: ${{ secrets.DIRECT_URL }}
+      HEALTH_BEARER: ${{ secrets.HEALTH_BEARER }}
+      PROD_CRON_SECRET: ${{ secrets.PROD_CRON_SECRET }}
+      APP_BASE_URL: ${{ vars.APP_BASE_URL || 'https://nmwc-cm.vercel.app' }}
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+      BACKUP_R2_ACCOUNT_ID: ${{ secrets.BACKUP_R2_ACCOUNT_ID }}
+      BACKUP_R2_BUCKET: ${{ secrets.BACKUP_R2_BUCKET }}
+      BACKUP_R2_ACCESS_KEY_ID: ${{ secrets.BACKUP_R2_ACCESS_KEY_ID }}
+      BACKUP_R2_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_R2_SECRET_ACCESS_KEY }}
+      BACKUP_AGE_RECIPIENTS: ${{ vars.BACKUP_AGE_RECIPIENTS }}
+      BACKUP_AGE_IDENTITY: ${{ secrets.BACKUP_AGE_IDENTITY }}
+      PHOTOS_R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || secrets.BACKUP_R2_ACCOUNT_ID }}
+      PHOTOS_BUCKET: ${{ vars.R2_BUCKET || 'nmwc-photos' }}
+      CLEANSTART_R2_RO_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RO_ACCESS_KEY_ID }}
+      CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RO_SECRET_ACCESS_KEY }}
+      CLEANSTART_R2_RW_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RW_ACCESS_KEY_ID }}
+      CLEANSTART_R2_RW_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RW_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install the Postgres 17 client and age
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund --loglevel=error > /dev/null
+
+      - name: Preflight, production named, the apply run's exports
+        run: |
+          set -euo pipefail
+          bash scripts/ops/clean-start/run.sh step "finish: preflight"
+          bash scripts/ops/clean-start/run.sh preflight finish
+          bash scripts/ops/clean-start/run.sh check-run-id "$TARGET_RUN"
+          bash scripts/ops/clean-start/run.sh prod-target read
+          mkdir -p "$CS_DIR/exports"
+          for f in seals.jsonl plan-id.txt seal-keys-foreign.txt; do
+            bash scripts/ops/clean-start/run.sh fetch-decrypt "cleanstart/$TARGET_RUN/apply/$f.age" "$CS_DIR/exports/$f"
+          done
+          echo "OLD_CHAIN=$(sed -n 's/^old_chain=//p' "$CS_DIR/exports/plan-id.txt" | tr -d '\r')" >> "$GITHUB_ENV"
+
+      - name: e-f. Did it commit? Verify (read-only)
+        env:
+          PGOPTIONS: -c default_transaction_read_only=on
+        run: |
+          set -euo pipefail
+          rc=0
+          psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -v run_id="$TARGET_RUN" -f scripts/ops/clean-start/verify.sql > "$CS_DIR/verify.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh settle "$rc" "$CS_DIR/verify.out"
+
+      - name: The reset did not commit — delete its unused safety branch
+        if: failure() && env.CS_COMMITTED == 'no'
+        run: |
+          bash scripts/ops/clean-start/run.sh neon-delete-safety "$TARGET_RUN"
+          echo "::error::the reset of that run did not commit; nothing changed on production"
+          exit 1
+
+      - name: g. Remove the old seal files from the live folder (each archived first)
+        run: |
+          set -euo pipefail
+          bash scripts/ops/clean-start/seal-archive.sh verify "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN"
+          bash scripts/ops/clean-start/seal-archive.sh retire "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN" "$TARGET_RUN"
+
+      - name: h. The first integrity watch on production
+        run: |
+          set -euo pipefail
+          rc=0
+          PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+            -v fact=watch-since-reset > "$CS_DIR/fact.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "watch results read" "$rc" "$CS_DIR/fact.out"
+          if ! bash scripts/ops/clean-start/run.sh bool "the first watch after the reset already ran" "$CS_DIR/fact.out"; then
+            bash scripts/ops/clean-start/run.sh app-watch
+          fi
+          rc=0
+          PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+            -v fact=watch-results > "$CS_DIR/watch-results.tsv" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "first watch results read" "$rc" "$CS_DIR/watch-results.tsv"
+          bash scripts/ops/clean-start/run.sh compare-watch "$CS_DIR/watch-results.tsv" "$CS_DIR/exports/seal-keys-foreign.txt"
+
+      - name: i. Smoke
+        run: |
+          rc=0
+          SHORT="${GITHUB_SHA:0:7}"
+          npm run smoke -- "$APP_BASE_URL" --expect-commit "$SHORT" > "$CS_DIR/smoke.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh result "smoke ok" "$rc"
+
+      - name: j. The encrypted report
+        if: always()
+        run: |
+          set -uo pipefail
+          [ -d "$CS_DIR" ] || exit 0
+          FILES=()
+          for f in verify.out watch-results.tsv compare.out smoke.out seal-archive.report; do
+            if [ -f "$CS_DIR/$f" ]; then FILES+=("$CS_DIR/$f"); fi
+          done
+          if [ "${#FILES[@]}" -gt 0 ] && [[ ${TARGET_RUN:-} =~ ^[0-9]{1,20}$ ]]; then
+            bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$TARGET_RUN/finish" "${FILES[@]}"
+          fi
+          if [ -f "$CS_DIR/exports/plan-id.txt" ]; then
+            bash scripts/ops/clean-start/run.sh for-the-owner "$CS_DIR/exports/plan-id.txt" "$TARGET_RUN"
+          fi
+
+      - name: Remove the plaintext
+        if: always()
+        run: bash scripts/ops/clean-start/run.sh shred
+
+  # ─────────────────────────────────────────────────────── SEAL RESTORE ──
+  seal_restore:
+    name: Seal restore (after a rollback)
+    if: inputs.mode == 'seal-restore'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production-reset
+    env:
+      CS_DIR: ${{ runner.temp }}/clean-start
+      TARGET_RUN: ${{ inputs.run_id }}
+      CONFIRM_HOST: ${{ inputs.confirm_host }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      PROD_URL_RAW: ${{ secrets.DIRECT_URL }}
+      PROD_CRON_SECRET: ${{ secrets.PROD_CRON_SECRET }}
+      APP_BASE_URL: ${{ vars.APP_BASE_URL || 'https://nmwc-cm.vercel.app' }}
+      BACKUP_R2_ACCOUNT_ID: ${{ secrets.BACKUP_R2_ACCOUNT_ID }}
+      BACKUP_R2_BUCKET: ${{ secrets.BACKUP_R2_BUCKET }}
+      BACKUP_R2_ACCESS_KEY_ID: ${{ secrets.BACKUP_R2_ACCESS_KEY_ID }}
+      BACKUP_R2_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_R2_SECRET_ACCESS_KEY }}
+      BACKUP_AGE_RECIPIENTS: ${{ vars.BACKUP_AGE_RECIPIENTS }}
+      BACKUP_AGE_IDENTITY: ${{ secrets.BACKUP_AGE_IDENTITY }}
+      PHOTOS_R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || secrets.BACKUP_R2_ACCOUNT_ID }}
+      PHOTOS_BUCKET: ${{ vars.R2_BUCKET || 'nmwc-photos' }}
+      CLEANSTART_R2_RO_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RO_ACCESS_KEY_ID }}
+      CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RO_SECRET_ACCESS_KEY }}
+      CLEANSTART_R2_RW_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RW_ACCESS_KEY_ID }}
+      CLEANSTART_R2_RW_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RW_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install the Postgres 17 client and age
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
+      - name: Preflight, production named, the apply run's exports
+        run: |
+          set -euo pipefail
+          bash scripts/ops/clean-start/run.sh step "seal restore: preflight"
+          bash scripts/ops/clean-start/run.sh preflight seal-restore
+          bash scripts/ops/clean-start/run.sh check-run-id "$TARGET_RUN"
+          bash scripts/ops/clean-start/run.sh prod-target read
+          mkdir -p "$CS_DIR/exports"
+          for f in seals.jsonl plan-id.txt seal-keys-foreign.txt; do
+            bash scripts/ops/clean-start/run.sh fetch-decrypt "cleanstart/$TARGET_RUN/apply/$f.age" "$CS_DIR/exports/$f"
+          done
+          echo "OLD_CHAIN=$(sed -n 's/^old_chain=//p' "$CS_DIR/exports/plan-id.txt" | tr -d '\r')" >> "$GITHUB_ENV"
+
+      - name: Production is back to before the reset (read-only)
+        env:
+          PGOPTIONS: -c default_transaction_read_only=on
+        run: |
+          set -euo pipefail
+          rc=0
+          psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+            -v fact=seal-state -v run_id="$TARGET_RUN" -v old_chain="$OLD_CHAIN" > "$CS_DIR/fact.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "seal state read" "$rc" "$CS_DIR/fact.out"
+          bash scripts/ops/clean-start/run.sh bool "production is back to before the reset (old chain, no reset row)" "$CS_DIR/fact.out"
+
+      - name: The old seal files back, the abandoned chain moved aside
+        run: |
+          bash scripts/ops/clean-start/seal-archive.sh restore "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN" "$TARGET_RUN" \
+            "$CS_DIR/exports/seal-keys-foreign.txt"
+
+      - name: The integrity watch, once
+        run: |
+          set -euo pipefail
+          bash scripts/ops/clean-start/run.sh app-watch
+          rc=0
+          PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+            -v fact=watch-latest > "$CS_DIR/watch-latest.tsv" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "watch results read" "$rc" "$CS_DIR/watch-latest.tsv"
+          bash scripts/ops/clean-start/run.sh status-lines "$CS_DIR/watch-latest.tsv"
+
+      - name: The encrypted report
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ -f "$CS_DIR/seal-archive.report" ] && [[ ${TARGET_RUN:-} =~ ^[0-9]{1,20}$ ]]; then
+            bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$TARGET_RUN/seal-restore" "$CS_DIR/seal-archive.report"
+          fi
+
+      - name: Remove the plaintext
+        if: always()
+        run: bash scripts/ops/clean-start/run.sh shred

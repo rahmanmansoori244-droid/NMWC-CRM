@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# The real date, except that the evening-window question (date -u +%H%M) can be
+# answered with FAKE_UTC_HHMM, so the apply path can be tested at any hour. It
+# changes nothing else: every other date call is the real clock.
+if [ -n "${FAKE_UTC_HHMM:-}" ] && [ "$#" -eq 2 ] && [ "$1" = -u ] && [ "$2" = +%H%M ]; then
+  printf '%s\n' "$FAKE_UTC_HHMM"
+  exit 0
+fi
+exec /usr/bin/date "$@"

@@ -142,6 +142,14 @@ which always populates both columns; a lint rule in `eslint.config.mjs` and
 | **Retention** | Results and seals indefinitely, append-only (DATA-RETENTION-SCHEDULE.md); the R2 copies indefinitely. |
 | **Lawful basis** | **[COUNSEL]** |
 
+**Dated note — the go-live clean start (owner decision, November 2026).** Before the pilot
+the test period's customer data, requests, imports, exports, notifications, logs, history,
+integrity results and seals were removed from production once, and the test photos at
+least 7 days later (`docs/OPERATIONS.md` §5m; DATA-RETENTION-SCHEDULE.md, the same note).
+The records of every activity above begin again at the reset; accounts, routes and regions
+were kept unchanged. Until the pre-reset backups expire (30 days) and Neon's history ages
+out (7 days), the test period remains recoverable there; that is the intended way back.
+
 ## Cross-border transfer
 
 Every activity above is processed outside Oman. There is no in-country component. The destinations, and what the repository can and cannot say about each, are in `DATA-RESIDENCY-REGISTER.md`. Whether that transfer is lawful, and on what mechanism, is **[COUNSEL]** — question Q1 in `PDPL-ASSESSMENT.md`.

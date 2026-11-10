@@ -51,7 +51,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'DIRECT_URL',
     kind: 'secret',
     required: true,
-    workflows: ['db-backup.yml', 'provision-app-role.yml'],
+    workflows: ['db-backup.yml', 'provision-app-role.yml', 'clean-start.yml', 'clean-start-photos.yml'],
     description: 'Direct (non-pooled) Postgres connection string, as the owner role.',
     source: 'Neon console → Project → Connection details → "Direct" mode.',
     localEnv: 'DIRECT_URL',
@@ -62,7 +62,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'BACKUP_R2_ACCOUNT_ID',
     kind: 'secret',
     required: true,
-    workflows: ['db-backup.yml', 'restore-drill.yml', 'r2-config.yml'],
+    workflows: ['db-backup.yml', 'restore-drill.yml', 'r2-config.yml', 'clean-start.yml', 'clean-start-photos.yml'],
     description: 'Cloudflare account hosting the backups bucket.',
     source: 'Cloudflare dashboard → R2 → bucket settings.',
     localEnv: 'R2_ACCOUNT_ID',
@@ -72,7 +72,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'BACKUP_R2_BUCKET',
     kind: 'secret',
     required: true,
-    workflows: ['db-backup.yml', 'restore-drill.yml', 'r2-config.yml'],
+    workflows: ['db-backup.yml', 'restore-drill.yml', 'r2-config.yml', 'clean-start.yml', 'clean-start-photos.yml'],
     description: 'Bucket name. Keep it separate from the photographs bucket.',
     source: 'Create it in the Cloudflare dashboard if it does not exist.',
     consequenceIfMissing: 'Same as BACKUP_R2_ACCOUNT_ID: the dump is taken and discarded.',
@@ -81,7 +81,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'BACKUP_R2_ACCESS_KEY_ID',
     kind: 'secret',
     required: true,
-    workflows: ['db-backup.yml', 'restore-drill.yml'],
+    workflows: ['db-backup.yml', 'restore-drill.yml', 'clean-start.yml', 'clean-start-photos.yml'],
     description: 'Object Read & Write token scoped to the backups bucket ONLY.',
     source: 'Cloudflare R2 → API tokens → Create token → Object Read & Write.',
     consequenceIfMissing: 'Upload is refused. Nothing is retained.',
@@ -90,7 +90,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'BACKUP_R2_SECRET_ACCESS_KEY',
     kind: 'secret',
     required: true,
-    workflows: ['db-backup.yml', 'restore-drill.yml'],
+    workflows: ['db-backup.yml', 'restore-drill.yml', 'clean-start.yml', 'clean-start-photos.yml'],
     description: 'The pair of BACKUP_R2_ACCESS_KEY_ID. Shown once, at creation.',
     source: 'Same flow. Save it before closing the dialog.',
     consequenceIfMissing: 'Upload is refused. Nothing is retained.',
@@ -146,7 +146,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'R2_ACCOUNT_ID',
     kind: 'secret',
     required: false,
-    workflows: ['r2-config.yml'],
+    workflows: ['r2-config.yml', 'clean-start.yml', 'clean-start-photos.yml'],
     description:
       'Cloudflare account hosting the PHOTOGRAPHS bucket. Needed only when that is a different account from the one holding the backups.',
     source:
@@ -159,7 +159,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'PROD_CRON_SECRET',
     kind: 'secret',
     required: true,
-    workflows: ['cron-scheduler.yml', 'db-backup.yml', 'keep-warm.yml', 'sla-escalate.yml'],
+    workflows: ['cron-scheduler.yml', 'db-backup.yml', 'keep-warm.yml', 'sla-escalate.yml', 'clean-start.yml'],
     description: 'Bearer token the scheduled jobs present to the production endpoints.',
     source: 'Generate one value (32+ random characters) and use it in BOTH places below.',
     alsoSetOn:
@@ -183,7 +183,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'HEALTH_BEARER',
     kind: 'secret',
     required: true,
-    workflows: ['ci.yml'],
+    workflows: ['ci.yml', 'clean-start.yml'],
     description:
       'Monitor bearer for the detailed /api/health payload. CI presents it after a deploy to main, because the commit production is running is only readable with it.',
     source:
@@ -198,7 +198,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'BACKUP_AGE_IDENTITY',
     kind: 'secret',
     required: false,
-    workflows: ['restore-drill.yml'],
+    workflows: ['restore-drill.yml', 'clean-start.yml', 'clean-start-photos.yml'],
     description: 'The age PRIVATE key, used only by the monthly restore drill to decrypt.',
     source: 'The private half of the key pair whose public half is BACKUP_AGE_RECIPIENTS.',
     consequenceIfMissing:
@@ -208,7 +208,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'NEON_API_KEY',
     kind: 'secret',
     required: false,
-    workflows: ['restore-drill.yml'],
+    workflows: ['restore-drill.yml', 'clean-start.yml', 'clean-start-photos.yml'],
     description: 'Lets the drill create and drop a throw-away branch to restore into.',
     source: 'Neon console → Settings → API keys.',
     consequenceIfMissing: 'The monthly restore drill cannot run.',
@@ -217,7 +217,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'NEON_PROJECT_ID',
     kind: 'secret',
     required: false,
-    workflows: ['restore-drill.yml'],
+    workflows: ['restore-drill.yml', 'clean-start.yml', 'clean-start-photos.yml'],
     description: 'The Neon project the drill restores into.',
     source: 'Neon console → Project → Settings → Project ID.',
     consequenceIfMissing: 'The monthly restore drill cannot run.',
@@ -232,6 +232,64 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     consequenceIfMissing:
       'The role-provisioning workflow cannot create or reset the role. It is dispatch-only, so nothing scheduled breaks.',
   },
+  // ---- the go-live clean start (scripts/ops/clean-start; delete after it) ----
+  {
+    name: 'CLEANSTART_ACTOR_USERNAME',
+    kind: 'secret',
+    required: false,
+    workflows: ['clean-start.yml', 'clean-start-photos.yml'],
+    description:
+      'The login name of the owner\'s own CRM account, recorded as the person who performed the go-live clean start and the photo deletion.',
+    source: 'Your own CRM login name. A secret only so it never appears in the public run log.',
+    consequenceIfMissing: 'The clean-start workflows refuse at their first step. Nothing else uses it.',
+  },
+  {
+    name: 'CLEANSTART_R2_RO_ACCESS_KEY_ID',
+    kind: 'secret',
+    required: false,
+    workflows: ['clean-start.yml'],
+    description: 'A READ-ONLY R2 token for the photos bucket: the clean start lists and reads the old seal copies with it.',
+    source: 'Cloudflare → R2 → Manage R2 API Tokens → "Object Read only", nmwc-photos only, 60-day TTL.',
+    consequenceIfMissing: 'The clean-start dry run refuses. Delete the token and this secret after the clean start.',
+  },
+  {
+    name: 'CLEANSTART_R2_RO_SECRET_ACCESS_KEY',
+    kind: 'secret',
+    required: false,
+    workflows: ['clean-start.yml'],
+    description: 'The secret half of CLEANSTART_R2_RO_ACCESS_KEY_ID.',
+    source: 'Shown once when the read-only token is created.',
+    consequenceIfMissing: 'Same as CLEANSTART_R2_RO_ACCESS_KEY_ID.',
+  },
+  {
+    name: 'CLEANSTART_R2_RW_ACCESS_KEY_ID',
+    kind: 'secret',
+    required: false,
+    workflows: ['clean-start.yml', 'clean-start-photos.yml'],
+    description:
+      'A READ-WRITE R2 token for the photos bucket, as an ENVIRONMENT secret of production-reset: it removes the archived old seal files and, at day 7, the test photos.',
+    source: 'Cloudflare → R2 → Manage R2 API Tokens → "Object Read & Write", nmwc-photos only, 60-day TTL. Settings → Environments → production-reset → Add environment secret.',
+    consequenceIfMissing: 'The clean-start apply and photo runs refuse at their first step. Delete it after the photo step.',
+  },
+  {
+    name: 'CLEANSTART_R2_RW_SECRET_ACCESS_KEY',
+    kind: 'secret',
+    required: false,
+    workflows: ['clean-start.yml', 'clean-start-photos.yml'],
+    description: 'The secret half of CLEANSTART_R2_RW_ACCESS_KEY_ID (environment secret of production-reset).',
+    source: 'Shown once when the read-write token is created.',
+    consequenceIfMissing: 'Same as CLEANSTART_R2_RW_ACCESS_KEY_ID.',
+  },
+  {
+    name: 'UAT_DATABASE_URL_RO',
+    kind: 'secret',
+    required: false,
+    workflows: ['clean-start-photos.yml'],
+    description:
+      'Optional, environment secret of production-reset: a READ-ONLY connection to the test environment, so the photo deletion keeps any photo UAT also uses.',
+    source: 'A read-only role on the UAT branch in Neon. Never a production connection string (the workflow refuses one).',
+    consequenceIfMissing: 'The photo deletion cannot tell whether UAT shares a photo and deletes every listed one; its summary says so.',
+  },
 
   // ---- variables ----
   {
@@ -240,7 +298,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     required: true,
     // restore-drill.yml seals its full restore log to the same keys (N08): the log
     // can quote customer rows, and without a recipient it is discarded.
-    workflows: ['db-backup.yml', 'restore-drill.yml'],
+    workflows: ['db-backup.yml', 'restore-drill.yml', 'clean-start.yml', 'clean-start-photos.yml'],
     description:
       'Age PUBLIC key(s), comma separated, that the nightly dump is encrypted to. Two is the right number: one working key and one escrowed.',
     source: 'Generate with `age-keygen`. Escrow the private half OFF this machine.',
@@ -251,7 +309,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'APP_BASE_URL',
     kind: 'variable',
     required: true,
-    workflows: ['cron-scheduler.yml', 'db-backup.yml'],
+    workflows: ['cron-scheduler.yml', 'db-backup.yml', 'clean-start.yml'],
     description: 'Production origin the backup job posts its completion report to.',
     source: 'The production URL, with no trailing slash.',
     consequenceIfMissing:
@@ -270,7 +328,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'R2_BUCKET',
     kind: 'variable',
     required: false,
-    workflows: ['r2-config.yml'],
+    workflows: ['r2-config.yml', 'clean-start.yml', 'clean-start-photos.yml'],
     description:
       "Name of the photographs bucket, mirroring lib/r2.ts's own R2_BUCKET contract so a bucket renamed in Vercel and not here cannot be checked silently.",
     source: 'The bucket name in the Cloudflare dashboard. Leave it unset while it is the default, nmwc-photos.',

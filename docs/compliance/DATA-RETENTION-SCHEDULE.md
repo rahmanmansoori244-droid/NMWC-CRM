@@ -46,6 +46,16 @@ Two columns matter more than the periods themselves: **Enforced by** and **Prove
 | Error telemetry (Sentry) | **[OWNER]** — Sentry org retention, typically 90 days | Sentry | — | — |
 | Application logs (Vercel) | 30 days on Pro with Observability Plus (since 2026-09-27; 1 day without it). The app's own lines and Prisma's error lines are scrubbed of phones, e-mails and 7–12 digit runs before they are written. **Not scrubbed:** the request path and query string Vercel records for every request (a customer search carries the typed phone number or name in `?q=`), and Next's own printout of an unhandled server error. **Known gap** — see gap 7 below | Vercel | — | — |
 
+**Dated note — the go-live clean start (owner decision, November 2026).** The ledgers and
+the history above are "indefinite, by design" from the clean start (`docs/OPERATIONS.md`
+§5m). Before it, the test period's rows of every ledger, history table and log were
+removed once, in the owner's maintenance window, by owner decision: the test period was
+test data, and its records begin again at the reset. The clean start is recorded by one
+AuditLog row (`cleanstart-<run>`), the history's BASELINE rows written in the same
+transaction, the encrypted reports and the archived old seals under `cleanstart/<run>/`
+in the backups bucket, and the owner's private operations log. The test photos are
+deleted from the photo bucket at least 7 days after it, in a separate approved run.
+
 ## Why the rate-limit period is one day and not thirty
 
 The row exists solely to hold token-bucket state — a token count and a refill timestamp. The bucket refills within minutes. Everything after that is a record of which username was tried from which IP address, kept for no operational purpose. One day is already generous.

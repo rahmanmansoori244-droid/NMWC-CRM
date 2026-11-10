@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# The REAL psql of FAKE_PG_BIN for the clean-start tests, with two additions:
+#  - line ends normalised to LF (the Windows client writes CRLF; CI's writes LF);
+#  - a lost connection to "production" (a connection string with @127.0.0.1:)
+#    at COMMIT, on demand (FAKE_PSQL_FAULT_FILE holds the mode):
+#      commit-then-drop    reset.sql runs and commits, then the client reports a
+#                          lost connection (exit 2), and every later call to
+#                          production fails
+#      drop-before-commit  reset.sql never reaches the server; the client reports a
+#                          lost connection (exit 2), and every later call to
+#                          production fails
+#      down                every call to production fails as "no connection" (exit 2)
+#    Calls to any other database (the rehearsal copies) are never affected.
+real="$FAKE_PG_BIN/psql"
+[ -x "$real.exe" ] && real="$real.exe"
+f="${FAKE_PSQL_FAULT_FILE:-}"
+if [ -n "$f" ] && [ -s "$f" ] && printf '%s\n' "$@" | grep -q '@127\.0\.0\.1:'; then
+  mode="$(cat "$f")"
+  case "$mode" in
+    down)
+      echo 'psql: error: connection to server failed: Connection refused' >&2
+      exit 2 ;;
+    commit-then-drop | drop-before-commit)
+      if printf '%s\n' "$@" | grep -q 'reset\.sql$'; then
+        if [ "$mode" = commit-then-drop ]; then "$real" "$@" > /dev/null 2>&1; fi
+        echo down > "$f"
+        echo 'psql: error: server closed the connection unexpectedly' >&2
+        exit 2
+      fi ;;
+  esac
+fi
+"$real" "$@" | tr -d '\r'
+exit "${PIPESTATUS[0]}"
