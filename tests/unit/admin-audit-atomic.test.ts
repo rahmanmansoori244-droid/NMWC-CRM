@@ -196,6 +196,8 @@ import {
   toggleRouteActiveAction,
 } from '@/services/routes';
 
+import { RESERVED_USERNAME_MESSAGE } from '@/lib/demo-accounts';
+
 const STEWARD = 'ckstewardactor0000000001';
 const TARGET = 'cktargetuser000000000001';
 const REGION = 'ckregionexisting00000001';
@@ -695,5 +697,41 @@ describe('finding 9: Disable and Enable set the state the click wants', () => {
     });
     expect(await click('false', SALES)).toEqual({ ok: true, data: { isActive: false, changed: false } });
     expect(audits()).toEqual([]);
+  });
+});
+
+// Code review 2026-11-10, finding 25: /users created an account on a demo-account
+// name without complaint; in production it could then never sign in.
+describe('finding 25: a reserved username is refused at creation', () => {
+  it.each(['supervisor.salalah', 'salesman.ali', 'viewer', 'steward', 'admin', 'manager.b'])(
+    '%s is refused under Username with the plain message, and nothing is written',
+    async (username) => {
+      const before = snapshot();
+      const res = await createUserAction(
+        form({ username, fullName: 'New Person', role: 'SUPERVISOR', password: 'A-long-password-1' })
+      );
+      expect(res).toEqual({
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        message: 'Validation failed',
+        fields: { username: RESERVED_USERNAME_MESSAGE },
+      });
+      expect(snapshot()).toEqual(before);
+    }
+  );
+
+  it('typed with capitals or spaces it is still refused (the form lower-cases and trims first)', async () => {
+    const res = await createUserAction(
+      form({ username: '  Supervisor.Sur ', fullName: 'New Person', role: 'SUPERVISOR', password: 'A-long-password-1' })
+    );
+    expect(res).toMatchObject({ ok: false, fields: { username: RESERVED_USERNAME_MESSAGE } });
+  });
+
+  it('a name that only looks like one is created: data.steward', async () => {
+    h.session = { user: { id: STEWARD, role: 'STEWARD', username: 'steward.one', mustChangePassword: false } };
+    const res = await createUserAction(
+      form({ username: 'data.steward', fullName: 'Data Steward Two', role: 'VIEWER', password: 'A-long-password-1' })
+    );
+    expect(res).toMatchObject({ ok: true });
   });
 });

@@ -37,6 +37,8 @@ import { randomUUID } from 'node:crypto';
 import ExcelJS from 'exceljs';
 import { purgeAuditLog, purgeHistory } from '../support/audit';
 
+import { RESERVED_USERNAME_MESSAGE } from '@/lib/demo-accounts';
+
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 const ENABLED = process.env.RUN_IMPORT_TESTS === '1' && !!process.env.DATABASE_URL;
@@ -439,5 +441,16 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
     expect((await prisma.user.findUniqueOrThrow({ where: { username: joiner } })).fullName).toBe(
       'ZZ Joiner Corrected'
     );
+  });
+
+  // Code review 2026-11-10, finding 25: a new account on a demo-account name
+  // could never sign in in production. The row is held back; nothing is created.
+  it('finding 25: a new account on a reserved username is held back, and no account is created', async () => {
+    const reserved = `supervisor.zz${tag}`;
+    const out = await upload([
+      { username: reserved, full_name: 'ZZ Reserved', role: 'SUPERVISOR', password: '12345', must_change_password: 'yes' },
+    ]);
+    expect(out.messages).toEqual([RESERVED_USERNAME_MESSAGE]);
+    expect(await prisma.user.findUnique({ where: { username: reserved } })).toBeNull();
   });
 });

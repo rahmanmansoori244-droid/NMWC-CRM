@@ -1,6 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
+import { reservedUsernameRefusal } from '@/lib/demo-accounts';
 import { setChangeContext, src, withChangeContext } from '@/lib/change-context';
 import { isTransientDbError } from '@/lib/db-errors';
 import {
@@ -588,6 +589,12 @@ async function uploadAccountMasterCore(
             row: sheetRow,
             message: 'creating MANAGER or STEWARD via import is not permitted — use the Users UI',
           });
+          continue;
+        }
+        // Code review 2026-11-10, finding 25: a new account on a reserved name could never sign in.
+        const reserved = existing ? null : reservedUsernameRefusal(username);
+        if (reserved) {
+          issues.push({ sheet: 'Users', row: sheetRow, message: reserved });
           continue;
         }
         // (b)/(c) Promote-to or mutate an existing admin via import — refuse.

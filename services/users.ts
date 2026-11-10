@@ -26,6 +26,7 @@ import {
 } from '@/lib/permissions';
 import { loadScope } from '@/lib/access';
 import { loadOpenWork } from '@/lib/open-work';
+import { reservedUsernameRefusal } from '@/lib/demo-accounts';
 import { ACTIVE_FIELD, ACTIVE_MISSING, wantedActive, type ActiveSwitchResult } from '@/lib/active-switch';
 import { getAuditEnvelope, writeAudit, type AuditEnvelope } from '@/lib/audit';
 import {
@@ -439,6 +440,10 @@ async function createUserCore(formData: FormData) {
     throw new ValidationError(fields);
   }
   const data = parsed.data;
+  // Code review 2026-11-10, finding 25: a demo-account name could be created and
+  // then never sign in (lib/demo-accounts.ts, shared with the account import).
+  const reserved = reservedUsernameRefusal(data.username);
+  if (reserved) throw new ValidationError({ username: reserved });
 
   // AUTH-03 / RBAC-05-006 / SR-USR-01: cap MANAGER-driven creation at the field
   // force so a Manager cannot mint an approver and seize the credit chain
