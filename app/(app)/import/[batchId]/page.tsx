@@ -291,9 +291,10 @@ export default async function ImportBatchPage({
           <strong className="font-semibold">This upload stopped at its time limit.</strong> Done and saved:{' '}
           {timeLimited.done || 'no row'}. Passwords set in this upload (new accounts and resets):{' '}
           {timeLimited.passwordsSet || 'none'}. {timeLimited.notProcessed ?? 0} row(s) were not processed; each is
-          listed below. Upload the same file again to do them: a row already done changes nothing the second time,
-          except that a row with reset_password set to yes that was done here is held back as a reused password — its
-          reset already happened in this upload.
+          listed below. Upload the same file again, unchanged, to do them: a row already done changes nothing the
+          second time, and a row with reset_password set to yes that was done here is held back, saying its reset was
+          already done by an earlier upload of this file — it is not reset again. Repeat until no row is listed as not
+          processed.
         </div>
       )}
       {batch.kind === 'CUSTOMER' && batch.overwriteCrmFields && (

@@ -400,7 +400,7 @@ describe('accountImportInterruptedMessage (X-IMPORTS-3)', () => {
     expect(msg).toMatch(/30 row\(s\) that were not applied are listed on this upload's batch page/);
     expect(msg).not.toMatch(/nothing was saved/i);
     // An applied reset is refused the second time as reused, not issued again.
-    expect(msg).toMatch(/reset_password set to yes is held back the second time as a reused password/);
+    expect(msg).toMatch(/reset_password set to yes that was applied is held back the second time — as already reset by an earlier upload of this same file/);
     expect(msg).not.toMatch(/issues its password again/);
   });
 

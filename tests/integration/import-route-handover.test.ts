@@ -107,10 +107,12 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
   let regionId = '';
   let routeId = '';
 
-  const upload = async (rows: Array<Record<string, string>>) => {
+  const upload = async (rows: Array<Record<string, string>>) => uploadBytes(await accountMaster(rows));
+  /** One workbook's bytes, so the same file can be uploaded twice (finding 23). */
+  const uploadBytes = async (bytes: Uint8Array<ArrayBuffer>) => {
     await prisma.rateLimit.deleteMany({ where: { key: { contains: stewardId } } });
     const fd = new FormData();
-    fd.set('file', new File([await accountMaster(rows)], 'account-master.xlsx', { type: XLSX_MIME }));
+    fd.set('file', new File([bytes], 'account-master.xlsx', { type: XLSX_MIME }));
     const res = await imports.uploadAccountMasterAction(fd);
     expect(res.ok, JSON.stringify(res)).toBe(true);
     const data = (res as { ok: true; data: { batchId: string; clean: number; issues: number } }).data;
@@ -439,5 +441,37 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
     expect((await prisma.user.findUniqueOrThrow({ where: { username: joiner } })).fullName).toBe(
       'ZZ Joiner Corrected'
     );
+  });
+
+  // Code review 2026-11-10, finding 23 (adversarial review): a re-upload of the
+  // same file after a time-limit stop must reach new rows. A reset the earlier
+  // upload of this file already did is held back at once, saying so — not
+  // re-checked against the password history (two to seven slow hashes) — and is
+  // not done twice. A changed file is judged by the reuse check, as before.
+  it('finding 23: the same file again holds back a reset it already did; a changed file is checked as before', async () => {
+    const resetRow = { username: emailHolder, full_name: 'ZZ Mail', role: 'VIEWER', password: '98765', reset_password: 'yes', must_change_password: 'yes' };
+    const bytes = await accountMaster([resetRow]);
+    const first = await uploadBytes(bytes);
+    expect(first.messages, JSON.stringify(first.messages)).toEqual([]);
+    const hash = (await prisma.user.findUniqueOrThrow({ where: { username: emailHolder } })).passwordHash;
+    const holderId = (await prisma.user.findUniqueOrThrow({ where: { username: emailHolder } })).id;
+    const resets = () =>
+      prisma.auditLog.count({ where: { entityType: 'User', entityId: holderId, reason: 'password_reset_via_import' } });
+    expect(await resets()).toBe(1);
+
+    const again = await uploadBytes(bytes);
+    expect(again.clean).toBe(0);
+    expect(again.messages).toEqual([
+      expect.stringMatching(
+        new RegExp(`^the password of "${emailHolder.replace(/\./g, '\\.')}" was already reset by an earlier upload of this same file \\(.+\\), so it was not reset again\\. Nothing was written for this row\\.`)
+      ),
+    ]);
+    expect((await prisma.user.findUniqueOrThrow({ where: { username: emailHolder } })).passwordHash).toBe(hash);
+    expect(await resets()).toBe(1);
+
+    // An edited sheet is another file: the reuse check holds the reset back.
+    const changed = await upload([{ ...resetRow, change_role: 'no' }]);
+    expect(changed.messages).toEqual([expect.stringMatching(/is its current password or one of its last five/)]);
+    expect(await resets()).toBe(1);
   });
 });

@@ -50,6 +50,9 @@ const READERS: Record<string, string> = {
   // Code review 2026-11-10, finding 23.
   'app/(app)/import/[batchId]/page.tsx':
     'the IMPORT summary row of the account batch on screen (rows done and passwords set, as row numbers); a Steward-only page, ImportBatch entity only',
+  // Code review 2026-11-10, finding 23 (adversarial review).
+  'lib/account-import-repeat.ts':
+    "one account's own password_reset_via_import row from an earlier upload of the same file; returns only its time, never a row",
 };
 
 /** The entity type each listed non-page reader is held to, read from its query. */
@@ -59,6 +62,7 @@ const READ_ONLY_ENTITY: Record<string, string> = {
   'services/imports.ts': 'Customer',
   'lib/integrity/checks.ts': 'User',
   'app/(app)/import/[batchId]/page.tsx': 'ImportBatch',
+  'lib/account-import-repeat.ts': 'User',
 };
 
 const ROOTS = ['app', 'lib', 'services', 'components'];

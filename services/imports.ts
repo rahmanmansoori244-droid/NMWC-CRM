@@ -1,6 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
+import { omanDateTime } from '@/lib/tz';
 import { setChangeContext, src, withChangeContext } from '@/lib/change-context';
 import { isTransientDbError } from '@/lib/db-errors';
 import {
@@ -61,6 +62,7 @@ import {
   inactiveRouteIssue,
   OWN_PASSWORD_RESET_ISSUE,
   passwordReusedIssue,
+  resetAlreadyDoneIssue,
   reportableError,
   roleMismatchIssue,
   supervisorIssue,
@@ -75,6 +77,7 @@ import {
 } from '@/lib/account-edit';
 import { onlyHisToCloseWhere } from '@/lib/stranded-creates';
 import { assertPasswordNotReused, rotatePasswordHistory } from '@/lib/password-policy';
+import { earlierAccountUploadsOfFile, resetByEarlierUpload } from '@/lib/account-import-repeat';
 import {
   checkCustomerRow,
   fileCollisions,
@@ -360,6 +363,11 @@ async function uploadAccountMasterCore(formData: FormData): Promise<AccountUploa
     issues.push({ sheet, row, message: ACCOUNT_ROW_NOT_PROCESSED_TIME });
   const done: AccountSheetRow[] = [];
   const passwordsSet: AccountSheetRow[] = [];
+  // Finding 23 (adversarial review): the earlier uploads of this same file, read
+  // once and only when a reset row needs them (lib/account-import-repeat.ts).
+  let earlierUploads: string[] | null = null;
+  const earlierUploadsOfThisFile = async () =>
+    (earlierUploads ??= await earlierAccountUploadsOfFile(batch.id, batch.fileSha256 ?? null));
 
   // 1) Regions
   if (regionsSheet) {
@@ -911,6 +919,15 @@ async function uploadAccountMasterCore(formData: FormData): Promise<AccountUploa
                 row: sheetRow,
                 message: 'reset_password=yes but no password provided',
               });
+              continue;
+            }
+            // Finding 23 (adversarial review): a reset an earlier upload of this
+            // same file already applied is held back before any password hash, so
+            // re-uploading the file after a time-limit stop reaches the rows not
+            // yet done instead of spending its budget re-checking these.
+            const resetAt = await resetByEarlierUpload(existing.id, await earlierUploadsOfThisFile());
+            if (resetAt) {
+              issues.push({ sheet: 'Users', row: sheetRow, message: resetAlreadyDoneIssue(username, omanDateTime(resetAt)) });
               continue;
             }
             // B-15, as resetPasswordCore applies it: not the current password nor

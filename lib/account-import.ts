@@ -311,6 +311,15 @@ export function reportableError(err: unknown): Error {
  */
 export const ACCOUNT_IMPORT_TIME_BUDGET_MS = 20_000;
 
+/**
+ * Finding 23 (adversarial review): the issue for a reset row an earlier upload of
+ * this same file already applied. Held back with no password hash, so a
+ * re-upload reaches new rows instead of re-checking resets already done.
+ */
+export function resetAlreadyDoneIssue(username: string, when: string): string {
+  return `the password of "${username}" was already reset by an earlier upload of this same file (${when}), so it was not reset again. Nothing was written for this row. To reset it once more, upload a sheet with a different password.`;
+}
+
 /** Finding 23: the issue for a row the upload did not reach before its time budget ran out. */
 export const ACCOUNT_ROW_NOT_PROCESSED_TIME =
   'not processed: this upload reached its time limit before this row. Nothing was written for this row. Upload the file again to do it.';
@@ -355,7 +364,7 @@ export function accountImportTimeLimitMessage(p: {
     p.passwordsSet.length > 0
       ? ` Passwords set in this upload (new accounts and resets): ${accountRowList(p.passwordsSet)}.`
       : ' No password was set in this upload.';
-  return `This upload stopped at its time limit, so the request could not be cut off part-way. ${done}${pw} ${p.notProcessed} row(s) were not processed; each is listed on the batch page. Upload the same file again to do them: a row already done changes nothing the second time, except that a row with reset_password set to yes that was done here is held back as a reused password — its reset already happened in this upload. Or upload a file of only the rows not processed.`;
+  return `This upload stopped at its time limit, so the request could not be cut off part-way. ${done}${pw} ${p.notProcessed} row(s) were not processed; each is listed on the batch page. Upload the same file again, unchanged, to do them: a row already done changes nothing the second time, and a row with reset_password set to yes that was done here is held back, saying its reset was already done by an earlier upload of this file — it is not reset again. Repeat until no row is listed as not processed. Or upload a file of only the rows not processed.`;
 }
 
 /** X-IMPORTS-3: the issue for a row the import never reached because it stopped. */
@@ -390,7 +399,7 @@ export function accountImportInterruptedMessage(p: {
   // one the account has used (passwordReusedIssue). Harmless, but it would be
   // listed as held back, which reads as the reset having failed.
   const again =
-    'A row that was already applied changes nothing the second time, except that a row with reset_password set to yes is held back the second time as a reused password, so take those rows out first.';
+    'A row that was already applied changes nothing the second time, and a row with reset_password set to yes that was applied is held back the second time — as already reset by an earlier upload of this same file, or, if the file was changed, as a reused password — so its reset is not done twice.';
   const rerun = `Upload the same file again once the CRM responds. ${again}`;
   if (p.recorded) {
     return `The database stopped answering, so the import stopped part-way. ${applied}${uncertain}. The ${p.notApplied} row(s) that were not applied are listed on this upload's batch page. ${rerun}`;

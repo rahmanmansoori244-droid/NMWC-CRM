@@ -429,8 +429,35 @@ function makeClient(isTx: boolean): any {
         st().audits.push({ ...row, viaTx: isTx });
         return row;
       },
+      // Finding 23 (lib/account-import-repeat.ts): an account's reset row from one
+      // of the named earlier uploads, the newest.
+      findFirst: async (args: any) => {
+        gate('auditLog', 'findFirst', args, false);
+        const w = args.where;
+        const ids = new Set(w.OR.map((o: any) => o.after.equals));
+        const hit = [...st().audits]
+          .reverse()
+          .find(
+            (a) =>
+              a.entityType === w.entityType &&
+              a.entityId === w.entityId &&
+              a.reason === w.reason &&
+              ids.has((a.after as { batchId?: string } | undefined)?.batchId)
+          );
+        return hit ? { at: new Date('2026-11-10T08:00:00Z') } : null;
+      },
     },
     importBatch: {
+      // Finding 23: the earlier uploads of the same file, newest first.
+      findMany: async (args: any) => {
+        gate('importBatch', 'findMany', args, false);
+        const w = args.where;
+        return st()
+          .batches.filter((b) => b.kind === w.kind && b.fileSha256 === w.fileSha256 && b.id !== w.id.not)
+          .reverse()
+          .slice(0, args.take)
+          .map((b) => ({ id: b.id }));
+      },
       create: async (args: any) => {
         gate('importBatch', 'create', args, true);
         const b = { id: id('batch'), ...args.data };
@@ -553,7 +580,9 @@ async function upload(sheets: Array<{ name: string; rows: Array<Record<string, s
     rowNumbers: s.rows.map((_, i) => i + 2),
     duplicateHeadings: [],
   }));
-  return send(new Uint8Array([1, 2, 3]));
+  // The bytes stand for the file: the same sheets are the same file (the same
+  // SHA-256), as a re-upload of an unchanged workbook is (finding 23).
+  return send(new TextEncoder().encode(JSON.stringify(sheets)) as Uint8Array<ArrayBuffer>);
 }
 /** A real workbook, through the real parser: blank lines and headings as Excel has them. */
 async function uploadWorkbook(build: (wb: import('exceljs').Workbook) => void) {
@@ -2090,7 +2119,7 @@ describe('finding 23: an account upload stops cleanly at its time budget and rep
     }
   });
 
-  it('a reset done before the stop is named, and a re-upload holds that row back as a reused password, as the message says', async () => {
+  it('a reset done before the stop is named, and a re-upload of the same file holds that row back as already done, as the message says', async () => {
     addUser({ id: 's1', username: 'mct-01', role: 'SALESMAN', ownedRouteId: 'rt-1', passwordHash: 'hashed:Current-pass-1' });
     const reset = {
       username: 'mct-01',
@@ -2110,15 +2139,98 @@ describe('finding 23: an account upload stops cleanly at its time budget and rep
       spy.mockRestore();
     }
     expect(stopped).toContain('Passwords set in this upload (new accounts and resets): Users row 2.');
-    expect(stopped).toContain('held back as a reused password — its reset already happened in this upload');
+    expect(stopped).toContain('saying its reset was already done by an earlier upload of this file — it is not reset again');
     expect(find('mct-01')!.passwordHash).toBe('hashed:Temp1234');
     spy = clockSteps(1);
     try {
       const { messages } = await upload(usersSheet(reset, ...viewers(2)));
-      expect(messages).toEqual([expect.stringMatching(/^Users 2: the new password for "mct-01" is its current password/)]);
+      expect(messages).toEqual([
+        'Users 2: the password of "mct-01" was already reset by an earlier upload of this same file (10/11/2026, 12:00:00), so it was not reset again. Nothing was written for this row. To reset it once more, upload a sheet with a different password.',
+      ]);
+      expect(find('mct-01')!.passwordHash).toBe('hashed:Temp1234');
       expect(find('viewer.2')).toBeTruthy();
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it('a changed file is not taken for the same one: its reset row is judged by the reuse check, as before', async () => {
+    addUser({ id: 's1', username: 'mct-01', role: 'SALESMAN', ownedRouteId: 'rt-1', passwordHash: 'hashed:Current-pass-1' });
+    const reset = {
+      username: 'mct-01',
+      full_name: 'Name mct-01',
+      role: 'SALESMAN',
+      route_code: 'MCT-01',
+      password: 'Temp1234',
+      reset_password: 'yes',
+      must_change_password: 'yes',
+    };
+    await upload(usersSheet(reset));
+    expect(find('mct-01')!.passwordHash).toBe('hashed:Temp1234');
+    const { messages } = await upload(usersSheet(reset, ...viewers(1)));
+    expect(messages).toEqual([expect.stringMatching(/^Users 2: the new password for "mct-01" is its current password/)]);
+  });
+
+  // Adversarial review of finding 23: "upload the same file again, as often as
+  // needed" must finish. Each password hash costs one second here, as cost-12
+  // bcrypt did in the 2026-11-10 review; every reset account has five earlier
+  // passwords, so a fresh reset costs seven hashes. A reset an earlier upload of
+  // the file already did must cost none, or re-uploads stall once about twenty
+  // resets are done.
+  it('30 resets at a second per hash finish in a bounded number of uploads of the same file', async () => {
+    const { ACCOUNT_ROW_NOT_PROCESSED_TIME } = await import('@/lib/account-import');
+    const bcrypt = (await import('bcryptjs')).default as unknown as {
+      hash: (p: string) => Promise<string>;
+      compare: (p: string, h: string) => Promise<boolean>;
+    };
+    let t = Date.parse('2026-11-10T08:00:00Z');
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => t);
+    const realHash = bcrypt.hash;
+    const realCompare = bcrypt.compare;
+    bcrypt.hash = async (p: string) => {
+      t += 1_000;
+      return realHash(p);
+    };
+    bcrypt.compare = async (p: string, hsh: string) => {
+      t += 1_000;
+      return realCompare(p, hsh);
+    };
+    try {
+      const rows = Array.from({ length: 30 }, (_, i) => {
+        const n = String(i + 1).padStart(2, '0');
+        h.store.routes.push({ id: `rt-x${n}`, code: `MCT-X${n}`, name: `X ${n}`, regionId: 'rg-mct' });
+        const u = addUser({ id: `sx${n}`, username: `mct-x${n}`, role: 'SALESMAN', ownedRouteId: `rt-x${n}`, passwordHash: `hashed:Current-${n}` });
+        for (let k = 0; k < 5; k++) h.store.history.push({ id: `ph-${n}-${k}`, userId: u.id, hash: `hashed:Old-${n}-${k}`, at: k });
+        return {
+          username: `mct-x${n}`,
+          full_name: `Name mct-x${n}`,
+          role: 'SALESMAN',
+          route_code: `MCT-X${n}`,
+          password: `Temp-${n}-new`,
+          reset_password: 'yes',
+          must_change_password: 'yes',
+        };
+      });
+      let uploads = 0;
+      let left = rows.length;
+      while (left > 0) {
+        uploads++;
+        expect(uploads, 'uploads needed').toBeLessThanOrEqual(15);
+        const { messages } = await upload(usersSheet(...rows));
+        const notProcessed = messages.filter((m) => m.endsWith(ACCOUNT_ROW_NOT_PROCESSED_TIME)).length;
+        // Every upload reaches at least one new row.
+        expect(notProcessed, `upload ${uploads}`).toBeLessThan(left);
+        left = notProcessed;
+      }
+      // Every account was reset exactly once, to the sheet's password.
+      for (const r of rows) expect(find(r.username)!.passwordHash).toBe(`hashed:${r.password}`);
+      const resets = h.store.audits.filter((a) => a.reason === 'password_reset_via_import');
+      expect(resets).toHaveLength(30);
+      expect(new Set(resets.map((a) => a.entityId)).size).toBe(30);
+    } finally {
+      bcrypt.hash = realHash;
+      bcrypt.compare = realCompare;
+      now.mockRestore();
     }
   });
 });
