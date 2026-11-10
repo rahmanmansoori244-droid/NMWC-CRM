@@ -21,6 +21,8 @@ import {
   GPS_LISTEN_MS,
   GPS_START_WAIT_MS,
   GPS_STOP_EARLY_AT_M,
+  distanceMetres,
+  distanceWords,
   listenForBestFix,
   type ListenOutcome,
   type PermissionsLike,
@@ -185,6 +187,26 @@ describe('the listening rule (lib/gps-listen.ts)', () => {
  * was told "No GPS fix", and the watch was gone when he tapped Allow. It now
  * starts when readings can arrive; a safety limit still ends every listen.
  */
+describe('how far apart two points are (second round)', () => {
+  it('one degree of latitude is about 111.2 km; a few metres are a few metres', () => {
+    expect(distanceMetres({ lat: 0, lng: 0 }, { lat: 1, lng: 0 })).toBeCloseTo(111_195, 0);
+    expect(distanceMetres({ lat: 23.5, lng: 58.3 }, { lat: 23.5003, lng: 58.3 })).toBeCloseTo(33.36, 1);
+    expect(distanceMetres({ lat: 23.5, lng: 58.3 }, { lat: 23.5, lng: 58.3 })).toBe(0);
+    // Symmetric.
+    expect(distanceMetres({ lat: 23.7, lng: 58.5 }, { lat: 23.5, lng: 58.3 })).toBeCloseTo(
+      distanceMetres({ lat: 23.5, lng: 58.3 }, { lat: 23.7, lng: 58.5 }),
+      6
+    );
+  });
+
+  it('said in whole metres, with kilometres added from 1 km', () => {
+    expect(distanceWords(33.36)).toBe('about 33 m');
+    expect(distanceWords(999.4)).toBe('about 999 m');
+    expect(distanceWords(999.6)).toBe('about 1,000 m (1 km)');
+    expect(distanceWords(2140)).toBe('about 2,140 m (2.1 km)');
+  });
+});
+
 describe('the window starts when readings can arrive, not at the tap', () => {
   it('its safety limit: two minutes to start, longer than the window it guards', () => {
     expect(GPS_START_WAIT_MS).toBe(120_000);
@@ -397,6 +419,36 @@ describe('the GPS button', () => {
     expect(onCapture).not.toHaveBeenCalled();
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.getByText('23.500000, 58.300000')).toBeTruthy();
+  });
+
+  it('second round: the question says how far apart the two points are, so a moved shop can be told from a weak signal', async () => {
+    const onCapture = vi.fn();
+    render(<GpsCaptureButton initial={ON_FILE} saved={ON_FILE} onCapture={onCapture} />);
+    // A weak signal over the same shop: ±150 m, 33 m from the point on file.
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    await reading(150, 23.5003, 58.3);
+    await wait(GPS_LISTEN_MS);
+    expect(screen.getByRole('alert').textContent).toContain('The new reading is ±150 m, rougher than the saved location (±8 m).');
+    expect(screen.getByTestId('gps-rougher-distance').textContent).toBe('It is about 33 m from the saved location.');
+    fireEvent.click(screen.getByRole('button', { name: 'Keep the saved location' }));
+    // A shop that moved: ±40 m, 30 km away.
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    await reading(40, 23.7, 58.5);
+    await wait(GPS_LISTEN_MS);
+    expect(screen.getByTestId('gps-rougher-distance').textContent).toBe('It is about 30,164 m (30.2 km) from the saved location.');
+    // Which button leads is unchanged (an owner question): Keep stays the filled one.
+    expect(screen.getByRole('button', { name: 'Keep the saved location' }).className).toContain('bg-brand-600');
+    expect(screen.getByRole('button', { name: 'Use the new reading (±40 m)' }).className).not.toContain('bg-brand-600');
+    expect(onCapture).not.toHaveBeenCalled();
+  });
+
+  it('second round: against a typed point the distance is said too', async () => {
+    const typed: Gps = { lat: 23.5, lng: 58.3, capturedAt: new Date(), isManual: true, manualReason: 'From the map' };
+    render(<GpsCaptureButton initial={typed} onCapture={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    await reading(160, 23.5, 58.3);
+    await wait(GPS_LISTEN_MS);
+    expect(screen.getByTestId('gps-rougher-distance').textContent).toBe('It is about 0 m from the location already here.');
   });
 
   it('…or "Use the new reading", when the shop really is somewhere else', async () => {

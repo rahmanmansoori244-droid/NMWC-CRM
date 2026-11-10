@@ -3,7 +3,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { MapPin, Check, RotateCcw, AlertTriangle, PencilLine, Undo2 } from 'lucide-react';
 import { gpsAccuracyAdvice, gpsAccuracyBand } from '@/lib/gps-accuracy';
-import { GPS_LISTEN_MS, listenForBestFix, rankedAccuracy, type PermissionsLike } from '@/lib/gps-listen';
+import {
+  GPS_LISTEN_MS,
+  distanceMetres,
+  distanceWords,
+  listenForBestFix,
+  rankedAccuracy,
+  type PermissionsLike,
+} from '@/lib/gps-listen';
 import { typedDecimal } from '@/lib/digits';
 
 export type Gps = {
@@ -415,6 +422,12 @@ export function GpsCaptureButton({
             {`The new reading is ±${Math.round(rougher.accuracy ?? 0)} m, rougher than ${currentLabel}${
               gps.isManual ? ' (typed in)' : gps.accuracy != null ? ` (±${Math.round(gps.accuracy)} m)` : ''
             }.`}
+          </p>
+          {/* Second round: how far apart, so a shop that moved (far) can be told
+              from a weak signal (close). Which button leads is unchanged: an
+              owner question (see CHANGELOG). */}
+          <p className="mt-1" data-testid="gps-rougher-distance">
+            {`It is ${distanceWords(distanceMetres(rougher, gps))} from ${currentLabel}.`}
           </p>
           <div className="mt-2 flex flex-wrap gap-2">
             <button

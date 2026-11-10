@@ -67,6 +67,29 @@ export type PermissionStatusLike = {
   removeEventListener?: (type: 'change', fn: () => void) => void;
 };
 
+/**
+ * Great-circle distance in metres between two points (haversine, mean Earth
+ * radius). Second round of finding 19: the "rougher reading" question says how
+ * far the new reading is from the point already there, so a shop that moved
+ * (far apart) can be told from a weak signal (close together). Over the few
+ * kilometres that matter here the error is well under a metre.
+ */
+export function distanceMetres(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const R = 6_371_008.8;
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const dLat = rad(b.lat - a.lat);
+  const dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/** "about 40 m", "about 2,140 m (2.1 km)": whole metres, with kilometres added from 1 km. */
+export function distanceWords(metres: number): string {
+  const m = Math.round(metres);
+  const shown = `about ${m.toLocaleString('en-GB')} m`;
+  return m >= 1000 ? `${shown} (${(m / 1000).toLocaleString('en-GB', { maximumFractionDigits: 1 })} km)` : shown;
+}
+
 /** Whole metres, as the chip shows them; an unknown accuracy ranks last. */
 export function rankedAccuracy(accuracy: number | null | undefined): number {
   return typeof accuracy === 'number' && Number.isFinite(accuracy) && accuracy >= 0
