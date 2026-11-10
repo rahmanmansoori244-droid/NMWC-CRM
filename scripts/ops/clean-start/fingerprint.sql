@@ -9,7 +9,8 @@
 --   - the CodeSequence rows;
 --   - sha256 of the photo-key list and sha256 of the seal export (byte for byte
 --     the files plan.sql writes);
---   - md5 of the trigger set and of the function bodies.
+--   - md5 of the trigger set (printed without parentheses, so that a restored
+--     dump gives the same value; see triggers_stable) and of the function bodies.
 -- CronRun, CronHeartbeat and RateLimit are left out: the schedulers write them.
 --
 -- Rows are hashed as to_jsonb(row)::text, not row::text: jsonb prints dates and
@@ -105,6 +106,22 @@ triggers AS (
     JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
    WHERE NOT t.tgisinternal AND c.relnamespace = 'public'::regnamespace
 ),
+-- The same set, as a dump RESTORES it: Postgres keeps a trigger's WHEN clause as
+-- an expression tree, and a chain of ORs created as written is printed nested
+-- ((a OR b) OR c) while the same clause re-read from a dump is printed flat
+-- (a OR b OR c). Found by tests/integration/clean-start-flow.test.ts: with the
+-- printed text in the plan id, production's plan id could never equal the
+-- restored backup's (REHEARSE step 2). The plan id therefore takes the text
+-- without parentheses; triggers_md5 (the before/after comparison inside one
+-- database, selfcheck.sql CS107) keeps the exact text.
+triggers_stable AS (
+  SELECT md5(COALESCE(string_agg(c.relname || '|' || t.tgname || '|' || t.tgenabled::text || '|'
+                                 || regexp_replace(pg_catalog.pg_get_triggerdef(t.oid), '[()]', '', 'g'),
+           E'\n' ORDER BY c.relname COLLATE "C", t.tgname COLLATE "C"), '')) AS md5
+    FROM pg_catalog.pg_trigger t
+    JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+   WHERE NOT t.tgisinternal AND c.relnamespace = 'public'::regnamespace
+),
 functions AS (
   SELECT md5(COALESCE(string_agg(p.proname || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')|'
            || md5(p.prosrc) || '|' || p.prosecdef::text || '|' || COALESCE(array_to_string(p.proconfig, ';'), ''),
@@ -123,7 +140,7 @@ lines(name, value) AS (
   UNION ALL SELECT 'codesequence', (SELECT rows FROM codeseq)
   UNION ALL SELECT 'photo-keys', (SELECT sha FROM photo_keys)
   UNION ALL SELECT 'seals', (SELECT sha FROM seals)
-  UNION ALL SELECT 'triggers', (SELECT md5 FROM triggers)
+  UNION ALL SELECT 'triggers', (SELECT md5 FROM triggers_stable)
   UNION ALL SELECT 'functions', (SELECT md5 FROM functions)
 ),
 doc AS (
