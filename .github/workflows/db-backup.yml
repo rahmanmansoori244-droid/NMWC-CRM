@@ -385,7 +385,7 @@ jobs:
           fi
           echo "NEWEST_WRITE_AT=${NEWEST:-none}" >> "$GITHUB_ENV"
           echo "NEWEST_WRITE_FROM=${FROM:-not known}" >> "$GITHUB_ENV"
-          bash scripts/ops/backup-freshness.sh "$SINCE" "$EVENT_NAME"
+          bash scripts/ops/backup-freshness.sh "$SINCE" "$EVENT_NAME" "${FROM:-not known}"
 
       - name: Report the outcome to the app (dead man)
         if: always()

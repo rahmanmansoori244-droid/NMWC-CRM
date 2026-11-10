@@ -498,7 +498,7 @@ jobs:
           # written, so the rule must call this database live, on the nightly trigger.
           SINCE="$(jq -r '.secondsSinceNewestWrite // empty' manifest.json)"
           echo "newest write before the dump (manifest) $(jq -r '.newestWriteAt // "none"' manifest.json), ${SINCE:-?} s ago"
-          bash scripts/ops/backup-freshness.sh "$SINCE" schedule
+          bash scripts/ops/backup-freshness.sh "$SINCE" schedule 'from the manifest, taken before the dump'
           # Second round: the nightly job reads the age from its own small query
           # first (a failed manifest is only a warning). Run it on Postgres 17 too,
           # through the same rule, and check it agrees with the manifest.
@@ -509,7 +509,7 @@ jobs:
           ROW="$(psql "$DATABASE_URL" -At -v ON_ERROR_STOP=1 -f scripts/ops/backup-newest-write.sql)"
           echo "newest-write query (this database when checked): ${ROW}"
           test "${ROW#*|}" = "$(jq -r '.newestWriteAt' manifest.json)"
-          bash scripts/ops/backup-freshness.sh "${ROW%%|*}" schedule
+          bash scripts/ops/backup-freshness.sh "${ROW%%|*}" schedule 'from the newest-record query, checked now'
 
       - name: Dump with the production flags, then check it like production does
         run: |

@@ -21,12 +21,12 @@ import { resolveBash, runScriptOf, runStep, STEP_TEST_TIMEOUT_MS } from '../supp
 
 const HOUR = 3600;
 
-function freshness(seconds: string, event: string) {
+function freshness(seconds: string, event: string, from?: string) {
   const { bash, extraPath } = resolveBash();
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const k of Object.keys(env)) if (k.toLowerCase() === 'path') delete env[k];
   env.PATH = extraPath ? `${extraPath}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}` : process.env.PATH;
-  const r = spawnSync(bash, ['scripts/ops/backup-freshness.sh', seconds, event], { env, encoding: 'utf8', timeout: 60_000 });
+  const r = spawnSync(bash, ['scripts/ops/backup-freshness.sh', seconds, event, ...(from === undefined ? [] : [from])], { env, encoding: 'utf8', timeout: 60_000 });
   return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
 
@@ -57,9 +57,21 @@ describe('the rule (scripts/ops/backup-freshness.sh)', () => {
     const r = freshness(String(50 * HOUR), 'workflow_dispatch');
     expect(r.status, r.out).toBe(0);
     expect(r.out).toMatch(/::warning::The newest record/);
-    expect(r.out).toMatch(/newest record in this database, when checked: 50 h ago/);
-    // Third round: measured after the upload, so not called "the dumped database".
+    // Third round: the script cannot know when the caller measured the age, so
+    // without being told it claims neither "when checked" nor "the dumped database".
+    expect(r.out).toMatch(/newest record in this database: 50 h ago/);
+    expect(r.out).not.toMatch(/when checked/);
     expect(r.out).not.toMatch(/dumped database/);
+  }, STEP_TEST_TIMEOUT_MS);
+
+  it.each([
+    ['checked after the upload'],
+    ['from the manifest, taken before the dump'],
+  ])('the age line repeats where the caller says the value came from — %s', (from) => {
+    const r = freshness(String(3 * HOUR), 'schedule', from);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain(`newest record in this database (${from}): 3 h ago (limit 24 h)`);
+    expect(r.out).not.toMatch(/when checked/);
   }, STEP_TEST_TIMEOUT_MS);
 
   it.each([['no value', ''], ['not a number', 'null']])('%s: the nightly run fails (it cannot show the database is live); by hand it warns', (_label, v) => {
@@ -105,6 +117,9 @@ describe('the backup job runs it (.github/workflows/db-backup.yml)', () => {
     expect(check?.run).toContain('-f scripts/ops/backup-newest-write.sql');
     expect(check?.run).toContain(`jq -r '.secondsSinceNewestWrite // empty' "\${STAMP}.manifest.json"`);
     expect(check?.run).toContain('bash scripts/ops/backup-freshness.sh "$SINCE" "$EVENT_NAME"');
+    // ...and where the age came from, so a manifest (pre-dump) value is not printed
+    // as one read after the upload.
+    expect(check?.run).toContain('bash scripts/ops/backup-freshness.sh "$SINCE" "$EVENT_NAME" "${FROM:-not known}"');
   });
 
   it('the nightly trigger is the schedule the rule fails on', () => {
@@ -256,5 +271,8 @@ ${stepSummary}`, { STAMP });
     expect(ci).toContain('ROW="$(psql "$DATABASE_URL" -At -v ON_ERROR_STOP=1 -f scripts/ops/backup-newest-write.sql)"');
     expect(ci).toContain(`test "\${ROW#*|}" = "$(jq -r '.newestWriteAt' manifest.json)"`);
     expect(ci).toContain('bash scripts/ops/backup-freshness.sh "${ROW%%|*}" schedule');
+    // Each call says where its age came from: the first is the manifest's.
+    expect(ci).toContain(`bash scripts/ops/backup-freshness.sh "$SINCE" schedule 'from the manifest, taken before the dump'`);
+    expect(ci).toContain(`bash scripts/ops/backup-freshness.sh "\${ROW%%|*}" schedule 'from the newest-record query, checked now'`);
   });
 });
