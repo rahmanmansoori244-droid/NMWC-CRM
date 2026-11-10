@@ -357,6 +357,12 @@ jobs:
       # is and does not turn a backup that was taken red. The manifest's value is
       # the fallback; with neither, a scheduled run still fails (it cannot show the
       # database is live).
+      # Third round: that query runs AFTER the dump and the upload, so its value is
+      # the newest record in this database at check time — the right measure for
+      # "is this the live database", but not a statement of what the dump holds (a
+      # sign-in or a heartbeat between the dump and the check is not in it). The
+      # summary says which it is (NEWEST_WRITE_FROM), and shows the manifest's
+      # value, taken BEFORE the dump, as what the backup holds at least.
       - name: Is this the database the app writes to? (newest record within a day)
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -364,17 +370,21 @@ jobs:
           set -euo pipefail
           SINCE=''
           NEWEST=''
+          FROM=''
           if ROW="$(/usr/lib/postgresql/17/bin/psql "$PGURL" -At -v ON_ERROR_STOP=1 -f scripts/ops/backup-newest-write.sql)"; then
             SINCE="${ROW%%|*}"
             NEWEST="${ROW#*|}"
+            FROM='checked after the upload'
           else
             echo "::warning::the newest-record query failed; using the manifest's value, if it has one"
             if [ -s "${STAMP}.manifest.json" ]; then
               SINCE="$(jq -r '.secondsSinceNewestWrite // empty' "${STAMP}.manifest.json")"
               NEWEST="$(jq -r '.newestWriteAt // empty' "${STAMP}.manifest.json")"
+              FROM='from the manifest, taken before the dump'
             fi
           fi
           echo "NEWEST_WRITE_AT=${NEWEST:-none}" >> "$GITHUB_ENV"
+          echo "NEWEST_WRITE_FROM=${FROM:-not known}" >> "$GITHUB_ENV"
           bash scripts/ops/backup-freshness.sh "$SINCE" "$EVENT_NAME"
 
       - name: Report the outcome to the app (dead man)
@@ -424,7 +434,15 @@ jobs:
             echo "- manifest: \`${BASE_KEY:-?}.manifest.json\`"
             echo "- size: ${BYTES:-?} bytes"
             echo "- encrypted: ${ENCRYPTED:-unknown}"
-            echo "- newest record in the dumped database (UTC): ${NEWEST_WRITE_AT:-unknown}"
+            # Third round: the freshness check's value is this database's newest
+            # record when it was checked, after the upload; the manifest's, taken
+            # before the dump, is the newest record the backup is sure to hold.
+            echo "- newest record in this database (UTC, ${NEWEST_WRITE_FROM:-not known}): ${NEWEST_WRITE_AT:-unknown}"
+            BEFORE=''
+            if [ -s "${STAMP:-none}.manifest.json" ]; then
+              BEFORE="$(jq -r '.newestWriteAt // empty' "${STAMP}.manifest.json" 2>/dev/null || true)"
+            fi
+            echo "- newest record before the dump (UTC, from the manifest; the backup holds at least this): ${BEFORE:-unknown}"
             echo "- job status: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"
 

@@ -57,7 +57,9 @@ describe('the rule (scripts/ops/backup-freshness.sh)', () => {
     const r = freshness(String(50 * HOUR), 'workflow_dispatch');
     expect(r.status, r.out).toBe(0);
     expect(r.out).toMatch(/::warning::The newest record/);
-    expect(r.out).toMatch(/newest record in the dumped database: 50 h ago/);
+    expect(r.out).toMatch(/newest record in this database, when checked: 50 h ago/);
+    // Third round: measured after the upload, so not called "the dumped database".
+    expect(r.out).not.toMatch(/dumped database/);
   }, STEP_TEST_TIMEOUT_MS);
 
   it.each([['no value', ''], ['not a number', 'null']])('%s: the nightly run fails (it cannot show the database is live); by hand it warns', (_label, v) => {
@@ -111,8 +113,13 @@ describe('the backup job runs it (.github/workflows/db-backup.yml)', () => {
     expect(raw).toMatch(/\n {2}workflow_dispatch:\n/);
   });
 
-  it('the run summary shows the newest record', () => {
-    expect(steps[at('Summary')]?.run).toContain('newest record in the dumped database (UTC): ${NEWEST_WRITE_AT:-unknown}');
+  it('the run summary shows the newest record, labelled by when it was measured (third round)', () => {
+    const summary = steps[at('Summary')]?.run ?? '';
+    expect(summary).toContain('newest record in this database (UTC, ${NEWEST_WRITE_FROM:-not known}): ${NEWEST_WRITE_AT:-unknown}');
+    expect(summary).toContain('newest record before the dump (UTC, from the manifest; the backup holds at least this): ${BEFORE:-unknown}');
+    expect(summary).toContain(`jq -r '.newestWriteAt // empty' "\${STAMP}.manifest.json"`);
+    // The value the check measures after the upload is never called what the dump holds.
+    expect(summary).not.toContain('newest record in the dumped database');
   });
 });
 
@@ -159,6 +166,7 @@ describe('second round: a failed manifest no longer fails a backup that was take
     expect(r.status, r.output).toBe(0);
     expect(r.calls).toEqual(['psql postgresql://u@db.invalid/neondb -At -v ON_ERROR_STOP=1 -f scripts/ops/backup-newest-write.sql']);
     expect(r.output).toContain('NEWEST_WRITE_AT=2026-11-10T23:00:00.000Z');
+    expect(r.output).toContain('NEWEST_WRITE_FROM=checked after the upload');
     expect(r.output).toMatch(/::notice::the newest record in this database is 3 h old/);
   }, STEP_TEST_TIMEOUT_MS);
 
@@ -179,6 +187,7 @@ describe('second round: a failed manifest no longer fails a backup that was take
     expect(fresh.status, fresh.output).toBe(0);
     expect(fresh.output).toMatch(/::warning::the newest-record query failed; using the manifest's value/);
     expect(fresh.output).toContain('NEWEST_WRITE_AT=2026-11-10T23:00:00.000Z');
+    expect(fresh.output).toContain('NEWEST_WRITE_FROM=from the manifest, taken before the dump');
     const stale = run('schedule', { PSQL_FAIL: '1' }, { [`${STAMP}.manifest.json`]: manifest(30 * HOUR) });
     expect(stale.status).toBe(1);
   }, STEP_TEST_TIMEOUT_MS);
@@ -200,6 +209,29 @@ describe('second round: a failed manifest no longer fails a backup that was take
     expect(r.status).toBe(1);
     expect(r.output).toMatch(/::error::The backup could not tell/);
     expect(r.output).toContain('NEWEST_WRITE_AT=none');
+  }, STEP_TEST_TIMEOUT_MS);
+
+  it('third round: the summary labels each value by when it was measured, executed', () => {
+    const summary = runScriptOf(raw, 'Summary').split('${{ job.status }}').join('success');
+    expect(summary).not.toBe('');
+    const stepSummary = `export GITHUB_STEP_SUMMARY="$STUB_DIR/summary"; trap 'cat "$GITHUB_STEP_SUMMARY" 2>/dev/null || true' EXIT`;
+    const r = runStep(
+      summary,
+      `${stubs}
+${stepSummary}`,
+      { STAMP, NEWEST_WRITE_AT: '2026-11-11T02:05:00.000Z', NEWEST_WRITE_FROM: 'checked after the upload' },
+      { [`${STAMP}.manifest.json`]: manifest(HOUR) }
+    );
+    expect(r.status, r.output).toBe(0);
+    expect(r.output).toContain('- newest record in this database (UTC, checked after the upload): 2026-11-11T02:05:00.000Z');
+    expect(r.output).toContain(
+      '- newest record before the dump (UTC, from the manifest; the backup holds at least this): 2026-11-10T23:00:00.000Z'
+    );
+    const noManifest = runStep(summary, `${stubs}
+${stepSummary}`, { STAMP });
+    expect(noManifest.status, noManifest.output).toBe(0);
+    expect(noManifest.output).toContain('- newest record in this database (UTC, not known): unknown');
+    expect(noManifest.output).toContain('the backup holds at least this): unknown');
   }, STEP_TEST_TIMEOUT_MS);
 
   it('the manifest warning says what now happens, and the manifest step itself still only warns', () => {

@@ -60,7 +60,9 @@ fi
 # A clock a little ahead of the database's: as fresh as it gets.
 if [ "$SECONDS_SINCE" -lt 0 ]; then SECONDS_SINCE=0; fi
 HOURS=$((SECONDS_SINCE / 3600))
-echo "newest record in the dumped database: ${HOURS} h ago (limit ${MAX_QUIET_HOURS} h)"
+# Third round: the age is this database's newest record when the check ran, after
+# the upload — not what the dump holds — and the line says so.
+echo "newest record in this database, when checked: ${HOURS} h ago (limit ${MAX_QUIET_HOURS} h)"
 
 if [ "$SECONDS_SINCE" -le $((MAX_QUIET_HOURS * 3600)) ]; then
   echo "::notice::the newest record in this database is ${HOURS} h old: it is the database the app writes to."
