@@ -50,9 +50,10 @@ export const FIXED_WAITING_ROW = {
 } satisfies Prisma.ImportRowWhereInput;
 
 /** The Work list's rule for a customer batch the Steward must come back to. */
+// Code review 2026-11-10, finding 6: a discarded batch is done with, whatever rows it holds.
 export const WORK_BATCH_ROWS: Prisma.ImportBatchWhereInput[] = [
-  { kind: 'CUSTOMER', rows: { some: OPEN_PROBLEM_ROW } },
-  { kind: 'CUSTOMER', rows: { some: FIXED_WAITING_ROW } },
+  { kind: 'CUSTOMER', status: { not: 'DISCARDED' }, rows: { some: OPEN_PROBLEM_ROW } },
+  { kind: 'CUSTOMER', status: { not: 'DISCARDED' }, rows: { some: FIXED_WAITING_ROW } },
 ];
 
 export function parseRowView(value: string | undefined): RowView {

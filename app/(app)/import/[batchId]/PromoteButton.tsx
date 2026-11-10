@@ -3,6 +3,7 @@
 import { Suspense, lazy, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { promoteCustomerBatchAction } from '@/services/imports';
+import { SKIP_NEWER_FIELD } from '@/lib/import-batch-guard';
 
 // Code review 2026-11-10, finding 1: the "Before you promote" dialog. Loaded when
 // it is first opened: a resumed or finished batch never needs it.
@@ -57,16 +58,15 @@ export function PromoteButton({
     // question — "This creates customer + branch records" — which said nothing of
     // what the sheet would do to customers already in the CRM. It now opens the
     // review: what is created, refreshed, kept (or, with the batch's option on,
-    // replaced), and which credit cells are not applied. Resume and Finish carry
-    // on a load the Steward already reviewed.
-    if (!resume) {
-      setReviewing(true);
-      return;
-    }
-    run();
+    // replaced), and which credit cells are not applied.
+    // Code review 2026-11-10, finding 6: Resume and Finish open it too. A batch
+    // staged earlier — days ago, by someone else — used to load with no question;
+    // the review now says when and by whom it was uploaded, how old it is and what
+    // it will do, and refuses one past the age limit.
+    setReviewing(true);
   }
 
-  function run() {
+  function run({ skipNewer = false }: { skipNewer?: boolean } = {}) {
     setReviewing(false);
     start(async () => {
       // A fresh run starts from a clean slate — otherwise a resumed promote shows
@@ -92,6 +92,8 @@ export function PromoteButton({
         for (let slice = 0; slice < MAX_SLICES; slice++) {
           const fd = new FormData();
           fd.set('batchId', batchId);
+          // Finding 6: the Steward confirmed leaving out the customers a newer upload loaded.
+          if (skipNewer) fd.set(SKIP_NEWER_FIELD, '1');
           if (token) fd.set('leaseToken', token);
           // PROD-006: action returns `{ ok, code, message, fields? }` — a batch held
           // by another steward surfaces its real reason, not a generic render error.
@@ -241,6 +243,7 @@ export function PromoteButton({
             batchId={batchId}
             remainingCount={remainingCount}
             canSetOverwrite={canSetOverwrite}
+            resume={resume}
             onCancel={() => setReviewing(false)}
             onPromote={run}
           />

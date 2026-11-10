@@ -17,6 +17,7 @@ import {
   type NewerCandidate,
   type NewerUpload,
 } from '@/lib/import-row-fix';
+import type { NewerLoad } from '@/lib/import-batch-guard';
 
 export async function masterCollisionMaps(
   phones: string[],
@@ -168,4 +169,35 @@ export function fixTarget(
   fixed: boolean
 ): FixTarget {
   return { key, code, branch: branchCell ? composeBranchCode(code, branchCell) : null, fixed };
+}
+
+/**
+ * Code review 2026-11-10, finding 6: of this batch's rows still to load (CLEAN),
+ * the customers a NEWER customer upload has already loaded (a PROMOTED row of
+ * the same customer code in a batch uploaded later), with the newest such row.
+ * Rows fixed in the app are left out: promote judges them by the newest-upload
+ * rule above (newerUploadsCarrying), branch by branch for a customer linked to
+ * Temix. Read-only. The newer batches are at most STAGED_BATCH_MAX_AGE_DAYS
+ * younger than one that can still be promoted, so their rows are never swept.
+ */
+export async function newerLoadsOfBatch(
+  db: Prisma.TransactionClient | typeof prisma,
+  batchId: string,
+  uploadedAt: Date
+): Promise<NewerLoad[]> {
+  const rows = await db.$queryRaw<Array<{ code: string; filename: string; rowNumber: number }>>`
+    SELECT DISTINCT ON (r."parsed"->>'custCode')
+           r."parsed"->>'custCode' AS "code", b."filename", nr."rowNumber"
+      FROM "ImportRow" r
+      JOIN "ImportRow" nr
+        ON nr."parsed"->>'custCode' = r."parsed"->>'custCode' AND nr."state" = 'PROMOTED'
+      JOIN "ImportBatch" b
+        ON b."id" = nr."batchId" AND b."kind" = 'CUSTOMER' AND b."id" <> ${batchId}
+       AND b."uploadedAt" > ${uploadedAt}
+     WHERE r."batchId" = ${batchId} AND r."state" = 'CLEAN'
+       AND r."parsed" IS NOT NULL
+       AND COALESCE(r."parsed"->>'fixedInApp', 'false') <> 'true'
+       AND r."parsed"->'fixedFrom' IS NULL
+     ORDER BY r."parsed"->>'custCode', b."uploadedAt" DESC, nr."rowNumber"`;
+  return rows.map((r) => ({ code: r.code, filename: r.filename, rowNumber: Number(r.rowNumber) }));
 }

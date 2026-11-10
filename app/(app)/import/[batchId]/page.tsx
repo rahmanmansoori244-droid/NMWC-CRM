@@ -9,6 +9,8 @@ import { omanDateTime } from '@/lib/tz';
 import { notReadNote, reportHeadings } from '@/lib/import-headings';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { PromoteButton } from './PromoteButton';
+import { DiscardBatch } from './DiscardBatch';
+import { DISCARDED_BATCH_MESSAGE, batchAgeText, stagedBatchExpired, stagedBatchExpiredMessage } from '@/lib/import-batch-guard';
 import { ExcludeRemaining, RowActions } from './RowActions';
 import {
   canReleasePhone,
@@ -88,7 +90,14 @@ export default async function ImportBatchPage({
   });
   // Rows can be fixed only on a customer-master batch; the account master is
   // re-uploaded instead (its rows keep no values to fix).
-  const fixable = batch.kind === 'CUSTOMER';
+  // Code review 2026-11-10, finding 6: nothing is fixed back into a discarded
+  // batch, or into one too old to promote (the server refuses both).
+  const discarded = batch.status === 'DISCARDED';
+  const tooOld =
+    batch.kind === 'CUSTOMER' &&
+    (batch.status === 'READY' || batch.status === 'PROMOTING' || batch.status === 'FAILED') &&
+    stagedBatchExpired(batch.uploadedAt);
+  const fixable = batch.kind === 'CUSTOMER' && !discarded && !tooOld;
   // Whether each row can still be fixed — or its waiting fix still load — asked
   // as the server asks it (lib/import-fix-blocks.ts): the fix window, a newer
   // upload of the row or of a row fixed with it. The row then offers Exclude
@@ -153,7 +162,7 @@ export default async function ImportBatchPage({
   // A run holds a short grace lease BETWEEN its slices, so a healthy load still reads
   // as held here. No live lease therefore does mean the run stopped (tab closed,
   // timeout, network drop) — committed rows are safe, the batch just needs resuming.
-  const interrupted = (batch.status === 'PROMOTING' && !leaseHeld) || batch.status === 'FAILED';
+  const interrupted = !tooOld && ((batch.status === 'PROMOTING' && !leaseHeld) || batch.status === 'FAILED');
 
   // Code review 2026-11-10, finding 1.
   // The headings of the sheet the import did not read, from the first row as
@@ -198,16 +207,53 @@ export default async function ImportBatchPage({
         subtitle={`${batch.kind} import · ${batch.totalRows} rows · ${batch.status}`}
         actions={
           batch.kind === 'CUSTOMER' && promotable ? (
-            <PromoteButton
-              batchId={batch.id}
-              remainingCount={remainingClean}
-              resume={batch.status === 'PROMOTING' || batch.status === 'FAILED'}
-              leaseHeld={leaseHeld}
-              canSetOverwrite={canSetOverwrite}
-            />
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {!tooOld && (
+                <PromoteButton
+                  batchId={batch.id}
+                  remainingCount={remainingClean}
+                  resume={batch.status === 'PROMOTING' || batch.status === 'FAILED'}
+                  leaseHeld={leaseHeld}
+                  canSetOverwrite={canSetOverwrite}
+                />
+              )}
+              {/* Finding 6: the Steward alone sees this page; the action refuses anyone else. */}
+              {!leaseHeld && (
+                <DiscardBatch
+                  batchId={batch.id}
+                  waiting={remainingClean}
+                  loaded={stateCounts.find((c) => c.state === 'PROMOTED')?._count._all ?? 0}
+                />
+              )}
+            </div>
           ) : null
         }
       />
+      {discarded && (
+        <div
+          role="status"
+          data-testid="batch-discarded"
+          className="mx-4 mt-4 rounded-lg bg-slate-100 px-4 py-3 text-sm text-slate-800 ring-1 ring-inset ring-slate-300 sm:mx-6"
+        >
+          <strong className="font-semibold">Discarded.</strong> {DISCARDED_BATCH_MESSAGE} Who discarded it, when and
+          why is in the audit log.
+        </div>
+      )}
+      {tooOld && (
+        <div
+          role="status"
+          data-testid="batch-too-old"
+          className="mx-4 mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800 ring-1 ring-inset ring-red-200 sm:mx-6"
+        >
+          <strong className="font-semibold">Too old to promote.</strong> {stagedBatchExpiredMessage(batch.uploadedAt)}
+        </div>
+      )}
+      {batch.kind === 'CUSTOMER' && promotable && !tooOld && (
+        <p data-testid="batch-staged" className="mx-4 mt-4 text-xs text-slate-600 sm:mx-6">
+          Uploaded {omanDateTime(batch.uploadedAt)} by {batch.uploadedBy?.fullName ?? 'a former user'} (
+          {batchAgeText(batch.uploadedAt)}).
+        </p>
+      )}
       {interrupted && (
         <div className="mx-4 mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-inset ring-amber-200 sm:mx-6">
           <strong className="font-semibold">Promote interrupted.</strong>{' '}

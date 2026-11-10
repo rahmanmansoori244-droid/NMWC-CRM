@@ -66,6 +66,11 @@ import {
   siblingSupersededMessage,
   type Corrections,
 } from '@/lib/import-row-fix';
+import {
+  DISCARDED_BATCH_MESSAGE,
+  stagedBatchExpired,
+  stagedBatchExpiredMessage,
+} from '@/lib/import-batch-guard';
 
 type Tx = Prisma.TransactionClient;
 
@@ -123,6 +128,10 @@ async function withBatch<T>(
           'BATCH_PROMOTING',
           'This batch is being promoted right now — wait for it to finish, then try again.'
         );
+      }
+      // Code review 2026-11-10, finding 6: a discarded batch is not touched again.
+      if (batch.status === 'DISCARDED') {
+        throw new ValidationError({ _form: DISCARDED_BATCH_MESSAGE }, DISCARDED_BATCH_MESSAGE);
       }
       return fn(tx, batch);
     },
@@ -267,6 +276,12 @@ async function recheck(
   /** Gap 22 (part C): the Steward, named on a CONFLICT row when a row changed meanwhile. */
   actorId: string
 ): Promise<{ clean: number; held: number }> {
+  // Code review 2026-11-10, finding 6: a row of a batch past the age limit is
+  // not brought back to load — the batch can no longer be promoted.
+  if (stagedBatchExpired(batch.uploadedAt)) {
+    const why = stagedBatchExpiredMessage(batch.uploadedAt);
+    throw new ValidationError({ _form: why }, why);
+  }
   const targetIds = new Set(targets.map((t) => t.id));
   // The unit this action's rows belong to: the acted row's own, when an earlier
   // fix already brought it back with others — a row that came back held back
@@ -855,6 +870,63 @@ async function setOverwriteCore(formData: FormData): Promise<{ on: boolean }> {
   });
   done(batchId);
   return { on };
+}
+
+// ── Discard a staged batch ──────────────────────────────────────────────────
+
+/**
+ * Code review 2026-11-10, finding 6: the Data Steward throws away a customer
+ * batch that is staged (READY), or whose promote stopped part-way (PROMOTING
+ * with no live lease, or the old FAILED), so that it can never be promoted or
+ * resumed and leaves his Work list. With a written reason, audited as an UPDATE
+ * on the batch (its status before and after, the rows still waiting to load).
+ *
+ * Nothing is deleted or changed in its rows: the rows a stopped promote already
+ * loaded stay loaded, and the retention rules handle the rest as before. Under
+ * the batch's row lock, which the promote's claim also takes; a live promote is
+ * refused (withBatch).
+ */
+export async function discardImportBatchAction(formData: FormData): SafeAction<{ status: 'DISCARDED' }> {
+  return runAction(() => discardCore(formData));
+}
+
+const MAX_DISCARD_REASON = 500;
+
+async function discardCore(formData: FormData): Promise<{ status: 'DISCARDED' }> {
+  const me = await requireSteward();
+  const batchId = String(formData.get('batchId') ?? '');
+  const reason = String(formData.get('reason') ?? '').trim();
+  if (!batchId) throw new ValidationError({ _form: 'Batch required.' });
+  if (reason.length < MIN_REASON) {
+    throw new ValidationError({ reason: `Say why this batch is discarded (${MIN_REASON}+ characters).` });
+  }
+  if (reason.length > MAX_DISCARD_REASON) {
+    throw new ValidationError({ reason: `Keep the reason to ${MAX_DISCARD_REASON} characters or fewer.` });
+  }
+  const env = await getAuditEnvelope(me.id);
+  await withBatch(batchId, { actorId: me.id, row: 'discard' }, async (tx, batch) => {
+    if (batch.status !== 'READY' && batch.status !== 'PROMOTING' && batch.status !== 'FAILED') {
+      throw new ValidationError({
+        _form: `Only a batch that is staged or whose promote stopped part-way can be discarded; this one is ${batch.status}.`,
+      });
+    }
+    const waiting = await tx.importRow.count({ where: { batchId: batch.id, state: ImportRowState.CLEAN } });
+    const loaded = await tx.importRow.count({ where: { batchId: batch.id, state: ImportRowState.PROMOTED } });
+    await tx.importBatch.update({
+      where: { id: batch.id },
+      data: { status: 'DISCARDED', promoteLeaseBy: null, promoteLeaseUntil: null, overwriteCrmFields: false },
+    });
+    await writeAudit(tx, env, {
+      action: 'UPDATE',
+      entityType: 'ImportBatch',
+      entityId: batch.id,
+      before: { status: batch.status } as Prisma.InputJsonValue,
+      after: { status: 'DISCARDED', rowsNotLoaded: waiting, rowsLoadedBefore: loaded } as Prisma.InputJsonValue,
+      reason: `Import batch discarded by the Data Steward: ${reason}`,
+    });
+  });
+  done(batchId);
+  return { status: 'DISCARDED' };
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────

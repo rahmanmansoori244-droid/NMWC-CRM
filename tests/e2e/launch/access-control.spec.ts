@@ -1658,11 +1658,25 @@ test.describe('access control: server actions replayed by the wrong caller', { t
       await submit.click();
     });
     expect(upload.actionId).toBe(actionIdFor('uploadCustomerMasterAction', 'app/(app)/import/page'));
-    const promote = await captureAs(browser, stw, `/import/${failedBatch}`, async (page) => {
-      const btn = page.getByRole('button', { name: 'Finish promote', exact: true });
-      await hydrated(btn);
-      await btn.click();
-    });
+    // Code review 2026-11-10, finding 6: Finish (and Resume) open the review first,
+    // which calls its own check action; the promote is the click in the review, so
+    // the capture starts once the review has answered.
+    const promote = await (async () => {
+      const ctx = await contextAs(browser, stw, { device: 'desktop' });
+      const page = await ctx.newPage();
+      try {
+        await page.goto(`/import/${failedBatch}`);
+        const btn = page.getByRole('button', { name: 'Finish promote', exact: true });
+        await hydrated(btn);
+        await btn.click();
+        const review = page.getByRole('dialog', { name: 'Before you resume' });
+        const go = review.getByRole('button', { name: 'Finish promote now', exact: true });
+        await expect(go).toBeEnabled({ timeout: 90_000 });
+        return await captureServerAction(page, () => go.click());
+      } finally {
+        await page.close().catch(() => undefined);
+      }
+    })();
     expect(promote.actionId).toBe(actionIdFor('promoteCustomerBatchAction', 'app/(app)/import/[batchId]/page'));
 
     const callers = await callersFor(browser, world, ['M1', 'SA', 'VW', 'ACC1', 'FM1', 'GM1', 'SD1']);

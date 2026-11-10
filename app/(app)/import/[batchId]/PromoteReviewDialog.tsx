@@ -32,6 +32,7 @@ export function PromoteReviewDialog({
   batchId,
   remainingCount,
   canSetOverwrite,
+  resume = false,
   onCancel,
   onPromote,
 }: {
@@ -39,8 +40,11 @@ export function PromoteReviewDialog({
   remainingCount: number;
   /** The batch is ready to promote and nobody is promoting it: the option may change. */
   canSetOverwrite: boolean;
+  /** Code review 2026-11-10, finding 6: a promote that stopped part-way is resumed through this review too. */
+  resume?: boolean;
   onCancel: () => void;
-  onPromote: () => void;
+  /** `skipNewer`: the Steward confirmed leaving out the customers a newer upload has loaded. */
+  onPromote: (opts: { skipNewer: boolean }) => void;
 }) {
   const router = useRouter();
   const titleId = useId();
@@ -58,6 +62,9 @@ export function PromoteReviewDialog({
   const [switching, startSwitch] = useTransition();
   // Code review 2026-11-10, finding 28: rows that will load without changing their shop.
   const [ackShops, setAckShops] = useState(false);
+  // Finding 6: customers a newer upload has already loaded are left out only on this tick.
+  const [skipNewer, setSkipNewer] = useState(false);
+  const skipId = useId();
   const ackId = useId();
 
   const check = useCallback(async () => {
@@ -107,8 +114,16 @@ export function PromoteReviewDialog({
   const crm = review?.summary?.crm;
   const notChanged = crm ? crm.linkedShops + crm.linkedNotAdded : 0;
   const routeNotChanged = crm ? crm.linkedRouteNotMoved : 0;
+  // Finding 6: too old to promote — the server refuses it, so the button is not offered.
+  const expired = review?.staged?.expired === true;
+  const newerCount = review?.newer?.customers ?? 0;
   const canPromote =
-    !checking && !switching && (review !== null || failed !== null) && (notChanged === 0 || ackShops);
+    !checking &&
+    !switching &&
+    (review !== null || failed !== null) &&
+    (notChanged === 0 || ackShops) &&
+    !expired &&
+    (newerCount === 0 || skipNewer);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/50 sm:items-center sm:p-4">
@@ -120,8 +135,21 @@ export function PromoteReviewDialog({
         className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-t-lg bg-white p-5 text-left shadow-xl sm:rounded-lg"
       >
         <h2 id={titleId} className="text-base font-semibold text-slate-900">
-          Before you promote
+          {resume ? 'Before you resume' : 'Before you promote'}
         </h2>
+
+        {/* Finding 6: when, by whom, and how old — before what it will do. */}
+        {review?.staged && (
+          <p data-testid="batch-staged" className="mt-3 text-sm text-slate-700">
+            Uploaded {review.staged.uploadedAt} by {review.staged.uploadedBy} ({review.staged.age}).
+            {resume ? ' Resuming loads the rows it has not loaded yet, as the lines below say.' : ''}
+          </p>
+        )}
+        {review?.staged?.expired && (
+          <p role="alert" className="mt-2 rounded-md bg-red-50 p-3 text-sm font-semibold text-red-700 ring-1 ring-inset ring-red-200">
+            {review.staged.expiredMessage}
+          </p>
+        )}
 
         <div className="mt-3 text-sm" aria-live="polite">
           {checking && <p className="text-slate-600">Checking what this sheet will change…</p>}
@@ -140,6 +168,28 @@ export function PromoteReviewDialog({
             </ul>
           )}
         </div>
+
+        {review && !expired && newerCount > 0 && (
+          <div
+            data-testid="newer-loads"
+            className="mt-4 rounded-md bg-red-50 p-3 text-sm text-red-800 ring-1 ring-inset ring-red-300"
+          >
+            <p className="font-semibold">{review.newer.refusal}</p>
+            <label htmlFor={skipId} className="mt-2 flex items-start gap-2">
+              <input
+                id={skipId}
+                type="checkbox"
+                checked={skipNewer}
+                onChange={(e) => setSkipNewer(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                Leave out these {newerCount.toLocaleString('en-US')} customer(s): their rows in this batch are rejected
+                and not loaded, and the rest loads.
+              </span>
+            </label>
+          </div>
+        )}
 
         {review && notChanged > 0 && (
           <div className="mt-4 rounded-md bg-amber-50 p-3 text-sm text-amber-900 ring-1 ring-inset ring-amber-200">
@@ -234,12 +284,12 @@ export function PromoteReviewDialog({
           <button
             type="button"
             disabled={!canPromote}
-            onClick={onPromote}
+            onClick={() => onPromote({ skipNewer: newerCount > 0 && skipNewer })}
             className={`rounded-md px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-300 ${
               on ? 'bg-red-600 hover:bg-red-700' : 'bg-brand-600 hover:bg-brand-700'
             }`}
           >
-            Promote {count} clean rows now
+            {resume ? (remainingCount === 0 ? 'Finish promote now' : `Resume promote now (${count} rows left)`) : `Promote ${count} clean rows now`}
           </button>
         </div>
       </div>

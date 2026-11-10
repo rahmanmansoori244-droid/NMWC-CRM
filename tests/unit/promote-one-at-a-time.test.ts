@@ -89,6 +89,8 @@ beforeEach(() => {
   failUndos = 0;
   h.warn.mockClear();
   Object.assign(h.db, {
+    // Code review 2026-11-10, finding 6: newerLoadsOfBatch — no newer upload loaded any of them.
+    $queryRaw: vi.fn(async () => []),
     importBatch: {
       findUnique: vi.fn(
         async ({ where, select }: { where: { id: string }; select?: Record<string, boolean> }) => {
@@ -127,7 +129,8 @@ beforeEach(() => {
   });
 });
 
-const T0 = new Date('2026-10-01T08:00:00Z');
+// Uploaded an hour ago: within the age limit of a staged batch (code review 2026-11-10, finding 6).
+const T0 = new Date(Date.now() - 60 * 60 * 1000);
 const live = () => new Date(Date.now() + 60_000);
 
 function batch(over: Partial<Batch>): Batch {
@@ -335,4 +338,66 @@ describe('promote while another customer import is being promoted', () => {
       expect(claim.where).toMatchObject({ id: 'batch-9', status: 'READY', overwriteCrmFields: read });
     }
   );
+});
+
+// ── Code review 2026-11-10, finding 6 ────────────────────────────────────────
+describe('finding 6: an old, discarded or overtaken batch is not loaded', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  async function promoteWith(extra: Record<string, string>) {
+    const fd = new FormData();
+    fd.set('batchId', 'batch-9');
+    for (const [k, v] of Object.entries(extra)) fd.set(k, v);
+    return promoteCustomerBatchAction(fd);
+  }
+  const message = (res: unknown) => (res as { message?: string }).message ?? '';
+
+  it('a discarded batch is refused, and nothing is written', async () => {
+    table = [batch({ status: 'DISCARDED' })];
+    const res = await promote();
+    expect(res.ok).toBe(false);
+    expect(message(res)).toMatch(/^This batch was discarded, so it can no longer be promoted or fixed\./);
+    expect(writes).toEqual([]);
+  });
+
+  it('a batch staged more than 7 days ago is refused — a fresh promote and a resume alike — and nothing is written', async () => {
+    for (const status of ['READY', 'PROMOTING', 'FAILED']) {
+      writes = [];
+      table = [batch({ status, uploadedAt: new Date(Date.now() - 8 * DAY) })];
+      const res = await promote();
+      expect(res.ok, status).toBe(false);
+      expect(message(res)).toMatch(
+        /^This batch was uploaded 8 days ago, and a staged batch older than 7 days can no longer be promoted/
+      );
+      expect(writes).toEqual([]);
+    }
+  });
+
+  it('exactly 7 days old is still promotable (the limit is "older than")', async () => {
+    table = [batch({ uploadedAt: new Date(Date.now() - 7 * DAY + 60_000) })];
+    // Past every refusal: the claim is taken and the load starts (where this fake stops it).
+    await expect(promote()).rejects.toThrow('the promote went past the refusal');
+    expect(writes.some((w) => w.data.status === 'PROMOTING')).toBe(true);
+  });
+
+  it('the run already under way may finish its next slice past the limit (its own lease token)', async () => {
+    table = [batch({ status: 'PROMOTING', promoteLeaseBy: 'stew:tok', promoteLeaseUntil: live(), uploadedAt: new Date(Date.now() - 8 * DAY) })];
+    await expect(promoteWith({ leaseToken: 'stew:tok' })).rejects.toThrow('the promote went past the refusal');
+  });
+
+  it('customers a newer upload already loaded: refused before the claim unless the Steward confirmed leaving them out', async () => {
+    table = [batch({})];
+    (h.db as { $queryRaw: unknown }).$queryRaw = vi.fn(async () => [
+      { code: 'C1', filename: 'newer.xlsx', rowNumber: 4 },
+      { code: 'C2', filename: 'newer.xlsx', rowNumber: 5 },
+    ]);
+    const res = await promote();
+    expect(res.ok).toBe(false);
+    expect(message(res)).toBe(
+      '2 customer(s) in this batch (for example C1, C2) were loaded since from a newer upload ("newer.xlsx"). Loading this older batch would write its older values over theirs. Open Promote again and confirm that those customers are left out: their rows are then rejected, and the rest loads.'
+    );
+    expect(writes).toEqual([]);
+    // Confirmed: the claim is taken (what follows is the ordinary promote).
+    await expect(promoteWith({ skipNewer: '1' })).rejects.toThrow('the promote went past the refusal');
+    expect(writes.some((w) => w.data.status === 'PROMOTING')).toBe(true);
+  });
 });

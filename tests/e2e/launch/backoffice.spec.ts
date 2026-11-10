@@ -964,6 +964,13 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     notRunHere(live > 0, `another customer import holds a live promote lease (${live})`);
     const done = seeText(page, '✓ Done — 3 rows promoted in this run.');
     await resume.click();
+    // Code review 2026-11-10, finding 6: Resume opens the review too — when and by
+    // whom the batch was uploaded and how old it is — and loads only on the click there.
+    const review = page.getByRole('dialog', { name: 'Before you resume' });
+    await expect(review.getByTestId('batch-staged')).toContainText(`by ${stw.fullName} (today)`, { timeout: 90_000 });
+    const go = review.getByRole('button', { name: 'Resume promote now (3 rows left)', exact: true });
+    await expect(go).toBeEnabled({ timeout: 90_000 });
+    await go.click();
     await done;
     await page.reload();
     await expect(pageSubtitle(page)).toHaveText('CUSTOMER import · 3 rows · PROMOTED');

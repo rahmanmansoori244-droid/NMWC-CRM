@@ -104,7 +104,8 @@ vi.mock('@/lib/db', () => {
           promotedRows: h.rows.filter((r) => r.state === 'PROMOTED').length,
           rejectedRows: h.rows.filter((r) => r.state === 'REJECTED').length,
           promoteLeaseUntil: null,
-          uploadedAt: new Date('2026-09-23T10:00:00Z'),
+          // Within the age limit of a staged batch (code review 2026-11-10, finding 6).
+          uploadedAt: new Date(Date.now() - 60 * 60 * 1000),
           uploadedBy: { fullName: 'S' },
           overwriteCrmFields: false,
           overwriteCrmFieldsAt: null,
@@ -566,5 +567,61 @@ describe('/import/[batchId]: what the sheet had that the import did not read, an
     h.batch = { status: 'PROMOTING', promoteLeaseUntil: null };
     await open({ show: 'all' });
     expect(h.promote).toMatchObject({ resume: true, canSetOverwrite: false });
+  });
+});
+
+// Code review 2026-11-10, finding 6.
+describe('/import/[batchId]: an old or discarded batch', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const row = (raw: Record<string, unknown>, over: Partial<Row> = {}): Row => ({
+    id: 'g2',
+    rowNumber: 2,
+    state: 'CLEAN',
+    raw,
+    parsed: { custCode: 'C1', custName: 'Shop' },
+    issues: null,
+    ...over,
+  });
+
+  it('a staged batch says when and by whom it was uploaded, and offers Discard beside Promote', async () => {
+    h.rows = [row({ cust_code: 'C1', cust_name: 'Shop' })];
+    h.batch = { status: 'READY', uploadedAt: new Date(Date.now() - 2 * DAY - 60_000) };
+    await open({ show: 'all' });
+    expect(screen.getByTestId('batch-staged').textContent).toMatch(/^Uploaded .+ by S \(2 days ago\)\.$/);
+    expect(screen.getByRole('button', { name: 'Discard batch' })).toBeTruthy();
+    expect(h.promote).toMatchObject({ batchId: 'b1' });
+  });
+
+  it('older than 7 days: no Promote or Resume, no fixing, a red note — and Discard', async () => {
+    for (const status of ['READY', 'PROMOTING']) {
+      h.promote = null;
+      h.rows = [row({ cust_code: 'C1', cust_name: 'Shop' }, { state: 'QUARANTINED', issues: [{ field: 'phone', message: 'phone invalid' }] })];
+      h.batch = { status, uploadedAt: new Date(Date.now() - 8 * DAY) };
+      await open();
+      expect(h.promote, status).toBeNull();
+      expect(screen.getByTestId('batch-too-old').textContent).toMatch(/This batch was uploaded 8 days ago, and a staged batch older than 7 days can no longer be promoted/);
+      expect(screen.queryByText('Promote interrupted.')).toBeNull();
+      expect(screen.queryByRole('columnheader', { name: 'Fix' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Discard batch' })).toBeTruthy();
+      cleanup();
+    }
+  });
+
+  it('discarded: says so, and offers nothing', async () => {
+    h.promote = null;
+    h.rows = [row({ cust_code: 'C1', cust_name: 'Shop' })];
+    h.batch = { status: 'DISCARDED' };
+    await open({ show: 'all' });
+    expect(screen.getByTestId('batch-discarded').textContent).toContain('This batch was discarded, so it can no longer be promoted or fixed.');
+    expect(h.promote).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Discard batch' })).toBeNull();
+    expect(screen.queryByRole('columnheader', { name: 'Fix' })).toBeNull();
+  });
+
+  it('a live promote: no Discard', async () => {
+    h.rows = [row({ cust_code: 'C1', cust_name: 'Shop' })];
+    h.batch = { status: 'PROMOTING', promoteLeaseUntil: new Date(Date.now() + 60_000) };
+    await open({ show: 'all' });
+    expect(screen.queryByRole('button', { name: 'Discard batch' })).toBeNull();
   });
 });

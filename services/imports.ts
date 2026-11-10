@@ -85,8 +85,17 @@ import {
   fixTarget,
   linkedCustomerCodes,
   masterCollisionMaps,
+  newerLoadsOfBatch,
   newerUploadsCarrying,
 } from '@/lib/import-master-lookup';
+import {
+  DISCARDED_BATCH_MESSAGE,
+  SKIP_NEWER_FIELD,
+  newerLoadRowMessage,
+  newerLoadsRefusal,
+  stagedBatchExpired,
+  stagedBatchExpiredMessage,
+} from '@/lib/import-batch-guard';
 import { headingClashIssue, missingTemixColumnIssue, reportHeadings } from '@/lib/import-headings';
 import { branchCrmRule, customerCrmRule, keptNote, type CrmOutcome } from '@/lib/import-crm-rule';
 import {
@@ -1919,6 +1928,28 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
   // the same answer.
   const overwriteCrm = preflight.overwriteCrmFields === true;
 
+  // Code review 2026-11-10, finding 6. A discarded batch is never promoted; a
+  // staged batch past STAGED_BATCH_MAX_AGE_DAYS is not promoted or resumed (only
+  // the run already under way may finish its next slice); and the customers a
+  // NEWER upload has already loaded are not loaded again from this one unless
+  // the Steward confirmed leaving them out (their rows are then rejected, below).
+  // All read before the claim, so a refusal touches nothing.
+  const continuing = !!formData.get('leaseToken') && preflight.promoteLeaseBy === String(formData.get('leaseToken'));
+  if (preflight.status === 'DISCARDED') {
+    throw new ValidationError({ batchId: DISCARDED_BATCH_MESSAGE }, DISCARDED_BATCH_MESSAGE);
+  }
+  if (!continuing && stagedBatchExpired(preflight.uploadedAt)) {
+    const why = stagedBatchExpiredMessage(preflight.uploadedAt);
+    throw new ValidationError({ batchId: why }, why);
+  }
+  // A run that is continuing rejected these in its first slice; no other
+  // promote can have loaded anything since (one runs at a time, under the lease).
+  const newerLoads = continuing ? [] : await newerLoadsOfBatch(prisma, batchId, preflight.uploadedAt);
+  if (newerLoads.length > 0 && String(formData.get(SKIP_NEWER_FIELD) ?? '') !== '1') {
+    const why = newerLoadsRefusal(newerLoads);
+    throw new ValidationError({ batchId: why }, why);
+  }
+
   // RK-3: the lease serializes ONE batch, but the QA P-01 branch-steal guard is a
   // read-then-upsert whose safety argument rests on promote being serialized across
   // the whole master ("batch promote is serialized by the atomic claim"). Two
@@ -2072,6 +2103,34 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     // `corrections` too: a fixed row's note says which of the cells the Steward
     // corrected were not written (item 20, post-merge review). Small, and only
     // fixed rows carry one.
+    // Finding 6: the Steward confirmed leaving out the customers a newer upload
+    // has loaded. Their rows (not those fixed in the app, which the newest-upload
+    // rule below judges) are rejected with the reason, in one statement, before
+    // anything of this slice is read; each such customer counts as one failure.
+    const newerRejected: Array<{ custCode: string; rowIds: string[]; reason: string }> = [];
+    if (newerLoads.length > 0) {
+      const codes = newerLoads.map((l) => l.code);
+      const reasons = newerLoads.map((l) => newerLoadRowMessage(l));
+      const hit = await prisma.$queryRaw<Array<{ id: string; code: string }>>`
+        UPDATE "ImportRow" r
+           SET "state" = 'REJECTED',
+               "issues" = jsonb_build_array(jsonb_build_object('field', '_promote', 'message', v."msg")),
+               "reviewedById" = ${me.id},
+               "reviewedAt" = now()
+          FROM (SELECT unnest(${codes}::text[]) AS "code", unnest(${reasons}::text[]) AS "msg") v
+         WHERE r."batchId" = ${batchId} AND r."state" = 'CLEAN'
+           AND r."parsed"->>'custCode' = v."code"
+           AND COALESCE(r."parsed"->>'fixedInApp', 'false') <> 'true'
+           AND r."parsed"->'fixedFrom' IS NULL
+        RETURNING r."id", v."code"`;
+      const byCode = new Map<string, string[]>();
+      for (const h of hit) byCode.set(h.code, [...(byCode.get(h.code) ?? []), h.id]);
+      for (const l of newerLoads) {
+        const ids = byCode.get(l.code);
+        if (ids) newerRejected.push({ custCode: l.code, rowIds: ids, reason: newerLoadRowMessage(l) });
+      }
+    }
+
     const cleanRows = await prisma.importRow.findMany({
       where: { batchId, state: ImportRowState.CLEAN },
       select: { id: true, parsed: true, corrections: true, rowNumber: true, createdAt: true },
@@ -2128,7 +2187,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
       groups.set(p.custCode, g);
     }
 
-    const failures: Array<{ custCode: string; rowIds: string[]; reason: string }> = [];
+    const failures: Array<{ custCode: string; rowIds: string[]; reason: string }> = [...newerRejected];
 
     // Item 20: the rows a fix in the app brought back — the row acted on, and
     // its customer's rows it released with it (parsed.fixedFrom, one

@@ -221,21 +221,79 @@ describe('the batch’s option: Overwrite CRM fields from this sheet', () => {
   });
 });
 
-describe('a resumed promote goes straight on', () => {
-  it('Resume does not open the review, and asks nothing', async () => {
+// Code review 2026-11-10, finding 6: Resume and Finish went straight on with no
+// question, so a batch staged weeks earlier loaded without a word. They now open
+// the review too: when and by whom it was uploaded, how old, what it will do.
+describe('a resumed promote is reviewed first too (finding 6)', () => {
+  const staged = (over: Record<string, unknown> = {}) => {
+    const r = review(false);
+    return {
+      ...r,
+      data: {
+        ...r.data,
+        staged: {
+          uploadedAt: '05 Nov 2026, 10:00',
+          uploadedBy: 'ZZ Steward',
+          age: '5 days ago',
+          expired: false,
+          expiredMessage: null,
+          maxAgeDays: 7,
+          ...over,
+        },
+        newer: { customers: 0, examples: [], refusal: null },
+      },
+    };
+  };
+
+  it('Resume opens "Before you resume" with the upload date, the uploader and the age, and loads only on confirmation', async () => {
+    h.summarise.mockResolvedValue(staged());
     render(<PromoteButton batchId="b1" remainingCount={3} resume />);
     fireEvent.click(screen.getByRole('button', { name: 'Resume promote (3 rows left)' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Before you resume' });
+    expect(h.promote).not.toHaveBeenCalled();
+    expect((await within(dialog).findByTestId('batch-staged')).textContent).toContain(
+      'Uploaded 05 Nov 2026, 10:00 by ZZ Steward (5 days ago).'
+    );
+    await within(dialog).findByText(KEPT);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Resume promote now (3 rows left)' }));
     await waitFor(() => expect(h.promote).toHaveBeenCalledTimes(1));
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(h.summarise).not.toHaveBeenCalled();
-    expect(window.confirm).not.toHaveBeenCalled();
+    expect(fields(h.promote.mock.calls[0]![0])).toEqual({ batchId: 'b1' });
   });
 
-  it('Finish promote (nothing left) too', async () => {
+  it('Finish promote (nothing left) is confirmed the same way', async () => {
+    h.summarise.mockResolvedValue(staged());
     render(<PromoteButton batchId="b1" remainingCount={0} resume />);
     fireEvent.click(screen.getByRole('button', { name: 'Finish promote' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Before you resume' });
+    await within(dialog).findByText(KEPT);
+    expect(h.promote).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Finish promote now' }));
     await waitFor(() => expect(h.promote).toHaveBeenCalledTimes(1));
-    expect(h.summarise).not.toHaveBeenCalled();
+  });
+
+  it('too old: the reason is shown and there is nothing to press', async () => {
+    h.summarise.mockResolvedValue(staged({ age: '9 days ago', expired: true, expiredMessage: 'This batch was uploaded 9 days ago, and a staged batch older than 7 days can no longer be promoted.' }));
+    render(<PromoteButton batchId="b1" remainingCount={3} resume />);
+    fireEvent.click(screen.getByRole('button', { name: 'Resume promote (3 rows left)' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Before you resume' });
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('can no longer be promoted');
+    expect((within(dialog).getByRole('button', { name: 'Resume promote now (3 rows left)' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('customers a newer upload already loaded: a loud box, a tick to leave them out, and the promote says so to the server on every pass', async () => {
+    const refusal = '2 customer(s) in this batch (for example C1, C2) were loaded since from a newer upload ("newer.xlsx").';
+    const r = staged();
+    h.summarise.mockResolvedValue({ ...r, data: { ...r.data, newer: { customers: 2, examples: [], refusal } } });
+    const dialog = await openReview();
+    const box = await within(dialog).findByTestId('newer-loads');
+    expect(box.textContent).toContain(refusal);
+    const go = within(dialog).getByRole('button', { name: 'Promote 3 clean rows now' }) as HTMLButtonElement;
+    expect(go.disabled).toBe(true);
+    fireEvent.click(within(box).getByRole('checkbox', { name: /Leave out these 2 customer\(s\)/ }));
+    expect(go.disabled).toBe(false);
+    fireEvent.click(go);
+    await waitFor(() => expect(h.promote).toHaveBeenCalledTimes(1));
+    expect(fields(h.promote.mock.calls[0]![0])).toEqual({ batchId: 'b1', skipNewer: '1' });
   });
 });
 

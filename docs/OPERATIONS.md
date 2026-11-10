@@ -1047,6 +1047,33 @@ not built yet (item D).
      rather than loaded over the newer data. A row whose data the 90-day retention sweep has
      cleared can only be excluded or uploaded again.
 
+### An old or replaced customer batch (code review 2026-11-10, finding 6)
+
+A staged batch used to stay promotable for ever, could not be thrown away, and **Resume** loaded
+an interrupted one with no question — weeks later it would write its older values back.
+
+- **Promote and Resume both open the review first.** It says when and by whom the batch was
+  uploaded and how old it is ("Uploaded 05 Nov 2026, 10:00 by … (5 days ago)"), then what it
+  will do; nothing loads until the Steward presses the button in it.
+- **Older than 7 days, a staged batch can no longer be promoted or resumed**
+  (`lib/import-batch-guard.ts` `STAGED_BATCH_MAX_AGE_DAYS`; a default awaiting the owner). The
+  batch page and Work say "too old to promote"; a fix that would bring a row back to load is
+  refused. Upload the sheet again, and discard the old batch. (A run already under way may
+  finish its next slice.)
+- **A customer a newer upload has already loaded is not loaded again from an older batch.**
+  The review names how many and from which file, in red; Promote stays disabled until the
+  Steward ticks "Leave out these … customer(s)". Their rows in the older batch are then
+  REJECTED ("Customer … was loaded since from a newer upload …, so this older row was not loaded
+  over it. Exclude it.") and the rest loads. Rows fixed in the app keep their own newest-upload
+  rule (above).
+- **Discard batch** (Data Steward only): on a staged batch, or one whose promote stopped
+  part-way, with a reason. It asks first. The batch becomes `DISCARDED` (migration
+  `20261111100000_import_batch_discarded`, one enum value), leaves Work, and can never be
+  promoted, resumed or fixed; the `UPDATE` audit row on the batch has who, when, why, the status
+  before, and how many rows were not loaded and how many an earlier promote had loaded (those
+  stay loaded). Nothing is deleted; the retention rules handle its rows as before (rows still
+  waiting to load are not swept, as for any batch).
+
 ### Export the cleaned master for ERP
 1. Sign in as Steward (or Manager).
 2. `/export` → choose filters → **Download .xlsx**.

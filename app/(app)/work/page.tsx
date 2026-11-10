@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db';
 import { omanDate } from '@/lib/tz';
 import { Role } from '@prisma/client';
 import { OPEN_PROBLEM_ROW, WORK_BATCH_ROWS } from '@/lib/import-rows-view';
+import { batchAgeText, stagedBatchExpired } from '@/lib/import-batch-guard';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import Link from 'next/link';
@@ -348,7 +349,10 @@ export default async function WorkPage() {
             : 'Import to promote',
       title: b.filename,
       subtitle:
-        b.status === 'PROMOTING' || b.status === 'FAILED'
+        // Code review 2026-11-10, finding 6: too old to load; the batch page offers Discard.
+        (b.status === 'PROMOTING' || b.status === 'FAILED' || b.status === 'READY') && stagedBatchExpired(b.uploadedAt)
+          ? `Uploaded ${batchAgeText(b.uploadedAt)}: too old to promote — upload the sheet again, and discard this batch on its page`
+          : b.status === 'PROMOTING' || b.status === 'FAILED'
           ? `Promote interrupted — ${b.promotedRows} of ${b.totalRows} rows loaded`
           : b._count.rows > 0
             ? `${b._count.rows.toLocaleString('en-US')} row${b._count.rows === 1 ? '' : 's'} held back or rejected, not yet fixed or excluded`

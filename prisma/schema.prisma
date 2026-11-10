@@ -116,6 +116,8 @@ enum ImportBatchStatus {
   PROMOTING
   PROMOTED
   FAILED
+  // Code review 2026-11-10, finding 6: thrown away by the Data Steward (audited); never promoted again.
+  DISCARDED
 }
 
 enum ExportJobStatus {

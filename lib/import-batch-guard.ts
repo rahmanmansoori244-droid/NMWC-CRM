@@ -1,0 +1,72 @@
+/**
+ * Code review 2026-11-10, finding 6: the rules that keep an old staged
+ * customer-import batch from being loaded over newer data.
+ *
+ *  - A staged batch older than STAGED_BATCH_MAX_AGE_DAYS can no longer be
+ *    promoted, resumed or fixed back into a load: the sheet must be uploaded
+ *    again. Exclude and Discard still work on it.
+ *  - Before a promote or a resume the Steward is shown when and by whom the batch
+ *    was uploaded and what it will do, and confirms it.
+ *  - A customer that a NEWER customer upload has already loaded is not loaded
+ *    again from this older batch: the promote is refused until the Steward
+ *    confirms, in so many words, that those customers are left out; their rows
+ *    are then rejected with the reason, and the rest loads.
+ *  - The Data Steward can discard a batch (services/import-fixes.ts).
+ *
+ * PURE: no database, so the page, the review and the promote say the same thing.
+ */
+
+/**
+ * How old a staged batch may be and still be promoted. A default, kept in one
+ * place: the owner is asked to confirm the number (open question).
+ */
+export const STAGED_BATCH_MAX_AGE_DAYS = 7;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Whole days since the upload (0 on the day itself). */
+export function batchAgeDays(uploadedAt: Date, now: Date = new Date()): number {
+  return Math.max(0, Math.floor((now.getTime() - uploadedAt.getTime()) / DAY_MS));
+}
+
+/** "today", "1 day ago", "12 days ago". */
+export function batchAgeText(uploadedAt: Date, now: Date = new Date()): string {
+  const d = batchAgeDays(uploadedAt, now);
+  return d === 0 ? 'today' : d === 1 ? '1 day ago' : `${d} days ago`;
+}
+
+/** Past the age limit: it can no longer be promoted. */
+export function stagedBatchExpired(uploadedAt: Date, now: Date = new Date()): boolean {
+  return now.getTime() - uploadedAt.getTime() > STAGED_BATCH_MAX_AGE_DAYS * DAY_MS;
+}
+
+export function stagedBatchExpiredMessage(uploadedAt: Date, now: Date = new Date()): string {
+  return `This batch was uploaded ${batchAgeText(uploadedAt, now)}, and a staged batch older than ${STAGED_BATCH_MAX_AGE_DAYS} days can no longer be promoted: what it holds may be older than what is in the CRM now. Upload the sheet again to load it, and discard this batch.`;
+}
+
+export const DISCARDED_BATCH_MESSAGE =
+  'This batch was discarded, so it can no longer be promoted or fixed. Upload the sheet again to load it.';
+
+/** A customer of this batch that a newer upload has already loaded, and from where. */
+export type NewerLoad = { code: string; filename: string; rowNumber: number };
+
+/**
+ * The refusal of a promote or resume that has not confirmed leaving out the
+ * customers a newer upload has loaded. Names at most three of them.
+ */
+export function newerLoadsRefusal(loads: NewerLoad[]): string {
+  const files = [...new Set(loads.map((l) => `"${l.filename}"`))];
+  const eg = loads
+    .slice(0, 3)
+    .map((l) => l.code)
+    .join(', ');
+  return `${loads.length.toLocaleString('en-US')} customer(s) in this batch (for example ${eg}) were loaded since from a newer upload (${files.slice(0, 3).join(', ')}${files.length > 3 ? ` and ${files.length - 3} more` : ''}). Loading this older batch would write its older values over theirs. Open Promote again and confirm that those customers are left out: their rows are then rejected, and the rest loads.`;
+}
+
+/** The note on a row left out because a newer upload loaded its customer. */
+export function newerLoadRowMessage(l: NewerLoad): string {
+  return `Customer ${l.code} was loaded since from a newer upload, "${l.filename}" (row ${l.rowNumber}), so this older row was not loaded over it. Exclude it.`;
+}
+
+/** The form value a promote sends once the Steward has confirmed leaving them out. */
+export const SKIP_NEWER_FIELD = 'skipNewer';

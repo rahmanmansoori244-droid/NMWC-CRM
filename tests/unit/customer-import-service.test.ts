@@ -487,6 +487,9 @@ function setup(
   };
   const now = new Date();
   Object.assign(h.db, {
+    // Code review 2026-11-10, finding 6: lib/import-master-lookup.ts newerLoadsOfBatch —
+    // no newer upload has loaded any of these customers.
+    $queryRaw: vi.fn(async () => []),
     importBatch: {
       findUnique: vi.fn(async () => ({ kind: 'CUSTOMER', uploadedAt: now, overwriteCrmFields: overwriteOption })),
       updateMany: vi.fn(async () => ({ count: 1 })),

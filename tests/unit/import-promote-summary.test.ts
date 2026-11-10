@@ -16,6 +16,9 @@ const h = vi.hoisted(() => ({
   limit: { ok: true as boolean, retryAfterSec: 0 },
   limitKeys: [] as string[],
   batch: null as null | { kind: string; overwriteCrmFields: boolean },
+  /** Code review 2026-11-10, finding 6: when the batch was uploaded, and the newer loads of its customers. */
+  uploadedAt: new Date(),
+  newer: [] as Array<{ code: string; filename: string; rowNumber: number }>,
   // The fake database (below), handed to the '@/lib/db' mock.
   db: {} as Record<string, unknown>,
 }));
@@ -67,7 +70,11 @@ const fake = {
       return shops.filter((b) => args.where.branchCode!.in!.includes(b.branchCode as string));
     },
   },
-  importBatch: { findUnique: async () => h.batch },
+  importBatch: {
+    findUnique: async () => (h.batch ? { uploadedAt: h.uploadedAt, uploadedBy: { fullName: 'ZZ Steward' }, ...h.batch } : null),
+  },
+  // Finding 6: lib/import-master-lookup.ts newerLoadsOfBatch.
+  $queryRaw: async () => h.newer,
 };
 Object.assign(h.db, fake);
 vi.mock('@/lib/db', () => ({ prisma: h.db }));
@@ -141,6 +148,8 @@ beforeEach(() => {
   h.limit = { ok: true, retryAfterSec: 0 };
   h.limitKeys = [];
   h.batch = { kind: 'CUSTOMER', overwriteCrmFields: false };
+  h.uploadedAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000 - 60_000);
+  h.newer = [];
 });
 
 const load = (overwrite = false) => loadPromoteSummary(fake as never, 'batch-9', overwrite);
@@ -293,5 +302,28 @@ describe('summariseCustomerBatchAction', () => {
     h.limit = { ok: false, retryAfterSec: 5 };
     expect(JSON.stringify(await ask())).toContain('Wait 5s before checking this batch again.');
     expect(calls).toEqual([]);
+  });
+
+  // Code review 2026-11-10, finding 6.
+  it('says when and by whom the batch was uploaded and how old it is, and whether it is too old to promote', async () => {
+    staged = [parsed()];
+    const fresh = await ask();
+    if (!fresh.ok) throw new Error(JSON.stringify(fresh));
+    expect(fresh.data.staged).toMatchObject({ uploadedBy: 'ZZ Steward', age: '2 days ago', expired: false, expiredMessage: null, maxAgeDays: 7 });
+    expect(fresh.data.newer).toEqual({ customers: 0, examples: [], refusal: null });
+    h.uploadedAt = new Date(Date.now() - 9 * 24 * 60 * 60 * 1000);
+    const old = await ask();
+    if (!old.ok) throw new Error(JSON.stringify(old));
+    expect(old.data.staged.expired).toBe(true);
+    expect(old.data.staged.expiredMessage).toMatch(/^This batch was uploaded 9 days ago/);
+  });
+
+  it('names the customers a newer upload already loaded, with the refusal the promote gives', async () => {
+    staged = [parsed()];
+    h.newer = [{ code: 'C1', filename: 'newer.xlsx', rowNumber: 3 }];
+    const res = await ask();
+    if (!res.ok) throw new Error(JSON.stringify(res));
+    expect(res.data.newer.customers).toBe(1);
+    expect(res.data.newer.refusal!.startsWith('1 customer(s) in this batch (for example C1) were loaded since from a newer upload ("newer.xlsx")')).toBe(true);
   });
 });
