@@ -722,3 +722,45 @@ describe('gap 31 review: a customer whose stored record breaks a database rule i
     });
   });
 });
+
+describe('the Temix upload workbook — code review 2026-11-10, finding 30', () => {
+  it('writes names and addresses starting with = + - @ as typed text, with no apostrophe and no formula', async () => {
+    const { firstSheetCells } = await import('../support/xlsx-xml');
+    model.state.rows = [
+      cust({
+        nmwcCode: 'N1',
+        temixCode: 'T1',
+        temixSyncState: TemixSyncState.PENDING_UPLOAD,
+        ...({
+        legalName: '@Home Furniture',
+        contactPerson: '=1+1',
+        branches: [
+          {
+            branchCode: 'N1-01',
+            branchName: '+Corner shop',
+            address: '- behind the mosque',
+            dayOfVisit: 'SUN',
+            gpsLat: null,
+            gpsLng: null,
+            deletedAt: null,
+            region: { name: 'Muscat', code: 'MCT' },
+            route: { code: 'MCT-01' },
+          },
+        ],
+        } as Partial<Cust>),
+      }),
+    ];
+    const res = await generateTemixBatchAction();
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    const cells = firstSheetCells(Buffer.from(res.data.base64, 'base64'));
+    for (const want of ['@Home Furniture', '=1+1', '+Corner shop', '- behind the mosque']) {
+      const hit = cells.filter((c) => c.text === want);
+      expect(hit, want).toHaveLength(1);
+      expect(['s', 'inlineStr'], want).toContain(hit[0]!.type);
+      expect(hit[0]!.formula, want).toBe(false);
+    }
+    expect(cells.some((c) => c.formula)).toBe(false);
+    expect(cells.some((c) => c.text.startsWith("'"))).toBe(false);
+  });
+});

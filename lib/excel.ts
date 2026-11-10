@@ -175,7 +175,43 @@ export function escapeFormulaCell(v: unknown): unknown {
   return `'${v}`;
 }
 
-export async function buildWorkbook(rows: Record<string, unknown>[], sheetName = 'Sheet1') {
+/**
+ * Code review 2026-11-10, finding 30: a value as buildWorkbook writes it when
+ * the formula escape is off. Every cell of an .xlsx file built here is a TYPED
+ * cell: a string goes in as a string cell (a shared string), which no
+ * spreadsheet evaluates, whatever its first character — only a cell written as
+ * a formula is evaluated, and exceljs writes one only for a `{ formula }`
+ * object. So the only thing to make sure of is that no such object gets in:
+ * anything that is not text, a number, a boolean, a date or empty is written
+ * as its text.
+ *
+ * The escape (escapeFormulaCell) stays the default, and stays for anything that
+ * could be read as a formula — a CSV file is plain text, and a spreadsheet
+ * opening one decides each cell's type itself, so `=…` there IS a formula.
+ */
+export function typedTextCell(v: unknown): unknown {
+  if (v === null || v === undefined) return v;
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return v;
+  if (v instanceof Date) return v;
+  return String(v);
+}
+
+export type BuildWorkbookOptions = {
+  /**
+   * Prefix the escape apostrophe on text that starts with = + - @ (default
+   * true). Off only where the file is read as data by another system and a
+   * stray apostrophe would be stored as part of the value: the weekly Temix
+   * upload workbook (services/temix.ts). Its cells are typed text (typedTextCell).
+   */
+  escapeFormulas?: boolean;
+};
+
+export async function buildWorkbook(
+  rows: Record<string, unknown>[],
+  sheetName = 'Sheet1',
+  options: BuildWorkbookOptions = {}
+) {
+  const cell = options.escapeFormulas === false ? typedTextCell : escapeFormulaCell;
   const ExcelJS = await loadExcelJS();
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet(sheetName);
@@ -189,7 +225,7 @@ export async function buildWorkbook(rows: Record<string, unknown>[], sheetName =
   ws.columns = headers.map((h) => ({ header: h, key: h, width: Math.max(12, h.length + 2) }));
   for (const r of rows) {
     const safe: Record<string, unknown> = {};
-    for (const k of headers) safe[k] = escapeFormulaCell(r[k]);
+    for (const k of headers) safe[k] = cell(r[k]);
     ws.addRow(safe);
   }
   ws.getRow(1).font = { bold: true };

