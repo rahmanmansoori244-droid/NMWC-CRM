@@ -81,6 +81,39 @@ export const TEMIX_CODE_BULK_REFUSED_MESSAGE =
  */
 export const NO_ANSWER_MESSAGE = 'No answer — reload to see what was decided.';
 
+/**
+ * Code review 2026-11-10, finding 21, second round: in a batch sent again after
+ * "No answer", the requests whose decision had already arrived come back with
+ * this code (lib/already-decided.ts ALREADY_DECIDED_CODE; a unit test keeps
+ * the two equal — this module has no imports, so the client can share it).
+ * They did not fail: the approver's decision is in. The banner counts them
+ * apart, in these words, so "failed" means failed.
+ */
+export const BULK_ALREADY_DECIDED_CODE = 'ALREADY_DECIDED';
+export const ALREADY_DECIDED_BY_YOU = 'already decided by you';
+
+/** How many lines of each kind the banner lists before it says how many more. */
+export const BULK_LINES_SHOWN = 5;
+
+/** A batch's failures, split: decisions that had already arrived, and real failures. */
+export function splitBulkFailures<F extends { code: string }>(failures: F[]): { arrived: F[]; failed: F[] } {
+  return {
+    arrived: failures.filter((f) => f.code === BULK_ALREADY_DECIDED_CODE),
+    failed: failures.filter((f) => f.code !== BULK_ALREADY_DECIDED_CODE),
+  };
+}
+
+/** The banner's first line: "2 processed, 3 already decided by you, 1 failed, 4 not attempted — run it again to finish." */
+export function bulkHeadline(counts: { processed: number; arrived: number; failed: number; notAttempted: number }): string {
+  return (
+    `${counts.processed} processed` +
+    (counts.arrived > 0 ? `, ${counts.arrived} ${ALREADY_DECIDED_BY_YOU}` : '') +
+    (counts.failed > 0 ? `, ${counts.failed} failed` : '') +
+    (counts.notAttempted > 0 ? `, ${counts.notAttempted} not attempted — run it again to finish` : '') +
+    '.'
+  );
+}
+
 /** Set by bulkApproveEditsAction on each item it hands to approveEditAction. */
 export const BULK_RUN_FIELD = 'viaBulk';
 
