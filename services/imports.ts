@@ -3724,6 +3724,18 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               where: { id: { in: g.rowIds } },
               data: { state: ImportRowState.PROMOTED, reviewedById: me.id, reviewedAt: new Date() },
             });
+            // Code review 2026-11-10, finding 28 (second round): the rows loaded
+            // with their shop NOT changed are counted on the batch in this same
+            // transaction, so the count is exactly the rows that committed — a
+            // slice that dies later loses none of it. The batch page shows it
+            // until the Data Steward acknowledges it (acknowledgeShopsNotChanged).
+            const notChangedHere = rowNotes.filter((n) => n?.shopNotChanged === true).length;
+            if (notChangedHere > 0) {
+              await tx.importBatch.update({
+                where: { id: batchId },
+                data: { shopNotChangedRows: { increment: notChangedHere } },
+              });
+            }
             // Compute completenessScore for the promoted customer. Without this,
             // every imported customer/branch stayed at 0, hiding them from
             // completeness-filtered worklists and skewing dashboard averages.

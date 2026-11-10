@@ -381,6 +381,8 @@ let rescoreWrites: Array<{ table: string; sql: string; rows: Array<[unknown, unk
 let temixLocks: unknown[];
 /** Gap 24: the source each set_config named, in order (lib/change-context.ts). */
 let contexts: string[];
+/** Finding 28, second round: the batch increments of the rows loaded with their shop NOT changed. */
+let shopNotChangedOnBatch: Array<{ where: { id: string }; data: { shopNotChangedRows: { increment: number } } }>;
 
 /** Other customers in the master, as the crosswalk guard's findFirst reads them. */
 type Other = {
@@ -411,6 +413,7 @@ function setup(
   opts: SetupOptions = {}
 ) {
   order = [];
+  shopNotChangedOnBatch = [];
   lockSql = [];
   rejected = [];
   rescoreWrites = [];
@@ -484,6 +487,15 @@ function setup(
       update: w('branch.update'),
     },
     importRow: { updateMany: w('importRow.promoted', { count: rows.length }) },
+    // Finding 28, second round: the rows loaded with their shop NOT changed,
+    // counted on the batch inside the customer's transaction.
+    importBatch: {
+      update: vi.fn(async (a: { where: { id: string }; data: { shopNotChangedRows: { increment: number } } }) => {
+        order.push('batch.shopNotChanged');
+        shopNotChangedOnBatch.push(a);
+        return {};
+      }),
+    },
   };
   const now = new Date();
   Object.assign(h.db, {
@@ -2089,6 +2101,11 @@ describe('finding 1 — parity: the plan the summary is built from is what the p
       // Finding 28: the rows loaded with their shop left as it was, as the summary counts them.
       shopNotChanged: plan.rejected ? 0 : plan.linkedShops + plan.linkedNotAdded,
     });
+    // Second round: the same count is added to the batch, in the customer's own transaction, after its rows are PROMOTED.
+    const onBatch = shopNotChangedOnBatch.reduce((n, a) => n + a.data.shopNotChangedRows.increment, 0);
+    expect(onBatch).toBe(out.notes!.shopNotChanged);
+    for (const a of shopNotChangedOnBatch) expect(a.where).toEqual({ id: 'batch-9' });
+    if (onBatch > 0) expect(order.indexOf('batch.shopNotChanged')).toBeGreaterThan(order.indexOf('importRow.promoted'));
     expect(out.notes!.kept > 0, 'a kept CRM value').toBe(!plan.rejected && !overwrite && differs);
     expect(out.notes!.replaced > 0, 'a replaced CRM value').toBe(!plan.rejected && overwrite && differs);
   });

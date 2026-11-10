@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**540 stored columns across 37 tables** — Customer contact: 30 · Employee: 97 · Customer entity (personal if a sole establishment): 50 · Not personal data: 363.
+**544 stored columns across 37 tables** — Customer contact: 30 · Employee: 99 · Customer entity (personal if a sole establishment): 50 · Not personal data: 365.
 
 ## Columns holding personal data
 
@@ -135,6 +135,8 @@ Every column the database stores, classified by whose personal data it is. This 
 | `uploadedAt` | Employee | behaviour |  |
 | `promoteLeaseBy` | Employee | identifier | which Steward holds the promote lease |
 | `overwriteCrmFieldsAt` | Employee | behaviour |  |
+| `shopNotChangedAckAt` | Employee | behaviour |  |
+| `shopNotChangedAckById` | Employee | identifier | which Data Steward acknowledged the rows loaded with their shop NOT changed |
 
 ### ImportRow
 
@@ -447,6 +449,8 @@ Every column the database stores, classified by whose personal data it is. This 
 | ImportBatch | `fileSha256` | String | SHA-256 of the uploaded workbook as a whole (gap 7): identifies the file, not its contents — no value can be read back from it |
 | ImportBatch | `fileBytes` | Int | size of the uploaded workbook |
 | ImportBatch | `overwriteCrmFields` | Boolean | per-batch option: the sheet may replace CRM-owned fields (code review 2026-11-10, finding 1) |
+| ImportBatch | `shopNotChangedRows` | Int | rows a promote loaded with their shop NOT changed (code review 2026-11-10, finding 28) |
+| ImportBatch | `shopNotChangedAckRows` | Int | how many of those rows the Data Steward acknowledged |
 | ImportRow | `id` | String | foreign key / structural value |
 | ImportRow | `batchId` | String | foreign key / structural value |
 | ImportRow | `rowNumber` | Int | structural / operational value |

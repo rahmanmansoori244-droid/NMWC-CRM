@@ -937,8 +937,15 @@ not built yet (item D).
      that no screen in the CRM changes a shop's route and route moves are made in Temix
      (`lib/import-shop-notice.ts` `ROUTE_NOT_APPLIED`, second round); name, address, visit
      day and status can be changed by an edit on the customer page — a route cannot. "Before you
-     promote" counts these rows and Promote waits for the Steward to tick that he understands; at the
-     end of the load their count is shown again and must be acknowledged before the result. The refresh
+     promote" counts these rows and Promote waits for the Steward to tick that he understands. The
+     rows counted are those that carry the customer's Temix code and name a shop of that customer whose
+     details differ from the CRM, or that the CRM does not have; a row with no `branch_code`, or naming
+     an archived shop, has its own note and is not counted. When the load finishes, its result ("✓ Done
+     — …") stays on screen, and the batch page shows a notice with the count of such rows **until the
+     Steward presses "I have read this"** — also after a reload or on a later visit. The acknowledgement
+     is stored on the batch (`shopNotChangedAckRows`, `shopNotChangedAckAt`, `shopNotChangedAckById`)
+     and audited (an UPDATE row on the batch: how many). Rows a later load of the same batch adds bring
+     the notice back for those rows only (second round, finding 28). The refresh
      also flips the customer from UPLOADED to **SYNCED**, as though Temix had confirmed the last
      batch — do not re-import the full master while a Temix batch is waiting for its
      acknowledgement. A row with a *different* non-blank `temix_code` is rejected. The credit

@@ -131,6 +131,7 @@ vi.mock('@/lib/db', () => {
 });
 
 import ImportBatchPage from '@/app/(app)/import/[batchId]/page';
+import { ROUTE_NOT_APPLIED, SHOP_NOT_CHANGED_MEANING } from '@/lib/import-shop-notice';
 
 const rejected = (n: number): Row => ({
   id: `r${n}`,
@@ -638,5 +639,67 @@ describe('/import/[batchId]: an old or discarded batch', () => {
     h.batch = { status: 'PROMOTING', promoteLeaseUntil: new Date(Date.now() + 60_000) };
     await open({ show: 'all' });
     expect(screen.queryByRole('button', { name: 'Discard batch' })).toBeNull();
+  });
+});
+
+// Code review 2026-11-10, finding 28 (second round): the rows a promote loaded
+// with their shop NOT changed are read from the batch, so the notice is on the
+// page after the refresh that ends the load, after a reload and on a later
+// visit, until the Data Steward acknowledges it.
+describe('/import/[batchId]: rows loaded with their shop NOT changed', () => {
+  const row = (): Row => ({
+    id: 'g2',
+    rowNumber: 2,
+    state: 'PROMOTED',
+    raw: { cust_code: 'C1', cust_name: 'Shop', temix_code: 'T1' },
+    parsed: { custCode: 'C1', custName: 'Shop' },
+    issues: null,
+  });
+
+  it('a finished batch with rows not yet acknowledged shows the notice, whenever it is opened', async () => {
+    h.rows = [row()];
+    h.batch = { status: 'PROMOTED', shopNotChangedRows: 2, shopNotChangedAckRows: 0 };
+    for (let visit = 0; visit < 2; visit++) {
+      await open();
+      const note = screen.getByTestId('shops-not-changed');
+      expect(note.textContent).toContain('2 row(s) were loaded, but their shop was NOT changed.');
+      expect(note.textContent).toContain(SHOP_NOT_CHANGED_MEANING);
+      expect(note.textContent).toContain(ROUTE_NOT_APPLIED);
+      expect(within(note).getByRole('button', { name: 'I have read this' })).toBeTruthy();
+      cleanup();
+    }
+  });
+
+  it('the Promote button stays mounted on a finished batch, told it is finished, so the result of the load survives', async () => {
+    h.rows = [row()];
+    h.batch = { status: 'PROMOTED' };
+    await open();
+    expect(h.promote).toMatchObject({ batchId: 'b1', finished: true });
+    cleanup();
+    h.batch = { status: 'READY' };
+    await open();
+    expect(h.promote).toMatchObject({ finished: false });
+  });
+
+  it('acknowledged: no notice; rows a later promote added: only those are counted', async () => {
+    h.rows = [row()];
+    h.batch = { status: 'PROMOTED', shopNotChangedRows: 2, shopNotChangedAckRows: 2 };
+    await open();
+    expect(screen.queryByTestId('shops-not-changed')).toBeNull();
+    cleanup();
+    h.batch = { status: 'PROMOTED', shopNotChangedRows: 5, shopNotChangedAckRows: 2 };
+    await open();
+    expect(screen.getByTestId('shops-not-changed').textContent).toContain('3 row(s) were loaded, but their shop was NOT changed.');
+  });
+
+  it('none such, or a promote still running: no notice', async () => {
+    h.rows = [row()];
+    h.batch = { status: 'PROMOTED', shopNotChangedRows: 0, shopNotChangedAckRows: 0 };
+    await open();
+    expect(screen.queryByTestId('shops-not-changed')).toBeNull();
+    cleanup();
+    h.batch = { status: 'PROMOTING', promoteLeaseUntil: new Date(Date.now() + 60_000), shopNotChangedRows: 3, shopNotChangedAckRows: 0 };
+    await open();
+    expect(screen.queryByTestId('shops-not-changed')).toBeNull();
   });
 });

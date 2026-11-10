@@ -335,6 +335,17 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
     note: 'per-batch option: the sheet may replace CRM-owned fields (code review 2026-11-10, finding 1)',
   },
   'ImportBatch.overwriteCrmFieldsAt': { subject: 'employee', kind: 'behaviour' },
+  'ImportBatch.shopNotChangedRows': {
+    subject: 'none',
+    note: 'rows a promote loaded with their shop NOT changed (code review 2026-11-10, finding 28)',
+  },
+  'ImportBatch.shopNotChangedAckRows': { subject: 'none', note: 'how many of those rows the Data Steward acknowledged' },
+  'ImportBatch.shopNotChangedAckAt': { subject: 'employee', kind: 'behaviour' },
+  'ImportBatch.shopNotChangedAckById': {
+    subject: 'employee',
+    kind: 'identifier',
+    note: 'which Data Steward acknowledged the rows loaded with their shop NOT changed',
+  },
   'ImportRow.id': { subject: 'none', note: STRUCTURAL },
   'ImportRow.batchId': { subject: 'none', note: STRUCTURAL },
   'ImportRow.rowNumber': { subject: 'none' },
