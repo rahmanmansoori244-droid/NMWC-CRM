@@ -68,7 +68,10 @@ describe('every hand-over row carries openWork (structural)', () => {
     const fn = s.slice(s.indexOf('async function toggleUserActiveCore('), s.indexOf('export async function resetPasswordAction('));
     expect(fn).toContain('await loadOpenWork(tx, userId, atSignedForm.map((e) => e.id))');
     expect(fn.indexOf('withdrawWithAccountChange(')).toBeLessThan(fn.indexOf('loadOpenWork('));
-    expect(fn).toMatch(/after: \{ isActive: updated\.isActive, \.\.\.\(openWork \? \{ openWork \} : \{\}\) \}/);
+    expect(fn).toMatch(/after: \{ isActive: newActive, \.\.\.\(openWork \? \{ openWork \} : \{\}\) \}/);
+    // Finding 9 (code review 2026-11-10): the row is written only once the switch really changed the account.
+    expect(fn.indexOf('if (switched.count === 0) return false;')).toBeGreaterThan(-1);
+    expect(fn.indexOf('if (switched.count === 0) return false;')).toBeLessThan(fn.indexOf('writeAudit('));
   });
 
   it('the account_edit row of a route or role change, after the withdrawals it made', () => {

@@ -26,6 +26,7 @@ import {
 } from '@/lib/permissions';
 import { loadScope } from '@/lib/access';
 import { loadOpenWork } from '@/lib/open-work';
+import { ACTIVE_FIELD, ACTIVE_MISSING, wantedActive, type ActiveSwitchResult } from '@/lib/active-switch';
 import { getAuditEnvelope, writeAudit, type AuditEnvelope } from '@/lib/audit';
 import {
   REGION_SCOPED_ROLES,
@@ -657,12 +658,17 @@ async function createUserCore(formData: FormData) {
  *     request of his waits at his signed-application step, unless the form
  *     sends `withdrawCreates` (UserRowActions asks first): they are then
  *     withdrawn in the same transaction (lib/stranded-creates.ts).
+ *   • Code review 2026-11-10, finding 9 — the form sends the state it WANTS
+ *     (`active`, lib/active-switch.ts) and the server sets exactly that. A click
+ *     that finds the account already so (a second admin's stale screen, or a
+ *     retry after a lost reply) changes nothing, writes no history or audit row,
+ *     and answers `changed: false`; the banner is built from this answer.
  */
-export async function toggleUserActiveAction(formData: FormData): SafeAction<void> {
+export async function toggleUserActiveAction(formData: FormData): SafeAction<ActiveSwitchResult> {
   return runAction(() => toggleUserActiveCore(formData));
 }
 
-async function toggleUserActiveCore(formData: FormData) {
+async function toggleUserActiveCore(formData: FormData): Promise<ActiveSwitchResult> {
   const me = await requireUserAdmin();
   const userId = String(formData.get('userId') ?? '');
   if (!userId) throw new ValidationError({ userId: 'required' });
@@ -676,7 +682,14 @@ async function toggleUserActiveCore(formData: FormData) {
   if (!guard.ok) throw new ForbiddenError(guard.reason);
   await assertManagerScopeOverTarget(me, user.id); // B2 / SEC-02
 
-  const newActive = !user.isActive;
+  // Finding 9: the wanted state, never the opposite of what was read.
+  const wanted = wantedActive(formData);
+  if (wanted === null) throw new ValidationError({ [ACTIVE_FIELD]: ACTIVE_MISSING });
+  const newActive = wanted;
+  if (user.isActive === newActive) {
+    revalidatePath('/users'); // the stale screen that sent this is put right
+    return { isActive: newActive, changed: false };
+  }
 
   // AUTH-07: last-Manager lockout. Disabling the only active Manager would
   // require raw SQL to recover from. Refuse loudly.
@@ -717,7 +730,21 @@ async function toggleUserActiveCore(formData: FormData) {
   const env = await getAuditEnvelope(me.id);
   const now = new Date();
   const cause = { actorId: me.id, source: src.users('toggle', userId) };
-  await withChangeContext(prisma, cause, async (tx) => {
+  const changed = await withChangeContext(prisma, cause, async (tx) => {
+    // Finding 9: only from the opposite state. Another admin's click that
+    // committed since the read above leaves nothing to change here: no row is
+    // written, so no history row either, and no audit row below.
+    const switched = await tx.user.updateMany({
+      where: { id: userId, isActive: !newActive },
+      data: {
+        isActive: newActive,
+        // AUTH-12: bump revocation marker so existing JWTs are immediately
+        // invalidated on the next freshness check (≤5 min). Bump on disable
+        // OR re-enable so a re-enabled user still picks up role changes etc.
+        sessionsRevokedAt: now,
+      },
+    });
+    if (switched.count === 0) return false;
     for (const e of atSignedForm) {
       const done = await withdrawWithAccountChange(tx, env, e, {
         submittedById: userId,
@@ -733,16 +760,6 @@ async function toggleUserActiveCore(formData: FormData) {
         });
       }
     }
-    const updated = await tx.user.update({
-      where: { id: userId },
-      data: {
-        isActive: newActive,
-        // AUTH-12: bump revocation marker so existing JWTs are immediately
-        // invalidated on the next freshness check (≤5 min). Bump on disable
-        // OR re-enable so a re-enabled user still picks up role changes etc.
-        sessionsRevokedAt: now,
-      },
-    });
 
     // Gap 37: a disable records what he left open, after the withdrawals above.
     const openWork = newActive ? null : await loadOpenWork(tx, userId, atSignedForm.map((e) => e.id));
@@ -750,17 +767,20 @@ async function toggleUserActiveCore(formData: FormData) {
       action: 'UPDATE',
       entityType: 'User',
       entityId: userId,
-      before: { isActive: user.isActive },
-      after: { isActive: updated.isActive, ...(openWork ? { openWork } : {}) } as unknown as Prisma.InputJsonValue,
+      before: { isActive: !newActive },
+      after: { isActive: newActive, ...(openWork ? { openWork } : {}) } as unknown as Prisma.InputJsonValue,
       reason: newActive ? 'enabled' : 'disabled',
     });
+    return true;
   });
   revalidatePath('/users');
+  if (!changed) return { isActive: newActive, changed: false };
   revalidateTag('ref:users'); // the cached list holds active accounts only
   if (atSignedForm.length > 0) {
     revalidatePath('/work');
     revalidatePath('/approvals');
   }
+  return { isActive: newActive, changed: true };
 }
 
 /**

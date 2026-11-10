@@ -64,6 +64,14 @@ vi.mock('@/lib/db', () => {
         h.regions.set(where.id, r);
         return r;
       },
+      // Finding 9: the switch writes only from the opposite state.
+      updateMany: async ({ where, data }: { where: { id: string; isActive: boolean }; data: { isActive: boolean } }) => {
+        const r = h.regions.get(where.id);
+        if (!r || r.isActive !== where.isActive) return { count: 0 };
+        h.writes.push(`region:${where.id}`);
+        h.regions.set(where.id, { ...r, ...data });
+        return { count: 1 };
+      },
       findMany: async () => h.pageRegions,
     },
     route: {
@@ -73,6 +81,13 @@ vi.mock('@/lib/db', () => {
         const r = { ...h.routes.get(where.id)!, ...data };
         h.routes.set(where.id, r);
         return r;
+      },
+      updateMany: async ({ where, data }: { where: { id: string; isActive: boolean }; data: { isActive: boolean } }) => {
+        const r = h.routes.get(where.id);
+        if (!r || r.isActive !== where.isActive) return { count: 0 };
+        h.writes.push(`route:${where.id}`);
+        h.routes.set(where.id, { ...r, ...data });
+        return { count: 1 };
       },
     },
     user: {
@@ -106,11 +121,14 @@ import RoutesPage from '@/app/(app)/routes/page';
 
 const MANAGER = { id: 'm1', role: 'MANAGER', username: 'mct-gt' };
 const STEWARD = { id: 's1', role: 'STEWARD', username: 'data.steward' };
-const form = (id: string) => {
+/** A click on Disable (the default) or Enable: it says the state it wants (finding 9). */
+const form = (id: string, active: 'true' | 'false' | null = 'false') => {
   const fd = new FormData();
   fd.set('id', id);
+  if (active !== null) fd.set('active', active);
   return fd;
 };
+const OFF = { ok: true, data: { isActive: false, changed: true } };
 
 beforeEach(() => {
   h.session = MANAGER;
@@ -165,7 +183,7 @@ describe('the actions (services/routes.ts)', () => {
 
   it('the Steward switches a region off, with its audit row', async () => {
     h.session = STEWARD;
-    expect(await toggleRegionActiveAction(form('shared'))).toEqual({ ok: true, data: undefined });
+    expect(await toggleRegionActiveAction(form('shared'))).toEqual(OFF);
     expect(h.regions.get('shared')!.isActive).toBe(false);
     expect(h.writes).toEqual(['region:shared', 'audit']);
   });
@@ -179,14 +197,75 @@ describe('the actions (services/routes.ts)', () => {
   });
 
   it('a Manager still switches a route in a region he manages alone', async () => {
-    expect(await toggleRouteActiveAction(form('r-solo'))).toEqual({ ok: true, data: undefined });
+    expect(await toggleRouteActiveAction(form('r-solo'))).toEqual(OFF);
     expect(h.routes.get('r-solo')!.isActive).toBe(false);
   });
 
   it('the Steward switches a route in a shared region', async () => {
     h.session = STEWARD;
-    expect(await toggleRouteActiveAction(form('r-shared'))).toEqual({ ok: true, data: undefined });
+    expect(await toggleRouteActiveAction(form('r-shared'))).toEqual(OFF);
     expect(h.routes.get('r-shared')!.isActive).toBe(false);
+  });
+});
+
+// Code review 2026-11-10, finding 9: the switches used to flip whatever they
+// found, so a second click from an old screen switched a route or region back.
+describe('finding 9: a switch sets the state the click wants, and only once', () => {
+  const ALREADY_OFF = { ok: true, data: { isActive: false, changed: false } };
+
+  it('a double click on Disable: the second click changes nothing and writes nothing', async () => {
+    h.session = STEWARD;
+    expect(await toggleRouteActiveAction(form('r-shared'))).toEqual(OFF);
+    h.writes = [];
+    expect(await toggleRouteActiveAction(form('r-shared'))).toEqual(ALREADY_OFF);
+    expect(h.routes.get('r-shared')!.isActive).toBe(false);
+    expect(h.writes).toEqual([]);
+  });
+
+  it('two admins on stale screens both click Disable on a region: it stays off, one audit row', async () => {
+    h.session = STEWARD;
+    const a = await toggleRegionActiveAction(form('solo'));
+    const b = await toggleRegionActiveAction(form('solo'));
+    expect([a, b]).toEqual([OFF, ALREADY_OFF]);
+    expect(h.regions.get('solo')!.isActive).toBe(false);
+    expect(h.writes).toEqual(['region:solo', 'audit']);
+  });
+
+  it('Enable from a screen that still shows the route off, after someone else enabled it: already on, nothing written', async () => {
+    h.routes.set('r-solo', { ...h.routes.get('r-solo')!, isActive: true });
+    expect(await toggleRouteActiveAction(form('r-solo', 'true'))).toEqual({
+      ok: true,
+      data: { isActive: true, changed: false },
+    });
+    expect(h.writes).toEqual([]);
+  });
+
+  it('Enable on a route that is off switches it on, with its audit row', async () => {
+    h.routes.set('r-solo', { ...h.routes.get('r-solo')!, isActive: false });
+    expect(await toggleRouteActiveAction(form('r-solo', 'true'))).toEqual({
+      ok: true,
+      data: { isActive: true, changed: true },
+    });
+    expect(h.routes.get('r-solo')!.isActive).toBe(true);
+    expect(h.writes).toEqual(['route:r-solo', 'audit']);
+  });
+
+  it('a click that does not say what it wants is refused, and nothing is written', async () => {
+    h.session = STEWARD;
+    for (const res of [
+      await toggleRegionActiveAction(form('solo', null)),
+      await toggleRouteActiveAction(form('r-solo', null)),
+    ]) {
+      expect(res).toMatchObject({ ok: false, code: 'VALIDATION_FAILED', fields: { active: expect.stringMatching(/Reload the page/) } });
+    }
+    expect(h.writes).toEqual([]);
+    expect(h.regions.get('solo')!.isActive).toBe(true);
+    expect(h.routes.get('r-solo')!.isActive).toBe(true);
+  });
+
+  it('the permission rule still comes first: a Manager’s stale click on a shared region is FORBIDDEN, not "already"', async () => {
+    h.regions.set('shared', { id: 'shared', isActive: false });
+    expect(await toggleRegionActiveAction(form('shared'))).toMatchObject({ ok: false, code: 'FORBIDDEN' });
   });
 });
 

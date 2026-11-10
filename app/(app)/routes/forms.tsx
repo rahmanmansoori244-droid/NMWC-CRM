@@ -8,6 +8,7 @@ import {
   toggleRouteActiveAction,
 } from '@/services/routes';
 import { errorTiedTo } from '@/components/nmwc/LabeledField';
+import { ACTIVE_FIELD, placeSwitchMessage } from '@/lib/active-switch';
 
 // B-17: actions now return `{ ok, ... }` (runAction wrapping) instead of
 // throwing AppError. The form translates that shape into inline errors.
@@ -158,8 +159,11 @@ export function ToggleButton({
       )
     )
       return;
+    // Code review 2026-11-10, finding 9: the click says the state it wants; the
+    // server sets exactly that and answers whether anything changed.
     const fd = new FormData();
     fd.set('id', id);
+    fd.set(ACTIVE_FIELD, String(!isActive));
     start(async () => {
       const res =
         kind === 'region'
@@ -169,7 +173,11 @@ export function ToggleButton({
         // Toggle is a button without an inline error slot; surface the
         // server message as an alert. Rare path (network or perm change).
         alert(res.message);
+        return;
       }
+      // A change shows itself: the list refreshes with the new state. A click
+      // that found it already so says so, instead of looking like a change.
+      if (!res.data.changed) alert(placeSwitchMessage(kind, res.data));
     });
   }
 

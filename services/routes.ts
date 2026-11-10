@@ -16,6 +16,7 @@ import { revalidatePath, revalidateTag } from 'next/cache';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { loadScope } from '@/lib/access';
 import { canToggleRegion, canToggleRoute } from '@/lib/permissions';
+import { ACTIVE_FIELD, ACTIVE_MISSING, wantedActive, type ActiveSwitchResult } from '@/lib/active-switch';
 
 /**
  * Route/region administration: MANAGER (region-scoped) or STEWARD (org-wide).
@@ -149,11 +150,18 @@ async function createRouteCore(formData: FormData) {
   revalidateTag('ref:routes'); // final-hunt #25
 }
 
-export async function toggleRegionActiveAction(formData: FormData): SafeAction<void> {
+/**
+ * Code review 2026-11-10, finding 9: both switches below set the state the click
+ * WANTS (`active`, lib/active-switch.ts), never the opposite of what they read.
+ * A click that finds it already so — a second admin's stale screen, a retry
+ * after a lost reply — changes nothing, writes no history or audit row, and
+ * answers `changed: false`.
+ */
+export async function toggleRegionActiveAction(formData: FormData): SafeAction<ActiveSwitchResult> {
   return runAction(() => toggleRegionActiveCore(formData));
 }
 
-async function toggleRegionActiveCore(formData: FormData) {
+async function toggleRegionActiveCore(formData: FormData): Promise<ActiveSwitchResult> {
   const me = await requireRouteAdmin();
   // Owner decision 5: a region is shared by several Managers, so only the
   // Steward switches one off or on (lib/permissions.ts canToggleRegion).
@@ -164,31 +172,42 @@ async function toggleRegionActiveCore(formData: FormData) {
   if (!id) throw new ValidationError({ id: 'required' });
   const r = await prisma.region.findUnique({ where: { id } });
   if (!r) throw new NotFoundError('Region not found.');
+  const wanted = wantedActive(formData);
+  if (wanted === null) throw new ValidationError({ [ACTIVE_FIELD]: ACTIVE_MISSING });
+  if (r.isActive === wanted) {
+    revalidatePath('/routes');
+    return { isActive: wanted, changed: false };
+  }
   const env = await getAuditEnvelope(me.id);
   const cause = { actorId: me.id, source: src.routes('toggle-region', id) };
-  await withChangeContext(prisma, cause, async (tx) => {
-    const updated = await tx.region.update({
-      where: { id },
-      data: { isActive: !r.isActive },
+  const changed = await withChangeContext(prisma, cause, async (tx) => {
+    // Only from the opposite state: another click that committed since the read
+    // above leaves nothing to write, and so no history or audit row.
+    const switched = await tx.region.updateMany({
+      where: { id, isActive: !wanted },
+      data: { isActive: wanted },
     });
+    if (switched.count === 0) return false;
     await writeAudit(tx, env, {
       action: 'UPDATE',
       entityType: 'Region',
       entityId: id,
-      before: { isActive: r.isActive },
-      after: { isActive: updated.isActive },
-      reason: updated.isActive ? 'enabled' : 'disabled',
+      before: { isActive: !wanted },
+      after: { isActive: wanted },
+      reason: wanted ? 'enabled' : 'disabled',
     });
+    return true;
   });
   revalidatePath('/routes');
-  revalidateTag('ref:regions'); // final-hunt #25: getAllActiveRegions filters on isActive
+  if (changed) revalidateTag('ref:regions'); // final-hunt #25: getAllActiveRegions filters on isActive
+  return { isActive: wanted, changed };
 }
 
-export async function toggleRouteActiveAction(formData: FormData): SafeAction<void> {
+export async function toggleRouteActiveAction(formData: FormData): SafeAction<ActiveSwitchResult> {
   return runAction(() => toggleRouteActiveCore(formData));
 }
 
-async function toggleRouteActiveCore(formData: FormData) {
+async function toggleRouteActiveCore(formData: FormData): Promise<ActiveSwitchResult> {
   const me = await requireRouteAdmin();
   const id = String(formData.get('id') ?? '');
   if (!id) throw new ValidationError({ id: 'required' });
@@ -209,22 +228,31 @@ async function toggleRouteActiveCore(formData: FormData) {
       );
     }
   }
+  const wanted = wantedActive(formData);
+  if (wanted === null) throw new ValidationError({ [ACTIVE_FIELD]: ACTIVE_MISSING });
+  if (r.isActive === wanted) {
+    revalidatePath('/routes');
+    return { isActive: wanted, changed: false };
+  }
   const env = await getAuditEnvelope(me.id);
   const cause = { actorId: me.id, source: src.routes('toggle-route', id) };
-  await withChangeContext(prisma, cause, async (tx) => {
-    const updated = await tx.route.update({
-      where: { id },
-      data: { isActive: !r.isActive },
+  const changed = await withChangeContext(prisma, cause, async (tx) => {
+    const switched = await tx.route.updateMany({
+      where: { id, isActive: !wanted },
+      data: { isActive: wanted },
     });
+    if (switched.count === 0) return false;
     await writeAudit(tx, env, {
       action: 'UPDATE',
       entityType: 'Route',
       entityId: id,
-      before: { isActive: r.isActive },
-      after: { isActive: updated.isActive },
-      reason: updated.isActive ? 'enabled' : 'disabled',
+      before: { isActive: !wanted },
+      after: { isActive: wanted },
+      reason: wanted ? 'enabled' : 'disabled',
     });
+    return true;
   });
   revalidatePath('/routes');
-  revalidateTag('ref:routes'); // final-hunt #25
+  if (changed) revalidateTag('ref:routes'); // final-hunt #25
+  return { isActive: wanted, changed };
 }

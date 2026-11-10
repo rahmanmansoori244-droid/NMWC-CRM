@@ -141,7 +141,7 @@ describe.skipIf(!ENABLED)('B2 / SEC-02: Manager user administration is region-sc
 
   it('Manager A cannot disable, reset or re-role the salesman of region B; Manager B can', async () => {
     as(ids.mgrA, 'MANAGER');
-    const toggle = await users.toggleUserActiveAction(fd({ userId: ids.salesmanB }));
+    const toggle = await users.toggleUserActiveAction(fd({ userId: ids.salesmanB, active: 'false' }));
     expect(toggle.ok).toBe(false);
     if (!toggle.ok) expect(toggle.code).toBe('FORBIDDEN');
     const reset = await users.resetPasswordAction(fd({ userId: ids.salesmanB, password: 'Another-Strong-Pass-2026!' }));
@@ -198,8 +198,8 @@ describe.skipIf(!ENABLED)('B2 / SEC-02: Manager user administration is region-sc
       fd({ username: `sv.${sfx}`, fullName: 'Viewer', role: 'VIEWER', password: PASSWORD })
     );
     expect(v.ok, JSON.stringify(v)).toBe(true);
-    const t = await users.toggleUserActiveAction(fd({ userId: ids.salesmanB }));
+    const t = await users.toggleUserActiveAction(fd({ userId: ids.salesmanB, active: 'false' }));
     expect(t.ok, JSON.stringify(t)).toBe(true);
-    await users.toggleUserActiveAction(fd({ userId: ids.salesmanB })); // re-enable
+    await users.toggleUserActiveAction(fd({ userId: ids.salesmanB, active: 'true' })); // re-enable
   });
 });

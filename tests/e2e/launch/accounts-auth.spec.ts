@@ -1485,6 +1485,10 @@ test.describe('accounts: a disable or a role change ends the live session', { ta
     const admin = await (await contextAt(browser, stw, world.ip(1), { device: 'desktop' })).newPage();
     await admin.goto('/users');
     await settle(admin);
+    // Code review 2026-11-10, finding 9: a second admin's screen, opened before the disable.
+    const staleAdmin = await (await contextAt(browser, world.user('MG'), world.ip(5), { device: 'desktop' })).newPage();
+    await staleAdmin.goto('/users');
+    await settle(staleAdmin);
     let asked = '';
     admin.once('dialog', (d) => {
       asked = d.message();
@@ -1493,6 +1497,14 @@ test.describe('accounts: a disable or a role change ends the live session', { ta
     await usersAction(admin, () => usersRow(admin, t.username).getByRole('button', { name: 'Disable', exact: true }).click());
     expect(asked).toBe(`Disable user "${t.username}"? They can no longer sign in, and the row leaves the Active list.`);
     await expect(usersBanner(admin)).toContainText(`Disabled "${t.username}". It is on the Disabled tab, where Enable puts it back.`);
+
+    // Finding 9: the stale screen still offers Disable; its click must not switch him back on.
+    const auditsBefore = await db.auditLog.count({ where: { entityId: t.id, reason: { in: ['enabled', 'disabled'] } } });
+    staleAdmin.once('dialog', (d) => void d.accept());
+    await usersAction(staleAdmin, () => usersRow(staleAdmin, t.username).getByRole('button', { name: 'Disable', exact: true }).click());
+    await expect(usersBanner(staleAdmin)).toContainText(`"${t.username}" was already disabled. Nothing changed.`);
+    expect((await db.user.findUniqueOrThrow({ where: { id: t.id } })).isActive, 'still disabled').toBe(false);
+    expect(await db.auditLog.count({ where: { entityId: t.id, reason: { in: ['enabled', 'disabled'] } } })).toBe(auditsBefore);
 
     // Within the 30 s per-instance cache, every way in refuses him.
     await expect

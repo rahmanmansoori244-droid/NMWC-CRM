@@ -96,7 +96,7 @@ describe('UserRowActions — refusals read as errors', () => {
 
   it('a Disable that works after a refusal clears the red refusal (the row stays on the All tab)', async () => {
     h.toggle.mockResolvedValueOnce({ ok: false, code: 'FORBIDDEN', message: 'That account is outside the regions you manage.' });
-    h.toggle.mockResolvedValueOnce({ ok: true, data: undefined });
+    h.toggle.mockResolvedValueOnce({ ok: true, data: { isActive: false, changed: true } });
     render(
       <UsersFeedback>
         <UserRowActions userId="u-target" username="someone" isActive />
@@ -126,7 +126,7 @@ describe('UserRowActions — refusals read as errors', () => {
 
   it('a request at his signed-application step: asked again, and sent again with withdrawCreates only on a yes', async () => {
     h.toggle.mockResolvedValueOnce(SIGNED_FORM_REFUSAL);
-    h.toggle.mockResolvedValueOnce({ ok: true, data: undefined });
+    h.toggle.mockResolvedValueOnce({ ok: true, data: { isActive: false, changed: true } });
     const asked = vi.mocked(window.confirm);
     render(
       <UsersFeedback>
@@ -139,6 +139,8 @@ describe('UserRowActions — refusals read as errors', () => {
     expect(asked.mock.calls[1]![0]).toContain('upload the customer');
     expect(asked.mock.calls[1]![0]).toContain('Disable "mct-01" and withdraw them now? A withdrawn request is closed for good.');
     expect(sentWithdraw()).toEqual([null, 'on']);
+    // Finding 9: the second send still says it wants the account disabled.
+    expect(h.toggle.mock.calls.map(([fd]) => (fd as FormData).get('active'))).toEqual(['false', 'false']);
   });
 
   it('a request at his signed-application step, and the answer is no: nothing sent again, the reason in red', async () => {
@@ -149,6 +151,50 @@ describe('UserRowActions — refusals read as errors', () => {
     const alert = await screen.findByRole('alert', {}, SLOW);
     expect(alert.textContent).toBe(SIGNED_FORM_REFUSAL.fields.withdrawCreates);
     expect(sentWithdraw()).toEqual([null]);
+  });
+
+  // Code review 2026-11-10, finding 9: the click says what it wants, and the
+  // banner says what the server did, not what this (perhaps stale) row believed.
+  it('Disable sends active=false and Enable sends active=true', async () => {
+    h.toggle.mockResolvedValue({ ok: true, data: { isActive: false, changed: true } });
+    const { unmount } = render(<UserRowActions userId="u-a" username="a" isActive />);
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+    await waitFor(() => expect(h.toggle).toHaveBeenCalledTimes(1), SLOW);
+    unmount();
+    h.toggle.mockResolvedValue({ ok: true, data: { isActive: true, changed: true } });
+    render(<UserRowActions userId="u-b" username="b" isActive={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Enable' }));
+    await waitFor(() => expect(h.toggle).toHaveBeenCalledTimes(2), SLOW);
+    const sent = h.toggle.mock.calls.map(([fd]) => [(fd as FormData).get('userId'), (fd as FormData).get('active')]);
+    expect(sent).toEqual([
+      ['u-a', 'false'],
+      ['u-b', 'true'],
+    ]);
+  });
+
+  it('a stale row (another admin already disabled him): the banner says "already disabled", never "Disabled"', async () => {
+    h.toggle.mockResolvedValue({ ok: true, data: { isActive: false, changed: false } });
+    render(
+      <UsersFeedback>
+        <UserRowActions userId="u-target" username="leaver" isActive />
+      </UsersFeedback>
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+    const status = await screen.findByRole('status', {}, SLOW);
+    expect(status.textContent).toContain('"leaver" was already disabled. Nothing changed.');
+    expect(screen.queryByText(/^Disabled "leaver"/)).toBeNull();
+  });
+
+  it('a stale row showing him disabled, already enabled by someone else: "already enabled"', async () => {
+    h.toggle.mockResolvedValue({ ok: true, data: { isActive: true, changed: false } });
+    render(
+      <UsersFeedback>
+        <UserRowActions userId="u-target" username="joiner" isActive={false} />
+      </UsersFeedback>
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Enable' }));
+    const status = await screen.findByRole('status', {}, SLOW);
+    expect(status.textContent).toContain('"joiner" was already enabled. Nothing changed.');
   });
 
   it('a thrown failure is red too', async () => {

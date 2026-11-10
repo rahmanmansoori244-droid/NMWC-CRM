@@ -4,6 +4,7 @@ import { useContext, useId, useRef, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { toggleUserActiveAction, resetPasswordAction, updateUserEmailAction } from '@/services/users';
 import { AnnounceContext } from './announce';
+import { ACTIVE_FIELD, userSwitchMessage } from '@/lib/active-switch';
 import { AccountEditor, type EditOptions } from './EditAccount';
 
 // Go-live: a successful Disable used to confirm itself — the row stayed put, the
@@ -117,8 +118,13 @@ export function UserRowActions({
       ? `Disable user "${username}"? They can no longer sign in, and the row leaves the Active list.`
       : `Enable user "${username}"?`;
     if (!confirm(question)) return;
+    // Code review 2026-11-10, finding 9: the click says the state it wants, so a
+    // second click from this screen after someone else's (or after a lost reply)
+    // cannot switch the account back; the server answers whether it changed.
+    const wanted = String(!isActive);
     const fd = new FormData();
     fd.set('userId', userId);
+    fd.set(ACTIVE_FIELD, wanted);
     start(async () => {
       // PROD-006: action returns `{ ok, code, message, fields? }` shape —
       // last-Manager-lockout and peer-Manager guards must surface to the UI.
@@ -134,6 +140,7 @@ export function UserRowActions({
         }
         const again = new FormData();
         again.set('userId', userId);
+        again.set(ACTIVE_FIELD, wanted);
         again.set('withdrawCreates', 'on');
         res = await toggleUserActiveAction(again);
       }
@@ -143,11 +150,9 @@ export function UserRowActions({
       }
       // On the All tab the row stays: an earlier refusal must not sit beside it.
       setResetMsg(null);
-      announce(
-        isActive
-          ? `Disabled "${username}". It is on the Disabled tab, where Enable puts it back.`
-          : `Enabled "${username}".`
-      );
+      // Finding 9: the banner says what the SERVER did, not what this (possibly
+      // stale) row believed: "already disabled" when nothing changed.
+      announce(userSwitchMessage(username, res.data));
     });
   }
 
