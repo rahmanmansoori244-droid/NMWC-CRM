@@ -7,20 +7,32 @@
  * text beside the button. A salesman using a screen reader tapped Capture GPS
  * and heard nothing. Errors are alerts; the accuracy advice is a status.
  */
-import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
+import { GPS_LISTEN_MS } from '@/lib/gps-listen';
 import { gpsAccuracyAdvice } from '@/lib/gps-accuracy';
 import { GpsCaptureButton } from '@/components/nmwc/GpsCaptureButton';
 
 const realGeo = Object.getOwnPropertyDescriptor(navigator, 'geolocation');
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   if (realGeo) Object.defineProperty(navigator, 'geolocation', realGeo);
   else delete (navigator as unknown as Record<string, unknown>).geolocation;
 });
 
-function geolocation(getCurrentPosition: (ok: PositionCallback, fail: PositionErrorCallback) => void) {
-  Object.defineProperty(navigator, 'geolocation', { configurable: true, value: { getCurrentPosition } });
+// Finding 19: the button watches the position (lib/gps-listen.ts).
+function geolocation(answer: (ok: PositionCallback, fail: PositionErrorCallback) => void) {
+  Object.defineProperty(navigator, 'geolocation', {
+    configurable: true,
+    value: {
+      watchPosition: (ok: PositionCallback, fail: PositionErrorCallback) => {
+        answer(ok, fail);
+        return 1;
+      },
+      clearWatch: () => {},
+    },
+  });
 }
 
 describe('the GPS capture, for a screen reader', () => {
@@ -46,9 +58,13 @@ describe('the GPS capture, for a screen reader', () => {
   });
 
   it('a fix too rough to submit is said in a status', () => {
+    vi.useFakeTimers();
     geolocation((ok) => ok({ coords: { latitude: 23.588, longitude: 58.3829, accuracy: 150 } } as unknown as GeolocationPosition));
     render(<GpsCaptureButton onCapture={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: 'Capture GPS' }));
+    // While it listens, how good the best reading is so far is a status too.
+    expect(screen.getByRole('status').textContent).toBe('Looking for a better fix… best so far ±150 m.');
+    act(() => void vi.advanceTimersByTime(GPS_LISTEN_MS));
     expect(screen.getByRole('status').textContent).toBe(gpsAccuracyAdvice(150));
   });
 });

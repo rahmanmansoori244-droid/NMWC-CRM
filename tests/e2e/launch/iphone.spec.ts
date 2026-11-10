@@ -35,6 +35,7 @@
  */
 import { randomInt } from 'node:crypto';
 import { expect, test } from '@playwright/test';
+import { GPS_LISTEN_MS } from '../../../lib/gps-listen';
 import {
   INITIAL_PASSWORD,
   MUSCAT,
@@ -390,6 +391,10 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
 
   test('Enrich: WebKit’s GPS fix shows its accuracy band — green, amber, red and refused, green again', async ({ browser }) => {
     needsSession();
+    // Finding 19: a reading over ±30 m is kept only when the listening window ends,
+    // and one rougher than the point on the chip only when he says so.
+    test.setTimeout(180_000);
+    const listened = { timeout: GPS_LISTEN_MS + 15_000 };
     const ctx = await iphoneContext(browser, world.user('SA'));
     const page = await ctx.newPage();
     await page.goto(`/customers/${world.customer('EN2').id}/edit`);
@@ -408,6 +413,8 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
     const recapture = page.getByRole('button', { name: 'Recapture GPS', exact: true });
     await ctx.setGeolocation({ ...MUSCAT_GEO, accuracy: 60 });
     await recapture.tap();
+    await expect(page.getByText('The new reading is ±60 m, rougher than the location already here (±9 m).', { exact: true })).toBeVisible(listened);
+    await page.getByRole('button', { name: 'Use the new reading (±60 m)', exact: true }).tap();
     await expect(chip).toHaveAttribute('data-accuracy-band', 'fair');
     await expect(chip).toContainText('±60m');
     await expect(page.getByText(fair, { exact: true })).toBeVisible();
@@ -415,6 +422,8 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
 
     await ctx.setGeolocation({ ...MUSCAT_GEO, accuracy: 150 });
     await recapture.tap();
+    await expect(page.getByText('The new reading is ±150 m, rougher than the location already here (±60 m).', { exact: true })).toBeVisible(listened);
+    await page.getByRole('button', { name: 'Use the new reading (±150 m)', exact: true }).tap();
     await expect(chip).toHaveAttribute('data-accuracy-band', 'poor');
     await expect(chip).toContainText('±150m');
     await expect(page.getByText(poor, { exact: true })).toBeVisible();

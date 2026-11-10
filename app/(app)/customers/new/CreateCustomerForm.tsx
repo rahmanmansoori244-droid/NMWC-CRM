@@ -1707,6 +1707,9 @@ export function CreateCustomerForm({
                   chip on a request nothing here could save. */}
               <GpsCaptureButton
                 initial={s.gps}
+                // Nothing is on file for a new customer: every point here is
+                // judged at submit (finding 19), after a reload too.
+                saved={null}
                 onCapture={(g) => !readOnly && setBranch(s.key, { gps: g })}
                 disabled={readOnly}
                 required

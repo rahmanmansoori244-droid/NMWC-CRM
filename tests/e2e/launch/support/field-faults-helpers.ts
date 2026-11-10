@@ -22,6 +22,8 @@ import { uniquePng } from './media';
 // The app's own words and limits, imported where the module is plain TypeScript.
 export { OFFLINE_MESSAGE, PHOTO_UPLOADING_MESSAGE, UNCONFIRMED_MESSAGE } from '../../../../lib/submission';
 export { SUBMIT_TIMEOUT_MS } from '../../../../lib/submit-client';
+// Finding 19: how long one tap listens for a better GPS fix (no JSX: imported, not copied).
+export { GPS_LISTEN_MS } from '../../../../lib/gps-listen';
 
 // PhotoCaptureSlot's words and limits, defined once for every spec (photo-slot-words.ts).
 export { PHOTO_TRIES, UPLOAD_NO_CONNECTION, UPLOAD_STALL_MS } from './photo-slot-words';
@@ -34,14 +36,13 @@ export { PHOTO_TRIES, UPLOAD_NO_CONNECTION, UPLOAD_STALL_MS } from './photo-slot
 export const GPS_DENIED = 'Location permission denied. Tap below to enter coordinates manually.';
 export const GPS_UNAVAILABLE = 'Location unavailable. Tap below to enter coordinates manually.';
 export const GPS_TIMEOUT = 'Location took too long. Tap below to enter coordinates manually.';
+/** components/nmwc/GpsCaptureButton.tsx GPS_TRY_OUTSIDE_MESSAGE: the first listen that heard nothing (finding 19). */
+export const GPS_TRY_OUTSIDE = 'No GPS fix in 25 seconds. Step outside, away from roofs and walls, then tap “Try again outside”.';
 /** components/nmwc/GpsCaptureButton.tsx: the manual panel's own heading (the same words whatever the error). */
 export const GPS_MANUAL_PANEL = GPS_UNAVAILABLE;
 /** components/nmwc/GpsCaptureButton.tsx applyManual's refusals. */
 export const GPS_MANUAL_NUMBERS = 'Enter valid latitude and longitude numbers.';
 export const GPS_MANUAL_REASON = 'Tell us why GPS did not work (5+ characters).';
-/** components/nmwc/GpsCaptureButton.tsx getCurrentPosition options.timeout. */
-export const GPS_TIMEOUT_MS = 15_000;
-
 /** vercel.json functions maxDuration: the platform kills a request after this. */
 export const VERCEL_MAX_DURATION_MS = 60_000;
 
@@ -561,26 +562,50 @@ export function neverFixGeolocation(): void {
   const w = window as unknown as { __nmwcGeoCalls?: Call[] };
   w.__nmwcGeoCalls = [];
   const proto = Object.getPrototypeOf(navigator.geolocation) as object;
+  const timers = new Map<number, ReturnType<typeof setTimeout>>();
+  let nextId = 1;
+  // Finding 19: the button watches the position (lib/gps-listen.ts); the one-shot
+  // ask is answered the same way, so either path is seen to have a limit.
+  const ask = (fail: ((e: unknown) => void) | null | undefined, options: PositionOptions | undefined, id: number) => {
+    const t = options?.timeout;
+    w.__nmwcGeoCalls!.push({
+      timeout: typeof t === 'number' ? t : null,
+      enableHighAccuracy: options?.enableHighAccuracy === true,
+      maximumAge: typeof options?.maximumAge === 'number' ? options.maximumAge : null,
+    });
+    if (typeof t !== 'number' || !Number.isFinite(t)) return;
+    timers.set(
+      id,
+      setTimeout(() => fail?.({ code: 3, message: 'Timeout expired', PERMISSION_DENIED: 1, POSITION_UNAVAILABLE: 2, TIMEOUT: 3 }), t)
+    );
+  };
   Object.defineProperty(proto, 'getCurrentPosition', {
     configurable: true,
     writable: true,
     value(_ok: unknown, fail?: ((e: unknown) => void) | null, options?: PositionOptions) {
-      const t = options?.timeout;
-      w.__nmwcGeoCalls!.push({
-        timeout: typeof t === 'number' ? t : null,
-        enableHighAccuracy: options?.enableHighAccuracy === true,
-        maximumAge: typeof options?.maximumAge === 'number' ? options.maximumAge : null,
-      });
-      if (typeof t !== 'number' || !Number.isFinite(t)) return;
-      setTimeout(
-        () => fail?.({ code: 3, message: 'Timeout expired', PERMISSION_DENIED: 1, POSITION_UNAVAILABLE: 2, TIMEOUT: 3 }),
-        t
-      );
+      ask(fail, options, nextId++);
+    },
+  });
+  Object.defineProperty(proto, 'watchPosition', {
+    configurable: true,
+    writable: true,
+    value(_ok: unknown, fail?: ((e: unknown) => void) | null, options?: PositionOptions) {
+      const id = nextId++;
+      ask(fail, options, id);
+      return id;
+    },
+  });
+  Object.defineProperty(proto, 'clearWatch', {
+    configurable: true,
+    writable: true,
+    value(id: number) {
+      clearTimeout(timers.get(id));
+      timers.delete(id);
     },
   });
 }
 
-/** The options the app passed to each getCurrentPosition (neverFixGeolocation only). */
+/** The options the app passed to each watchPosition / getCurrentPosition (neverFixGeolocation only). */
 export function geoCalls(page: Page): Promise<Array<{ timeout: number | null; enableHighAccuracy: boolean; maximumAge: number | null }>> {
   return page.evaluate(
     () =>

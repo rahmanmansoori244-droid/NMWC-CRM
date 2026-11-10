@@ -63,7 +63,9 @@ beforeEach(() => {
     });
   }));
   Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
-    getCurrentPosition: (ok: PositionCallback, fail: PositionErrorCallback) => gps.push({ ok, fail }),
+    // Finding 19: the button watches the position (lib/gps-listen.ts).
+    watchPosition: (ok: PositionCallback, fail: PositionErrorCallback) => gps.push({ ok, fail }),
+    clearWatch: () => {},
   } });
 });
 afterEach(() => {

@@ -38,6 +38,7 @@ import {
   draftBranchStates,
   labelsForPaths,
   loadedFormState,
+  loadedPoint,
   NO_KEPT_FIELDS,
   openConflicts,
   patchDifference,
@@ -104,6 +105,10 @@ const gpsForButton = (g: FormGps | null): Gps | null =>
         manualReason: g.manualReason,
       }
     : null;
+
+// Finding 19: each GPS button is also given the branch's point on file (the
+// loaded values, moved by "Use this value"), which its "Keep the saved
+// location" puts back — a restored or recaptured point is then one tap from undone.
 
 function without<T>(record: Readonly<Record<string, T>>, key: string): Record<string, T> {
   const next = { ...record };
@@ -1059,6 +1064,7 @@ export function EnrichmentForm({
                   key={`${restoreGeneration}:${gpsGeneration[b.id] ?? 0}`}
                   disabled={sending || arrived}
                   initial={gpsForButton(s.gps)}
+                  saved={gpsForButton(loadedPoint(loadedRef.current.branches.find((x) => x.id === b.id) ?? b))}
                   onCapture={(g) => setBranch(b.id, { gps: g })}
                   enforceAccuracy={gpsGated}
                   required
