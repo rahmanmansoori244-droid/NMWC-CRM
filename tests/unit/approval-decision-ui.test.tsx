@@ -840,7 +840,8 @@ describe('the bulk queue', () => {
       expect(alert.textContent).toBe(NO_ANSWER_MESSAGE);
       // Not "failed" and not "nothing was processed": what was saved is unknown.
       expect(alert.textContent).not.toMatch(/failed|Nothing was processed/);
-      expect(screen.getByRole('button', { name: '✓ Approve 2' })).toBeTruthy();
+      // The selection is kept: once the transition ends, the bar offers the same two again.
+      expect(await screen.findByRole('button', { name: '✓ Approve 2' })).toBeTruthy();
       expect(h.refresh).not.toHaveBeenCalled();
     });
 

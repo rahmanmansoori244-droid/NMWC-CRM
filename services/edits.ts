@@ -11,7 +11,7 @@ import {
   runBulk,
   type BulkOutcome,
 } from '@/lib/bulk-run';
-import { Role, EditState, EditTarget, EditProcess, PaymentTerms, type Prisma } from '@prisma/client';
+import { Role, EditState, EditTarget, EditProcess, PaymentTerms, type CustomerEdit, type Prisma } from '@prisma/client';
 import { requireActor } from '@/lib/session';
 import {
   ForbiddenError,
@@ -268,10 +268,7 @@ function lostOnEdit(
  */
 async function decidedAlready(
   me: { id: string; role: Role; username: string },
-  edit: {
-    id: string;
-    approvalChain: unknown;
-    target: EditTarget;
+  edit: Pick<CustomerEdit, 'id' | 'approvalChain' | 'target'> & {
     submittedBy: { id: string; supervisorId: string | null };
   },
   view: DecisionView,

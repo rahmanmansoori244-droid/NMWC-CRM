@@ -10,6 +10,7 @@ import {
   AttachmentKind,
   CustomerStatus,
   type Attachment,
+  type CustomerEdit,
   type Prisma,
 } from '@prisma/client';
 import { requireActor } from '@/lib/session';
@@ -25,7 +26,7 @@ import {
 } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
-import { namingShop, rescoreAfterChangeTx } from '@/lib/shop-rescore';
+import { rescoreAfterChangeTx } from '@/lib/shop-rescore';
 import { lockCustomerRow, lockLiveCustomer } from '@/lib/locks';
 import { followBranchStatus, statusEvents } from '@/lib/customer-status';
 import { REACTIVATION_STATE_CHANGED_MESSAGE, assertStatusEvidence } from '@/lib/status-evidence';
@@ -108,10 +109,7 @@ function reactivationConflict(actorId: string, editId: string, path: string): Co
  */
 async function reactivationNotPending(
   me: { id: string },
-  edit: {
-    id: string;
-    state: EditState;
-    approvalChain: unknown;
+  edit: Pick<CustomerEdit, 'id' | 'state' | 'approvalChain'> & {
     branch: { regionId: string } | null;
     submittedBy: { id: string } | null;
   },
@@ -728,17 +726,14 @@ async function approveReactivationCore(formData: FormData) {
     const evidence = atRequest.attachmentId
       ? await tx.attachment.findUnique({ where: { id: atRequest.attachmentId }, select: { capturedAt: true } })
       : null;
-    // Finding 27: a rule refusing this shop's save names it.
-    await namingShop(edit.branch!.branchCode, () =>
-      tx.branch.update({
-        where: { id: edit.branchId! },
-        data: {
-          status: 'ACTIVE',
-          lastEditedById: me.id,
-          lastStatusChangeAt: new Date(),
-        },
-      })
-    );
+    await tx.branch.update({
+      where: { id: edit.branchId! },
+      data: {
+        status: 'ACTIVE',
+        lastEditedById: me.id,
+        lastStatusChangeAt: new Date(),
+      },
+    });
     // Owner decision 7 (2026-10-07): a customer with at least one ACTIVE branch
     // is ACTIVE — the same rule a closure follows (lib/customer-status.ts). It
     // used to wait until EVERY branch was active, so reopening one shop of a
