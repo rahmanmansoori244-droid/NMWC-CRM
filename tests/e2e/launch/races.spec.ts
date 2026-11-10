@@ -67,8 +67,9 @@ import {
 // ── the app's words (read from the code under test) ──────────────────────────
 
 /** services/edits.ts: a decision on a request somebody decided a moment before (the state check, or the lost claim). */
+// Code review 2026-11-10, finding 21 (lib/already-decided.ts): his own decision, a colleague's, or where it stands.
 const DECIDED =
-  /^(Edit is in state (APPROVED|NEEDS_CORRECTION|REJECTED)\.|This (edit|request|step) was just decided by another reviewer\. Refresh to see the current state\.)$/;
+  /^(Your decision already arrived: .+|Already decided by a colleague: .+|This request is no longer waiting for a decision: .+|This (edit|request|step) was just decided by another reviewer\. Refresh to see the current state\.)$/;
 /** app/(app)/customers/[id]/edit/EnrichmentForm.tsx: the Submit button in each of its states. */
 const SUBMIT = 'Submit for approval ▶';
 const ANY_SUBMIT = /^(Submit for approval ▶|Submitting…|Sent ✓)$/;
@@ -450,7 +451,11 @@ test.describe('races: approvers deciding the same request at the same instant', 
     await expect(banner).toHaveText(m2Won ? '2 processed, 1 failed.' : '3 processed.');
     if (m2Won) {
       await expect(
-        m1.getByText(new RegExp(`^${ids.BK1!.slice(-8)}: (Edit is in state APPROVED\\.|This edit was just decided by another reviewer\\. Refresh to see the current state\\.)$`))
+        m1.getByText(
+          new RegExp(
+            `^${ids.BK1!.slice(-8)}: (Already decided by a colleague: .+ \\(Manager\\) approved this request at the Supervisor step\\..*|This edit was just decided by another reviewer\\. Refresh to see the current state\\.)$`
+          )
+        )
       ).toBeVisible();
       expect(await decisionVerdict(m2)).toBe('won');
     } else {
