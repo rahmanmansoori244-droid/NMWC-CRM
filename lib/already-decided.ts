@@ -27,7 +27,7 @@
  *     to. Anyone else keeps the refusal he had.
  */
 import type { EditState, Prisma, PrismaClient, Role } from '@prisma/client';
-import { ConflictError, type ConflictMeta } from './errors';
+import { AlreadyDecidedError, ConflictError, type ConflictMeta } from './errors';
 import { parseChainOrNull, stepName, type ApprovalStep } from './approval-chains';
 import { ROLE_LABELS } from './account-edit';
 
@@ -144,7 +144,8 @@ export async function alreadyDecidedRefusal(db: Db, args: AlreadyDecidedArgs): P
   const did = args.words[row.decision];
   if (!did) return null;
   if (row.actorId === args.viewerId) {
-    return new ConflictError(ALREADY_DECIDED_CODE, yourDecisionArrivedMessage(did, row.role));
+    // Third round: with the decision that stands, so a bulk batch can tell it from the one it sent.
+    return new AlreadyDecidedError(ALREADY_DECIDED_CODE, yourDecisionArrivedMessage(did, row.role), row.decision);
   }
   const step = chain?.[row.stepIndex] ?? null;
   if (!step) return null;

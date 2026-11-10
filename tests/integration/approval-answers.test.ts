@@ -307,7 +307,10 @@ describe.skipIf(!ENABLED)('finding 21: a decision already made is answered as on
       const res = (await edits.bulkApproveEditsAction(form({ decisions: JSON.stringify([{ editId: id, decisionToken: page }]) }))) as Result;
       expect(res.ok, JSON.stringify(res)).toBe(true);
       expect(res.data!.successes).toEqual([]);
-      expect(res.data!.failures).toEqual([{ editId: id, code: ALREADY_DECIDED_CODE, message: ARRIVED('approved this request', 'Supervisor') }]);
+      // Third round: with the decision that stands, so the queue can tell it from the one the batch sent.
+      expect(res.data!.failures).toEqual([
+        { editId: id, code: ALREADY_DECIDED_CODE, message: ARRIVED('approved this request', 'Supervisor'), decided: 'APPROVED' },
+      ]);
     });
 
     it('Manager Two of the same region, on a page from before: told Manager One approved it — a lost race, recorded', async () => {
@@ -390,6 +393,14 @@ describe.skipIf(!ENABLED)('finding 21: a decision already made is answered as on
       const no = await rejectWith(SUP, id, page);
       expect(no.ok, JSON.stringify(no)).toBe(true);
       expect(await rejectWith(SUP, id, page)).toMatchObject({ code: ALREADY_DECIDED_CODE, message: ARRIVED('refused this request', 'Supervisor') });
+      // Third round: a bulk APPROVE of the request he had refused says the refusal
+      // stands (decided REJECTED), so the queue does not show it as done.
+      as(...SUP);
+      const bulk = (await edits.bulkApproveEditsAction(form({ decisions: JSON.stringify([{ editId: id, decisionToken: page }]) }))) as Result;
+      expect(bulk.ok, JSON.stringify(bulk)).toBe(true);
+      expect(bulk.data!.failures).toEqual([
+        { editId: id, code: ALREADY_DECIDED_CODE, message: ARRIVED('refused this request', 'Supervisor'), decided: 'REJECTED' },
+      ]);
       expect(await rejectWith(MX, id, page)).toMatchObject({
         message: 'This request is no longer waiting for a decision: it has already been turned down or closed. Reload to see where it is now.',
       });

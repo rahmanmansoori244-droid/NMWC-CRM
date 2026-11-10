@@ -148,9 +148,45 @@ describe('finding 21, second round: a decision that had already arrived is not c
   it('splitBulkFailures keeps the order and leaves every other code a failure', async () => {
     const { splitBulkFailures } = await import('@/lib/bulk-run');
     const f = (editId: string, code: string) => ({ editId, code, message: code });
-    const { arrived, failed } = splitBulkFailures([f('a', 'ALREADY_DECIDED'), f('b', 'NOT_PENDING'), f('c', 'ALREADY_DECIDED'), f('d', 'UNKNOWN')]);
+    const ok = (editId: string) => ({ editId, code: 'ALREADY_DECIDED', message: '', decided: 'APPROVED' });
+    const { arrived, otherwise, failed } = splitBulkFailures(
+      [ok('a'), f('b', 'NOT_PENDING'), ok('c'), f('d', 'UNKNOWN')],
+      'APPROVED'
+    );
     expect(arrived.map((x) => x.editId)).toEqual(['a', 'c']);
+    expect(otherwise).toEqual([]);
     expect(failed.map((x) => x.editId)).toEqual(['b', 'd']);
+  });
+
+  it('third round: an already-decided request counts as done only when the decision that stands is what the batch asked for', async () => {
+    const { splitBulkFailures } = await import('@/lib/bulk-run');
+    const d = (editId: string, decided?: string) => ({
+      editId,
+      code: 'ALREADY_DECIDED',
+      message: '',
+      ...(decided ? { decided } : {}),
+    });
+    const list = [d('approved', 'APPROVED'), d('sentBack', 'REJECTED'), d('form', 'FORM_UPLOADED'), d('unknown')];
+    const forApprove = splitBulkFailures(list, 'APPROVED');
+    expect(forApprove.arrived.map((x) => x.editId)).toEqual(['approved']);
+    // Not known is not proof: kept apart, so the banner is not green.
+    expect(forApprove.otherwise.map((x) => x.editId)).toEqual(['sentBack', 'form', 'unknown']);
+    expect(forApprove.failed).toEqual([]);
+    const forReject = splitBulkFailures(list, 'REJECTED');
+    expect(forReject.arrived.map((x) => x.editId)).toEqual(['sentBack']);
+    expect(forReject.otherwise.map((x) => x.editId)).toEqual(['approved', 'form', 'unknown']);
+  });
+
+  it('third round: runBulk hands on the decision that stands', async () => {
+    const out = await runBulk(['a', 'b'], async (id) =>
+      id === 'a'
+        ? { ok: false, code: 'ALREADY_DECIDED', message: 'm', decided: 'REJECTED' }
+        : { ok: false, code: 'STALE_VIEW', message: 's' }
+    );
+    expect(out.failures).toEqual([
+      { editId: 'a', code: 'ALREADY_DECIDED', message: 'm', decided: 'REJECTED' },
+      { editId: 'b', code: 'STALE_VIEW', message: 's' },
+    ]);
   });
 
   it('bulkHeadline: each count in plain words, only when there is one', async () => {
@@ -160,6 +196,9 @@ describe('finding 21, second round: a decision that had already arrived is not c
     expect(bulkHeadline({ processed: 0, arrived: 3, failed: 0, notAttempted: 0 })).toBe('0 processed, 3 already decided by you.');
     expect(bulkHeadline({ processed: 1, arrived: 2, failed: 1, notAttempted: 4 })).toBe(
       '1 processed, 2 already decided by you, 1 failed, 4 not attempted — run it again to finish.'
+    );
+    expect(bulkHeadline({ processed: 0, arrived: 1, otherwise: 2, failed: 0, notAttempted: 0 })).toBe(
+      '0 processed, 1 already decided by you, 2 already decided otherwise by you.'
     );
     // The launch suite's patterns still read a batch with nothing already decided.
     expect(bulkHeadline({ processed: 1, arrived: 0, failed: 0, notAttempted: 1 })).toMatch(

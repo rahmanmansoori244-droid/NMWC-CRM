@@ -27,7 +27,7 @@ import {
   notPendingMessage,
   yourDecisionArrivedMessage,
 } from '@/lib/already-decided';
-import { ConflictError } from '@/lib/errors';
+import { AlreadyDecidedError, ConflictError, runAction } from '@/lib/errors';
 import { freezeChain, reactivationChain, resolveChain } from '@/lib/approval-chains';
 
 const CHAIN = freezeChain(resolveChain('CREATE', 'CASH'));
@@ -161,6 +161,26 @@ describe('alreadyDecidedRefusal', () => {
   it('the role recorded when he decided wins over his role now', async () => {
     const { db } = dbWith(decision({ actorRole: 'SUPERVISOR', actor: { fullName: 'Sup One', role: 'MANAGER' } }));
     expect((await alreadyDecidedRefusal(db, base()))!.message).toContain('Sup One (Supervisor) approved');
+  });
+});
+
+describe('third round: "Your decision already arrived" carries the decision that stands', () => {
+  it.each(['APPROVED', 'REJECTED', 'FORM_UPLOADED'])('%s: on the error, and on the action result as `decided`', async (d) => {
+    const { db } = dbWith(decision({ actorId: 'm1', decision: d }));
+    const err = await alreadyDecidedRefusal(db, base({ viewerId: 'm1' }));
+    expect(err).toBeInstanceOf(AlreadyDecidedError);
+    expect((err as AlreadyDecidedError).decided).toBe(d);
+    const res = await runAction(async () => {
+      throw err;
+    });
+    expect(res).toEqual({ ok: false, code: ALREADY_DECIDED_CODE, message: err!.message, decided: d });
+  });
+
+  it("a colleague's decision is not one: no `decided` on its result", async () => {
+    const { db } = dbWith(decision({ actorId: 'm1', decision: 'REJECTED' }));
+    const err = await alreadyDecidedRefusal(db, base({ viewerId: 'm2' }));
+    expect(err).not.toBeInstanceOf(AlreadyDecidedError);
+    expect(err!.code).toBe('NOT_PENDING');
   });
 });
 
