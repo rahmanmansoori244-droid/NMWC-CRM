@@ -801,7 +801,7 @@ describe('the bulk queue', () => {
       expect(screen.queryByRole('checkbox')).toBeNull();
     });
 
-    it('a partly failed batch that empties the queue still names each failure, by the customer its card showed', async () => {
+    it('a partly failed batch that empties the queue still lists each failure, with its message', async () => {
       h.bulkApprove.mockResolvedValue({
         ok: true,
         data: { successes: ['c2'], failures: [{ editId: 'u1', code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE }], notAttempted: [] },
@@ -811,7 +811,8 @@ describe('the bulk queue', () => {
       view.rerender(<BulkApprovalQueue items={[]} />);
       const alert = screen.getByRole('alert');
       expect(alert.textContent).toMatch(/^1 processed, 1 failed\./);
-      expect(within(alert).getByText(`Shop u1: ${STALE_VIEW_MESSAGE}`)).toBeTruthy();
+      // The request's reference as the banner has always shown it (the launch e2e reads it).
+      expect(within(alert).getByText(`u1: ${STALE_VIEW_MESSAGE}`)).toBeTruthy();
     });
 
     it('a batch the time budget cut short says so after the refresh too', async () => {

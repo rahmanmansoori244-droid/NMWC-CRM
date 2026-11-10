@@ -70,8 +70,7 @@ export type BulkOutcomeView =
   | {
       kind: 'answered';
       successes: number;
-      /** `label`: the card's customer as it was on screen, so a failure is named after its card has gone. */
-      failures: Array<{ editId: string; code: string; message: string; label: string }>;
+      failures: Array<{ editId: string; code: string; message: string }>;
       // REL-04: selected but never started, because the batch ran out of time.
       // Distinct from a failure: nothing was attempted, so running it again is safe.
       notAttempted: number;
@@ -170,8 +169,6 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
     onDone: () => void
   ) {
     const decisions = selectedDecisions();
-    // The customer each card showed, to name a failure after its card has gone.
-    const labelOf = new Map(items.map((i) => [i.id, cardLabel(i.id, i.customer?.legalName)]));
     setOutcome(null);
     start(async () => {
       const fd = new FormData();
@@ -189,10 +186,7 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
         setOutcome({
           kind: 'answered',
           successes: res.data.successes.length,
-          failures: res.data.failures.map((f) => ({
-            ...f,
-            label: labelOf.get(f.editId) ?? cardLabel(f.editId),
-          })),
+          failures: res.data.failures,
           notAttempted: res.data.notAttempted.length,
         });
         setSelected(new Set());
@@ -433,11 +427,6 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
   );
 }
 
-/** A card's name in the banner: its customer, or the end of its id when it showed none. */
-function cardLabel(editId: string, legalName?: string | null): string {
-  return legalName || `Request …${editId.slice(-8)}`;
-}
-
 /** What one bulk decision did: a status when all went through, an alert otherwise. */
 export function BulkOutcomeBanner({
   outcome,
@@ -486,7 +475,7 @@ export function BulkOutcomeBanner({
             <ul className="mt-2 list-disc pl-5 text-xs">
               {outcome.failures.slice(0, 5).map((f) => (
                 <li key={f.editId}>
-                  {f.label}: {f.message}
+                  {f.editId.slice(-8)}: {f.message}
                 </li>
               ))}
               {outcome.failures.length > 5 && <li>… and {outcome.failures.length - 5} more.</li>}
