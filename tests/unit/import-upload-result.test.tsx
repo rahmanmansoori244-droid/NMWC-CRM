@@ -64,6 +64,21 @@ describe('account master upload result', () => {
     expect(screen.getByRole('link', { name: 'Open the batch' }).getAttribute('href')).toBe('/import/b-some');
   });
 
+  // Code review 2026-11-10, finding 23.
+  it('stopped at the time limit: a warning with the server\'s account of what was done, and the link', async () => {
+    const stopped = 'This upload stopped at its time limit, so the request could not be cut off part-way. Done and saved: Users rows 2–4.';
+    h.account.mockResolvedValue({
+      ok: true,
+      data: { batchId: 'b-time', clean: 3, issues: 5, notProcessed: 5, stopped },
+    });
+    render(<UploadAccountForm />);
+    submit('Upload account master');
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toContain(`Upload stopped at its time limit — 3 clean · 5 issues. ${stopped}`);
+    expect(status.className).toContain('text-amber-700');
+    expect(screen.getByRole('link', { name: 'Open the batch' }).getAttribute('href')).toBe('/import/b-time');
+  });
+
   it('everything loaded: green, and the batch is still one click away', async () => {
     h.account.mockResolvedValue({ ok: true, data: { batchId: 'b-all', clean: 5, issues: 0 } });
     render(<UploadAccountForm />);

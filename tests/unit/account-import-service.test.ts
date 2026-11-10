@@ -2009,3 +2009,145 @@ describe('owner decision 8: the import and /users agree on routes, names and sup
     expect(routeOwner('rt-2')).toBe('mct-01');
   });
 });
+
+// ── Code review 2026-11-10, finding 23 ───────────────────────────────────────
+describe('finding 23: an account upload stops cleanly at its time budget and reports every row', () => {
+  const viewers = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      username: `viewer.${i + 1}`,
+      full_name: `V${i + 1}`,
+      role: 'VIEWER',
+      password: '123456789012',
+    }));
+  /** Each read of the clock moves it on `stepMs`: the budget runs out part-way. */
+  function clockSteps(stepMs: number) {
+    let t = Date.parse('2026-11-10T08:00:00Z');
+    return vi.spyOn(Date, 'now').mockImplementation(() => (t += stepMs));
+  }
+
+  it('no write starts after the budget; the rest are listed as not processed; the batch and its report are saved', async () => {
+    const { ACCOUNT_ROW_NOT_PROCESSED_TIME } = await import('@/lib/account-import');
+    // Start, then two reads per row (before it, and before its write): 7 s each.
+    // Row 1: 7 s, 14 s — written. Row 2: 21 s at its first read — not reached.
+    const spy = clockSteps(7_000);
+    try {
+      const { res, batch, messages } = await upload(usersSheet(...viewers(4)));
+      const data = okData(res) as { clean: number; issues: number; notProcessed?: number; stopped?: string };
+      expect(data).toMatchObject({ clean: 1, issues: 3, notProcessed: 3 });
+      expect(messages).toEqual([
+        `Users 3: ${ACCOUNT_ROW_NOT_PROCESSED_TIME}`,
+        `Users 4: ${ACCOUNT_ROW_NOT_PROCESSED_TIME}`,
+        `Users 5: ${ACCOUNT_ROW_NOT_PROCESSED_TIME}`,
+      ]);
+      expect(data.stopped).toContain('Done and saved: Users row 2.');
+      expect(data.stopped).toContain('Passwords set in this upload (new accounts and resets): Users row 2.');
+      expect(data.stopped).toContain('3 row(s) were not processed; each is listed on the batch page.');
+      expect(batch).toMatchObject({ status: 'PROMOTED', cleanRows: 1, quarantinedRows: 3 });
+      expect(find('viewer.1')).toBeTruthy();
+      expect(find('viewer.2')).toBeUndefined();
+      const summary = h.store.audits.find((a) => a.entityType === 'ImportBatch' && a.action === 'IMPORT');
+      expect(summary?.after).toMatchObject({ timeLimit: true, notProcessed: 3, done: 'Users row 2', passwordsSet: 'Users row 2' });
+      // Row numbers only in the ledger: no username.
+      expect(JSON.stringify(summary?.after)).not.toMatch(/viewer/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('a row whose password hashing ran past the budget writes nothing: the check before the write holds it', async () => {
+    // Row 1's first read at 19 s is inside the budget; its second, after hashing, at 38 s is not.
+    const spy = clockSteps(19_000);
+    try {
+      const { res, messages } = await upload(usersSheet(...viewers(1)));
+      expect(okData(res)).toMatchObject({ clean: 0, issues: 1, notProcessed: 1 });
+      expect(messages).toEqual([expect.stringMatching(/^Users 2: not processed: this upload reached its time limit/)]);
+      expect(find('viewer.1')).toBeUndefined();
+      expect(rowAudits()).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('uploading the same file again does the rest; the account made the first time keeps its password', async () => {
+    let spy = clockSteps(7_000);
+    try {
+      await upload(usersSheet(...viewers(3)));
+    } finally {
+      spy.mockRestore();
+    }
+    const first = find('viewer.1')!.passwordHash;
+    spy = clockSteps(1);
+    try {
+      const { res, messages } = await upload(usersSheet(...viewers(3)));
+      const data = okData(res) as { clean: number; issues: number; stopped?: string };
+      expect(data).toMatchObject({ clean: 3, issues: 0 });
+      expect(data.stopped).toBeUndefined();
+      expect(messages).toEqual([]);
+      expect(find('viewer.1')!.passwordHash).toBe(first);
+      expect(find('viewer.3')).toBeTruthy();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('a reset done before the stop is named, and a re-upload holds that row back as a reused password, as the message says', async () => {
+    addUser({ id: 's1', username: 'mct-01', role: 'SALESMAN', ownedRouteId: 'rt-1', passwordHash: 'hashed:Current-pass-1' });
+    const reset = {
+      username: 'mct-01',
+      full_name: 'Name mct-01',
+      role: 'SALESMAN',
+      route_code: 'MCT-01',
+      password: 'Temp1234',
+      reset_password: 'yes',
+      must_change_password: 'yes',
+    };
+    let spy = clockSteps(7_000);
+    let stopped = '';
+    try {
+      const { res } = await upload(usersSheet(reset, ...viewers(2)));
+      stopped = (okData(res) as { stopped?: string }).stopped ?? '';
+    } finally {
+      spy.mockRestore();
+    }
+    expect(stopped).toContain('Passwords set in this upload (new accounts and resets): Users row 2.');
+    expect(stopped).toContain('held back as a reused password — its reset already happened in this upload');
+    expect(find('mct-01')!.passwordHash).toBe('hashed:Temp1234');
+    spy = clockSteps(1);
+    try {
+      const { messages } = await upload(usersSheet(reset, ...viewers(2)));
+      expect(messages).toEqual([expect.stringMatching(/^Users 2: the new password for "mct-01" is its current password/)]);
+      expect(find('viewer.2')).toBeTruthy();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe('finding 23: the row lists the Steward reads', () => {
+  it('runs of rows, sheet by sheet, in the order the import reads them', async () => {
+    const { accountRowList } = await import('@/lib/account-import');
+    expect(
+      accountRowList([
+        { sheet: 'Users', row: 7 },
+        { sheet: 'Users', row: 2 },
+        { sheet: 'Regions', row: 2 },
+        { sheet: 'Users', row: 3 },
+        { sheet: 'Users', row: 4 },
+        { sheet: 'Routes', row: 5 },
+      ])
+    ).toBe('Regions row 2; Routes row 5; Users rows 2–4, 7');
+    expect(accountRowList([])).toBe('');
+  });
+
+  it('the budget leaves room for one row and the report inside the 60-second limit', async () => {
+    const { ACCOUNT_IMPORT_TIME_BUDGET_MS } = await import('@/lib/account-import');
+    const { readFileSync } = await import('node:fs');
+    const vercel = JSON.parse(readFileSync('vercel.json', 'utf8')) as { functions: Record<string, { maxDuration: number }> };
+    const max = Math.min(...Object.values(vercel.functions).map((f) => f.maxDuration)) * 1000;
+    // One row's write: up to 10 s waiting for a connection and 20 s running (the
+    // transaction options below), then the report.
+    expect(ACCOUNT_IMPORT_TIME_BUDGET_MS + 10_000 + 20_000).toBeLessThanOrEqual(max - 5_000);
+    const src = readFileSync('services/imports.ts', 'utf8');
+    expect(src).toContain('{ timeout: 20_000, maxWait: 10_000 }');
+  });
+});

@@ -176,6 +176,20 @@ export default async function ImportBatchPage({
   // while the batch is ready to promote and nobody is promoting it, as the
   // server rules (services/import-fixes.ts setOverwriteCore).
   const canSetOverwrite = (batch.status === 'READY' || batch.status === 'FAILED') && !leaseHeld;
+  // Code review 2026-11-10, finding 23: an account upload that stopped at its
+  // time limit says so here too, from its IMPORT summary row: the rows done and
+  // the passwords set (row numbers only); the rows not processed are listed below.
+  const accountSummary =
+    batch.kind === 'ACCOUNT'
+      ? ((
+          await prisma.auditLog.findFirst({
+            where: { entityType: 'ImportBatch', entityId: batchId, action: 'IMPORT' },
+            orderBy: { at: 'desc' },
+            select: { after: true },
+          })
+        )?.after as { timeLimit?: boolean; done?: string; passwordsSet?: string; notProcessed?: number } | null)
+      : null;
+  const timeLimited = accountSummary?.timeLimit === true ? accountSummary : null;
 
   return (
     <main>
@@ -209,6 +223,20 @@ export default async function ImportBatchPage({
               <span className="font-semibold">Finish promote</span> to complete it.
             </>
           )}
+        </div>
+      )}
+      {timeLimited && (
+        <div
+          role="status"
+          data-testid="account-time-limit"
+          className="mx-4 mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-inset ring-amber-200 sm:mx-6"
+        >
+          <strong className="font-semibold">This upload stopped at its time limit.</strong> Done and saved:{' '}
+          {timeLimited.done || 'no row'}. Passwords set in this upload (new accounts and resets):{' '}
+          {timeLimited.passwordsSet || 'none'}. {timeLimited.notProcessed ?? 0} row(s) were not processed; each is
+          listed below. Upload the same file again to do them: a row already done changes nothing the second time,
+          except that a row with reset_password set to yes that was done here is held back as a reused password — its
+          reset already happened in this upload.
         </div>
       )}
       {batch.kind === 'CUSTOMER' && batch.overwriteCrmFields && (

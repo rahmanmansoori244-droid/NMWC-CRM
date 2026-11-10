@@ -323,4 +323,38 @@ describe.skipIf(!ENABLED)('account master: region_codes that do not resolve', ()
     expect(res.clean).toBe(1);
     expect(await regionsOf(acct)).toEqual([realCode]);
   });
+
+  // Code review 2026-11-10, finding 23: an upload stops at its time budget with
+  // its report written — on Postgres, through the real service. The clock is made
+  // to jump 4 s on every read (other code reads it too, so how many rows fit is
+  // not fixed): what is pinned is that the report matches what was written.
+  it('finding 23: stops at the time budget, saves the batch, lists the rows not processed and records the rows done', async () => {
+    const names = [1, 2, 3, 4, 5, 6].map((i) => `zz.time.${i}.${stewardId.slice(-8).toLowerCase()}`);
+    made.push(...names);
+    let t = Date.now();
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => (t += 4_000));
+    let res: Awaited<ReturnType<typeof upload>> & { notProcessed?: number };
+    try {
+      res = await upload(names.map((u) => ({ username: u, full_name: 'ZZ Time', role: 'VIEWER', password: '123456789012' })));
+    } finally {
+      spy.mockRestore();
+    }
+    const notProcessed = res.notProcessed ?? 0;
+    expect(notProcessed).toBeGreaterThan(0);
+    expect(res.clean + notProcessed).toBe(names.length);
+    expect(res.messages).toEqual(
+      Array.from({ length: notProcessed }, () => expect.stringMatching(/^not processed: this upload reached its time limit/))
+    );
+    // Exactly the rows reported done exist, in sheet order (rows 2 on).
+    const created = await prisma.user.findMany({ where: { username: { in: names } }, select: { username: true } });
+    expect(created.map((u) => u.username).sort()).toEqual(names.slice(0, res.clean).sort());
+    const batch = await prisma.importBatch.findUniqueOrThrow({ where: { id: res.batchId } });
+    expect(batch).toMatchObject({ status: 'PROMOTED', cleanRows: res.clean, quarantinedRows: notProcessed });
+    const summary = await prisma.auditLog.findFirst({ where: { entityType: 'ImportBatch', entityId: res.batchId, action: 'IMPORT' } });
+    expect(summary?.after).toMatchObject({ timeLimit: true, notProcessed });
+    if (res.clean > 0) {
+      const rows = res.clean === 1 ? 'Users row 2' : `Users rows 2–${res.clean + 1}`;
+      expect(summary?.after).toMatchObject({ done: rows, passwordsSet: rows });
+    }
+  });
 });

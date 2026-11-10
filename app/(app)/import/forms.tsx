@@ -31,11 +31,17 @@ const TONE_CLASS: Record<Tone, string> = {
 function uploadOutcome(data: UploadOk): { tone: Tone; message: string } {
   const summary = Object.entries(data)
     // Counts only: the batch is linked, and the unread headings have a line of their own.
-    .filter(([k, v]) => k !== 'batchId' && !Array.isArray(v))
+    .filter(([k, v]) => typeof v === 'number' && k !== 'notProcessed')
     .map(([k, v]) => `${v} ${k}`)
     .join(' · ');
   const clean = Number(data.clean ?? 0);
   const held = Number(data.issues ?? data.quarantined ?? 0);
+  // Code review 2026-11-10, finding 23: the account upload stopped at its time
+  // limit. The server's words say which rows were done, which passwords were set
+  // and how to do the rest; the batch lists every row not processed.
+  if (typeof data.stopped === 'string') {
+    return { tone: 'warn', message: `Upload stopped at its time limit — ${summary}. ${data.stopped}` };
+  }
   if (clean === 0) {
     return {
       tone: 'fail',

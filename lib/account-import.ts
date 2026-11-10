@@ -298,6 +298,66 @@ export function reportableError(err: unknown): Error {
   return out;
 }
 
+/**
+ * Code review 2026-11-10, finding 23: how long one account upload may work
+ * before it stops taking new rows. Each new account or password reset costs a
+ * second or more of password hashing, one after another, inside a request the
+ * platform stops at 60 seconds (vercel.json maxDuration) — killed there, the
+ * rows already done were live but nothing reported them. The import checks this
+ * before each row and again just before a row's write: no write starts after
+ * it. The worst case is this, plus one row's write (its transaction may wait
+ * 10 s for a connection and run 20 s), plus the report — about 55 s, inside the
+ * limit, so every password set is in the report.
+ */
+export const ACCOUNT_IMPORT_TIME_BUDGET_MS = 20_000;
+
+/** Finding 23: the issue for a row the upload did not reach before its time budget ran out. */
+export const ACCOUNT_ROW_NOT_PROCESSED_TIME =
+  'not processed: this upload reached its time limit before this row. Nothing was written for this row. Upload the file again to do it.';
+
+/** A sheet's row in the Steward's words: "Users 7". */
+export type AccountSheetRow = { sheet: string; row: number };
+
+/** "Regions rows 2–4; Users rows 2, 5–7", in sheet order Regions, Routes, Users. */
+export function accountRowList(rows: AccountSheetRow[]): string {
+  const order = ['Regions', 'Routes', 'Users'];
+  const bySheet = new Map<string, number[]>();
+  for (const r of rows) bySheet.set(r.sheet, [...(bySheet.get(r.sheet) ?? []), r.row]);
+  const parts: string[] = [];
+  for (const sheet of [...bySheet.keys()].sort((a, b) => order.indexOf(a) - order.indexOf(b))) {
+    const nums = [...new Set(bySheet.get(sheet)!)].sort((a, b) => a - b);
+    const runs: string[] = [];
+    for (let i = 0; i < nums.length; i++) {
+      let j = i;
+      while (j + 1 < nums.length && nums[j + 1] === nums[j]! + 1) j++;
+      runs.push(j > i ? `${nums[i]}–${nums[j]}` : `${nums[i]}`);
+      i = j;
+    }
+    parts.push(`${sheet} row${nums.length === 1 ? '' : 's'} ${runs.join(', ')}`);
+  }
+  return parts.join('; ');
+}
+
+/**
+ * Finding 23: what the Steward is told when an upload stopped at its time
+ * budget. The batch and every row's outcome WERE saved: the rows done, the rows
+ * held back and why, and every row not processed, each listed on the batch page.
+ * `passwordsSet`: the rows that gave an account a password in this upload (a new
+ * account, or reset_password = yes), so the Steward knows whom to hand one.
+ */
+export function accountImportTimeLimitMessage(p: {
+  done: AccountSheetRow[];
+  passwordsSet: AccountSheetRow[];
+  notProcessed: number;
+}): string {
+  const done = p.done.length > 0 ? `Done and saved: ${accountRowList(p.done)}.` : 'No row was done.';
+  const pw =
+    p.passwordsSet.length > 0
+      ? ` Passwords set in this upload (new accounts and resets): ${accountRowList(p.passwordsSet)}.`
+      : ' No password was set in this upload.';
+  return `This upload stopped at its time limit, so the request could not be cut off part-way. ${done}${pw} ${p.notProcessed} row(s) were not processed; each is listed on the batch page. Upload the same file again to do them: a row already done changes nothing the second time, except that a row with reset_password set to yes that was done here is held back as a reused password — its reset already happened in this upload. Or upload a file of only the rows not processed.`;
+}
+
 /** X-IMPORTS-3: the issue for a row the import never reached because it stopped. */
 export const ACCOUNT_ROW_NOT_PROCESSED =
   'not processed: the import stopped because the database stopped answering. Nothing was written for this row. Import it again.';

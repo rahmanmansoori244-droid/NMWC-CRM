@@ -41,6 +41,8 @@ const h = vi.hoisted(() => ({
   batch: {} as Record<string, unknown>,
   /** The props the page hands the Promote button, when it renders one. */
   promote: null as Record<string, unknown> | null,
+  /** Finding 23: the account upload's IMPORT summary row (its after), or none. */
+  importSummary: null as Record<string, unknown> | null,
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: h.user }) }));
@@ -85,6 +87,7 @@ vi.mock('@/lib/db', () => {
     prisma: {
       // lib/import-master-lookup newerUploadsCarrying: the rows of newer uploads carrying these customers.
       $queryRaw: async () => h.newer,
+      auditLog: { findFirst: async () => (h.importSummary ? { after: h.importSummary } : null) },
       customer: {
         findMany: async ({ where }: { where: { nmwcCode: { in: string[] } } }) =>
           h.linked.filter((c) => where.nmwcCode.in.includes(c)).map((nmwcCode) => ({ nmwcCode })),
@@ -143,6 +146,7 @@ beforeEach(() => {
   h.linked = [];
   h.kind = 'CUSTOMER';
   h.batch = {};
+  h.importSummary = null;
   h.promote = null;
   h.findMany.mockReset();
   h.findMany.mockImplementation(async ({ where, skip, take }: { where: Record<string, unknown>; skip: number; take: number }) => {
@@ -164,6 +168,24 @@ const open = async (search: Record<string, string> = {}) =>
 // row Excel shows (services/imports.ts), and with three sheets the number alone
 // is ambiguous, so the Row column names the sheet.
 describe('/import/[batchId] for an account master', () => {
+  // Code review 2026-11-10, finding 23.
+  it('an upload stopped at its time limit says what was done and which passwords were set', async () => {
+    h.kind = 'ACCOUNT';
+    h.importSummary = { kind: 'ACCOUNT', timeLimit: true, notProcessed: 2, done: 'Users rows 2–3', passwordsSet: 'Users row 3' };
+    const issue = { sheet: 'Users', row: 4, message: 'not processed: this upload reached its time limit before this row.' };
+    h.rows = [{ id: 'a9', rowNumber: 4, state: 'QUARANTINED', raw: issue, parsed: null, issues: [issue] }];
+    await open();
+    const note = screen.getByTestId('account-time-limit');
+    expect(note.textContent).toContain('This upload stopped at its time limit. Done and saved: Users rows 2–3. Passwords set in this upload (new accounts and resets): Users row 3. 2 row(s) were not processed');
+  });
+
+  it('an upload that finished shows no such note', async () => {
+    h.kind = 'ACCOUNT';
+    h.importSummary = { kind: 'ACCOUNT', clean: 3, issues: 0 };
+    await open();
+    expect(screen.queryByTestId('account-time-limit')).toBeNull();
+  });
+
   it('the Row column reads the sheet and the Excel row', async () => {
     h.kind = 'ACCOUNT';
     const issue = { sheet: 'Users', row: 7, message: 'salesman needs route_code' };

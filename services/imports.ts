@@ -47,8 +47,13 @@ import {
 } from '@/lib/import-lineage';
 import {
   ACCOUNT_IMPORT_STOP_AFTER_DB_FAILURES,
+  ACCOUNT_IMPORT_TIME_BUDGET_MS,
   ACCOUNT_ROW_NOT_PROCESSED,
+  ACCOUNT_ROW_NOT_PROCESSED_TIME,
   accountCreateAudit,
+  accountImportTimeLimitMessage,
+  accountRowList,
+  type AccountSheetRow,
   accountImportInterruptedMessage,
   accountRowFailure,
   accountUpdateAudit,
@@ -211,13 +216,24 @@ async function reportAccountImportFault(err: unknown, event: string): Promise<vo
 
 export async function uploadAccountMasterAction(
   formData: FormData
-): SafeAction<{ batchId: string; clean: number; issues: number }> {
+): SafeAction<AccountUploadResult> {
   return runAction(() => uploadAccountMasterCore(formData));
 }
 
-async function uploadAccountMasterCore(
-  formData: FormData
-): Promise<{ batchId: string; clean: number; issues: number }> {
+/**
+ * Code review 2026-11-10, finding 23: `notProcessed` and `stopped` only when the
+ * upload stopped at its time budget — how many rows it did not reach, and what
+ * the Steward is told (the rows done, the passwords set, how to do the rest).
+ */
+export type AccountUploadResult = {
+  batchId: string;
+  clean: number;
+  issues: number;
+  notProcessed?: number;
+  stopped?: string;
+};
+
+async function uploadAccountMasterCore(formData: FormData): Promise<AccountUploadResult> {
   const me = await requireSteward();
   // One envelope for the whole upload: read the request headers once, up front,
   // before the row loop and before anything opens a transaction.
@@ -288,7 +304,8 @@ async function uploadAccountMasterCore(
     if (rowAnswered) dbFailuresInARow = 0;
     rowAnswered = false;
   };
-  const applied = () => {
+  const applied = (sheet: string, row: number) => {
+    done.push({ sheet, row });
     cleanCount++;
     dbFailuresInARow = 0;
     rowAnswered = false;
@@ -316,6 +333,22 @@ async function uploadAccountMasterCore(
     if (!f.transient) await reportAccountImportFault(err, 'import.account.row_failed');
   };
 
+  // Code review 2026-11-10, finding 23: the upload's time budget
+  // (lib/account-import.ts ACCOUNT_IMPORT_TIME_BUDGET_MS). Asked before each row
+  // and again just before a row's write, so no write starts after it and the
+  // report below is always written: every row done, every password set and every
+  // row not reached is in it.
+  const startedAt = Date.now();
+  let timedOut = false;
+  const outOfTime = () => {
+    if (!timedOut && Date.now() - startedAt > ACCOUNT_IMPORT_TIME_BUDGET_MS) timedOut = true;
+    return timedOut;
+  };
+  const notReached = (sheet: string, row: number) =>
+    issues.push({ sheet, row, message: ACCOUNT_ROW_NOT_PROCESSED_TIME });
+  const done: AccountSheetRow[] = [];
+  const passwordsSet: AccountSheetRow[] = [];
+
   // 1) Regions
   if (regionsSheet) {
     for (const [i, row] of regionsSheet.rows.entries()) {
@@ -323,6 +356,10 @@ async function uploadAccountMasterCore(
       const sheetRow = regionsSheet.rowNumbers[i];
       if (stopped) {
         issues.push({ sheet: 'Regions', row: sheetRow, message: ACCOUNT_ROW_NOT_PROCESSED });
+        continue;
+      }
+      if (outOfTime()) {
+        notReached('Regions', sheetRow);
         continue;
       }
       const code = uc(row.code ?? row.Code);
@@ -359,7 +396,7 @@ async function uploadAccountMasterCore(
             });
           }
         });
-        applied();
+        applied('Regions', sheetRow);
       } catch (err) {
         await failed('Regions', sheetRow, err, `region "${code}"`);
       }
@@ -373,6 +410,10 @@ async function uploadAccountMasterCore(
       const sheetRow = routesSheet.rowNumbers[i];
       if (stopped) {
         issues.push({ sheet: 'Routes', row: sheetRow, message: ACCOUNT_ROW_NOT_PROCESSED });
+        continue;
+      }
+      if (outOfTime()) {
+        notReached('Routes', sheetRow);
         continue;
       }
       const code = uc(row.code ?? row.Code);
@@ -391,6 +432,11 @@ async function uploadAccountMasterCore(
         answered();
         if (!region) {
           issues.push({ sheet: 'Routes', row: sheetRow, message: `region "${regionCode}" not found` });
+          continue;
+        }
+        // Finding 23: no write starts after the time budget.
+        if (outOfTime()) {
+          notReached('Routes', sheetRow);
           continue;
         }
         // X-AUTH-3 / X-IMPORTS-1: as for regions.
@@ -442,7 +488,7 @@ async function uploadAccountMasterCore(
           issues.push({ sheet: 'Routes', row: sheetRow, message: regionHeld });
           continue;
         }
-        applied();
+        applied('Routes', sheetRow);
       } catch (err) {
         await failed('Routes', sheetRow, err, `route "${code}"`);
       }
@@ -465,6 +511,10 @@ async function uploadAccountMasterCore(
       nextRow();
       if (stopped) {
         issues.push({ sheet: 'Users', row: sheetRow, message: ACCOUNT_ROW_NOT_PROCESSED });
+        continue;
+      }
+      if (outOfTime()) {
+        notReached('Users', sheetRow);
         continue;
       }
       const username = lc(row.username);
@@ -1079,6 +1129,13 @@ async function uploadAccountMasterCore(
         // Each of those rows names the batch, as the account_import rows do: a
         // reset or a role change that alters nothing else writes no account_import
         // row, and the batch's IMPORT summary holds counts only.
+        //
+        // Finding 23: no write starts after the time budget — asked here, after
+        // the password hashing, so a row whose hashing ran past it writes nothing.
+        if (outOfTime()) {
+          notReached('Users', sheetRow);
+          continue;
+        }
         await withChangeContext(
           prisma,
           { actorId: me.id, source: src.importAccount(batch.id, 'Users', sheetRow) },
@@ -1173,7 +1230,8 @@ async function uploadAccountMasterCore(
           },
           { timeout: 20_000, maxWait: 10_000 }
         );
-        applied();
+        applied('Users', sheetRow);
+        if (!existing || wantsReset) passwordsSet.push({ sheet: 'Users', row: sheetRow });
       } catch (err) {
         await failed('Users', sheetRow, err, `"${username}"`);
       }
@@ -1263,6 +1321,15 @@ async function uploadAccountMasterCore(
         clean: cleanCount,
         issues: issues.length,
         ...(stopped ? { stopped: true } : {}),
+        // Finding 23: rows by sheet and number only — never a username.
+        ...(timedOut
+          ? {
+              timeLimit: true,
+              notProcessed: issues.filter((i) => i.message === ACCOUNT_ROW_NOT_PROCESSED_TIME).length,
+              done: accountRowList(done),
+            }
+          : {}),
+        ...(passwordsSet.length > 0 ? { passwordsSet: accountRowList(passwordsSet) } : {}),
       } as unknown as Prisma.InputJsonValue,
       reason: 'account_master_upload',
     }).catch((e) => {
@@ -1271,7 +1338,7 @@ async function uploadAccountMasterCore(
   }
 
   logger.info(
-    { batchId: batch.id, clean: cleanCount, issues: issues.length, stopped, recorded },
+    { batchId: batch.id, clean: cleanCount, issues: issues.length, stopped, timedOut, recorded },
     'import.account.complete'
   );
   revalidatePath('/import');
@@ -1280,6 +1347,12 @@ async function uploadAccountMasterCore(
   // Before the throw below: rows applied before an interruption are live too.
   for (const tag of ['ref:regions', 'ref:routes', 'ref:users']) revalidateTag(tag);
   if (stopped || !recorded) {
+    // Finding 23: the passwords set before the stop are named here too, so none
+    // is set without the Steward being told — even when the report could not be saved.
+    const pw =
+      passwordsSet.length > 0
+        ? ` Passwords set in this upload (new accounts and resets): ${accountRowList(passwordsSet)}.`
+        : '';
     throw new AppError(
       'IMPORT_INTERRUPTED',
       accountImportInterruptedMessage({
@@ -1288,9 +1361,19 @@ async function uploadAccountMasterCore(
         notApplied: issues.length - uncertain,
         recorded,
         reportFault,
-      }),
+      }) + pw,
       503
     );
+  }
+  if (timedOut) {
+    const notProcessed = issues.filter((i) => i.message === ACCOUNT_ROW_NOT_PROCESSED_TIME).length;
+    return {
+      batchId: batch.id,
+      clean: cleanCount,
+      issues: issues.length,
+      notProcessed,
+      stopped: accountImportTimeLimitMessage({ done, passwordsSet, notProcessed }),
+    };
   }
   return { batchId: batch.id, clean: cleanCount, issues: issues.length };
 }
