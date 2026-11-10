@@ -115,8 +115,15 @@ export function rankedAccuracy(accuracy: number | null | undefined): number {
  *     TIMEOUT error, whose timer (`timeout` below) the standard starts only once
  *     permission is given — so a browser without the Permissions API still ends
  *     a silent listen after `listenMs`;
- *   - a TIMEOUT while the question is known to be still open is not believed,
- *     and the watch goes on;
+ *   - that TIMEOUT is believed even while the Permissions API still says
+ *     'prompt' (third round). Its timer runs only after permission is given,
+ *     so the TIMEOUT itself proves he answered "Allow". Some phones keep
+ *     saying 'prompt' after a one-time "Allow" and send no change event
+ *     (iPhone Safari on "Ask", Firefox "allow this time"); ignoring the
+ *     TIMEOUT there made a silent tap indoors wait GPS_START_WAIT_MS and end
+ *     as 'no-start', so "Try again outside" and the typed-coordinates panel
+ *     never came. It now ends as an ordinary 'timeout', `listenMs` after
+ *     "Allow", like on any other phone;
  *   - GPS_START_WAIT_MS from the tap is the safety limit: the listen then ends
  *     with 'no-start', so the button can never hang.
  *
@@ -215,8 +222,8 @@ export function listenForBestFix(
       if (best) return finish({ kind: 'fix', reading: best, early: false });
       // The spec's codes: 1 PERMISSION_DENIED, 2 POSITION_UNAVAILABLE, 3 TIMEOUT.
       if (err.code === 1) return finish({ kind: 'denied' });
-      // Timed out while his answer to the question is still awaited: not believed.
-      if (err.code === 3 && permission === 'prompt') return;
+      // A TIMEOUT is believed whatever the Permissions API says: by the
+      // standard its timer starts only once location is allowed (third round).
       if (err.code === 3) return finish({ kind: 'timeout' });
       finish({ kind: 'unavailable' });
     },

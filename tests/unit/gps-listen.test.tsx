@@ -245,17 +245,42 @@ describe('the window starts when readings can arrive, not at the tap', () => {
     expect(done).toHaveBeenCalledWith({ kind: 'fix', reading: { lat: 2, lng: 2, accuracy: 45 }, early: false });
   });
 
-  it('a browser TIMEOUT while the question is still open is not believed; after "Allow", it is', async () => {
+  it('third round: permission stays "prompt", no change event, browser TIMEOUT, no reading: an ordinary timeout', async () => {
+    // iPhone Safari on "Ask", Firefox "allow this time": "Allow" is tapped but the
+    // Permissions API keeps saying 'prompt' and sends no change event. The
+    // browser's TIMEOUT runs only after "Allow", so it proves he answered.
     const p = fakePermissions('prompt');
     const done = vi.fn();
     listenForBestFix(fakeGeo, done, undefined, { permissions: p.api });
-    await vi.advanceTimersByTimeAsync(0);
-    last().fail({ code: 3 } as GeolocationPositionError);
+    await vi.advanceTimersByTimeAsync(5_000); // he reads the question, taps Allow
+    await vi.advanceTimersByTimeAsync(GPS_LISTEN_MS); // the browser's timer, from "Allow"
     expect(done).not.toHaveBeenCalled();
-    expect(last().cleared).toBe(false);
-    p.set('granted');
     last().fail({ code: 3 } as GeolocationPositionError);
     expect(done).toHaveBeenCalledWith({ kind: 'timeout' });
+    expect(done).toHaveBeenCalledOnce();
+    expect(last().cleared).toBe(true);
+    expect(p.listeners.size, 'the permission listener is removed').toBe(0);
+    // Not the two-minute safety limit's 'no-start' later on.
+    await vi.advanceTimersByTimeAsync(GPS_START_WAIT_MS);
+    expect(done).toHaveBeenCalledOnce();
+  });
+
+  it('third round: a reading while the state still says "prompt" starts the window and is kept; a later TIMEOUT ends with it', async () => {
+    const p = fakePermissions('prompt');
+    const done = vi.fn();
+    listenForBestFix(fakeGeo, done, undefined, { permissions: p.api });
+    await vi.advanceTimersByTimeAsync(3_000);
+    last().ok({ coords: { latitude: 1, longitude: 1, accuracy: 70 } } as GeolocationPosition);
+    expect(done).not.toHaveBeenCalled();
+    last().fail({ code: 3 } as GeolocationPositionError);
+    expect(done).toHaveBeenCalledWith({ kind: 'fix', reading: { lat: 1, lng: 1, accuracy: 70 }, early: false });
+
+    // And a good one while still 'prompt' stops at once.
+    const early = vi.fn();
+    listenForBestFix(fakeGeo, early, undefined, { permissions: fakePermissions('prompt').api });
+    await vi.advanceTimersByTimeAsync(0);
+    last().ok({ coords: { latitude: 2, longitude: 2, accuracy: 9 } } as GeolocationPosition);
+    expect(early).toHaveBeenCalledWith({ kind: 'fix', reading: { lat: 2, lng: 2, accuracy: 9 }, early: true });
   });
 
   it('"Block" on the question: denied at once, as before', async () => {
@@ -599,6 +624,23 @@ describe('the GPS button', () => {
     expect(onCapture).toHaveBeenCalledOnce();
     expect(onCapture.mock.calls[0]![0]).toMatchObject({ lat: 23.6, lng: 58.4, accuracy: 40 });
     expect(watches).toHaveLength(1);
+  });
+
+  it('third round: a phone that keeps saying "prompt" after Allow — a silent tap indoors gets "Try again outside", then the typed-coordinates panel', async () => {
+    perms = fakePermissions('prompt');
+    Object.defineProperty(navigator, 'permissions', { configurable: true, value: perms.api });
+    render(<GpsCaptureButton onCapture={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Capture GPS' }));
+    await wait(GPS_LISTEN_MS);
+    await failWith(3);
+    expect(screen.getByRole('alert').textContent).toBe(GPS_TRY_OUTSIDE_MESSAGE);
+    expect(screen.queryByText(GPS_NO_START_MESSAGE)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again outside' }));
+    expect(watches).toHaveLength(2);
+    await wait(GPS_LISTEN_MS);
+    await failWith(3);
+    expect(screen.getByRole('alert').textContent).toBe('Location took too long. Tap below to enter coordinates manually.');
+    expect(screen.getByRole('button', { name: 'Save manual location' })).toBeTruthy();
   });
 
   it('second round: the question never answered — after the safety limit he is told to tap Allow, not to step outside', async () => {
