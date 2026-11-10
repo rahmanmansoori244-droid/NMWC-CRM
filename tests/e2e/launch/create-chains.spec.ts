@@ -143,7 +143,9 @@ const INVALID_PHONE = 'Enter a valid Oman number (8 digits, or +968 XXXXXXXX).';
 const CR_LOCKED = 'The CR document of a credit customer is changed by your manager or the Data Steward.';
 const CREDIT_DOCUMENT_LOCKED_MESSAGE =
   "A customer's credit documents and signed credit application are changed by your manager or the Data Steward.";
-const DECIDED_ELSEWHERE = /This request was just decided by another reviewer\. Refresh to see the current state\.|Edit is in state APPROVED\./;
+// Finding 21 (code review 2026-11-10): the same Accountant's other tab is told his decision already arrived.
+const DECIDED_ELSEWHERE =
+  /This request was just decided by another reviewer\. Refresh to see the current state\.|Your decision already arrived: you approved this request at the Accountant step\./;
 const ADDRESS = 'Way 3012, Al Ghubra North, Muscat — opposite the bakery';
 
 const codeRe = () => new RegExp(`^NMWC-${omanYearNow()}-\\d{6}$`);
@@ -1234,7 +1236,10 @@ test.describe('new CREDIT customer, through all six steps', { tag: ['@desktop'] 
     // FIN-16: FM2's page still shows the FM step. The request has moved to a step he cannot decide: refused, nothing written.
     const frozen = await snapshot(['CustomerEdit'], { id: K.id });
     await approveHere(fm2, 'Send on to GM?', 'Approve and send on');
-    await expect(fm2.getByText(new RegExp(`${escapeRe(NOT_AUTHORIZED)}|${escapeRe(STALE_VIEW)}`))).toBeVisible();
+    // Finding 21: FM2 could have decided that step himself, so he is told FM1 did.
+    await expect(
+      fm2.getByText(new RegExp(`Already decided by a colleague: .+ \\(Finance Manager\\) approved this request at the Finance Manager step\\.|${escapeRe(STALE_VIEW)}`))
+    ).toBeVisible();
     expect(await snapshot(['CustomerEdit'], { id: K.id })).toBe(frozen);
     expect(await db.editApproval.count({ where: { editId: K.id } })).toBe(steps + 1);
     await fm2.reload();

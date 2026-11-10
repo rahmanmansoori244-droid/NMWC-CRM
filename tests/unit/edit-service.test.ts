@@ -49,6 +49,8 @@ const tx = vi.hoisted(() => ({
   customer: {
     findUnique: vi.fn(),
     findUniqueOrThrow: vi.fn(),
+    // The rescore's read (lib/shop-rescore.ts, finding 27).
+    findMany: vi.fn(),
     updateMany: vi.fn(),
     update: vi.fn(),
   },
@@ -279,6 +281,8 @@ beforeEach(() => {
     submittedAt: null,
   }));
   tx.customer.findUniqueOrThrow.mockImplementation(async () => ({ ...(locked ?? live) }));
+  // The rescore reads the customer with its live branches; none here, so it plans no write.
+  tx.customer.findMany.mockResolvedValue([]);
   tx.customer.updateMany.mockResolvedValue({ count: 1 });
   tx.branch.findUniqueOrThrow.mockResolvedValue({ version: 5, status: 'ACTIVE' });
   tx.branch.updateMany.mockResolvedValue({ count: 1 });

@@ -831,6 +831,18 @@ describe('the approval queue', () => {
     expect(bound('u1')).toBeNull();
   });
 
+  it('launch browser suite 2026-11-10: an empty queue keeps the queue mounted, with "Nothing pending" beside it', async () => {
+    // A bulk approve that empties the queue refreshes into this page: the queue
+    // component keeps what the batch did only while it stays mounted.
+    const cards = await renderQueue([]);
+    expect(cards).toEqual([]);
+    expect(screen.getByText('Nothing pending')).toBeTruthy();
+    // The queue (and so the outcome it holds) comes before the empty state.
+    const queue = screen.getByTestId('queue');
+    const empty = screen.getByText('Nothing pending');
+    expect(queue.compareDocumentPosition(empty) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   describe('the header counts the queue, not the page', () => {
     // It printed the number of cards, so a queue of 600 read "200 pending".
     const rows = (n: number) =>

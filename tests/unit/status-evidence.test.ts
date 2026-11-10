@@ -74,6 +74,8 @@ const tx = vi.hoisted(() => ({
   customer: {
     findUnique: vi.fn(),
     findUniqueOrThrow: vi.fn(),
+    // The rescore's read (lib/shop-rescore.ts, finding 27).
+    findMany: vi.fn(),
     update: vi.fn(),
     updateMany: vi.fn(),
   },
@@ -233,6 +235,8 @@ beforeEach(() => {
   tx.branch.findUniqueOrThrow.mockResolvedValue({ version: 0, status: 'ACTIVE' });
   tx.branch.updateMany.mockResolvedValue({ count: 1 });
   tx.customer.findUniqueOrThrow.mockResolvedValue({ id: CUST, branches: [{ id: B1 }] });
+  // The rescore reads the customer with its live branches; none here, so it plans no write.
+  tx.customer.findMany.mockResolvedValue([]);
   tx.customer.updateMany.mockResolvedValue({ count: 0 });
   db.editApproval.findMany.mockResolvedValue([]);
   db.user.findUnique.mockResolvedValue({ role: 'SALESMAN' });

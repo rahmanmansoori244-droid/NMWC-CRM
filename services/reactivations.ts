@@ -10,6 +10,7 @@ import {
   AttachmentKind,
   CustomerStatus,
   type Attachment,
+  type CustomerEdit,
   type Prisma,
 } from '@prisma/client';
 import { requireActor } from '@/lib/session';
@@ -25,13 +26,14 @@ import {
 } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
-import { scoreCustomer, scoreBranch } from '@/lib/completeness';
+import { rescoreAfterChangeTx } from '@/lib/shop-rescore';
 import { lockCustomerRow, lockLiveCustomer } from '@/lib/locks';
 import { followBranchStatus, statusEvents } from '@/lib/customer-status';
 import { REACTIVATION_STATE_CHANGED_MESSAGE, assertStatusEvidence } from '@/lib/status-evidence';
 import { closeRequestChain, freezeChain, reactivationChain, stepDeadline } from '@/lib/approval-chains';
 import { STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN, stageSnapshot } from '@/lib/working-hours';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { REACTIVATION_DECISION_WORDS, alreadyDecidedRefusal, notPendingMessage } from '@/lib/already-decided';
 import {
   answerIfLanded,
   findReceipt,
@@ -95,6 +97,40 @@ function reactivationDecision(
 /** Gap 22 (part C): the losing side of two Managers deciding one reactivation at once. */
 function reactivationConflict(actorId: string, editId: string, path: string): ConflictMeta {
   return { actorId, entityType: 'CustomerEdit', entityId: editId, path };
+}
+
+/**
+ * Code review 2026-11-10, finding 21: a reactivation no longer pending, decided
+ * by this Manager (a reply lost, a second tap) or by a colleague. His own is
+ * said to him; a colleague's is named only to a Manager of the shop's region
+ * who did not send it — one who could have decided it himself. Anyone else is
+ * told where it stands in plain words (it read `Edit is in state APPROVED.`).
+ * Reads only; the request is refused either way.
+ */
+async function reactivationNotPending(
+  me: { id: string },
+  edit: Pick<CustomerEdit, 'id' | 'state' | 'approvalChain'> & {
+    branch: { regionId: string } | null;
+    submittedBy: { id: string } | null;
+  },
+  path: string
+): Promise<never> {
+  const answer = await alreadyDecidedRefusal(prisma, {
+    editId: edit.id,
+    viewerId: me.id,
+    visit: null,
+    approvalChain: edit.approvalChain,
+    words: REACTIVATION_DECISION_WORDS,
+    couldDecide: async () => {
+      if (!edit.branch || edit.submittedBy?.id === me.id) return false;
+      const { loadScope } = await import('@/lib/access');
+      return (await loadScope(me.id)).managedRegionIds.includes(edit.branch.regionId);
+    },
+    lost: { ...reactivationConflict(me.id, edit.id, path), liveVersion: edit.state },
+  });
+  if (answer) throw answer;
+  const message = notPendingMessage(edit.state);
+  throw new ValidationError({ editId: message }, message);
 }
 
 /**
@@ -565,7 +601,7 @@ async function approveReactivationCore(formData: FormData) {
   if (!edit) throw new NotFoundError('Edit not found.');
   if (!edit.isReactivation) throw new ValidationError({ editId: 'Not a reactivation.' });
   if (edit.state !== EditState.SUBMITTED) {
-    throw new ValidationError({ editId: `Edit is in state ${edit.state}.` });
+    await reactivationNotPending(me, edit, 'reactivation.approve');
   }
   if (!edit.branch || !edit.customer) throw new NotFoundError('Branch / customer missing.');
   // RBAC-05-008: a Manager can only approve reactivations in regions they
@@ -702,26 +738,22 @@ async function approveReactivationCore(formData: FormData) {
     // is ACTIVE — the same rule a closure follows (lib/customer-status.ts). It
     // used to wait until EVERY branch was active, so reopening one shop of a
     // closed customer with another still closed left the customer CLOSED.
-    await followBranchStatus(
+    const customerFollowed = await followBranchStatus(
       tx,
       env,
       edit.customerId!,
       statusEvents(CustomerStatus.CLOSED, CustomerStatus.ACTIVE),
       { actorId: me.id, via: `reactivation ${editId}` }
     );
-    // Recompute scores
-    const fresh = await tx.customer.findUniqueOrThrow({
-      where: { id: edit.customerId! },
-      include: { branches: { where: { deletedAt: null } } },
-    });
-    const cScore = scoreCustomer(fresh, fresh.branches);
-    await tx.customer.update({
-      where: { id: edit.customerId! },
-      data: { completenessScore: cScore },
-    });
-    for (const b of fresh.branches) {
-      const bScore = scoreBranch(b);
-      await tx.branch.update({ where: { id: b.id }, data: { completenessScore: bScore } });
+    // Recompute scores. Code review 2026-11-10, finding 27: only the scores that
+    // changed, with no sister shop's updatedAt moved (lib/shop-rescore.ts); it
+    // re-saved every live shop of the customer through Prisma.
+    await rescoreAfterChangeTx(tx, edit.customerId!);
+    // The rescore no longer moves the customer's updatedAt ("updated since"
+    // exports read it); the reopened shop is a change, so move it when the
+    // customer's status did not (lib/rescore.ts, as services/edits.ts does).
+    if (!customerFollowed) {
+      await tx.customer.update({ where: { id: edit.customerId! }, data: { updatedAt: new Date() } });
     }
     // (edit state already claimed to APPROVED at the top of this tx — QA-C12.)
     await writeAudit(tx, env, {
@@ -793,7 +825,7 @@ async function rejectReactivationCore(formData: FormData) {
   // still-pending reactivation.
   if (!edit.isReactivation) throw new ValidationError({ editId: 'Not a reactivation.' });
   if (edit.state !== EditState.SUBMITTED) {
-    throw new ValidationError({ editId: `Edit is in state ${edit.state}.` });
+    await reactivationNotPending(me, edit, 'reactivation.reject');
   }
   const { loadScope } = await import('@/lib/access');
   const actorScope = await loadScope(me.id);

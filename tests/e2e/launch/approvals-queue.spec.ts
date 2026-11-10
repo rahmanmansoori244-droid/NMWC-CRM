@@ -124,7 +124,10 @@ const closedShop = (key: string, route: string, hoursAgo = 2, photos = false): C
 // ── the app's words (read from the code under test) ──────────────────────────
 
 /** services/edits.ts: a decision on a request someone else has just decided. */
-const DECIDED = /Edit is in state (APPROVED|NEEDS_CORRECTION|REJECTED)\.|just decided by another reviewer/;
+// Code review 2026-11-10, finding 21: a colleague's decision is named to a Manager who could have
+// made it; his own is "already arrived"; anyone else reads where it stands in words (lib/already-decided.ts).
+const DECIDED =
+  /Already decided by a colleague: .+ at the .+ step\.|Your decision already arrived: |This request is no longer waiting for a decision: |just decided by another reviewer/;
 /** lib/decision-token.ts STALE_VIEW_MESSAGE. */
 const STALE_VIEW = 'This request changed since you opened it. Reload the page and review it again.';
 /** services/reactivations.ts: evidence older than the closure. */
@@ -568,7 +571,8 @@ test.describe('approvals: bulk approve and bulk reject', { tag: ['@desktop'] }, 
     await dialog.getByRole('button', { name: 'Approve 3', exact: true }).click();
     await expect(m1.getByText('2 processed, 1 failed.', { exact: true })).toBeVisible({ timeout: 90_000 });
     await expect(
-      m1.getByText(new RegExp(`^${upd.slice(-8)}: (Edit is in state APPROVED\\.|.*just decided by another reviewer.*)$`))
+      // Finding 21: M1 could have decided it himself, so he is told M2 did.
+      m1.getByText(new RegExp(`^${upd.slice(-8)}: (Already decided by a colleague: .+ \\(Manager\\) approved this request at the Supervisor step\\..*|.*just decided by another reviewer.*)$`))
     ).toBeVisible();
     // The selection clears and the queue refreshes: only the untouched request is left.
     await expect(m1.getByText('0 selected', { exact: true })).toBeVisible();
@@ -796,7 +800,9 @@ test.describe('approvals: two Managers on one request', { tag: ['@desktop'] }, (
     await backToQueue(m1, 'Approve (M1) → the queue');
 
     await approveHere(m3);
-    await expect(m3.getByText('Edit is in state APPROVED.')).toBeVisible();
+    // Finding 21 (code review 2026-11-10): told who decided it, not "Edit is in state APPROVED."
+    const colleague = /^Already decided by a colleague: .+ \(Manager\) approved this request at the Supervisor step\./;
+    await expect(m3.getByText(colleague)).toBeVisible();
     await expect(m3, 'no redirect').toHaveURL(new RegExp(`/approvals/${id}$`));
     await m3.getByRole('button', { name: /^✗ Reject$/ }).click();
     await m3.locator('textarea[name="reason"]').fill(w.name('Too late to reject'));
@@ -805,7 +811,7 @@ test.describe('approvals: two Managers on one request', { tag: ['@desktop'] }, (
       m3.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === `/approvals/${id}`),
       m3.getByRole('button', { name: '✗ Send back to salesman' }).click(),
     ]);
-    await expect(m3.getByText('Edit is in state APPROVED.')).toBeVisible();
+    await expect(m3.getByText(colleague)).toBeVisible();
     await expect(m3).toHaveURL(new RegExp(`/approvals/${id}$`));
 
     expect(await stateOf(id)).toMatchObject({ state: 'APPROVED', reviewedById: w.user('M1').id });
@@ -1305,7 +1311,8 @@ test.describe('approvals: a reactivation from the phone to the Manager’s decis
     const card3 = m3.getByRole('main').getByRole('listitem').filter({ hasText: cl2.legalName });
     await card3.getByRole('button', { name: '✓ Reactivate' }).click();
     await m3.getByRole('dialog', { name: 'Reactivate this shop?' }).getByRole('button', { name: 'Reactivate', exact: true }).click();
-    await expect(card3.getByText(/Edit is in state REJECTED\.|just decided by another reviewer/)).toBeVisible();
+    // Finding 21: M3 manages the shop's region, so he is told M2 kept it closed.
+    await expect(card3.getByText(/Already decided by a colleague: .+ kept this shop closed at the Manager step\.|just decided by another reviewer/)).toBeVisible();
     expect((await db.branch.findUniqueOrThrow({ where: { id: cl2.branch.id }, select: { status: true } })).status).toBe('CLOSED');
   });
 

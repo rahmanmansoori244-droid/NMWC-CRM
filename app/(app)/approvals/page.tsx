@@ -281,15 +281,23 @@ export default async function ApprovalsPage() {
           <div className="px-4 sm:px-6">
             <NoRegionNotice requests="approval requests" />
           </div>
-        ) : items.length === 0 ? (
-          <div className="px-4 sm:px-6">
-            <EmptyState
-              title="Nothing pending"
-              description="When a request reaches your step of the approval chain, it appears here."
-            />
-          </div>
         ) : (
-          <BulkApprovalQueue items={queueItems} />
+          // Launch browser suite (2026-11-10): the queue stays mounted when it is
+          // empty. A bulk approve that took the last cards off it used to swap it
+          // for "Nothing pending" on the refresh, and what the batch did ("12
+          // processed.", or which failed) went with it, unseen. The queue renders
+          // only that outcome when it has no cards; the empty state is beside it.
+          <>
+            <BulkApprovalQueue items={queueItems} />
+            {items.length === 0 && (
+              <div className="px-4 sm:px-6">
+                <EmptyState
+                  title="Nothing pending"
+                  description="When a request reaches your step of the approval chain, it appears here."
+                />
+              </div>
+            )}
+          </>
         )}
       </div>
     </main>
