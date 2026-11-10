@@ -408,6 +408,11 @@ test.describe('races: approvers deciding the same request at the same instant', 
 
     const m1 = await pageAs(browser, w, 'M1');
     await m1.goto('/approvals');
+    // The queue streams in after a "Loading…" skeleton, and allInnerTexts() does not wait:
+    // read the order only once the three cards are on screen.
+    for (const k of keys) {
+      await expect(m1.getByRole('main').getByRole('listitem').getByRole('heading', { level: 3, name: w.customer(k).legalName, exact: true })).toBeVisible();
+    }
     const names = (await m1.getByRole('main').getByRole('listitem').getByRole('heading', { level: 3 }).allInnerTexts()).map((t) => t.trim());
     const at = keys.map((k) => names.indexOf(w.customer(k).legalName));
     expect(at.every((x) => x >= 0) && at[0]! < at[1]! && at[1]! < at[2]!, `BK1 is decided first (queue order: ${at.join(', ')})`).toBe(true);
