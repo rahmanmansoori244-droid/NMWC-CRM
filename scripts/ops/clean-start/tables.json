@@ -1,0 +1,50 @@
+{
+  "about": "Go-live clean start: what happens to every table in the public schema. EMPTY = every row removed by the one TRUNCATE in reset.sql (AuditLog then gets the single reset row, the four baseline history tables their BASELINE rows). PARTIAL = rows removed by a DELETE with the WHERE named here. KEEP = untouched, and proven byte-identical by the fingerprint. _prisma_migrations is untouched and listed under ignored. tests/unit/clean-start-tables.test.ts pins this list to prisma/schema.prisma, and tests/unit/clean-start-sql.test.ts pins the SQL files to this list.",
+  "EMPTY": [
+    "Customer",
+    "Branch",
+    "Attachment",
+    "CustomerEdit",
+    "EditCustomerDraft",
+    "EditBranchDraft",
+    "EditApproval",
+    "EditRevision",
+    "Notification",
+    "ImportBatch",
+    "ImportRow",
+    "TemixSyncBatch",
+    "ExportJob",
+    "AuditLog",
+    "AuthEvent",
+    "JobRunDay",
+    "PurgeSummary",
+    "IntegrityCheckResult",
+    "SealRecord",
+    "RateLimit",
+    "SavedView",
+    "CustomerHistory",
+    "BranchHistory",
+    "AttachmentHistory",
+    "UserHistory",
+    "RouteHistory",
+    "RouteOwnerHistory",
+    "RegionHistory"
+  ],
+  "PARTIAL": {
+    "CodeSequence": "\"scope\" ~ '^CUSTOMER-[0-9]{4}$'",
+    "CronRun": "\"at\" < (((now() AT TIME ZONE 'Asia/Muscat')::date - 1)::timestamp AT TIME ZONE 'Asia/Muscat' AT TIME ZONE 'UTC')"
+  },
+  "KEEP": [
+    "User",
+    "PasswordHistory",
+    "Region",
+    "Route",
+    "_ManagerRegions",
+    "Channel",
+    "SubChannel",
+    "CronHeartbeat"
+  ],
+  "ignored": ["_prisma_migrations"],
+  "baseline": ["RegionHistory", "RouteHistory", "UserHistory", "RouteOwnerHistory"],
+  "notInFingerprint": ["CronRun", "CronHeartbeat", "RateLimit"]
+}

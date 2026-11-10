@@ -1,0 +1,62 @@
+{
+  "about": "The nightly integrity watch on a database the clean start has just reset (design final.first_night_integrity): the statuses each check may have on the reset day (night1, right after COMMIT) and on the next Oman morning (night2, 02:30 UTC). A check missing here, or a status not listed, is a mismatch. rehearse-watch.ts asserts it; tests/integration/clean-start.test.ts runs it.",
+  "night1": {
+    "shop-region-matches-route": ["pass"],
+    "customer-status-follows-shops": ["pass"],
+    "temix-code-shared": ["pass"],
+    "temix-code-shape": ["pass"],
+    "customer-code-is-anothers-temix-code": ["pass"],
+    "cr-number-shared": ["info"],
+    "test-scaffolding-mixed": ["info"],
+    "history-open-interval": ["pass"],
+    "history-matches-master": ["pass"],
+    "history-unattributed-since-last-run": ["pass"],
+    "protection-triggers": ["pass"],
+    "protection-functions": ["pass"],
+    "runtime-role-privileges": ["pass", "info"],
+    "app-login-is-runtime-role": ["info"],
+    "customer-code-sequence": ["pass"],
+    "scheduled-jobs-on-time": ["pass", "info"],
+    "test-flags-changed": ["info"],
+    "db-rules-older-rows": ["info"],
+    "seal-written": ["info"],
+    "seal-chain-intact": ["pass"],
+    "seal-offsite-copies": ["pass"],
+    "exports-since-last-run": ["info"],
+    "sign-in-failures-since-last-run": ["info"]
+  },
+  "night2": {
+    "shop-region-matches-route": ["pass"],
+    "customer-status-follows-shops": ["pass"],
+    "temix-code-shared": ["pass"],
+    "temix-code-shape": ["pass"],
+    "customer-code-is-anothers-temix-code": ["pass"],
+    "cr-number-shared": ["info"],
+    "test-scaffolding-mixed": ["info"],
+    "history-open-interval": ["pass"],
+    "history-matches-master": ["pass"],
+    "history-unattributed-since-last-run": ["pass"],
+    "protection-triggers": ["pass"],
+    "protection-functions": ["pass"],
+    "runtime-role-privileges": ["pass", "info"],
+    "app-login-is-runtime-role": ["info"],
+    "customer-code-sequence": ["pass"],
+    "scheduled-jobs-on-time": ["pass", "info"],
+    "test-flags-changed": ["pass"],
+    "db-rules-older-rows": ["info"],
+    "seal-written": ["pass"],
+    "seal-chain-intact": ["pass"],
+    "seal-offsite-copies": ["pass"],
+    "exports-since-last-run": ["info"],
+    "sign-in-failures-since-last-run": ["info"]
+  },
+  "withForeignSeals": {
+    "about": "When PLAN found objects under seals/ that are not production's chain (another environment's chain folder, a non-seal object), the first run reports each once, as new and critical, and the next as information. Accepted ONLY when every open finding is one of those pre-listed keys.",
+    "night1": { "seal-offsite-copies": ["fail"] },
+    "night2": { "seal-offsite-copies": ["info"] }
+  },
+  "night2NotAssertedBeforeUtcHour": {
+    "about": "Night 2 is simulated at 02:30 UTC of the next Oman day, but the windowed jobs (03:00-15:00 UTC) of the reset day have not all run yet when the rehearsal starts before 15:00 UTC: their gaps would be real absences in the copy, not on production. The check is then reported, not asserted.",
+    "scheduled-jobs-on-time": 15
+  }
+}

@@ -258,6 +258,11 @@ jobs:
           # Finding 27: approving a change to one shop writes no history row and
           # no updated date on its sister shops (sister-shops).
           RUN_SISTER_SHOPS: '1'
+          # Go-live clean start: plan.sql, the target guard, reset.sql through
+          # psql, verify.sql and two nights of the real integrity watch, on a
+          # seeded scratch database it creates and drops on this job's own
+          # Postgres (clean-start). Needs psql and bash, both on the runner.
+          RUN_CLEAN_START: '1'
 
   # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
   # person typing `npm run test:e2e`. It shows: login.spec.ts asserted
