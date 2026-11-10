@@ -15,6 +15,8 @@
  *   SM-PHOTO-WEAK-NETWORK, UPLOAD-PHONE-REAL-PHOTOS, SM-RATE-LIMITS
  *   + production walk 2026-10-09: pictures he sent before, picked again for another new customer
  *   + critic: the visit-day job from the no-day list (wave 2, decision 4), a route switched off mid-week (P2)
+ *   + code review 2026-11-10, findings 4 and 5: a reload mid-form loses nothing (new customer, signed
+ *     application), leaving asks first, an old unsent change on the edit form is named and can be discarded
  *
  * Fixed in wave 1 and asserted as fixed (no test.fail): the Today header in Oman
  * time, the Needs-correction tile and Work link to /rejected, 'Sent to a Manager'
@@ -67,6 +69,7 @@ import {
   ATTACH_NO_ANSWER,
   CR_DOCUMENT_LOCKED_MESSAGE,
   HEIC_MESSAGE,
+  LEAVE_FORM_QUESTION,
   OFFLINE_MESSAGE,
   PHOTO_UPLOADING_MESSAGE,
   R2_HOST,
@@ -79,11 +82,14 @@ import {
   UPLOAD_SIGNED_OUT,
   addFieldSalesman,
   adoptSalesmanWork,
+  ageDeviceCopy,
   cameraJpeg,
   channelWithSubs,
   countRequests,
   delayDocument,
   delayPosts,
+  deviceCopy,
+  deviceCopyKeys,
   dropDraftBuckets,
   fillCreateForm,
   generalTrade,
@@ -97,6 +103,7 @@ import {
   photoSlot,
   pickFile,
   pngFile,
+  reloadLeaving,
   retakeOf,
   seedCreateRequest,
   seedReactivationRow,
@@ -1977,5 +1984,372 @@ test.describe('salesman phone: photos on a weak link and real camera files (SM-P
     }
     // The first customer's photos are as the approval left them.
     expect(byKind(await photosOf(firstId))).toEqual(first);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Code review 2026-11-10. Finding 4: the new-customer form and the signed-
+// application upload lost shops, GPS points and every photo when the page
+// reloaded (Android dropping the tab behind the camera, a pull down at the top
+// of the page, a mis-tap on the bottom bar), and kept nothing at all after the
+// first Save draft. Finding 5: the edit form put an old unsent change back
+// without saying which, or how old, and it went out with the next submit.
+test.describe('salesman phone: nothing is lost on a reload (review 2026-11-10, findings 4 and 5)', { tag: ['@phone'] }, () => {
+  requireLaunchEnv();
+  installLaunchHooks();
+
+  let world: World;
+  let since: Date;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  test.beforeAll(async () => {
+    test.setTimeout(300_000);
+    since = new Date();
+    world = await createWorld('spr', {
+      regions: [{ key: 'R1' }],
+      users: [
+        { key: 'M1', role: 'MANAGER', regions: ['R1'] },
+        { key: 'ACC1', role: 'ACCOUNTANT', regions: ['R1'] },
+        // The signed application goes on to the Finance Managers: the world has one of its own.
+        { key: 'FM1', role: 'FINANCE_MANAGER' },
+      ],
+    });
+  });
+
+  test.afterEach(async () => {
+    if (world) await adoptSalesmanWork(world, since);
+  });
+
+  test.afterAll(async () => {
+    test.setTimeout(300_000);
+    if (!world) return;
+    await adoptSalesmanWork(world, since);
+    await dropDraftBuckets(world);
+    await world.cleanup();
+  });
+
+  /** A shop's section of the new-customer form ("Branch 1: Main"). */
+  const branchOf = (page: Page, n: number): Locator =>
+    page.locator('details').filter({ has: page.locator('summary h3').filter({ hasText: new RegExp(`^Branch ${n}\\b`) }) });
+  const RESTORED_NEW = 'Restored the details you typed on this phone — shops, GPS points and photos included.';
+  const RESTORED_AFTER_SAVE = 'Restored what you added on this phone after your last Save draft.';
+  const takeIn = async (slot: Locator, name: string) => {
+    await pickFile(slot, pngFile(name));
+    await expect(retakeOf(slot), `${name} is in`).toBeVisible({ timeout: 120_000 });
+  };
+
+  test('new customer: a reload mid-form brings back the text, both shops, the GPS point and the photos; after Save draft what is added comes back too; sent, the request carries it all', async ({ browser }) => {
+    notRunHere(!hasR2, 'the new-customer form uploads its photos to R2');
+    test.setTimeout(900_000);
+    const { user } = await addFieldSalesman(world, 'N1');
+    await resetLimits({ users: [user] });
+    const page = await (await contextAs(browser, user, { device: 'phone' })).newPage();
+    const ch = await channelWithSubs();
+    const [phone] = await world.allocPhones(1);
+    const name = world.name('Al Reef Corner Shop');
+    const address1 = world.name('Way 5120, Al Khoudh, Seeb');
+    const address2 = world.name('Way 77, Al Hail North, Seeb');
+    const prefix = `nmwc:create:${user.id}:`;
+    const requests = () =>
+      db.customerEdit.findMany({
+        where: { submittedById: user.id, process: 'CREATE' },
+        select: {
+          id: true,
+          state: true,
+          submissionId: true,
+          customerDraft: { select: { legalName: true, contactPerson: true } },
+          branchDrafts: { select: { id: true } },
+          attachments: { where: { deletedAt: null }, select: { kind: true } },
+        },
+      });
+
+    await page.goto('/customers/new');
+    await settled(page);
+    const nameBox = page.getByLabel('Legal name *', { exact: true });
+    await nameBox.fill(name);
+    await page.getByLabel('CR number *', { exact: true }).fill(`CR${world.SFX}N1`);
+    await page.getByLabel('Channel *', { exact: true }).selectOption({ label: ch.label });
+    const sub = page.getByLabel('Sub-channel *', { exact: true });
+    await expect(sub).toBeEnabled();
+    await sub.selectOption({ index: 1 });
+    await page.getByLabel('Primary phone *', { exact: true }).fill(phone!);
+    await takeIn(photoSlot(page, 'CR document'), 'cr');
+    let shop1 = branchOf(page, 1);
+    await shop1.getByLabel('Address *', { exact: true }).fill(address1);
+    await shop1.getByRole('button', { name: /^Capture GPS/ }).click();
+    await expect(shop1.getByText(GPS_TEXT)).toBeVisible();
+    await shop1.getByLabel('Day of visit *', { exact: true }).selectOption(OMAN_TODAY);
+    await takeIn(photoSlot(shop1, 'Shop front'), 'shop-1');
+    await page.getByRole('button', { name: '+ Add another branch', exact: true }).click();
+    let shop2 = branchOf(page, 2);
+    await shop2.getByLabel('Branch name *', { exact: true }).fill('Second shop');
+    await shop2.getByLabel('Address *', { exact: true }).fill(address2);
+
+    // On the phone: the whole form. On the server: nothing yet.
+    await expect
+      .poll(async () => ((await deviceCopy(page, `${prefix}new`))?.branches as unknown[] | undefined)?.length ?? 0, {
+        message: 'the phone copy holds both shops',
+      })
+      .toBe(2);
+    const copy = (await deviceCopy(page, `${prefix}new`))!;
+    expect(copy.legalName).toBe(name);
+    expect(typeof copy.crPhotoId, 'the CR photo is kept by its id').toBe('string');
+    expect(await requests()).toEqual([]);
+
+    // The tab comes back from the camera reloaded.
+    await reloadLeaving(page);
+    await settled(page);
+    await expect(page.getByText(RESTORED_NEW, { exact: true })).toBeVisible();
+    await expect(page.getByText(`“${name}” — 2 shops, 1 GPS point, 2 photos.`)).toBeVisible();
+    await expect(page.getByText(/are not kept on the phone/)).toHaveCount(0);
+    await expect(nameBox).toHaveValue(name);
+    await expect(page.getByLabel('Primary phone *', { exact: true })).toHaveValue(phone!);
+    await expect(page.getByLabel('Channel *', { exact: true })).not.toHaveValue('');
+    await expect(retakeOf(photoSlot(page, 'CR document')), 'the CR photo is on its slot').toBeVisible();
+    shop1 = branchOf(page, 1);
+    shop2 = branchOf(page, 2);
+    await expect(shop1.getByLabel('Address *', { exact: true })).toHaveValue(address1);
+    await expect(shop1.getByText(GPS_TEXT), 'the GPS chip').toBeVisible();
+    await expect(shop1.getByLabel('Day of visit *', { exact: true })).toHaveValue(OMAN_TODAY);
+    await expect(retakeOf(photoSlot(shop1, 'Shop front')), 'the shop photo is on its slot').toBeVisible();
+    await expect(shop2.getByLabel('Branch name *', { exact: true })).toHaveValue('Second shop');
+    await expect(shop2.getByLabel('Address *', { exact: true })).toHaveValue(address2);
+    expect(await requests(), 'still nothing on the server').toEqual([]);
+
+    // Save draft: the request is on the server, and the never-saved copy is gone.
+    await page.getByRole('button', { name: 'Save draft', exact: true }).click();
+    await expect(page.getByText('✓ Draft saved. Finish and submit when ready.', { exact: true })).toBeVisible({ timeout: 45_000 });
+    const [draft] = await requests();
+    expect(draft).toMatchObject({ state: 'DRAFT', customerDraft: { legalName: name, contactPerson: null } });
+    await expect(page).toHaveURL(new RegExp(`/customers/new\\?edit=${draft!.id}$`));
+    await expect.poll(() => deviceCopyKeys(page, prefix), { message: 'saved, and nothing added since: no copy' }).toEqual([]);
+
+    // What he adds after Save draft used to be lost on a reload.
+    const contact = world.name('Hamed Al Siyabi');
+    await page.getByLabel('Contact person *', { exact: true }).fill(contact);
+    await takeIn(photoSlot(branchOf(page, 1), 'Signboard'), 'sign-1');
+    await expect.poll(() => deviceCopyKeys(page, prefix)).toEqual([`${prefix}${draft!.id}`]);
+    await expect
+      .poll(async () => (await deviceCopy(page, `${prefix}${draft!.id}`))?.contactPerson, { message: 'kept under the request’s own key' })
+      .toBe(contact);
+    expect((await deviceCopy(page, `${prefix}${draft!.id}`))!.base, 'as grown on the draft that Save draft made').toBe(draft!.submissionId);
+
+    await reloadLeaving(page);
+    await settled(page);
+    await expect(page.getByText(RESTORED_AFTER_SAVE, { exact: true })).toBeVisible();
+    await expect(page.getByText(/It is not on the server yet — tap Save draft to keep it\.$/)).toBeVisible();
+    await expect(page.getByLabel('Contact person *', { exact: true })).toHaveValue(contact);
+    await expect(retakeOf(photoSlot(branchOf(page, 1), 'Signboard')), 'the signboard photo taken after Save draft').toBeVisible();
+    expect((await requests())[0]!.customerDraft!.contactPerson, 'from the phone, not from the server').toBeNull();
+
+    // He finishes the second shop and submits: one request, with everything.
+    shop2 = branchOf(page, 2);
+    await shop2.getByRole('button', { name: /^Capture GPS/ }).click();
+    await expect(shop2.getByText(GPS_TEXT)).toBeVisible();
+    await shop2.getByLabel('Day of visit *', { exact: true }).selectOption(OMAN_TODAY);
+    await takeIn(photoSlot(shop2, 'Shop front'), 'shop-2');
+    await takeIn(photoSlot(shop2, 'Signboard'), 'sign-2');
+    const submit = page.getByRole('button', { name: SUBMIT, exact: true });
+    await expect(submit).toBeEnabled({ timeout: 30_000 });
+    await submit.click();
+    await expect(page).toHaveURL(/\/work$/, { timeout: 45_000 });
+    const sentRequests = await requests();
+    expect(sentRequests, 'one request').toHaveLength(1);
+    expect(sentRequests[0]).toMatchObject({ id: draft!.id, state: 'SUBMITTED', customerDraft: { legalName: name, contactPerson: contact } });
+    expect(sentRequests[0]!.branchDrafts).toHaveLength(2);
+    expect(sentRequests[0]!.attachments.map((a) => a.kind).sort()).toEqual(['CR', 'SHOP', 'SHOP', 'SIGNBOARD', 'SIGNBOARD']);
+    expect(await deviceCopyKeys(page, prefix), 'nothing of it is left on the phone').toEqual([]);
+  });
+
+  test('new customer: pull-to-refresh is off on the form; a tap on the bottom bar asks before it leaves; reopened, the form is back and "Start a blank form" empties it', async ({ browser }) => {
+    const { user } = await addFieldSalesman(world, 'N2');
+    const page = await (await contextAs(browser, user, { device: 'phone' })).newPage();
+    const newKey = `nmwc:create:${user.id}:new`;
+    const overscroll = () => page.evaluate(() => getComputedStyle(document.documentElement).overscrollBehaviorY);
+
+    await page.goto('/today');
+    await settled(page);
+    expect(await overscroll(), 'Today reloads on a pull down, as before').toBe('auto');
+    await page.goto('/customers/new');
+    await settled(page);
+    await expect.poll(overscroll, { message: 'a pull down at the top of the form does not reload it' }).toBe('contain');
+
+    // Nothing on the form yet: the bottom bar leaves without a question.
+    let asked: string[] = [];
+    const note = (d: import('@playwright/test').Dialog) => {
+      asked.push(d.message());
+      void d.dismiss().catch(() => undefined);
+    };
+    page.on('dialog', note);
+    await tabBar(page).getByRole('link', { name: 'Today', exact: true }).click();
+    await expect(page).toHaveURL(/\/today(\?|$)/);
+    expect(asked).toEqual([]);
+
+    // With a name typed, the same tap asks; "stay" keeps him on the form.
+    await page.goto('/customers/new');
+    await settled(page);
+    const name = world.name('Al Reef Unsent Shop');
+    const nameBox = page.getByLabel('Legal name *', { exact: true });
+    await nameBox.fill(name);
+    await tabBar(page).getByRole('link', { name: 'Today', exact: true }).click();
+    await expect.poll(() => asked).toEqual([LEAVE_FORM_QUESTION]);
+    await expect(page).toHaveURL(/\/customers\/new$/);
+    await expect(nameBox).toHaveValue(name);
+    page.off('dialog', note);
+
+    // "Leave": he goes, and what he typed is kept on the phone.
+    asked = [];
+    page.once('dialog', (d) => {
+      asked.push(d.message());
+      void d.accept().catch(() => undefined);
+    });
+    await tabBar(page).getByRole('link', { name: 'Today', exact: true }).click();
+    await expect(page).toHaveURL(/\/today(\?|$)/);
+    expect(asked).toEqual([LEAVE_FORM_QUESTION]);
+    expect((await deviceCopy(page, newKey))?.legalName).toBe(name);
+
+    // Reopened: it is back, named, with the way to a blank form for the next shop.
+    await page.goto('/customers/new');
+    await settled(page);
+    await expect(page.getByText(RESTORED_NEW, { exact: true })).toBeVisible();
+    await expect(page.getByText(`“${name}” — 1 shop, 0 GPS points, 0 photos.`)).toBeVisible();
+    await expect(nameBox).toHaveValue(name);
+    await page.getByRole('button', { name: 'Start a blank form', exact: true }).click();
+    await expect(page.getByText('Discard this unsent form? Its photos will have to be taken again.', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Yes, start blank', exact: true }).click();
+    await expect(nameBox).toHaveValue('');
+    await expect(page.getByText(RESTORED_NEW, { exact: true })).toHaveCount(0);
+    await expect.poll(() => deviceCopy(page, newKey), { message: 'the copy left the phone' }).toBeNull();
+    expect(await db.customerEdit.count({ where: { submittedById: user.id, process: 'CREATE' } }), 'nothing was sent').toBe(0);
+  });
+
+  test('signed application: two pages taken, the page reloads, both are still there; sent, the request holds them and the phone keeps nothing', async ({ browser }) => {
+    notRunHere(!hasR2, 'the signed application is uploaded to R2');
+    test.setTimeout(420_000);
+    const { user } = await addFieldSalesman(world, 'N3');
+    await resetLimits({ users: [user] });
+    const page = await (await contextAs(browser, user, { device: 'phone' })).newPage();
+    await page.goto('/today');
+    const id = await seedCreateRequest(page, world, {
+      legalName: world.name('Al Reef Credit Traders'),
+      paymentTerms: 'CREDIT',
+      state: 'SUBMITTED',
+      pendingRole: 'SALESMAN',
+    });
+    const key = `nmwc:create:${user.id}:signed:${id}`;
+    const pagesOnFile = () => db.attachment.count({ where: { editId: id, kind: 'CREDIT_FORM', deletedAt: null } });
+
+    await page.goto(`/customers/new?edit=${id}`);
+    await settled(page);
+    const block = () => page.locator('section').filter({ has: page.getByRole('heading', { name: 'Signed credit application needed' }) });
+    await expect(block()).toBeVisible();
+    // Each page in the fresh empty slot the one before it made way for.
+    await takeIn(photoSlot(block(), 'Signed application page', 0), 'signed-page-1');
+    await takeIn(photoSlot(block(), 'Signed application page', 1), 'signed-page-2');
+    await expect
+      .poll(async () => ((await deviceCopy(page, key))?.ids as unknown[] | undefined)?.length ?? 0, { message: 'the phone keeps the list of pages' })
+      .toBe(2);
+    expect(await pagesOnFile(), 'on no request until he sends them').toBe(0);
+
+    await reloadLeaving(page);
+    await settled(page);
+    await expect(
+      block().getByText(/^Restored 2 pages you had added on this phone \(saved .+\)\. Check them, then send\.$/)
+    ).toBeVisible();
+    await expect(retakeOf(photoSlot(block(), 'Signed application page', 0))).toBeVisible();
+    await expect(retakeOf(photoSlot(block(), 'Signed application page', 1))).toBeVisible();
+    const send = block().getByRole('button', { name: 'Send signed application', exact: true });
+    await expect(send).toBeEnabled();
+    await send.click();
+    await expect(page).toHaveURL(/\/work$/, { timeout: 45_000 });
+    expect(await pagesOnFile(), 'both pages are on the request').toBe(2);
+    expect(await db.customerEdit.findUniqueOrThrow({ where: { id }, select: { state: true, pendingRole: true } })).toEqual({
+      state: 'SUBMITTED',
+      pendingRole: 'FINANCE_MANAGER',
+    });
+    expect(await deviceCopy(page, key), 'the list left the phone').toBeNull();
+  });
+
+  test('enrich: a customer merely opened leaves no copy; an old unsent change comes back named, with its age, and is discarded; the submit that follows sends only the phone', async ({ browser }) => {
+    notRunHere(FULL_GATE, CORE_ONLY);
+    test.setTimeout(300_000);
+    const { user, customer } = await addFieldSalesman(world, 'N4');
+    await resetLimits({ users: [user] });
+    const page = await (await contextAs(browser, user, { device: 'phone' })).newPage();
+    const key = `nmwc:draft:${user.id}:${customer.id}`;
+    const changing = page.getByText(/^You are changing:/);
+    const restored = page.getByText('Restored a local draft from your last visit.', { exact: true });
+    const contactBox = page.getByLabel('Contact person *', { exact: true });
+
+    // Opened, nothing touched: the old form wrote a copy half a second later.
+    await openEnrich(page, customer.id);
+    await page.waitForTimeout(1_200);
+    expect(await deviceCopy(page, key), 'no copy for a customer he only opened').toBeNull();
+    await expect(changing).toHaveCount(0);
+
+    // He changes the contact and bumps a counter, and leaves without sending.
+    const contact = world.name('Nabil Al Zadjali');
+    await contactBox.fill(contact);
+    await page.getByRole('button', { name: 'Increase Coolers', exact: true }).click();
+    const LIST = /Contact person, Coolers(, Equipment counted)?\.$/;
+    await expect(changing).toHaveText(new RegExp(`^You are changing: ${LIST.source}`));
+    await expect.poll(async () => (await deviceCopy(page, key))?.contactPerson).toBe(contact);
+    await page.goto('/today');
+    await settled(page);
+    // Three days pass.
+    await ageDeviceCopy(page, key, 3 * DAY_MS);
+
+    // He opens the customer to fix a phone number: the old change is back, and SAID.
+    const submit = await openEnrich(page, customer.id);
+    await expect(restored).toBeVisible();
+    await expect(page.getByText(new RegExp(`^Saved on this phone 3 days ago\\. It changes: ${LIST.source}`))).toBeVisible();
+    await expect(contactBox).toHaveValue(contact);
+    await expect(changing).toHaveText(new RegExp(`^You are changing: ${LIST.source}`));
+
+    await page.getByRole('button', { name: 'Discard these changes', exact: true }).click();
+    await expect(page.getByText('Discard them? The form goes back to the customer as saved.', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Yes, discard', exact: true }).click();
+    await expect(contactBox).toHaveValue('Majid Al Shukaili');
+    await expect(restored).toHaveCount(0);
+    await expect(changing).toHaveCount(0);
+    await expect.poll(() => deviceCopy(page, key), { message: 'the copy left the phone' }).toBeNull();
+
+    // The phone number alone goes out.
+    const [phone] = await world.allocPhones(1);
+    await page.getByLabel('Primary phone *', { exact: true }).fill(phone!);
+    await expect(changing).toHaveText('You are changing: Primary phone.');
+    await expect(submit).toBeEnabled();
+    await submit.click();
+    await expect(page).toHaveURL(new RegExp(`/customers/${customer.id}$`), { timeout: 45_000 });
+    const edits = await db.customerEdit.findMany({
+      where: { customerId: customer.id, submittedById: user.id },
+      select: { state: true, fieldChanges: true },
+    });
+    expect(edits.map((e) => e.state)).toEqual(['SUBMITTED']);
+    expect((edits[0]!.fieldChanges as Array<{ field: string }>).map((c) => c.field), 'only the phone').toEqual(['customer.primaryPhone']);
+  });
+
+  test('enrich: an unsent change left for eight days is removed, with what it had changed', async ({ browser }) => {
+    const { user, customer } = await addFieldSalesman(world, 'N5');
+    const page = await (await contextAs(browser, user, { device: 'phone' })).newPage();
+    const key = `nmwc:draft:${user.id}:${customer.id}`;
+    await openEnrich(page, customer.id);
+    const notes = world.name('Back door on the side street');
+    await page.getByLabel('Notes', { exact: true }).fill(notes);
+    await expect.poll(async () => (await deviceCopy(page, key))?.notes).toBe(notes);
+    await page.goto('/today');
+    await settled(page);
+    await ageDeviceCopy(page, key, 8 * DAY_MS);
+
+    await openEnrich(page, customer.id);
+    await expect(
+      page.getByText('An unsent draft saved on this phone 8 days ago was removed: drafts are kept for 7 days. It had changed: Notes.', {
+        exact: true,
+      })
+    ).toBeVisible();
+    await expect(page.getByLabel('Notes', { exact: true })).toHaveValue('');
+    await expect(page.getByText('Restored a local draft from your last visit.', { exact: true })).toHaveCount(0);
+    expect(await deviceCopy(page, key)).toBeNull();
+    expect(await db.customerEdit.count({ where: { customerId: customer.id } }), 'nothing was sent').toBe(0);
   });
 });
