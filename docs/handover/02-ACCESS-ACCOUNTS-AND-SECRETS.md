@@ -159,8 +159,8 @@ hand over, and the pack does not contain it (§2.10).
    laptop.
 2. **Every secret and variable name in §2.2 is still present.** `gh secret list`
    prints secret names only. `gh variable list` also prints the variables' values.
-   None of those values is a credential. But `PROD_DB_HOST_MARKER` holds the full
-   production endpoint id, which the public docs deliberately shorten to
+   None of those values is a credential. But `PROD_DB_HOST_MARKER` (no longer read
+   since 2026-11-10; delete it) holds the full production endpoint id, which the public docs deliberately shorten to
    `ep-sweet-haze…`. Do not paste that output into an issue, a PR or a chat.
 3. **Every place the repository name is written.** Update the ones that people or
    tools follow:
@@ -220,8 +220,8 @@ requests. Name that person at handover (§6).
 | File | Name in Actions | When it runs | Secrets and variables it reads |
 |---|---|---|---|
 | `ci.yml` | CI | Every push | `HEALTH_BEARER` (post-deploy smoke, `main` only) |
-| `db-backup.yml` | DB Backup | 02:00 UTC daily, and on demand | `DIRECT_URL`, `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET`, `BACKUP_R2_ACCESS_KEY_ID`, `BACKUP_R2_SECRET_ACCESS_KEY`, `PROD_CRON_SECRET`; variables `BACKUP_AGE_RECIPIENTS`, `APP_BASE_URL`, `PROD_DB_HOST_MARKER`, `MIN_DUMP_BYTES`, `ALLOW_PLAINTEXT_BACKUP` |
-| `restore-drill.yml` | Restore drill | 04:00 UTC on the 1st of each month, and on demand | `BACKUP_AGE_IDENTITY`, the same four `BACKUP_R2_*` secrets, `NEON_API_KEY`, `NEON_PROJECT_ID`; variables `BACKUP_AGE_RECIPIENTS`, `PROD_DB_HOST_MARKER` |
+| `db-backup.yml` | DB Backup | 02:00 UTC daily, and on demand | `DIRECT_URL`, `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET`, `BACKUP_R2_ACCESS_KEY_ID`, `BACKUP_R2_SECRET_ACCESS_KEY`, `PROD_CRON_SECRET`; variables `BACKUP_AGE_RECIPIENTS`, `APP_BASE_URL`, `MIN_DUMP_BYTES`, `ALLOW_PLAINTEXT_BACKUP`; the production host from `config/production-hosts.txt` |
+| `restore-drill.yml` | Restore drill | 04:00 UTC on the 1st of each month, and on demand | `BACKUP_AGE_IDENTITY`, the same four `BACKUP_R2_*` secrets, `NEON_API_KEY`, `NEON_PROJECT_ID`; variable `BACKUP_AGE_RECIPIENTS`; the production hosts from `config/production-hosts.txt` |
 | `r2-config.yml` | R2 bucket settings | 05:00 UTC daily, and on demand | `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET`, `BACKUP_R2_ADMIN_ACCESS_KEY_ID`, `BACKUP_R2_ADMIN_SECRET_ACCESS_KEY`, `R2_ADMIN_ACCESS_KEY_ID`, `R2_ADMIN_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`; variable `R2_BUCKET` |
 | `keep-warm.yml` | Keep production warm | Every 4 minutes, 03:00–14:59 UTC | `PROD_CRON_SECRET`; variable `KEEP_WARM_PREVIEW_URL` |
 | `sla-escalate.yml` | SLA escalation sweep | At :15 and :45, 03:00–14:59 UTC | `PROD_CRON_SECRET` |
@@ -273,7 +273,7 @@ must be generated again by whoever holds the account, and that is a rotation.
 |---|---|---|
 | `BACKUP_AGE_RECIPIENTS` | Yes | The age **public** keys, separated by commas. Without them the nightly backup refuses to run |
 | `APP_BASE_URL` | Yes | The production origin, with no trailing slash |
-| `PROD_DB_HOST_MARKER` | Yes | The production endpoint id. Without it the restore drill refuses to run. Do not paste it into public places (§2.1 check 2) |
+| `PROD_DB_HOST_MARKER` | No longer read | Replaced by `config/production-hosts.txt` (code review 2026-11-10, finding 14; OPERATIONS §6.3a). It holds the full production endpoint id: delete it, and do not paste it into public places (§2.1 check 2) |
 | `KEEP_WARM_PREVIEW_URL` | No | A second address to keep warm, normally the UAT preview |
 | `R2_BUCKET` | No | The photos bucket's name. Leave it unset while it is `nmwc-photos` |
 | `MIN_DUMP_BYTES` | No | The size below which a dump counts as truncated |

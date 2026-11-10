@@ -474,6 +474,12 @@ jobs:
           set -euo pipefail
           psql "$DATABASE_URL" -At -f scripts/ops/backup-manifest.sql > manifest.json
           python3 -c "import json;d=json.load(open('manifest.json'));print('tables',d['tableCount'],'triggers',d['triggerCount'],'rows',sum(d['rowCounts'].values()))"
+          # Finding 14 (code review 2026-11-10): the newest write and its age, which the
+          # nightly job's freshness check reads. The synthetic audit rows above were just
+          # written, so the rule must call this database live, on the nightly trigger.
+          SINCE="$(jq -r '.secondsSinceNewestWrite // empty' manifest.json)"
+          echo "newest write $(jq -r '.newestWriteAt // "none"' manifest.json), ${SINCE:-?} s ago"
+          bash scripts/ops/backup-freshness.sh "$SINCE" schedule
 
       - name: Dump with the production flags, then check it like production does
         run: |

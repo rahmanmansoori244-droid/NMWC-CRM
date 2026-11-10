@@ -9,10 +9,16 @@
  * handed. The owner's decision of 2026-10-11 deleted those scripts (git history
  * keeps them) and put this guard in front of every one that is left.
  *
+ * WHICH HOSTS ARE PRODUCTION (code review 2026-11-10, finding 14): the markers in
+ * config/production-hosts.txt, read through scripts/lib/production-hosts.cjs — the
+ * one list every guard shares. It may hold several hosts (after a restore: the new
+ * production first, the old one kept). A missing, empty or malformed list throws
+ * the moment this file is imported, so every script that uses this guard refuses.
+ *
  * THE RULE.
- *   - A host that starts with `ep-sweet-haze` (production) is refused unless the
+ *   - A host that starts with a production marker is refused unless the
  *     command line carries `--expect-host <value>` where the value itself starts
- *     with `ep-sweet-haze` and is part of that host. That is the pattern
+ *     with a production marker and is part of that host. That is the pattern
  *     scripts/ops/* already use: the operator has to NAME production to reach it,
  *     so a variable that silently fell back to the wrong .env cannot get there.
  *   - `--expect-host` given for any other host must match that host too, so the
@@ -43,9 +49,25 @@
  * by calling it).
  */
 import { OperatorRefusal } from '../ops/error-label';
+import {
+  checkedHosts,
+  hostMarker,
+  loadProductionHosts,
+  namesProduction,
+  productionMarkerIn,
+} from './production-hosts.cjs';
 
-/** The production endpoint's public marker (also the PROD_DB_HOST_MARKER repository variable). */
-export const PRODUCTION_HOST_PREFIX = 'ep-sweet-haze';
+/**
+ * Every production host marker, from config/production-hosts.txt (finding 14).
+ * Read once, here: a list the guards cannot trust throws now, at import.
+ */
+export const PRODUCTION_HOSTS: readonly string[] = Object.freeze(loadProductionHosts());
+
+/**
+ * Production's host NOW: the list's first marker, the value operators type after
+ * `--expect-host` and the one the guards' messages name.
+ */
+export const PRODUCTION_HOST_PREFIX: string = PRODUCTION_HOSTS[0]!;
 
 /**
  * Thrown after the reason has been printed. An OperatorRefusal, so the ops
@@ -97,13 +119,14 @@ export const LIVE_SITE = 'https://nmwc-cm.vercel.app';
 export function liveSiteNamed(
   script: string,
   args: readonly string[] = process.argv.slice(2),
-  out: GuardOutput = consoleOutput
+  out: GuardOutput = consoleOutput,
+  hosts: readonly string[] = PRODUCTION_HOSTS
 ): boolean {
   const named = expectHostArg(args);
-  if (named && named.toLowerCase().startsWith(PRODUCTION_HOST_PREFIX)) return true;
+  if (named && namesProduction(named, hosts)) return true;
   out.error(`[live-site guard] refusing: ${script} signs in to the PRODUCTION site (${LIVE_SITE}).`);
   out.error(
-    `  Run it only on purpose, with --expect-host ${PRODUCTION_HOST_PREFIX} on the command line ` +
+    `  Run it only on purpose, with --expect-host ${checkedHosts(hosts)[0]} on the command line ` +
       '(owner decisions 2026-10-11). Nothing was opened, signed in to or written.'
   );
   return false;
@@ -132,20 +155,26 @@ export function withoutExpectHost(args: readonly string[]): string[] {
  * Exported for the scripts that must never run on production at all, whatever the
  * command line says (prisma/seed.ts; owner decisions 2026-10-11).
  */
-export function pointsAtProduction(url: string): boolean {
-  const decoded = url.replace(/%[0-9a-f]{2}/gi, (e) => String.fromCharCode(parseInt(e.slice(1), 16)));
-  return url.toLowerCase().includes(PRODUCTION_HOST_PREFIX) || decoded.toLowerCase().includes(PRODUCTION_HOST_PREFIX);
+export function pointsAtProduction(url: string, hosts: readonly string[] = PRODUCTION_HOSTS): boolean {
+  return productionMarkerIn(url, hosts) !== null;
 }
 
 export function assertNotProduction(
   url: string | undefined,
   args: readonly string[] = process.argv.slice(2),
-  out: GuardOutput = consoleOutput
+  out: GuardOutput = consoleOutput,
+  hosts: readonly string[] = PRODUCTION_HOSTS
 ): string {
   const refuse = (...lines: string[]): never => {
     for (const line of lines) out.error(line);
     throw new ProductionGuardRefusal();
   };
+  // A list the guard cannot trust refuses (finding 14): never weaker.
+  try {
+    checkedHosts(hosts);
+  } catch (e) {
+    refuse((e as Error).message);
+  }
 
   if (!url) {
     refuse(
@@ -169,8 +198,10 @@ export function assertNotProduction(
     );
   }
 
-  const production = host.startsWith(PRODUCTION_HOST_PREFIX) || pointsAtProduction(raw);
-  const shown = production ? `${PRODUCTION_HOST_PREFIX}… (PRODUCTION)` : host;
+  // The marker this connection carries: its host's own first, else one anywhere in it.
+  const marker = hostMarker(host, hosts) ?? productionMarkerIn(raw, hosts);
+  const production = marker !== null;
+  const shown = production ? `${marker}… (PRODUCTION)` : host;
   const expect = expectHostArg(args);
 
   if (expect === '') {
@@ -179,18 +210,19 @@ export function assertNotProduction(
   if (expect !== null && !host.includes(expect.toLowerCase())) {
     // The value is shown as the marker when it names production: it may be the
     // full endpoint id, which this guard never prints (see the end of this function).
-    const asked = expect.toLowerCase().includes(PRODUCTION_HOST_PREFIX) ? `${PRODUCTION_HOST_PREFIX}…` : expect;
+    const named = productionMarkerIn(expect, hosts);
+    const asked = named ? `${named}…` : expect;
     refuse(
       `[db-guard] refusing: you asked for "${asked}" but this connection points at ${shown}.`,
       '  Check the connection string you set, in the same shell that runs this command.',
       '  Nothing was read or written.'
     );
   }
-  if (production && (expect === null || !expect.toLowerCase().startsWith(PRODUCTION_HOST_PREFIX))) {
+  if (production && (expect === null || !namesProduction(expect, hosts))) {
     refuse(
-      `[db-guard] refusing: this connection points at PRODUCTION (${PRODUCTION_HOST_PREFIX}…).`,
+      `[db-guard] refusing: this connection points at PRODUCTION (${marker}…).`,
       '  Only the audited operator scripts run there, through scripts/dev/prod-run.cjs, and',
-      `  only with --expect-host ${PRODUCTION_HOST_PREFIX} on the command line (docs/OPERATIONS.md §5j).`,
+      `  only with --expect-host ${marker} on the command line (docs/OPERATIONS.md §5j).`,
       '  Nothing was read or written.'
     );
   }

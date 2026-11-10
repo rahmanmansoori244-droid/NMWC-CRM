@@ -31,6 +31,7 @@
  *   RUN_REQUEST_REASONS=1 DATABASE_URL=… DIRECT_URL=… \
  *     npx vitest run tests/integration/request-reasons.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
@@ -111,7 +112,7 @@ describe.skipIf(!ENABLED)('finding 18: a request’s reasons are kept apart, and
 
   beforeAll(async () => {
     for (const url of [process.env.DATABASE_URL, process.env.DIRECT_URL]) {
-      if ((url ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+      if (pointsAtProduction(url ?? '')) throw new Error('ABORT: production');
     }
     ({ prisma } = await import('@/lib/db'));
     creates = await import('@/services/creates');

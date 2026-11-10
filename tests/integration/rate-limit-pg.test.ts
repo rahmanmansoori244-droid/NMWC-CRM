@@ -16,6 +16,7 @@
  * In CI, run it against a `postgres:` service container after
  * `prisma migrate deploy`.
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 
 const ENABLED = process.env.RUN_PG_RATE_LIMIT_TEST === '1' && !!process.env.DATABASE_URL;
@@ -33,8 +34,8 @@ describe.skipIf(!ENABLED)('checkLimitPg — durable Postgres token bucket', () =
 
   beforeAll(async () => {
     // This suite writes to the database it is pointed at: never production.
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DIRECT_URL ?? '')) throw new Error('ABORT: production');
     savedBackend = process.env.RATE_LIMIT_BACKEND;
     delete process.env.RATE_LIMIT_BACKEND; // ensure the PG path is taken
     ({ checkLimit, refundLimit } = await import('@/lib/rate-limit'));

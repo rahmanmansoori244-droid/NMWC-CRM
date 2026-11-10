@@ -28,6 +28,7 @@
  *   RUN_IMPORT_TESTS=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/import-multibranch.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
@@ -87,7 +88,7 @@ describe.skipIf(!ENABLED)('F-UAT-7: multi-branch customer must not self-quaranti
   const extraBatchIds: string[] = [];
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     imports = await import('@/services/imports');
     await prisma.user.create({ data: { id: stewardId, username: stewardId, passwordHash: 'x', fullName: 'ZZ MB Steward', role: 'STEWARD' } });
@@ -276,8 +277,8 @@ describe.skipIf(!ENABLED)('F21 / F16: what the promote writes on a multi-branch 
     );
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DIRECT_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     imports = await import('@/services/imports');
     regionId = (await prisma.region.create({ data: { code: REGION, name: `ZZ MBS ${tag}` } })).id;

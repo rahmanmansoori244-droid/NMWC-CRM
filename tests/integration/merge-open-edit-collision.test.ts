@@ -14,6 +14,7 @@
  *   RUN_MERGE_OPEN=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/merge-open-edit-collision.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits } from '../support/audit';
 import { randomUUID } from 'node:crypto';
@@ -45,7 +46,7 @@ describe.skipIf(!ENABLED)('merge completes when BOTH customers have an open edit
   }
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     dupes = await import('@/services/duplicates');
     const region = await prisma.region.create({ data: { name: `ZZMO R ${tag}`, code: `ZZMO-${tag}` } });

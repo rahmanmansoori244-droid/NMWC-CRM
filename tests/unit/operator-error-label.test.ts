@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import { OperatorRefusal, operatorErrorLabel } from '../../scripts/ops/error-label';
+import * as productionHosts from '../../scripts/lib/production-hosts.cjs';
 
 const PRIVATE_DETAIL = 'synthetic-private-row-and-connection-detail';
 
@@ -94,6 +95,8 @@ async function runCli(script: Script, args: string[], guardError?: Error) {
     // Gap 24: the write paths name their run (not reached before a refusal).
     '../../lib/change-context': {},
     './error-label': { OperatorRefusal, operatorErrorLabel },
+    // The guard's production host list (finding 14): the real one, read from config/.
+    './production-hosts.cjs': productionHosts,
   };
   const processStub = {
     argv: ['node', `scripts/ops/${script}.ts`, ...args],

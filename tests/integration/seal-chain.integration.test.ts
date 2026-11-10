@@ -13,6 +13,7 @@
  *
  * Written with the watch-and-prove branch; NOT run there (no database was used).
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, vi } from 'vitest';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { writeSeal, type HorizonReader } from '@/lib/seal/seal';
@@ -32,7 +33,7 @@ describe.skipIf(!ENABLED)('gap 28: the seal chain on Postgres', () => {
   it('seals, verifies, and names a changed and a deleted row; refuses an unlinked seal; is append-only', async () => {
     assertNotProductionEnv();
     const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL!;
-    if (url.includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(url)) throw new Error('ABORT: production');
     const owner = new PrismaClient({ datasourceUrl: url });
     const sfx = `zzw${Date.now().toString(36)}`;
     try {

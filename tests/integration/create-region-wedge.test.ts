@@ -16,6 +16,7 @@
  *   RUN_REGION_WEDGE=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/create-region-wedge.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeCustomerEdits, purgeHistory } from '../support/audit';
 import { randomUUID } from 'node:crypto';
@@ -44,8 +45,8 @@ describe.skipIf(!ENABLED)('CREATE approval visibility follows the route, which n
     (await prisma.customerEdit.count({ where: { id: ids.edit, ...acctWhere(managed) } })) === 1;
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DIRECT_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     const rA = await prisma.region.create({ data: { name: `ZZRW A ${tag}`, code: `ZZRWA-${tag}` } });
     const rB = await prisma.region.create({ data: { name: `ZZRW B ${tag}`, code: `ZZRWB-${tag}` } });

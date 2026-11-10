@@ -8,6 +8,7 @@
  *   RUN_MGR_AUTHZ=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/manager-branch-region-authz.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { editPayload } from '../support/edit-payload';
@@ -29,7 +30,7 @@ describe.skipIf(!ENABLED)('Manager can only edit branches in a region they manag
   const ids = { regionA: '', regionB: '', routeA: '', routeB: '', mgr: `ZZMR-mgr-${tag}`, cust: '', branchA: '', branchB: '' };
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     const { PrismaClient } = await import('@prisma/client');
     importConnection = new PrismaClient();

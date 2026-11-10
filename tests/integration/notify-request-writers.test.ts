@@ -30,6 +30,7 @@
  *
  *   RUN_NOTIFY_WRITERS=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/notify-request-writers.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
@@ -88,7 +89,7 @@ describe.skipIf(!ENABLED)('F1: a salesman request notifies his hierarchy, in its
 
   beforeAll(async () => {
     for (const v of ['DATABASE_URL', 'DIRECT_URL']) {
-      if ((process.env[v] ?? '').includes('ep-sweet-haze')) throw new Error(`ABORT: ${v} points at production`);
+      if (pointsAtProduction(process.env[v] ?? '')) throw new Error(`ABORT: ${v} points at production`);
     }
     ({ prisma } = await import('@/lib/db'));
     edits = await import('@/services/edits');

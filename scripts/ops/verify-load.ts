@@ -33,7 +33,7 @@ import { isDemoAccount } from '../../lib/demo-accounts';
 import { REAL_BRANCH } from '../../lib/test-records';
 import { canApproveSpecificEdit } from '../../lib/permissions';
 import { OperatorRefusal, operatorErrorLabel } from './error-label';
-import { assertNotProduction } from '../lib/assert-not-production';
+import { assertNotProduction, PRODUCTION_HOST_PREFIX } from '../lib/assert-not-production';
 
 type LoadExpectations = { branches: number; visitDays: number };
 
@@ -62,7 +62,7 @@ export function loadExpectations(
     if (flag === '--expect-host' && !expectHostSeen) {
       const host = args[i + 1];
       if (!host || host.startsWith('--')) {
-        throw new OperatorRefusal('--expect-host needs the host marker, e.g. --expect-host ep-sweet-haze.');
+        throw new OperatorRefusal(`--expect-host needs the host marker, e.g. --expect-host ${PRODUCTION_HOST_PREFIX}.`);
       }
       expectHostSeen = true;
       continue;

@@ -1,0 +1,28 @@
+# Which databases are PRODUCTION — the one list every safety guard reads.
+#
+# Code review 2026-11-10, finding 14. Every guard that stops a seed, a test, a
+# clean-up script or a backup from touching the wrong database recognises
+# production by these markers: the start of the database host name (the Neon
+# endpoint id). They used to be written into about a hundred files, so after a
+# disaster-recovery restore to a new host every guard was blind to the real
+# production. Now scripts/lib/production-hosts.cjs (Node), scripts/ops/production-hosts.sh
+# (the backup, the restore drill and restore-load.sh) and everything built on
+# them read this file and nothing else.
+#
+# HOW TO CHANGE IT (docs/OPERATIONS.md, Runbooks A, B and C, "Point the guards
+# and the backup at the new host"):
+#   - Put the NEW production host's marker on the FIRST line: it is the one
+#     operators type after --expect-host.
+#   - KEEP the old marker on a line below it. The old database still holds real
+#     customers; listed here it stays protected. Remove a marker only once that
+#     database has been deleted.
+#   - A marker is the START of the host name, at least 6 characters, lower-case
+#     letters, digits, dots and dashes only. For Neon use the endpoint id's words
+#     WITHOUT its random ending (e.g. "ep-sweet-haze" for an endpoint
+#     "ep-sweet-haze-<letters and digits>"): this repository is public, and the
+#     full endpoint id is kept out of it (docs/handover/02-ACCESS-ACCOUNTS-AND-SECRETS.md §2.1).
+#   - Lines starting with # are notes. A blank line is ignored.
+#
+# Fail-closed: if this file is missing, empty, or has a line that is not a valid
+# marker, every guard REFUSES to run anything (it cannot tell what production is).
+ep-sweet-haze

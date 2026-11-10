@@ -22,6 +22,7 @@
  * Synthetic rows only, tagged with this run's suffix; everything is deleted again,
  * history included, in the owner's maintenance window.
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { PrismaClient, type Prisma } from '@prisma/client';
 import { setChangeContext, src, withChangeContext } from '@/lib/change-context';
@@ -30,7 +31,6 @@ import { purgeHistory, REMOTE_TX, withAuditMaintenance } from '../support/audit'
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 120_000 });
 
 const ENABLED = process.env.RUN_HISTORY === '1' && !!process.env.DATABASE_URL;
-const PROD = 'ep-sweet-haze';
 const sfx = `zzhc${Date.now().toString(36)}`;
 const SFX = sfx.toUpperCase();
 const TEST_SOURCE = src.test('history-capture');
@@ -72,7 +72,7 @@ describe.skipIf(!ENABLED)('the dated history is written by the database', () => 
 
   beforeAll(async () => {
     const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
-    if (url.includes(PROD) || (process.env.DATABASE_URL ?? '').includes(PROD))
+    if (pointsAtProduction(url) || pointsAtProduction(process.env.DATABASE_URL ?? ''))
       throw new Error('ABORT: production');
     db = new PrismaClient({ datasourceUrl: url });
     await write(async (tx) => {
@@ -496,7 +496,7 @@ describe.skipIf(!ENABLED)('the dated history is written by the database', () => 
   it.skipIf(!APP_URL)(
     'the runtime role writes the master and is recorded by name, but cannot write the history',
     async () => {
-      if (APP_URL.includes(PROD)) throw new Error('ABORT: production');
+      if (pointsAtProduction(APP_URL)) throw new Error('ABORT: production');
       const app = new PrismaClient({ datasourceUrl: APP_URL });
       try {
         await withChangeContext(app, ctx(src.edit(`${sfx}-app`)), (tx) =>

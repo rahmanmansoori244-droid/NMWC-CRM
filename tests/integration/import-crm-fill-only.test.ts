@@ -28,6 +28,7 @@
  *
  *   RUN_IMPORT_TESTS=1 npx vitest run tests/integration/import-crm-fill-only.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import ExcelJS from 'exceljs';
@@ -171,8 +172,8 @@ describe.skipIf(!ENABLED)('finding 1: an import fills blank CRM fields only, unl
   const closedAt = new Date('2026-10-20T09:00:00Z');
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DIRECT_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     imports = await import('@/services/imports');
     fixes = await import('@/services/import-fixes');

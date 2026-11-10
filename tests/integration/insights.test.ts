@@ -28,6 +28,7 @@
  *
  *   RUN_INSIGHTS=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/insights.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import type { Role } from '@prisma/client';
 import { purgeCustomerEdits } from '../support/audit';
@@ -58,7 +59,7 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
 
   beforeAll(async () => {
     for (const v of ['DATABASE_URL', 'DIRECT_URL']) {
-      if ((process.env[v] ?? '').includes('ep-sweet-haze')) throw new Error(`ABORT: ${v} points at production`);
+      if (pointsAtProduction(process.env[v] ?? '')) throw new Error(`ABORT: ${v} points at production`);
     }
     ({ prisma } = await import('@/lib/db'));
     ({ Prisma } = await import('@prisma/client'));

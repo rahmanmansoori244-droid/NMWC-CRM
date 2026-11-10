@@ -25,6 +25,7 @@
  *
  *   RUN_HISTORY=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/history-asof.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { PrismaClient, type Prisma } from '@prisma/client';
 import { src, withChangeContext, type ChangeContext } from '@/lib/change-context';
@@ -33,7 +34,6 @@ import { purgeHistory, REMOTE_TX, withAuditMaintenance } from '../support/audit'
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 120_000 });
 
 const ENABLED = process.env.RUN_HISTORY === '1' && !!process.env.DATABASE_URL;
-const PROD = 'ep-sweet-haze';
 const sfx = `zzha${Date.now().toString(36)}`;
 const SFX = sfx.toUpperCase();
 
@@ -68,7 +68,7 @@ describe.skipIf(!ENABLED)('the history answers the owner’s as-of questions', (
 
   beforeAll(async () => {
     const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
-    if (url.includes(PROD) || (process.env.DATABASE_URL ?? '').includes(PROD))
+    if (pointsAtProduction(url) || pointsAtProduction(process.env.DATABASE_URL ?? ''))
       throw new Error('ABORT: production');
     db = new PrismaClient({ datasourceUrl: url });
     await run({ actorId: null, source: src.test('history-asof') }, async (tx) => {

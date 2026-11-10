@@ -8,6 +8,7 @@
  * Isolated branch only (endpoint-guarded). Run:
  *   RUN_UAT_LOAD=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/uat-load.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -29,7 +30,7 @@ describe.skipIf(!ENABLED)('UAT load: import 300+ synthetic master into the live 
 
   beforeAll(async () => {
     // hard safety: never against production
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production endpoint');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production endpoint');
     ({ prisma } = await import('@/lib/db'));
     imports = await import('@/services/imports');
     const steward = await prisma.user.findFirst({ where: { role: 'STEWARD' }, select: { id: true, username: true } });

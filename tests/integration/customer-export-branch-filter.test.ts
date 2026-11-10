@@ -14,6 +14,7 @@
  *   RUN_EXPORT_TESTS=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/customer-export-branch-filter.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { purgeAuditLog, purgeExportJobs } from '../support/audit';
@@ -49,8 +50,8 @@ describe.skipIf(!ENABLED)('F17: the filtered export shows the branch the filter 
   };
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DIRECT_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     exportsSvc = await import('@/services/customer-export');
     excel = await import('@/lib/excel');

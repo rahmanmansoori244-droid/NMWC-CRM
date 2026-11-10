@@ -6,6 +6,7 @@
  *
  *   RUN_AUDIT_IMMUTABLE=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/audit-immutability.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, withAuditMaintenance } from '../support/audit';
 
@@ -18,7 +19,7 @@ describe.skipIf(!ENABLED)('B4: AuditLog and EditApproval are append-only at the 
   let customerId = '';
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     const u = await prisma.user.create({
       data: { username: `${sfx}.actor`, fullName: 'Audit Actor', role: 'STEWARD', passwordHash: 'x' },
@@ -101,7 +102,7 @@ describe.skipIf(!ENABLED)('B4: AuditLog and EditApproval are append-only at the 
   it.skipIf(!APP_URL)(
     'the runtime role cannot use the maintenance override — not directly, not through the CustomerEdit cascade',
     async () => {
-      if (APP_URL.includes('ep-sweet-haze')) throw new Error('ABORT: production');
+      if (pointsAtProduction(APP_URL)) throw new Error('ABORT: production');
       const { PrismaClient } = await import('@prisma/client');
       const app = new PrismaClient({ datasourceUrl: APP_URL });
       try {

@@ -28,7 +28,7 @@
  */
 import { PrismaClient, Role } from '@prisma/client';
 import bcrypt from 'bcryptjs';
-import { assertNotProduction } from '../scripts/lib/assert-not-production';
+import { assertNotProduction, PRODUCTION_HOSTS } from '../scripts/lib/assert-not-production';
 import { contextClient, src } from '../lib/change-context';
 
 const SEED_URL = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
@@ -47,7 +47,8 @@ const SEED_URL = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
 // pilot account would simply survive.
 //
 // Same endpoint list and same escape hatch as prisma/synthetic.ts.
-const PROD_ENDPOINTS = ['ep-sweet-haze'];
+// The shared production list (config/production-hosts.txt; code review 2026-11-10, finding 14).
+const PROD_ENDPOINTS = PRODUCTION_HOSTS;
 if (PROD_ENDPOINTS.some((e) => SEED_URL.includes(e)) && process.env.ALLOW_PROD_SEED !== '1') {
   console.error(
     '\n❌ ABORT: the pilot seed target looks like PRODUCTION (endpoint matched %s).\n' +

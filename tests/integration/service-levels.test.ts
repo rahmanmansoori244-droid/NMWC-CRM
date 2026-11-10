@@ -15,6 +15,7 @@
  *
  *   RUN_SERVICE_LEVELS=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/service-levels.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeCustomerEdits, withAuditMaintenance } from '../support/audit';
 
@@ -47,7 +48,7 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
   >;
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     svc = await import('@/lib/service-status');
 

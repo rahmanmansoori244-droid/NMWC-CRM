@@ -27,7 +27,7 @@ import { normalizePhone } from '../lib/phone';
 import { normalizeCR } from '../lib/cr';
 import { scoreCustomer, scoreBranch } from '../lib/completeness';
 import { formatCustomerCode, formatBranchCode } from '../lib/codes';
-import { assertNotProduction, withoutExpectHost } from '../scripts/lib/assert-not-production';
+import { assertNotProduction, PRODUCTION_HOSTS, withoutExpectHost } from '../scripts/lib/assert-not-production';
 import { contextClient, src } from '../lib/change-context';
 
 const SEED_URL = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
@@ -38,7 +38,8 @@ const SEED_URL = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
 // real customers + all users). Set ALLOW_PROD_SEED=1 only for a deliberate,
 // reviewed prod seed (there is none in normal operation). Mirrors the endpoint
 // guard in scripts/qa/probe-db.ts + constraint-smoke.ts.
-const PROD_ENDPOINTS = ['ep-sweet-haze'];
+// The shared production list (config/production-hosts.txt; code review 2026-11-10, finding 14).
+const PROD_ENDPOINTS = PRODUCTION_HOSTS;
 if (PROD_ENDPOINTS.some((e) => SEED_URL.includes(e)) && process.env.ALLOW_PROD_SEED !== '1') {
   console.error(
     '\n❌ ABORT: synthetic seed/reset target looks like PRODUCTION (endpoint matched %s).\n' +

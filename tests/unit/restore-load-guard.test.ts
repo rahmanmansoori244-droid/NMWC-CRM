@@ -42,6 +42,8 @@ echo "CODE=$CODE"
 const PASSWORD = 'synthetic-pw-zq81';
 const USER = 'synthetic_owner_zq';
 const PROD_ENDPOINT = `${PRODUCTION_HOST_PREFIX}-fake9q7`;
+// The production marker percent-escaped, as libpq would decode it (built from the shared list).
+const ESCAPED_MARKER = PRODUCTION_HOST_PREFIX.replace(/-/g, '%2D');
 const urlFor = (host: string, rest = '/neondb') => ['postgresql://', USER, ':', PASSWORD, '@', host, rest].join('');
 
 function load(env: Record<string, string>) {
@@ -73,10 +75,10 @@ describe('restore-load.sh refuses production before psql (owner decisions 2026-1
     ['the pooled production host', { RESTORE_TARGET_URL: urlFor(`${PROD_ENDPOINT}-pooler.us-east-1.aws.neon.invalid`) }],
     ['the host in upper case', { RESTORE_TARGET_URL: urlFor(`${PROD_ENDPOINT.toUpperCase()}.NEON.INVALID`) }],
     ['a host query parameter', { RESTORE_TARGET_URL: urlFor('localhost:5432', `/db?host=${PROD_ENDPOINT}.neon.invalid`) }],
-    ['a percent-escaped host parameter', { RESTORE_TARGET_URL: urlFor('localhost:5432', '/db?host=ep%2Dsweet%2Dhaze-fake9q7.neon.invalid') }],
+    ['a percent-escaped host parameter', { RESTORE_TARGET_URL: urlFor('localhost:5432', `/db?host=${ESCAPED_MARKER}-fake9q7.neon.invalid`) }],
     ['an escaped letter, in upper case', { RESTORE_TARGET_URL: urlFor('localhost:5432', '/db?host=%45P%2DSWEET-HAZE-fake.neon.invalid') }],
     // printf %b would stop at `\c` and hide what follows: the decoder must not.
-    ['an escape after a backslash-c', { RESTORE_TARGET_URL: urlFor('localhost:5432', '/db?x=\\c&host=ep%2Dsweet%2Dhaze-x.invalid') }],
+    ['an escape after a backslash-c', { RESTORE_TARGET_URL: urlFor('localhost:5432', `/db?x=\\c&host=${ESCAPED_MARKER}-x.invalid`) }],
     ['the marker in another part of the URL', { RESTORE_TARGET_URL: urlFor('localhost:5432', `/${PRODUCTION_HOST_PREFIX}-copy`) }],
     ['a keyword/value connection string', { RESTORE_TARGET_URL: `host=${PROD_ENDPOINT}.neon.invalid dbname=neondb` }],
     ['PGHOST, with a URL that names no host', { RESTORE_TARGET_URL: 'postgresql:///neondb', PGHOST: `${PROD_ENDPOINT}.neon.invalid` }],

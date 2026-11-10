@@ -15,6 +15,7 @@
  *   RUN_MERGE_TESTS=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/temix-queue-lock.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 
@@ -41,9 +42,9 @@ describe.skipIf(!ENABLED)('lockTemixQueue: the Temix queue, locked in byte id or
   const ids = rows.map((r) => r.id);
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze'))
+    if (pointsAtProduction(process.env.DATABASE_URL ?? ''))
       throw new Error('ABORT: production');
-    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze'))
+    if (pointsAtProduction(process.env.DIRECT_URL ?? ''))
       throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     ({ lockTemixQueue } = await import('@/lib/locks'));

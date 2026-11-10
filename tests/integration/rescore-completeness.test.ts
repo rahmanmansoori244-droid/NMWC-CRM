@@ -17,6 +17,7 @@
  *   RUN_RESCORE=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/rescore-completeness.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
@@ -92,8 +93,8 @@ describe.skipIf(!ENABLED)('ops:rescore-completeness against Postgres', () => {
 
   beforeAll(async () => {
     const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
-    if (url.includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze'))
+    if (pointsAtProduction(url)) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? ''))
       throw new Error('ABORT: production');
     host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
     // The script's own client, on the owner connection, as main() builds it.

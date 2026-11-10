@@ -9,16 +9,15 @@
  * Every row carries the suite's suffix. Never production: the caller's
  * beforeAll checks DATABASE_URL and DIRECT_URL before anything is written.
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import type { PrismaClient } from '@prisma/client';
 import { contextClient, src } from '@/lib/change-context';
 import { resolveChain, stepDeadline } from '@/lib/approval-chains';
 import { purgeAuditLog, purgeCustomerEdits, purgeHistory, withAuditMaintenance } from './audit';
 
-export const PROD_MARKER = 'ep-sweet-haze';
-
 export function assertNotProductionEnv(): void {
   for (const k of ['DATABASE_URL', 'DIRECT_URL'] as const) {
-    if ((process.env[k] ?? '').includes(PROD_MARKER)) throw new Error(`ABORT: ${k} points at production`);
+    if (pointsAtProduction(process.env[k] ?? '')) throw new Error(`ABORT: ${k} points at production`);
   }
 }
 

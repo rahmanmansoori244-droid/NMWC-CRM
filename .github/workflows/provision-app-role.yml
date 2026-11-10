@@ -26,7 +26,7 @@ name: Provision app role
 # deliberately and visibly. The typed host is also passed to every app-role.ts
 # step as --expect-host: the shared guard (scripts/lib/assert-not-production.ts,
 # data audit 2026-10-10) refuses production unless the command line names it,
-# with a value that starts with ep-sweet-haze.
+# with a value that starts with a marker in config/production-hosts.txt.
 #
 # Prerequisite: repository secret `NMWC_APP_PASSWORD` (24+ characters, no single
 # quote). Keep the same value for the Vercel `DATABASE_URL` in step 2.
@@ -35,7 +35,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm_host:
-        description: 'Type the endpoint id of the database you intend to provision (e.g. ep-sweet-haze). This is checked against DIRECT_URL.'
+        description: 'Type the endpoint id of the database you intend to provision (for production: the first line of config/production-hosts.txt). This is checked against DIRECT_URL.'
         required: true
         type: string
       dry_run:

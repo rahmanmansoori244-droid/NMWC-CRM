@@ -34,7 +34,7 @@
  *   node scripts/qa/run-with-env.mjs tsx scripts/ops/app-role.ts grant
  */
 import { PrismaClient } from '@prisma/client';
-import { assertNotProduction } from '../lib/assert-not-production';
+import { assertNotProduction, pointsAtProduction } from '../lib/assert-not-production';
 import { setChangeContext, src } from '../../lib/change-context';
 import {
   APPEND_ONLY_APP_TABLES,
@@ -47,12 +47,11 @@ import {
 } from '../../lib/history-tables';
 
 const ROLE = 'nmwc_app';
-const PROD_MARKER = 'ep-sweet-haze';
 
 function ownerUrl(): string {
   const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
   if (!url) throw new Error('DIRECT_URL (owner) is not set');
-  if (url.includes(PROD_MARKER) && process.env.ALLOW_PRODUCTION !== '1') {
+  if (pointsAtProduction(url) && process.env.ALLOW_PRODUCTION !== '1') {
     throw new Error('Refusing to run against production without ALLOW_PRODUCTION=1');
   }
   return assertNotProduction(url, process.argv.slice(2));
@@ -401,7 +400,7 @@ async function expectRefused(tx: Tx, label: string, fn: () => Promise<unknown>) 
 async function verify() {
   const url = process.env.NMWC_APP_URL;
   if (!url) throw new Error('NMWC_APP_URL (the nmwc_app connection string) is not set');
-  if (url.includes(PROD_MARKER) && process.env.ALLOW_PRODUCTION !== '1') {
+  if (pointsAtProduction(url) && process.env.ALLOW_PRODUCTION !== '1') {
     throw new Error('Refusing to run against production without ALLOW_PRODUCTION=1');
   }
   const app = new PrismaClient({ datasourceUrl: assertNotProduction(url, process.argv.slice(2)) });

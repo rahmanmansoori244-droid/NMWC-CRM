@@ -45,7 +45,7 @@ import { readFileSync } from 'node:fs';
 import { TEMIX_QUEUE_WHERE } from '../../lib/temix';
 import { isDemoAccount } from '../../lib/demo-accounts';
 import { OperatorRefusal } from './error-label';
-import { assertNotProduction } from '../lib/assert-not-production';
+import { assertNotProduction, PRODUCTION_HOST_PREFIX } from '../lib/assert-not-production';
 import { changeContextStatement, src } from '../../lib/change-context';
 
 /**
@@ -181,7 +181,8 @@ export async function connectWaking(prisma: PrismaClient): Promise<void> {
  * 2026-10-10, owner decision 2026-10-11), so every ops script that calls this is
  * covered by the same production rule as the rest of scripts/ and prisma/ — and
  * by the stricter half of it: `--expect-host sweet` matches the host here, but
- * production also needs the value to start with `ep-sweet-haze`.
+ * production also needs the value to start with a production marker
+ * (config/production-hosts.txt).
  */
 export function requireExpectedHost(args: string[], url: string, host: string): void {
   const expectIdx = args.indexOf('--expect-host');
@@ -193,8 +194,8 @@ export function requireExpectedHost(args: string[], url: string, host: string): 
         '  Name the database you intend, so a variable that did not take cannot\n' +
         '  send this at the wrong database — or report "nothing to do" from one.\n' +
         '  For the go-live:\n' +
-        '    --expect-host ep-sweet-haze\n' +
-        '  (that string is also the PROD_DB_HOST_MARKER repository variable).'
+        `    --expect-host ${PRODUCTION_HOST_PREFIX}\n` +
+        '  (the first line of config/production-hosts.txt).'
     );
   }
   if (host.includes(expectHost)) {

@@ -26,6 +26,7 @@
  *
  * Written with the watch-and-prove branch; NOT run there (no database was used).
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import { CHECK_BY_ID, type CheckContext } from '@/lib/integrity/checks';
@@ -50,7 +51,7 @@ describe.skipIf(!ENABLED)('gap 29: the nightly integrity checks on Postgres', ()
 
   beforeAll(async () => {
     assertNotProductionEnv();
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     w = await buildWorld(prisma, 'intwatch');
     const [s] = await prisma.$queryRaw<Array<{ n: number | null }>>`SELECT max("seq") AS n FROM "SealRecord"`;

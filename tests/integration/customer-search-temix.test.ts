@@ -16,6 +16,7 @@
  *   RUN_EXPORT_TESTS=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/customer-search-temix.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Role, type Prisma } from '@prisma/client';
@@ -67,8 +68,8 @@ describe.skipIf(!ENABLED)('the Temix code search on Postgres: `_` and `%` typed 
   const salesmanA = (q: string) => search(Role.SALESMAN, routeA, q);
 
   beforeAll(async () => {
-    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
-    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
+    if (pointsAtProduction(process.env.DIRECT_URL ?? '')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     regionId = (await prisma.region.create({ data: { code: `${P}R`, name: `ZZ TXS ${tag}` } })).id;
     routeA = (await prisma.route.create({ data: { code: `${P}-RA`, name: 'ZZ TXS A', regionId } })).id;

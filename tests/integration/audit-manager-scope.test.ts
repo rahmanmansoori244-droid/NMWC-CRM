@@ -19,6 +19,7 @@
  *
  *   RUN_AUDIT_SCOPE=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/audit-manager-scope.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import type { AuditAction } from '@prisma/client';
 import { purgeAuditLog, purgeCustomerEdits, purgeHistory } from '../support/audit';
@@ -45,7 +46,7 @@ describe.skipIf(!ENABLED)('a Manager’s audit log: his regions’ events and hi
 
   beforeAll(async () => {
     for (const v of ['DATABASE_URL', 'DIRECT_URL']) {
-      if ((process.env[v] ?? '').includes('ep-sweet-haze')) throw new Error(`ABORT: ${v} points at production`);
+      if (pointsAtProduction(process.env[v] ?? '')) throw new Error(`ABORT: ${v} points at production`);
     }
     ({ prisma } = await import('@/lib/db'));
     ({ Prisma } = await import('@prisma/client'));

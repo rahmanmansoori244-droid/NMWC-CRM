@@ -16,6 +16,7 @@
  *   E2E_CHROMIUM=<path to chrome.exe> RUN_GOLIVE_E2E=1 \
  *     node scripts/qa/run-with-env.mjs playwright test tests/e2e/golive-update-flow.spec.ts --project=chromium
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { test, expect, type Page } from '@playwright/test';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { PrismaClient } from '@prisma/client';
@@ -95,7 +96,7 @@ const F = {
 };
 
 test.beforeAll(async () => {
-  if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+  if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
   const clash = await prisma.route.findUnique({ where: { code: F.routeCode }, select: { id: true } });
   if (clash) throw new Error(`route ${F.routeCode} already exists on this database — pick another`);
   const gt = await prisma.channel.findFirstOrThrow({ where: { key: 'GENERAL_TRADE' } });

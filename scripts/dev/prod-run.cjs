@@ -3,15 +3,19 @@
 // string ever reaching the terminal, a log or a chat (docs/HANDOVER.md §5).
 //
 //   NMWC_PROD_ENV_FILE=<path to the .env holding the production DIRECT_URL> \
-//     node scripts/dev/prod-run.cjs <script path> --expect-host ep-sweet-haze [the script's own args]
+//     node scripts/dev/prod-run.cjs <script path> --expect-host <production marker> [the script's own args]
 //
-// - `--expect-host ep-sweet-haze` is REQUIRED on every run, read-only or not (owner
+// Production is whatever config/production-hosts.txt lists (code review 2026-11-10,
+// finding 14): its first line is the marker to type, e.g. ep-sweet-haze today. A
+// list that cannot be read, is empty or malformed refuses every run.
+//
+// - `--expect-host <marker>` is REQUIRED on every run, read-only or not (owner
 //   decisions 2026-10-11). It is one of the SCRIPT's arguments, anywhere after the
 //   script path: the runner reads it there and FORWARDS every argument to the script
 //   unchanged, so the script's own guard (scripts/lib/assert-not-production.ts, or
 //   requireExpectedHost in the ops scripts) checks the very same flag. Typed once,
 //   checked twice. The runner refuses, before it reads the env file, when the flag
-//   is missing, has no value, or its value does not start with ep-sweet-haze (the
+//   is missing, has no value, or its value does not start with a production marker (the
 //   two-word form only: `--expect-host=…` is not read); and after reading it, when
 //   the value is not part of the env file's host. A throw-away read-only script
 //   (`*.tmp.ts`) is handed the flag too and may simply ignore it.
@@ -20,7 +24,7 @@
 //   that cannot connect, so a script that ignores DIRECT_URL fails instead of silently
 //   using some other database. Build the client with
 //   `new PrismaClient({ datasourceUrl: process.env.DIRECT_URL })`.
-// - It refuses a DIRECT_URL whose HOST is not production (`ep-sweet-haze…`), so
+// - It refuses a DIRECT_URL whose HOST does not start with a production marker, so
 //   pointing it at a UAT .env runs nothing.
 // - Everything the script prints is masked: the URL, its password (raw and decoded),
 //   user and host, and anything shaped like a postgres connection string. Output is
@@ -34,8 +38,17 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { loadProductionHosts, hostMarker, namesProduction } = require('../lib/production-hosts.cjs');
 
-const PRODUCTION = 'ep-sweet-haze';
+let HOSTS;
+try {
+  HOSTS = loadProductionHosts();
+} catch (e) {
+  console.log(e.message);
+  process.exit(2);
+}
+// Production's host now: the list's first marker.
+const PRODUCTION = HOSTS[0];
 const USAGE = `usage: node scripts/dev/prod-run.cjs <script> --expect-host ${PRODUCTION} [the script's own args]`;
 
 const [script, ...args] = process.argv.slice(2);
@@ -48,7 +61,7 @@ if (!script || script.startsWith('-')) {
 // be the full endpoint id, which the output masking hides everywhere else).
 const flagAt = args.indexOf('--expect-host');
 const expectHost = flagAt < 0 ? '' : (args[flagAt + 1] ?? '');
-if (!expectHost || expectHost.startsWith('--') || !expectHost.toLowerCase().startsWith(PRODUCTION)) {
+if (!expectHost || expectHost.startsWith('--') || !namesProduction(expectHost, HOSTS)) {
   console.log(
     `[prod-run] refusing: every run needs --expect-host ${PRODUCTION} among the script's arguments,\n` +
       '  as two words, read-only or not (owner decisions 2026-10-11). It is passed on to the\n' +
@@ -79,7 +92,7 @@ try {
   process.exit(2);
 }
 const hostname = parsed.hostname.toLowerCase();
-if (!hostname.startsWith(PRODUCTION)) {
+if (!hostMarker(hostname, HOSTS)) {
   console.log('that env file does not point at production — refusing');
   process.exit(2);
 }

@@ -32,6 +32,7 @@
  *   RUN_CUSTOMER_STATUS=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/customer-status-follows.test.ts
  */
+import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import ExcelJS from 'exceljs';
@@ -106,7 +107,7 @@ describe.skipIf(!ENABLED)('owner decision 7: a customer’s status follows its s
 
   beforeAll(async () => {
     for (const v of ['DATABASE_URL', 'DIRECT_URL']) {
-      if ((process.env[v] ?? '').includes('ep-sweet-haze')) throw new Error(`ABORT: ${v} points at production`);
+      if (pointsAtProduction(process.env[v] ?? '')) throw new Error(`ABORT: ${v} points at production`);
     }
     ({ prisma } = await import('@/lib/db'));
     react = await import('@/services/reactivations');
