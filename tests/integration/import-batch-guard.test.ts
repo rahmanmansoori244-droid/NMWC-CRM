@@ -7,7 +7,8 @@
  *    before anything is claimed; confirmed ("skipNewer"), those customers' rows
  *    are rejected with the reason and the rest loads.
  *  - A batch staged more than 7 days ago is refused, and so is a fix that would
- *    bring one of its rows back to load.
+ *    bring one of its rows back to load; a batch already loaded keeps the fix
+ *    window for its held-back rows past 7 days.
  *  - The Data Steward discards a batch whose promote stopped part-way: audited,
  *    off the Work list, refused by promote and by every fix.
  *
@@ -179,6 +180,32 @@ describe.skipIf(!ENABLED)('finding 6: an old staged customer batch is not loaded
     const fix = await fixes.recheckImportRowAction(fd);
     expect(fix.ok).toBe(false);
     expect(msg(fix)).toMatch(/can no longer be promoted/);
+  });
+
+  // Adversarial review of finding 6: the 7-day limit is on a STAGED batch. A
+  // batch already loaded keeps the 90-day fix window for its held-back rows: the
+  // fix is accepted past 7 days, the batch goes back to READY, and it finishes.
+  it('a promoted batch older than 7 days: its held-back row is still fixed and loaded', async () => {
+    const id = await upload([
+      { cust_code: `${P}-7`, cust_name: 'ZZ Seven', address: 'Way 7, Loaded' },
+      { cust_code: `${P}-8`, cust_name: 'ZZ Eight', address: 'Way 8, Loaded', phone: 'not a phone' },
+    ]);
+    await promoteFully(imports, id);
+    expect((await batchOf(id)).status).toBe('PROMOTED');
+    await prisma.importBatch.update({ where: { id }, data: { uploadedAt: new Date(Date.now() - 30 * DAY) } });
+    const held = (await rowsOf(id)).find((r) => r.state === 'QUARANTINED')!;
+    expect(held, 'the bad phone is held back').toBeTruthy();
+    const phone = '+9689' + String(parseInt(tag.slice(0, 6), 16) % 10_000_000).padStart(7, '0');
+    const fd = new FormData();
+    fd.set('rowId', held.id);
+    fd.set('cells', JSON.stringify({ phone }));
+    const fix = await fixes.correctImportRowAction(fd);
+    expect(fix, JSON.stringify(fix)).toEqual({ ok: true, data: { clean: 1, held: 0 } });
+    expect((await batchOf(id)).status).toBe('READY');
+    expect(((await prisma.importRow.findUniqueOrThrow({ where: { id: held.id } })).parsed as { fixedAfterLoad?: boolean }).fixedAfterLoad).toBe(true);
+    await promoteFully(imports, id);
+    expect(await batchOf(id)).toMatchObject({ status: 'PROMOTED' });
+    expect(await nameOf(`${P}-8`)).toBe('ZZ Eight');
   });
 
   it('the Steward discards a batch whose promote stopped: audited, off the Work list, and nothing can load or fix it', async () => {

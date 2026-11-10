@@ -379,6 +379,31 @@ describe('finding 6: an old, discarded or overtaken batch is not loaded', () => 
     expect(writes.some((w) => w.data.status === 'PROMOTING')).toBe(true);
   });
 
+  // Adversarial review of finding 6: the limit is on a STAGED batch. A batch
+  // already loaded, whose only rows waiting were fixed in the app, loads them past
+  // 7 days (they keep the 90-day fix window); one whose first load stopped with
+  // rows of the sheet still waiting does not.
+  it('a batch already loaded, with only fixed rows waiting, is promoted past the limit', async () => {
+    table = [batch({ status: 'READY', uploadedAt: new Date(Date.now() - 30 * DAY) })];
+    const q = vi.fn(async () => [] as unknown[]);
+    q.mockResolvedValueOnce([{ loaded: true, waiting: 0 }]); // batchLoadHistory
+    (h.db as { $queryRaw: unknown }).$queryRaw = q;
+    await expect(promote()).rejects.toThrow('the promote went past the refusal');
+    expect(writes.some((w) => w.data.status === 'PROMOTING')).toBe(true);
+  });
+
+  it('a first load that stopped with rows of the sheet still waiting is refused past the limit', async () => {
+    for (const status of ['FAILED', 'PROMOTING']) {
+      writes = [];
+      table = [batch({ status, uploadedAt: new Date(Date.now() - 8 * DAY) })];
+      (h.db as { $queryRaw: unknown }).$queryRaw = vi.fn(async () => [{ loaded: true, waiting: 3 }]);
+      const res = await promote();
+      expect(res.ok, status).toBe(false);
+      expect(message(res)).toMatch(/^This batch was uploaded 8 days ago, and a staged batch older than 7 days/);
+      expect(writes).toEqual([]);
+    }
+  });
+
   it('the run already under way may finish its next slice past the limit (its own lease token)', async () => {
     table = [batch({ status: 'PROMOTING', promoteLeaseBy: 'stew:tok', promoteLeaseUntil: live(), uploadedAt: new Date(Date.now() - 8 * DAY) })];
     await expect(promoteWith({ leaseToken: 'stew:tok' })).rejects.toThrow('the promote went past the refusal');

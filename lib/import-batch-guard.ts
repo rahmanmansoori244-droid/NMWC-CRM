@@ -4,7 +4,12 @@
  *
  *  - A staged batch older than STAGED_BATCH_MAX_AGE_DAYS can no longer be
  *    promoted, resumed or fixed back into a load: the sheet must be uploaded
- *    again. Exclude and Discard still work on it.
+ *    again. Exclude and Discard still work on it. The limit is on the SHEET's
+ *    own rows: once a batch has been loaded and only rows fixed in the app are
+ *    left to load, those follow the fix window (IMPORT_PAYLOAD_DAYS) and the
+ *    newest-upload rule instead, as they did before (adversarial review of
+ *    finding 6: the limit cut the 90-day fix window of every loaded batch to 7
+ *    days, and told the Steward to discard a batch that cannot be discarded).
  *  - Before a promote or a resume the Steward is shown when and by whom the batch
  *    was uploaded and what it will do, and confirms it.
  *  - A customer that a NEWER customer upload has already loaded is not loaded
@@ -38,6 +43,28 @@ export function batchAgeText(uploadedAt: Date, now: Date = new Date()): string {
 /** Past the age limit: it can no longer be promoted. */
 export function stagedBatchExpired(uploadedAt: Date, now: Date = new Date()): boolean {
   return now.getTime() - uploadedAt.getTime() > STAGED_BATCH_MAX_AGE_DAYS * DAY_MS;
+}
+
+/**
+ * What a batch has been through, read from its rows (lib/import-master-lookup.ts
+ * batchLoadHistory): whether a promote has already run over it, and how many of
+ * the sheet's own rows (not fixed in the app) are still waiting to load.
+ */
+export type BatchLoadHistory = { everLoaded: boolean; uploadedRowsWaiting: number };
+
+/**
+ * Past the age limit for what it would load now. A batch never loaded, or one
+ * whose first load stopped with rows of the sheet still waiting, is a STAGED
+ * batch: refused past the limit. A batch already loaded, with only rows fixed in
+ * the app waiting, is not: those rows keep the fix window.
+ */
+export function stagedLoadExpired(
+  uploadedAt: Date,
+  history: BatchLoadHistory,
+  now: Date = new Date()
+): boolean {
+  if (!stagedBatchExpired(uploadedAt, now)) return false;
+  return !history.everLoaded || history.uploadedRowsWaiting > 0;
 }
 
 export function stagedBatchExpiredMessage(uploadedAt: Date, now: Date = new Date()): string {

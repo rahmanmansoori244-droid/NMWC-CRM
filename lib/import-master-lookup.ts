@@ -17,7 +17,7 @@ import {
   type NewerCandidate,
   type NewerUpload,
 } from '@/lib/import-row-fix';
-import type { NewerLoad } from '@/lib/import-batch-guard';
+import type { BatchLoadHistory, NewerLoad } from '@/lib/import-batch-guard';
 
 export async function masterCollisionMaps(
   phones: string[],
@@ -200,4 +200,39 @@ export async function newerLoadsOfBatch(
        AND r."parsed"->'fixedFrom' IS NULL
      ORDER BY r."parsed"->>'custCode', b."uploadedAt" DESC, nr."rowNumber"`;
   return rows.map((r) => ({ code: r.code, filename: r.filename, rowNumber: Number(r.rowNumber) }));
+}
+
+/**
+ * Code review 2026-11-10, finding 6 (adversarial review): what a customer batch
+ * has been through, for the age limit (lib/import-batch-guard.ts
+ * stagedLoadExpired). A promote has run over it when it is PROMOTED, or when it
+ * has a PROMOTED or REJECTED row (only a promote sets those — the same rule
+ * services/import-fixes.ts withdraw uses), or a row fixed back from REJECTED, or
+ * a row fixed after a load (`fixedAfterLoad`, set by the fix itself, so a batch
+ * whose every row was held back and then fixed still reads as loaded). The
+ * sheet's own rows still waiting are its CLEAN rows not fixed in the app.
+ * Read-only.
+ */
+export async function batchLoadHistory(
+  db: Prisma.TransactionClient | typeof prisma,
+  batch: { id: string; status: string }
+): Promise<BatchLoadHistory> {
+  const [r] = await db.$queryRaw<Array<{ loaded: boolean; waiting: number }>>`
+    SELECT
+      EXISTS (
+        SELECT 1 FROM "ImportRow"
+         WHERE "batchId" = ${batch.id}
+           AND ("state" IN ('PROMOTED', 'REJECTED')
+                OR "parsed"->'fixedFrom'->>'state' = 'REJECTED'
+                OR "parsed"->>'fixedAfterLoad' = 'true')
+      ) AS "loaded",
+      (SELECT COUNT(*)::int FROM "ImportRow"
+        WHERE "batchId" = ${batch.id} AND "state" = 'CLEAN' AND "excludedAt" IS NULL
+          AND "parsed" IS NOT NULL
+          AND COALESCE("parsed"->>'fixedInApp', 'false') <> 'true'
+          AND "parsed"->'fixedFrom' IS NULL) AS "waiting"`;
+  return {
+    everLoaded: batch.status === 'PROMOTED' || r?.loaded === true,
+    uploadedRowsWaiting: Number(r?.waiting ?? 0),
+  };
 }

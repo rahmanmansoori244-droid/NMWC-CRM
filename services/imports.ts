@@ -82,6 +82,7 @@ import {
   type SheetRow,
 } from '@/lib/import-row-check';
 import {
+  batchLoadHistory,
   fixTarget,
   linkedCustomerCodes,
   masterCollisionMaps,
@@ -95,6 +96,7 @@ import {
   newerLoadsRefusal,
   stagedBatchExpired,
   stagedBatchExpiredMessage,
+  stagedLoadExpired,
 } from '@/lib/import-batch-guard';
 import { headingClashIssue, missingTemixColumnIssue, reportHeadings } from '@/lib/import-headings';
 import { branchCrmRule, customerCrmRule, keptNote, type CrmOutcome } from '@/lib/import-crm-rule';
@@ -1938,7 +1940,14 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
   if (preflight.status === 'DISCARDED') {
     throw new ValidationError({ batchId: DISCARDED_BATCH_MESSAGE }, DISCARDED_BATCH_MESSAGE);
   }
-  if (!continuing && stagedBatchExpired(preflight.uploadedAt)) {
+  // The limit is on the sheet's own rows (adversarial review): a batch already
+  // loaded whose only rows waiting are fixed in the app loads them under the fix
+  // window and the newest-upload rule, as before.
+  if (
+    !continuing &&
+    stagedBatchExpired(preflight.uploadedAt) &&
+    stagedLoadExpired(preflight.uploadedAt, await batchLoadHistory(prisma, { id: batchId, status: preflight.status }))
+  ) {
     const why = stagedBatchExpiredMessage(preflight.uploadedAt);
     throw new ValidationError({ batchId: why }, why);
   }

@@ -5,7 +5,8 @@ import { prisma } from '@/lib/db';
 import { omanDate } from '@/lib/tz';
 import { Role } from '@prisma/client';
 import { OPEN_PROBLEM_ROW, WORK_BATCH_ROWS } from '@/lib/import-rows-view';
-import { batchAgeText, stagedBatchExpired } from '@/lib/import-batch-guard';
+import { batchAgeText, stagedBatchExpired, stagedLoadExpired } from '@/lib/import-batch-guard';
+import { batchLoadHistory } from '@/lib/import-master-lookup';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import Link from 'next/link';
@@ -339,6 +340,18 @@ export default async function WorkPage() {
       take: 30,
       include: { _count: { select: { rows: { where: OPEN_PROBLEM_ROW } } } },
     });
+    // Finding 6 (adversarial review): too old only for a STAGED batch, asked as
+    // the promote asks it; read only for the few batches past the age.
+    const tooOld = new Set<string>();
+    for (const b of failed) {
+      if (
+        (b.status === 'PROMOTING' || b.status === 'FAILED' || b.status === 'READY') &&
+        stagedBatchExpired(b.uploadedAt) &&
+        stagedLoadExpired(b.uploadedAt, await batchLoadHistory(prisma, b))
+      ) {
+        tooOld.add(b.id);
+      }
+    }
     items = failed.map((b) => ({
       id: b.id,
       category:
@@ -350,7 +363,7 @@ export default async function WorkPage() {
       title: b.filename,
       subtitle:
         // Code review 2026-11-10, finding 6: too old to load; the batch page offers Discard.
-        (b.status === 'PROMOTING' || b.status === 'FAILED' || b.status === 'READY') && stagedBatchExpired(b.uploadedAt)
+        tooOld.has(b.id)
           ? `Uploaded ${batchAgeText(b.uploadedAt)}: too old to promote — upload the sheet again, and discard this batch on its page`
           : b.status === 'PROMOTING' || b.status === 'FAILED'
           ? `Promote interrupted — ${b.promotedRows} of ${b.totalRows} rows loaded`

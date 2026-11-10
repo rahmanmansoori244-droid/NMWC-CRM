@@ -10,7 +10,14 @@ import { notReadNote, reportHeadings } from '@/lib/import-headings';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { PromoteButton } from './PromoteButton';
 import { DiscardBatch } from './DiscardBatch';
-import { DISCARDED_BATCH_MESSAGE, batchAgeText, stagedBatchExpired, stagedBatchExpiredMessage } from '@/lib/import-batch-guard';
+import {
+  DISCARDED_BATCH_MESSAGE,
+  batchAgeText,
+  stagedBatchExpired,
+  stagedBatchExpiredMessage,
+  stagedLoadExpired,
+} from '@/lib/import-batch-guard';
+import { batchLoadHistory } from '@/lib/import-master-lookup';
 import { ExcludeRemaining, RowActions } from './RowActions';
 import {
   canReleasePhone,
@@ -91,12 +98,16 @@ export default async function ImportBatchPage({
   // Rows can be fixed only on a customer-master batch; the account master is
   // re-uploaded instead (its rows keep no values to fix).
   // Code review 2026-11-10, finding 6: nothing is fixed back into a discarded
-  // batch, or into one too old to promote (the server refuses both).
+  // batch, or into one too old to promote (the server refuses both). The age
+  // limit is on a STAGED batch — never loaded, or its first load stopped with
+  // rows of the sheet waiting — asked as the server asks it; a batch already
+  // loaded keeps the fix window for its held-back rows (adversarial review).
   const discarded = batch.status === 'DISCARDED';
   const tooOld =
     batch.kind === 'CUSTOMER' &&
     (batch.status === 'READY' || batch.status === 'PROMOTING' || batch.status === 'FAILED') &&
-    stagedBatchExpired(batch.uploadedAt);
+    stagedBatchExpired(batch.uploadedAt) &&
+    stagedLoadExpired(batch.uploadedAt, await batchLoadHistory(prisma, batch));
   const fixable = batch.kind === 'CUSTOMER' && !discarded && !tooOld;
   // Whether each row can still be fixed — or its waiting fix still load — asked
   // as the server asks it (lib/import-fix-blocks.ts): the fix window, a newer

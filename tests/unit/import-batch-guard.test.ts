@@ -8,6 +8,7 @@ import {
   newerLoadsRefusal,
   stagedBatchExpired,
   stagedBatchExpiredMessage,
+  stagedLoadExpired,
 } from '@/lib/import-batch-guard';
 
 const NOW = new Date('2026-11-10T12:00:00Z');
@@ -30,6 +31,27 @@ describe('the age of a staged batch', () => {
     expect(stagedBatchExpiredMessage(ago(8 * DAY), NOW)).toBe(
       'This batch was uploaded 8 days ago, and a staged batch older than 7 days can no longer be promoted: what it holds may be older than what is in the CRM now. Upload the sheet again to load it, and discard this batch.'
     );
+  });
+});
+
+// Adversarial review of finding 6: the limit is on a STAGED batch. A batch
+// already loaded, with only rows fixed in the app waiting, keeps the 90-day fix
+// window (IMPORT_PAYLOAD_DAYS) for its held-back rows.
+describe('which batch the age limit applies to', () => {
+  const old = ago(30 * DAY);
+  it('a batch never loaded is refused past the limit, even when only fixed rows wait', () => {
+    expect(stagedLoadExpired(old, { everLoaded: false, uploadedRowsWaiting: 5 }, NOW)).toBe(true);
+    expect(stagedLoadExpired(old, { everLoaded: false, uploadedRowsWaiting: 0 }, NOW)).toBe(true);
+  });
+  it('a first load that stopped with rows of the sheet still waiting is refused past the limit', () => {
+    expect(stagedLoadExpired(old, { everLoaded: true, uploadedRowsWaiting: 1 }, NOW)).toBe(true);
+  });
+  it('a loaded batch with only fixed rows waiting is NOT refused, however old', () => {
+    expect(stagedLoadExpired(old, { everLoaded: true, uploadedRowsWaiting: 0 }, NOW)).toBe(false);
+    expect(stagedLoadExpired(ago(89 * DAY), { everLoaded: true, uploadedRowsWaiting: 0 }, NOW)).toBe(false);
+  });
+  it('nothing is refused inside the limit', () => {
+    expect(stagedLoadExpired(ago(7 * DAY), { everLoaded: false, uploadedRowsWaiting: 9 }, NOW)).toBe(false);
   });
 });
 

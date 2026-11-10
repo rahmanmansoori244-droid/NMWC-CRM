@@ -1059,7 +1059,11 @@ an interrupted one with no question — weeks later it would write its older val
   (`lib/import-batch-guard.ts` `STAGED_BATCH_MAX_AGE_DAYS`; a default awaiting the owner). The
   batch page and Work say "too old to promote"; a fix that would bring a row back to load is
   refused. Upload the sheet again, and discard the old batch. (A run already under way may
-  finish its next slice.)
+  finish its next slice.) The limit is on a **staged** batch: one never loaded, or one whose
+  first load stopped with rows of the sheet still waiting. A batch **already loaded** keeps the
+  90-day fix window above for its held-back and rejected rows: they can still be fixed and
+  loaded after 7 days, judged by the newest-upload rule (`stagedLoadExpired`,
+  `batchLoadHistory`; adversarial review of finding 6).
 - **A customer a newer upload has already loaded is not loaded again from an older batch.**
   The review names how many and from which file, in red; Promote stays disabled until the
   Steward ticks "Leave out these … customer(s)". Their rows in the older batch are then

@@ -48,6 +48,7 @@ import {
   type SheetRow,
 } from '@/lib/import-row-check';
 import {
+  batchLoadHistory,
   fixTarget,
   masterCollisionMaps,
   newerUploadsCarrying,
@@ -68,7 +69,7 @@ import {
 } from '@/lib/import-row-fix';
 import {
   DISCARDED_BATCH_MESSAGE,
-  stagedBatchExpired,
+  stagedLoadExpired,
   stagedBatchExpiredMessage,
 } from '@/lib/import-batch-guard';
 
@@ -276,9 +277,13 @@ async function recheck(
   /** Gap 22 (part C): the Steward, named on a CONFLICT row when a row changed meanwhile. */
   actorId: string
 ): Promise<{ clean: number; held: number }> {
-  // Code review 2026-11-10, finding 6: a row of a batch past the age limit is
-  // not brought back to load — the batch can no longer be promoted.
-  if (stagedBatchExpired(batch.uploadedAt)) {
+  // Code review 2026-11-10, finding 6: a row of a STAGED batch past the age
+  // limit is not brought back to load — the batch can no longer be promoted. A
+  // batch already loaded keeps the fix window for its held-back rows
+  // (fixBlocks / IMPORT_PAYLOAD_DAYS); its fixed rows load under the
+  // newest-upload rule above.
+  const history = await batchLoadHistory(tx, batch);
+  if (stagedLoadExpired(batch.uploadedAt, history)) {
     const why = stagedBatchExpiredMessage(batch.uploadedAt);
     throw new ValidationError({ _form: why }, why);
   }
@@ -370,6 +375,9 @@ async function recheck(
         parsed: {
           ...parsed,
           ...(fixedInApp ? { fixedInApp: true } : {}),
+          // Finding 6: fixed on a batch already loaded, so the batch still reads
+          // as loaded after its PROMOTED status goes back to READY below.
+          ...(history.everLoaded ? { fixedAfterLoad: true } : {}),
           fixedFrom,
           fixGroup: group,
         } as unknown as Prisma.InputJsonValue,

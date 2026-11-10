@@ -23,13 +23,14 @@ import {
 import { checkLimit } from '@/lib/rate-limit';
 import { loadPromoteSummary } from '@/lib/import-promote-summary';
 import { summaryLines, type PromoteSummary, type SummaryLine } from '@/lib/import-plan';
-import { newerLoadsOfBatch } from '@/lib/import-master-lookup';
+import { batchLoadHistory, newerLoadsOfBatch } from '@/lib/import-master-lookup';
 import {
   STAGED_BATCH_MAX_AGE_DAYS,
   batchAgeText,
   newerLoadsRefusal,
   stagedBatchExpired,
   stagedBatchExpiredMessage,
+  stagedLoadExpired,
   type NewerLoad,
 } from '@/lib/import-batch-guard';
 import { omanDateTime } from '@/lib/tz';
@@ -64,14 +65,25 @@ async function summariseCore(formData: FormData): Promise<PromoteReview> {
   if (!lim.ok) throw new RateLimitError(`Wait ${lim.retryAfterSec}s before checking this batch again.`);
   const batch = await prisma.importBatch.findUnique({
     where: { id: batchId },
-    select: { kind: true, overwriteCrmFields: true, uploadedAt: true, uploadedBy: { select: { fullName: true } } },
+    select: {
+      id: true,
+      kind: true,
+      status: true,
+      overwriteCrmFields: true,
+      uploadedAt: true,
+      uploadedBy: { select: { fullName: true } },
+    },
   });
   if (!batch) throw new NotFoundError('Import batch not found.');
   if (batch.kind !== 'CUSTOMER') throw new ValidationError({ batchId: 'not a customer import' });
   const overwrite = batch.overwriteCrmFields === true;
   const summary = await loadPromoteSummary(prisma, batchId, overwrite);
   const now = new Date();
-  const expired = stagedBatchExpired(batch.uploadedAt, now);
+  // Finding 6 (adversarial review): the age limit is on a staged batch, asked as
+  // the promote asks it — a loaded batch with only fixed rows waiting is not refused.
+  const expired =
+    stagedBatchExpired(batch.uploadedAt, now) &&
+    stagedLoadExpired(batch.uploadedAt, await batchLoadHistory(prisma, batch), now);
   const newer = await newerLoadsOfBatch(prisma, batchId, batch.uploadedAt);
   return {
     summary,

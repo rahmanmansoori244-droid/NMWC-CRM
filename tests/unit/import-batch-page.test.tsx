@@ -607,6 +607,21 @@ describe('/import/[batchId]: an old or discarded batch', () => {
     }
   });
 
+  // Adversarial review of finding 6: a batch already PROMOTED keeps the 90-day
+  // fix window for its held-back rows — the 7-day limit is on a staged batch.
+  it('a promoted batch older than 7 days still offers Fix on its held-back row, and no too-old note', async () => {
+    h.promote = null;
+    h.rows = [
+      row({ cust_code: 'C1', cust_name: 'Shop' }, { state: 'PROMOTED' }),
+      row({ cust_code: 'C2', cust_name: 'Shop 2' }, { id: 'r2', rowNumber: 3, state: 'QUARANTINED', parsed: { custCode: 'C2', custName: 'Shop 2' }, issues: [{ field: 'phone', message: 'phone invalid' }] }),
+    ];
+    h.batch = { status: 'PROMOTED', uploadedAt: new Date(Date.now() - 30 * DAY) };
+    await open();
+    expect(screen.queryByTestId('batch-too-old')).toBeNull();
+    expect(screen.getByRole('columnheader', { name: 'Fix' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Discard batch' })).toBeNull();
+  });
+
   it('discarded: says so, and offers nothing', async () => {
     h.promote = null;
     h.rows = [row({ cust_code: 'C1', cust_name: 'Shop' })];
