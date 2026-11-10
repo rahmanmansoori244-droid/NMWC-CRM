@@ -28,6 +28,7 @@ import bcrypt from 'bcryptjs';
 import { readFileSync } from 'node:fs';
 import { assertNotProduction, PRODUCTION_HOST_PREFIX, withoutExpectHost } from '../lib/assert-not-production';
 import { setChangeContext, src } from '../../lib/change-context';
+import { RESERVED_USERNAME_MESSAGE, reservedUsernameRefusal } from '../../lib/demo-accounts';
 
 type Cfg = {
   steward: { username: string; fullName: string; password: string };
@@ -57,6 +58,20 @@ async function main() {
   const file = withoutExpectHost(args).find((a) => !a.startsWith('--')) ?? 'golive-data/managers.json';
   const cfg = JSON.parse(readFileSync(file, 'utf8')) as Cfg;
   const host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
+  // Code review 2026-11-10, finding 25, second round: the same reserved-name check
+  // as /users create and the account import, before anything connects. A reserved
+  // name (the `steward` near miss in lib/demo-accounts.ts) would be created and
+  // then refused at every sign-in in production.
+  const reserved = [cfg.steward, ...(cfg.managers ?? [])]
+    .map((u) => String(u?.username ?? ''))
+    .filter((name) => reservedUsernameRefusal(name));
+  if (reserved.length > 0) {
+    throw new Error(
+      `refusing: reserved username(s) ${reserved.join(', ')} in ${file}.\n` +
+        `  ${RESERVED_USERNAME_MESSAGE}\n` +
+        '  Nothing has been written.'
+    );
+  }
 
   // The operator must NAME the database they mean; this refuses if the URL
   // disagrees.

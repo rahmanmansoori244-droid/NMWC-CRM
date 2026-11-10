@@ -116,6 +116,7 @@ vi.mock('@/app/(app)/routes/forms', () => ({
 }));
 
 import { canToggleRegion, canToggleRoute } from '@/lib/permissions';
+import { ACTIVE_MISSING } from '@/lib/active-switch';
 import { toggleRegionActiveAction, toggleRouteActiveAction } from '@/services/routes';
 import RoutesPage from '@/app/(app)/routes/page';
 
@@ -256,7 +257,9 @@ describe('finding 9: a switch sets the state the click wants, and only once', ()
       await toggleRegionActiveAction(form('solo', null)),
       await toggleRouteActiveAction(form('r-solo', null)),
     ]) {
-      expect(res).toMatchObject({ ok: false, code: 'VALIDATION_FAILED', fields: { active: expect.stringMatching(/Reload the page/) } });
+      // Second round of the review: the message is the reason too, since the
+      // /routes button shows only the message (it was the bare "Validation failed").
+      expect(res).toMatchObject({ ok: false, code: 'VALIDATION_FAILED', message: ACTIVE_MISSING, fields: { active: ACTIVE_MISSING } });
     }
     expect(h.writes).toEqual([]);
     expect(h.regions.get('solo')!.isActive).toBe(true);

@@ -173,7 +173,7 @@ async function toggleRegionActiveCore(formData: FormData): Promise<ActiveSwitchR
   const r = await prisma.region.findUnique({ where: { id } });
   if (!r) throw new NotFoundError('Region not found.');
   const wanted = wantedActive(formData);
-  if (wanted === null) throw new ValidationError({ [ACTIVE_FIELD]: ACTIVE_MISSING });
+  if (wanted === null) throw new ValidationError({ [ACTIVE_FIELD]: ACTIVE_MISSING }, ACTIVE_MISSING);
   if (r.isActive === wanted) {
     revalidatePath('/routes');
     return { isActive: wanted, changed: false };
@@ -229,7 +229,7 @@ async function toggleRouteActiveCore(formData: FormData): Promise<ActiveSwitchRe
     }
   }
   const wanted = wantedActive(formData);
-  if (wanted === null) throw new ValidationError({ [ACTIVE_FIELD]: ACTIVE_MISSING });
+  if (wanted === null) throw new ValidationError({ [ACTIVE_FIELD]: ACTIVE_MISSING }, ACTIVE_MISSING);
   if (r.isActive === wanted) {
     revalidatePath('/routes');
     return { isActive: wanted, changed: false };
