@@ -235,13 +235,9 @@ describe('launch browser suite — every change-password error is read out, and 
   });
 
   // Second round of the review: the guess limit could not be checked (its store
-  // did not answer). The form shows what the server says, not a lock-out.
-  it('a guess limit that could not be checked is said as that, not as too many attempts', async () => {
-    const message = 'Your password could not be checked just now, so nothing was changed. Please try again in a minute.';
-    h.change.mockResolvedValue({ ok: false, code: 'DB_UNAVAILABLE', message });
-    submit();
-    expect((await screen.findByRole('alert')).textContent).toBe(message);
-  });
+  // did not answer). Third round: proved through the real action and limiter in
+  // tests/unit/password-change-unavailable-ui.test.tsx; a test here, with the
+  // action mocked to return the message, passed on the old code too.
 
   it('a save the database may have finished says the same', async () => {
     h.change.mockResolvedValue({

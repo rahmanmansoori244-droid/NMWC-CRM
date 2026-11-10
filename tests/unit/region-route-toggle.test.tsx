@@ -16,7 +16,7 @@
  * the /routes page (the buttons are offered exactly where the action would act).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, cleanup, within } from '@testing-library/react';
+import { render, cleanup, within, screen, fireEvent, waitFor } from '@testing-library/react';
 import { Role } from '@prisma/client';
 
 const h = vi.hoisted(() => ({
@@ -264,6 +264,36 @@ describe('finding 9: a switch sets the state the click wants, and only once', ()
     expect(h.writes).toEqual([]);
     expect(h.regions.get('solo')!.isActive).toBe(true);
     expect(h.routes.get('r-solo')!.isActive).toBe(true);
+  });
+
+  // Third round: the /routes button and the real action together. A tab still
+  // running the code from before the deploy sends no wanted state; the button
+  // shows only the server's message, so the alert must say to reload. The second
+  // round's test mocked the action's answer and passed on the old code too.
+  it('the /routes button from a screen older than the deploy, through the real action: the alert says to reload', async () => {
+    const { ToggleButton: RealToggleButton } = await vi.importActual<typeof import('@/app/(app)/routes/forms')>(
+      '@/app/(app)/routes/forms'
+    );
+    h.session = STEWARD;
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const alert = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    // The older screen's form: everything but the wanted state.
+    const set = FormData.prototype.set;
+    const strip = vi.spyOn(FormData.prototype, 'set').mockImplementation(function (this: FormData, ...args: unknown[]) {
+      if (args[0] === 'active') return;
+      return (set as (...a: unknown[]) => void).apply(this, args);
+    });
+    try {
+      render(<RealToggleButton id="r-solo" kind="route" isActive />);
+      fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+      await waitFor(() => expect(alert).toHaveBeenCalledWith(ACTIVE_MISSING));
+      expect(alert).not.toHaveBeenCalledWith('Validation failed');
+      expect(h.writes).toEqual([]);
+      expect(h.routes.get('r-solo')!.isActive).toBe(true);
+    } finally {
+      strip.mockRestore();
+      vi.restoreAllMocks();
+    }
   });
 
   it('the permission rule still comes first: a Manager’s stale click on a shared region is FORBIDDEN, not "already"', async () => {
