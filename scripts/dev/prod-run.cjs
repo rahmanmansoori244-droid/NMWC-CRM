@@ -94,6 +94,12 @@ try {
 const hostname = parsed.hostname.toLowerCase();
 if (!hostMarker(hostname, HOSTS)) {
   console.log('that env file does not point at production — refusing');
+  // The list is this checkout's copy: after a restore moved production, a clone that
+  // has not pulled the new list refuses the real production (finding 14, §6.3a 1a).
+  console.log(
+    '  If production has just moved to a new host (a restore), this checkout may hold an old copy of\n' +
+      '  config/production-hosts.txt: run `git pull` here first (docs/OPERATIONS.md §6.3a step 1a).'
+  );
   process.exit(2);
 }
 if (!hostname.includes(expectHost.toLowerCase())) {

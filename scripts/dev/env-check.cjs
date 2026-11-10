@@ -43,6 +43,13 @@ const isProduction = (value) => {
 
 let production = false;
 console.log(`env file: ${fs.existsSync(envFile) ? envFile : `${envFile} (missing)`}`);
+// The list is read from THIS checkout. After a restore moves production, a clone that
+// has not pulled the new list does not see the new host as production (code review
+// 2026-11-10, finding 14; docs/OPERATIONS.md §6.3a step 1a), so say which list counted.
+console.log(
+  `production list: ${HOSTS.length} host marker(s) from this checkout's config/production-hosts.txt ` +
+    `(production first: ${HOSTS[0]}). If production moved to a new host, run \`git pull\` here first.`
+);
 for (const name of ['DATABASE_URL', 'DIRECT_URL']) {
   for (const [where, value] of [
     ['file', fromFile[name]],

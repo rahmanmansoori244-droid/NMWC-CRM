@@ -315,6 +315,10 @@ describe('the plain-node guards refuse when the list is broken', () => {
       const ok = runWithList(script, TWO.join('\n'), args);
       expect(ok.status, ok.out).toBe(0);
       expect(ok.out).toContain('ok: nothing here points at production.');
+      // It says which list counted — this checkout's copy — and to pull after a move (§6.3a 1a).
+      expect(ok.out).toContain(`production list: ${TWO.length} host marker(s) from this checkout's`);
+      expect(ok.out).toContain(`production first: ${TWO[0]}`);
+      expect(ok.out).toMatch(/git pull/);
     }
   }, STEP_TEST_TIMEOUT_MS);
 });
