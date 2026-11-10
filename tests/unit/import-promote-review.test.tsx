@@ -23,6 +23,7 @@ vi.mock('@/services/import-fixes', () => ({ setImportOverwriteAction: h.setOverw
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: h.refresh, push: vi.fn() }) }));
 
 import { PromoteButton } from '@/app/(app)/import/[batchId]/PromoteButton';
+import { SHOP_NOT_CHANGED_MEANING } from '@/lib/import-shop-notice';
 
 const KEPT =
   'CRM fields kept: on 2 customer(s) and 1 shop(s) the sheet differs from the record. Their values stay as they are on record (name 2, address 1).';
@@ -318,6 +319,11 @@ describe('rows loaded with their shop NOT changed are acknowledged', () => {
     expect(go.disabled).toBe(true);
     const tick = within(dialog).getByRole('checkbox', { name: /I understand that 3 row\(s\) will be loaded with their shop NOT changed/ });
     expect(tick.closest('label')!.textContent).toContain('1 of them carry a different route, and that route will NOT be applied');
+    // Finding 28, second round: the tick says which rows it counts — the same rows the end-of-load notice counts.
+    expect(tick.closest('label')!.textContent).toContain(SHOP_NOT_CHANGED_MEANING);
+    expect(SHOP_NOT_CHANGED_MEANING).toBe(
+      "Each is a row that carries the customer's Temix code and names a shop of that customer (branch_code) whose details in the sheet differ from the CRM, or that the CRM does not have; such a row never changes or adds a shop."
+    );
     fireEvent.click(tick);
     expect(go.disabled).toBe(false);
   });

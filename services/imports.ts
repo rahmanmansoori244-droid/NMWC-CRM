@@ -1657,6 +1657,16 @@ type LaneOutcome = {
   notes: Array<string | null>;
   written: boolean[];
   crm: Array<CrmOutcome | null>;
+  /**
+   * Code review 2026-11-10, finding 28 (second round): the row named a shop of
+   * this customer that the sheet differs from, or one the CRM does not have, and
+   * the shop was left as it was (not changed, not added) — exactly what the
+   * "Before you promote" tick counts (lib/import-plan.ts linkedShops +
+   * linkedNotAdded). A row with no branch_code, a branch of another customer or
+   * an archived one is NOT counted: it carries its own note, and it names no shop
+   * of this customer that the import declined to change.
+   */
+  shopNotChanged: boolean[];
 };
 /** What the branch-only lane did to a branch, for its audit row (gap 4). */
 type LaneBranchChange =
@@ -1682,10 +1692,12 @@ async function refreshLaneBranches(
   const notes: Array<string | null> = [];
   const written: boolean[] = [];
   const crm: Array<CrmOutcome | null> = [];
-  const skip = (note: string | null, outcome: CrmOutcome | null = null) => {
+  const shopNotChanged: boolean[] = [];
+  const skip = (note: string | null, outcome: CrmOutcome | null = null, notChanged = false) => {
     notes.push(note);
     written.push(false);
     crm.push(outcome);
+    shopNotChanged.push(notChanged);
   };
   for (const [k, r] of resolved.entries()) {
     if (!r.sheetCode) {
@@ -1729,7 +1741,9 @@ async function refreshLaneBranches(
     if (!found) {
       if (!r.fixedInApp) {
         skip(
-          `branch ${r.branchCode} is not in the master and was not added — a re-import does not add branches to a customer linked to Temix; fix the held-back row on its batch page instead`
+          `branch ${r.branchCode} is not in the master and was not added — a re-import does not add branches to a customer linked to Temix; fix the held-back row on its batch page instead`,
+          null,
+          true
         );
         continue;
       }
@@ -1765,6 +1779,7 @@ async function refreshLaneBranches(
       notes.push(null);
       written.push(true);
       crm.push(null);
+      shopNotChanged.push(false);
       continue;
     }
     if (found.customerId !== customerId) {
@@ -1795,7 +1810,7 @@ async function refreshLaneBranches(
       // Code review 2026-11-10, finding 28: the note said "change it on the
       // customer page", and no screen can change a route. It now says the route
       // was NOT changed and what can change one today (lib/import-plan.ts).
-      skip(shopNotChangedNote(r.branchCode, differs));
+      skip(shopNotChangedNote(r.branchCode, differs), null, true);
       continue;
     }
     // Code review 2026-11-10, finding 1: what the row may write on a shop that
@@ -1841,6 +1856,7 @@ async function refreshLaneBranches(
     notes.push(null);
     written.push(true);
     crm.push(outcome);
+    shopNotChanged.push(false);
   }
   if (written.some(Boolean)) {
     await tx.customer.updateMany({
@@ -1856,7 +1872,7 @@ async function refreshLaneBranches(
     // customer reads as last edited by.
     await tx.customer.update({ where: { id: customerId }, data: { updatedAt: new Date() } });
   }
-  return { notes, written, crm };
+  return { notes, written, crm, shopNotChanged };
 }
 
 /**
@@ -1882,6 +1898,8 @@ async function refreshLaneBranches(
 type RowNote = {
   note: string | null;
   written: boolean;
+  /** Finding 28 (second round): LaneOutcome.shopNotChanged for this row. */
+  shopNotChanged?: boolean;
   extra?: string | null;
   subChannel?: string | null;
   kept?: string[];
@@ -3502,7 +3520,11 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               // The customer's own writes below are the lead row's again.
               await nameRow(leadIdx);
               laneIdx.forEach((i, k) => {
-                rowNotes[i] = { note: out.notes[k] ?? null, written: out.written[k] ?? false };
+                rowNotes[i] = {
+                  note: out.notes[k] ?? null,
+                  written: out.written[k] ?? false,
+                  shopNotChanged: out.shopNotChanged[k] === true,
+                };
                 // Finding 1: a fixed row says what the rule kept or replaced on its shop.
                 addCrmNotes(i, { shop: resolvedBranches[i]!.branchCode }, out.crm[k] ?? null);
               });
@@ -3736,8 +3758,12 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         sliceNotes.kept += rowNotes.filter((n) => (n?.kept?.length ?? 0) > 0).length;
         sliceNotes.replaced += replacedRows.size;
         sliceNotes.creditNotApplied += rowNotes.filter((n) => !!n?.credit).length;
-        // Finding 28: rows loaded with their shop left as it was (a '_lane' note).
-        sliceNotes.shopNotChanged += rowNotes.filter((n) => !!n?.note && !n.written).length;
+        // Finding 28: rows loaded with their shop left as it was. Second round:
+        // only the rows the review's tick counts (LaneOutcome.shopNotChanged) —
+        // it used to count every unwritten lane note, so a row with no
+        // branch_code, or naming another customer's or an archived branch, was
+        // reported as "shop NOT changed" too.
+        sliceNotes.shopNotChanged += rowNotes.filter((n) => n?.shopNotChanged === true).length;
         if (noted) {
           // The branch outcome of each row: a branch left as it was, and why, or
           // what a fixed row did not write. It used to be invisible — the row

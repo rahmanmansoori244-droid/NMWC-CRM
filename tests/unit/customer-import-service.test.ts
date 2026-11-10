@@ -1993,6 +1993,13 @@ const SCENARIOS: Scenario[] = [
   { name: 'refresh lane: the row says CREDIT for a CASH customer', stored: LINKED, rows: [parsed({ temixCode: 'ARC1', paymentTerms: 'CREDIT', creditLimit: 750 }), parsed({ temixCode: 'ARC1', branchCode: 'ARC1-05' })], opts: { branches: { 'ARC1-02': storedBranch() } } },
   { name: 'a linked customer whose temix_code cell is blank: the full lane, fill-only', stored: LINKED, rows: [parsed({ address: 'Older', creditLimit: 750 })], opts: { branches: { 'ARC1-02': storedBranch() } } },
   { name: 'a seeded customer whose row carries a code and credit figures', stored: AS_SHEET, rows: [parsed({ temixCode: 'ARC1', creditLimit: 750, paymentTermDays: 30 })], opts: { branches: { 'ARC1-02': storedBranch() } } },
+  // Finding 28, second round: rows of the refresh lane that leave a shop alone for
+  // ANOTHER reason are not "shop NOT changed" — the review's tick does not count
+  // them, and the end-of-load count used to (every unwritten lane note).
+  { name: 'refresh lane: a row with no branch_code (only cust_code, name and temix_code)', stored: LINKED, rows: [parsed({ temixCode: 'ARC1', branchCode: null, address: null, branchName: null })], opts: { branches: { 'ARC1-02': storedBranch() } } },
+  { name: 'refresh lane: a row naming a branch of another customer', stored: LINKED, rows: [parsed({ temixCode: 'ARC1', address: 'Older' })], opts: { branches: { 'ARC1-02': storedBranch({ customerId: 'someone-else', customer: { nmwcCode: 'OTH1' } }) } } },
+  { name: 'refresh lane: a row naming an archived branch', stored: LINKED, rows: [parsed({ temixCode: 'ARC1', address: 'Older' })], opts: { branches: { 'ARC1-02': storedBranch({ deletedAt: new Date('2026-09-01T08:00:00Z') }) } } },
+  { name: 'refresh lane: one shop differs, one not in the CRM, one without branch_code', stored: LINKED, rows: [parsed({ temixCode: 'ARC1', address: 'Older' }), parsed({ temixCode: 'ARC1', branchCode: 'ARC1-05' }), parsed({ temixCode: 'ARC1', branchCode: null, address: null, branchName: null })], opts: { branches: { 'ARC1-02': storedBranch() } } },
   { name: 'a fixed row of a linked customer: route written, address kept', stored: LINKED, rows: [parsed({ fixedInApp: true, routeCode: 'R1', address: 'Older' })], opts: { routes: R1, branches: { 'ARC1-02': storedBranch() } } },
   { name: 'the same fixed row with the option ON', stored: LINKED, rows: [parsed({ fixedInApp: true, routeCode: 'R1', address: 'Older' })], opts: { routes: R1, branches: { 'ARC1-02': storedBranch() } }, overwrite: true },
   { name: 'a fixed row that creates its shop, beside a plain refresh row', stored: LINKED, rows: [parsed({ temixCode: 'ARC1' }), parsed({ fixedInApp: true, branchCode: 'ARC1-07' })], opts: { branches: { 'ARC1-02': storedBranch() } } },
