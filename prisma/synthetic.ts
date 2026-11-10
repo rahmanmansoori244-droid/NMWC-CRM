@@ -30,7 +30,7 @@ import { normalizeCR } from '../lib/cr';
 import { scoreCustomer, scoreBranch } from '../lib/completeness';
 import { formatCustomerCode, formatBranchCode } from '../lib/codes';
 import { assertNotProduction, withoutExpectHost } from '../scripts/lib/assert-not-production';
-import { contextClient, src } from '../lib/change-context';
+import { ARRAY_TX_LIMITS, contextClient, src } from '../lib/change-context';
 
 const SEED_URL = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
 
@@ -131,7 +131,7 @@ async function clearSyntheticData() {
       "EditRevision"
     RESTART IDENTITY CASCADE;
   `),
-  ]);
+  ], ARRAY_TX_LIMITS);
 
   // Re-create the admin user (it was wiped above)
   const passwordHash = await bcrypt.hash(

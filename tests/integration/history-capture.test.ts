@@ -26,7 +26,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { PrismaClient, type Prisma } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { pgPoolConfig } from '@/lib/pg-pool-config';
-import { setChangeContext, src, withChangeContext } from '@/lib/change-context';
+import { ARRAY_TX_LIMITS, setChangeContext, src, withChangeContext } from '@/lib/change-context';
 import { purgeHistory, REMOTE_TX, withAuditMaintenance } from '../support/audit';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 120_000 });
@@ -369,7 +369,7 @@ describe.skipIf(!ENABLED)('the dated history is written by the database', () => 
       db.$transaction([
         db.$executeRaw`SELECT set_config('nmwc.effective_from', '2999-01-01', true)`,
         db.customer.update({ where: { id: ids.customer }, data: { paymentTermDays: 61 } }),
-      ])
+      ], ARRAY_TX_LIMITS)
     ).rejects.toThrow(/in the future/);
     expect(
       (await db.customer.findUniqueOrThrow({ where: { id: ids.customer } })).paymentTermDays
@@ -456,7 +456,7 @@ describe.skipIf(!ENABLED)('the dated history is written by the database', () => 
       db.$transaction([
         db.$executeRawUnsafe(`SET LOCAL lock_timeout = '2000ms'`),
         db.$executeRawUnsafe(`TRUNCATE "BranchHistory"`),
-      ])
+      ], ARRAY_TX_LIMITS)
     ).rejects.toThrow(/append-only|lock timeout/);
     await expect(
       db.branchHistory.create({

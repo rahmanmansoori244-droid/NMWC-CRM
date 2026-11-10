@@ -27,6 +27,8 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
+// Prisma 7 gives an array transaction a 2 s / 5 s limit unless it names its own (lib/change-context.ts).
+import { ARRAY_TX_LIMITS } from '@/lib/change-context';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals, withAuditMaintenance } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
 import { editPayload, type EditPatch } from '../support/edit-payload';
@@ -320,7 +322,7 @@ describe.skipIf(!ENABLED)('owner decisions 2–4: the submit gate, the approval 
       prisma.customer.update({ where: { id: ids.credit }, data: { crPhotoId: null } }),
       prisma.attachment.update({ where: { id: his.id }, data: { customerId: ids.credit } }),
       prisma.customer.update({ where: { id: ids.credit }, data: { crPhotoId: his.id } }),
-    ]);
+    ], ARRAY_TX_LIMITS);
     as(ids.sales, 'SALESMAN');
     expect(await photos.detachPhotoAction({ attachmentId: his.id })).toEqual({ ok: false, code: 'FORBIDDEN', message: CR_LOCKED });
     expect((await prisma.attachment.findUniqueOrThrow({ where: { id: his.id } })).deletedAt).toBeNull();

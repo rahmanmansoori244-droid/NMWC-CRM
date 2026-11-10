@@ -240,7 +240,8 @@ export async function setChangeContext(tx: RawRunner, ctx: ChangeContext): Promi
 
 /**
  * The same statement as a batch item, for a script's array transaction:
- * `client.$transaction([changeContextStatement(client, ctx), client.x.update(...)])`.
+ * `client.$transaction([changeContextStatement(client, ctx), client.x.update(...)], ARRAY_TX_LIMITS)`
+ * (the limits are not optional there: see ARRAY_TX_LIMITS below).
  */
 export function changeContextStatement(
   client: Pick<PrismaClient, '$executeRaw'>,
@@ -249,6 +250,30 @@ export function changeContextStatement(
   const { actor, source, effective } = changeContextParams(ctx);
   return client.$executeRaw`SELECT set_config('nmwc.actor', ${actor}, true), set_config('nmwc.source', ${source}, true), set_config('nmwc.effective_from', ${effective}, true)`;
 }
+
+/**
+ * The limits every ARRAY transaction outside the application names for itself —
+ * `client.$transaction([changeContextStatement(client, ctx), write], ARRAY_TX_LIMITS)`
+ * in a seed, a fixture builder or an operator script.
+ *
+ * On Prisma 6 an array transaction had no time limit of Prisma's own. On Prisma 7
+ * it carries the interactive transaction's: `maxWait` to get a connection and
+ * BEGIN, `timeout` for the whole batch, and past either the batch is rolled back
+ * and rejected with P2028 although its statements succeeded. A client built
+ * without `transactionOptions` — every script, seed and test client — gets
+ * Prisma's defaults, 2 s and 5 s. A new TLS connection to Neon from Oman is
+ * about seven round trips and a waking compute takes seconds more (the harness
+ * allows 30 s for one in its URL, which these calls no longer honoured), a
+ * chunk of 250 customers fires a history trigger per row, and a row held by a
+ * user's request can make a statement wait up to that request's 20 s. A local
+ * Postgres answers in milliseconds, so none of it shows there (review of the
+ * upgrade, 2026-11-10). So: as long to start as the harness allows a connection,
+ * and two minutes for the batch — its statements are single writes; a real
+ * hang still ends. The application's own client sets its limits once, in
+ * lib/db.ts. tests/unit/array-transaction-limits.test.ts refuses an array
+ * transaction outside app/, lib/ and services/ that names none.
+ */
+export const ARRAY_TX_LIMITS = { maxWait: 30_000, timeout: 120_000 } as const;
 
 /**
  * A client whose every model call runs in its own short transaction under `ctx`
@@ -263,10 +288,10 @@ export function contextClient<C extends PrismaClient>(client: C, ctx: ChangeCont
     query: {
       $allModels: {
         async $allOperations({ args, query }) {
-          const [, result] = await client.$transaction([
-            changeContextStatement(client, ctx),
-            query(args),
-          ]);
+          const [, result] = await client.$transaction(
+            [changeContextStatement(client, ctx), query(args)],
+            ARRAY_TX_LIMITS
+          );
           return result;
         },
       },

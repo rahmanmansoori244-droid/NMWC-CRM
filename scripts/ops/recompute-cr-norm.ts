@@ -82,7 +82,7 @@ import {
   type SignalRow,
 } from '../../lib/duplicate-pairing';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
-import { changeContextStatement, src } from '../../lib/change-context';
+import { ARRAY_TX_LIMITS, changeContextStatement, src } from '../../lib/change-context';
 import { OperatorRefusal, operatorErrorLabel } from './error-label';
 
 export type NormRow = { id: string; crNumber: string | null; crNumberNorm: string | null };
@@ -380,7 +380,7 @@ export async function main(): Promise<number> {
           where: guardedWhere(f),
           data: { crNumberNorm: f.next, updatedAt: f.updatedAt },
         }),
-      ]);
+      ], ARRAY_TX_LIMITS);
       if (res.count === 1) custWritten += 1;
       else custSkipped += 1;
       if ((custWritten + custSkipped) % 100 === 0) {

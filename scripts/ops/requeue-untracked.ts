@@ -48,7 +48,7 @@ import { TEMIX_QUEUE_WHERE } from '../../lib/temix';
 import { isDemoAccount } from '../../lib/demo-accounts';
 import { OperatorRefusal } from './error-label';
 import { assertNotProduction } from '../lib/assert-not-production';
-import { changeContextStatement, src } from '../../lib/change-context';
+import { ARRAY_TX_LIMITS, changeContextStatement, src } from '../../lib/change-context';
 
 /**
  * The rows to correct, and the whole of the safety argument, in one object.
@@ -630,7 +630,7 @@ async function main(): Promise<number> {
           // field any of those forms can see.
         },
       }),
-      ]);
+      ], ARRAY_TX_LIMITS);
       if (res.count === 0) {
         throw new Error(
           `selected ${ids.length} rows and updated none — something else is writing to\n` +

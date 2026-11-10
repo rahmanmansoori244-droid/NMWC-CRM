@@ -23,7 +23,7 @@ import { normalizePhone } from '../../../../lib/phone';
 import { scoreBranch, scoreCustomer, type BranchForScore, type CustomerForScore } from '../../../../lib/completeness';
 import { cleanupRegistry, residue } from './cleanup';
 import { assertNotProduction, db, getDb, REGISTRY_DIR, RUN_ID, safeError, hasR2 } from './env';
-import { changeContextStatement, contextClient, src } from '../../../../lib/change-context';
+import { ARRAY_TX_LIMITS, changeContextStatement, contextClient, src } from '../../../../lib/change-context';
 import { FIXTURE_PASSWORD_SHAPE } from './secret-scan';
 import { makeRunId, newId, smallHash } from './ids';
 import { assertOmanDayUnchanged, OMAN_TODAY, omanDayAfter } from './oman';
@@ -381,7 +381,7 @@ class WorldImpl implements World {
       await client.$transaction([
         changeContextStatement(client, SEED_CONTEXT),
         client.$executeRaw`INSERT INTO "_ManagerRegions" ("A", "B") SELECT * FROM UNNEST(${regionIds}::text[], ${userIds}::text[]) ON CONFLICT DO NOTHING`,
-      ]);
+      ], ARRAY_TX_LIMITS);
     }
     return planned.map((p) => {
       const u: FixtureUser = {

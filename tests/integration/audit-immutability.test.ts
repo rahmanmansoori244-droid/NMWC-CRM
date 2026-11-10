@@ -10,6 +10,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, withAuditMaintenance } from '../support/audit';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { pgPoolConfig } from '@/lib/pg-pool-config';
+// Prisma 7 gives an array transaction a 2 s / 5 s limit unless it names its own (lib/change-context.ts).
+import { ARRAY_TX_LIMITS } from '@/lib/change-context';
 
 const ENABLED = process.env.RUN_AUDIT_IMMUTABLE === '1' && !!process.env.DATABASE_URL;
 const sfx = `aim${Date.now().toString(36)}`;
@@ -56,7 +58,7 @@ describe.skipIf(!ENABLED)('B4: AuditLog and EditApproval are append-only at the 
       prisma.$transaction([
         prisma.$executeRawUnsafe(`SET LOCAL lock_timeout = '2000ms'`),
         prisma.$executeRawUnsafe(`TRUNCATE "AuditLog"`),
-      ])
+      ], ARRAY_TX_LIMITS)
     ).rejects.toThrow(/append-only|lock timeout/);
     const still = await prisma.auditLog.findUniqueOrThrow({ where: { id: row.id } });
     expect(still.reason).toBe('original');
@@ -130,14 +132,14 @@ describe.skipIf(!ENABLED)('B4: AuditLog and EditApproval are append-only at the 
           app.$transaction([
             app.$executeRawUnsafe(`SET LOCAL nmwc.audit_maintenance = 'on'`),
             app.$executeRaw`DELETE FROM "AuditLog" WHERE "id" = ${row.id}`,
-          ])
+          ], ARRAY_TX_LIMITS)
         ).rejects.toThrow(/append-only|permission denied/);
         // through the cascade, with the GUC: refused
         await expect(
           app.$transaction([
             app.$executeRawUnsafe(`SET LOCAL nmwc.audit_maintenance = 'on'`),
             app.$executeRaw`DELETE FROM "CustomerEdit" WHERE "id" = ${edit.id}`,
-          ])
+          ], ARRAY_TX_LIMITS)
         ).rejects.toThrow(/append-only|permission denied/);
         expect(await prisma.editApproval.count({ where: { editId: edit.id } })).toBe(1);
         expect(await prisma.auditLog.findUnique({ where: { id: row.id } })).not.toBeNull();

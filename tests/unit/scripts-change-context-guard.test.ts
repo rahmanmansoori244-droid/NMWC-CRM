@@ -82,7 +82,7 @@ describe('gap 24: operator scripts, seeds and probes name their run', () => {
     expect(
       missing,
       'set the change context in each write transaction: setChangeContext(tx, { actorId, source: src.script(name, runId) }),\n' +
-        'or prisma.$transaction([changeContextStatement(prisma, ctx), write]) for a single statement'
+        'or prisma.$transaction([changeContextStatement(prisma, ctx), write], ARRAY_TX_LIMITS) for a single statement'
     ).toEqual([]);
   });
 });

@@ -30,7 +30,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { PrismaClient, type Prisma } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { pgPoolConfig } from '@/lib/pg-pool-config';
-import { src, withChangeContext } from '@/lib/change-context';
+import { ARRAY_TX_LIMITS, src, withChangeContext } from '@/lib/change-context';
 import { purgeCustomerEdits, purgeHistory, withAuditMaintenance } from '../support/audit';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 120_000 });
@@ -243,7 +243,7 @@ describe.skipIf(!ENABLED)('a sent request is evidence (gap 19)', () => {
         app.$transaction([
           app.$executeRawUnsafe(`SET LOCAL nmwc.audit_maintenance = 'on'`),
           app.$executeRaw`UPDATE "CustomerEdit" SET "fieldChanges" = '[]' WHERE "id" = ${e.id}`,
-        ])
+        ], ARRAY_TX_LIMITS)
       ).rejects.toThrow(REFUSED);
       await expect(app.$executeRaw`DELETE FROM "CustomerEdit" WHERE "id" = ${e.id}`).rejects.toThrow(REFUSED);
       // Its decision still moves.

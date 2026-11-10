@@ -37,7 +37,7 @@ import { PrismaClient, DayOfWeek, type Prisma } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
-import { changeContextStatement, src } from '../../lib/change-context';
+import { ARRAY_TX_LIMITS, changeContextStatement, src } from '../../lib/change-context';
 
 /** Rows per statement; tiny here, but the same shape as its sibling scripts. */
 const CHUNK = 100;
@@ -247,7 +247,7 @@ async function main(): Promise<number> {
             where: { id: p.branchId, deletedAt: null, dayOfVisit: null },
             data: { dayOfVisit: p.day, lastEditedById: actor.id },
           }),
-        ]);
+        ], ARRAY_TX_LIMITS);
         done += res.count;
       }
       console.log(`  written ${String(done).padStart(4)} of ${plan.length}`);

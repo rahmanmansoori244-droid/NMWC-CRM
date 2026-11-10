@@ -44,7 +44,7 @@ import { pgPoolConfig } from '../../lib/pg-pool-config';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
-import { changeContextStatement, src } from '../../lib/change-context';
+import { ARRAY_TX_LIMITS, changeContextStatement, src } from '../../lib/change-context';
 
 /**
  * The value Finance's decision takes in the CRM.
@@ -253,7 +253,7 @@ async function main(): Promise<number> {
             // on one of these customers with a concurrent-edit conflict.
           },
         }),
-      ]);
+      ], ARRAY_TX_LIMITS);
       done += res.count;
       console.log(`  written ${String(done).padStart(6)} of ${ids.length}`);
     }
