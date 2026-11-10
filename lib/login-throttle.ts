@@ -37,11 +37,15 @@ export class LoginThrottledError extends CredentialsSignin {
  */
 export function loginFailureMessage(error: AuthError): string {
   if (error instanceof CredentialsSignin) {
+    // Code review 2026-11-10, finding 10: both say how long to wait. Since a
+    // refused attempt no longer restarts the bucket (lib/rate-limit.ts), the
+    // number is the real time until the next attempt is let through. 60 s only
+    // when the error did not carry its wait (it always does from authorize()).
+    const wait = error instanceof LoginThrottledError ? error.retryAfterSec : 60;
     if (error.code === LOGIN_LOCKED_USER) {
-      return 'Account temporarily locked due to repeated attempts. Try again in a minute.';
+      return `Account temporarily locked due to repeated attempts. Try again in ${wait}s.`;
     }
     if (error.code === LOGIN_THROTTLED_IP) {
-      const wait = error instanceof LoginThrottledError ? error.retryAfterSec : 60;
       return `Too many attempts from your network. Try again in ${wait}s.`;
     }
   }

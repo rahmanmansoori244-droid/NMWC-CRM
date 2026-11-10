@@ -313,6 +313,8 @@ function rateLimitKeys(f: Fixture): string[] {
     // Every per-account throttle the app keys by user id (checkLimit callers): a draft
     // save is 'edit-draft', a printout 'print' (credit flow).
     for (const p of ['edit', 'edit-draft', 'photo', 'import', 'temix', 'temix-download', 'print', 'passwordreset']) keys.push(`${p}:${id}`);
+    // Code review 2026-11-10, finding 22: the change-password form's guesses.
+    keys.push(`pwchange:user:${id}`);
   }
   return keys;
 }

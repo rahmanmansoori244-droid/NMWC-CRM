@@ -87,15 +87,70 @@ describe.skipIf(!ENABLED)('checkLimitPg — durable Postgres token bucket', () =
     const later = await checkLimit(key, cfg);
     expect(first.ok).toBe(false);
     expect(later.ok).toBe(false);
-    // tokens floored at -1 => deficit <= 2 => retry <= ceil(2 / refill).
-    expect(later.retryAfterSec).toBeLessThanOrEqual(Math.ceil(2 / cfg.refillPerSec));
+    // Finding 10: a refusal costs nothing, so the wait never grows past one refill.
+    expect(later.retryAfterSec).toBeLessThanOrEqual(first.retryAfterSec);
+    expect(later.retryAfterSec).toBeLessThanOrEqual(Math.ceil(1 / cfg.refillPerSec));
   });
 
+  // Code review 2026-11-10, finding 10: a refused request used to be debited to
+  // -1 and re-stamp lastRefill, so while anyone behind one address kept trying,
+  // the bucket never refilled and nobody got in.
+  it('a refused request leaves the row exactly as it was: no token taken, the refill clock not restarted', async () => {
+    const cfg = { capacity: 5, refillPerSec: 5 / 60 };
+    await prisma.$executeRaw`
+      INSERT INTO "RateLimit" ("key", "tokens", "lastRefill", "updatedAt")
+      VALUES (${key}, 0.25, NOW() - INTERVAL '3 seconds', NOW() - INTERVAL '3 seconds')`;
+    const before = await prisma.rateLimit.findUnique({ where: { key } });
+    for (let i = 0; i < 10; i++) expect((await checkLimit(key, cfg)).ok).toBe(false);
+    const after = await prisma.rateLimit.findUnique({ where: { key } });
+    expect(after!.tokens).toBe(before!.tokens);
+    expect(after!.lastRefill.getTime()).toBe(before!.lastRefill.getTime());
+    expect(after!.updatedAt.getTime()).toBe(before!.updatedAt.getTime());
+  });
+
+  it('the wait a refusal answers is the real one: waiting exactly that long is granted, however many were refused meanwhile', async () => {
+    const cfg = { capacity: 5, refillPerSec: 5 / 60 }; // one token every 12 s
+    await prisma.$executeRaw`
+      INSERT INTO "RateLimit" ("key", "tokens", "lastRefill", "updatedAt") VALUES (${key}, 0, NOW(), NOW())`;
+    const told = await checkLimit(key, cfg);
+    expect(told.ok).toBe(false);
+    expect(told.retryAfterSec).toBeGreaterThanOrEqual(11);
+    expect(told.retryAfterSec).toBeLessThanOrEqual(12);
+    // Others behind the same address keep trying while he waits.
+    for (let i = 0; i < 20; i++) expect((await checkLimit(key, cfg)).ok).toBe(false);
+    // His wait passes, on the database's clock.
+    await prisma.$executeRaw`
+      UPDATE "RateLimit" SET "lastRefill" = "lastRefill" - make_interval(secs => ${told.retryAfterSec}::float8)
+      WHERE "key" = ${key}`;
+    expect((await checkLimit(key, cfg)).ok).toBe(true);
+    expect((await checkLimit(key, cfg)).ok, 'one token, one grant').toBe(false);
+  });
+
+  it('many concurrent callers on a fresh key: exactly `capacity` are granted', async () => {
+    const cfg = { capacity: 3, refillPerSec: 0.0001 };
+    const results = await Promise.all(Array.from({ length: 10 }, () => checkLimit(key, cfg)));
+    expect(results.filter((r) => r.ok)).toHaveLength(3);
+  });
+
+  it('a bucket never grants more than capacity + elapsed x refill, refused requests or not (the guard is as strong as before)', async () => {
+    const cfg = { capacity: 5, refillPerSec: 5 / 60 };
+    const k = key; // this test's own key, whatever a later beforeEach sets
+    let granted = 0;
+    // Ten simulated minutes of one guess a second, the clock moved on the database.
+    for (let sec = 0; sec < 600; sec++) {
+      if ((await checkLimit(k, cfg)).ok) granted++;
+      await prisma.$executeRaw`
+        UPDATE "RateLimit" SET "lastRefill" = "lastRefill" - INTERVAL '1 second' WHERE "key" = ${k}`;
+    }
+    expect(granted).toBeLessThanOrEqual(5 + Math.ceil(600 * cfg.refillPerSec));
+    expect(granted).toBeGreaterThanOrEqual(50); // and the steady rate is reached, not a permanent lock
+  }, 120_000); // 1,200 statements: generous for a remote or busy database
+
   // Launch browser suite: PhotoCaptureSlot waits out a presign 429 of up to
-  // RATE_LIMIT_MAX_WAIT_S, counting down, then tries again by itself. That
-  // was 30 s, under every wait an empty photo bucket asks for, so the
-  // countdown never ran.
-  it('an empty photo bucket asks for 31–60 s, which the photo slot waits out, and the try after it is granted', async () => {
+  // RATE_LIMIT_MAX_WAIT_S, counting down, then tries again by itself.
+  // Finding 10: an empty photo bucket now asks for exactly one refill (30 s),
+  // the real wait, and the try after it is granted.
+  it('an empty photo bucket asks for the real wait, which the photo slot waits out, and the try after it is granted', async () => {
     const { PHOTO_LIMIT } = await import('@/lib/rate-limit');
     const { RATE_LIMIT_MAX_WAIT_S } = await import('@/components/nmwc/PhotoCaptureSlot');
     // As the launch suite's drainLimit leaves it: no token, refilled just now
@@ -104,17 +159,16 @@ describe.skipIf(!ENABLED)('checkLimitPg — durable Postgres token bucket', () =
       INSERT INTO "RateLimit" ("key", "tokens", "lastRefill", "updatedAt") VALUES (${key}, 0, NOW(), NOW())`;
     const refused = await checkLimit(key, PHOTO_LIMIT);
     expect(refused.ok).toBe(false);
-    expect(refused.retryAfterSec).toBeGreaterThan(30);
+    expect(refused.retryAfterSec).toBeGreaterThan(0);
+    expect(refused.retryAfterSec).toBeLessThanOrEqual(Math.ceil(1 / PHOTO_LIMIT.refillPerSec));
     expect(refused.retryAfterSec).toBeLessThanOrEqual(RATE_LIMIT_MAX_WAIT_S);
-    // The slot's wait, on the database's clock: what was asked, not one refill.
     const waited = async (s: number) =>
       prisma.$executeRaw`
         UPDATE "RateLimit" SET "lastRefill" = "lastRefill" - make_interval(secs => ${s}::float8)
         WHERE "key" = ${key}`;
-    await waited(30);
-    expect((await checkLimit(key, PHOTO_LIMIT)).ok, 'a try after one refill is refused again').toBe(false);
-    const again = await checkLimit(key, PHOTO_LIMIT);
-    await waited(again.retryAfterSec);
+    await waited(Math.floor(refused.retryAfterSec / 2));
+    expect((await checkLimit(key, PHOTO_LIMIT)).ok, 'half the wait is not enough').toBe(false);
+    await waited(refused.retryAfterSec);
     expect((await checkLimit(key, PHOTO_LIMIT)).ok).toBe(true);
   });
 

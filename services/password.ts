@@ -16,7 +16,8 @@ import { prisma } from '@/lib/db';
 import { src, withChangeContext } from '@/lib/change-context';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
-import { ValidationError, runAction, type SafeAction } from '@/lib/errors';
+import { RateLimitError, ValidationError, runAction, type SafeAction } from '@/lib/errors';
+import { checkLimit, refundLimit, PASSWORD_CHANGE_KEY_PREFIX, PASSWORD_CHANGE_LIMIT } from '@/lib/rate-limit';
 import { requireActor } from '@/lib/session';
 import { signIn, signOut } from '@/lib/auth';
 import { logger } from '@/lib/logger';
@@ -66,13 +67,39 @@ async function changeOwnPasswordCore(formData: FormData) {
   if (confirm !== null && confirm !== parsed.data.newPassword) {
     throw new ValidationError({ confirmNewPassword: 'The two new passwords do not match.' });
   }
+  // Code review 2026-11-10, finding 22: the form's guesses are limited (it had
+  // no limit before), because a refused attempt below also tests the NEW
+  // password against the stored one. Charged on every attempt, given back once
+  // the password typed is found right, so only failed guesses count.
+  const limitKey = `${PASSWORD_CHANGE_KEY_PREFIX}${actor.id}`;
+  const lim = await checkLimit(limitKey, PASSWORD_CHANGE_LIMIT);
+  if (!lim.ok) {
+    throw new RateLimitError(`Too many attempts. Try again in ${lim.retryAfterSec}s.`);
+  }
   const me = await prisma.user.findUniqueOrThrow({ where: { id: actor.id } });
   const ok = await bcrypt.compare(parsed.data.currentPassword, me.passwordHash);
   if (!ok) {
+    // Finding 22: a change whose reply was lost. The password WAS changed (and
+    // the forced-change flag cleared), but the phone never got the answer or its
+    // new cookie; the retry sends the old password as "current", which no longer
+    // matches. When the NEW password is the stored one and the account is not
+    // waiting for a forced change, it is already done: renew this browser's
+    // session as a successful change does and answer ok, writing nothing (no
+    // second history or audit row; the renewal's sign-in records its LOGIN row).
+    // Not while mustChangePassword is set: then the stored password is one an
+    // administrator set, and the user must still choose his own.
+    if (!me.mustChangePassword && (await bcrypt.compare(parsed.data.newPassword, me.passwordHash))) {
+      await refundLimit(limitKey, PASSWORD_CHANGE_LIMIT);
+      logger.info({ userId: me.id }, 'password.change.already_changed');
+      return { renewed: await renewOwnSession(me.id, me.username, parsed.data.newPassword) };
+    }
     // AUTH-19: same opaque message as a login failure so we don't leak whether
     // the current password was wrong vs. a server hiccup.
     throw new ValidationError({ currentPassword: 'Current password incorrect.' });
   }
+  // The current password was right: not a guess, so its token is given back
+  // (a reused or unchanged new password, refused below, costs nothing here).
+  await refundLimit(limitKey, PASSWORD_CHANGE_LIMIT);
   if (parsed.data.currentPassword === parsed.data.newPassword) {
     throw new ValidationError({ newPassword: 'New password must differ from current.' });
   }

@@ -965,7 +965,7 @@ test.describe('accounts: the per-account lock', { tag: ['@desktop'] }, () => {
     if (world) await world.cleanup();
   });
 
-  test('a sixth attempt inside the refill window is locked although the password is right; it opens about 24 s later', async ({ browser }) => {
+  test('a sixth attempt inside the refill window is locked although the password is right; it opens after the wait it names (about 12 s)', async ({ browser }) => {
     test.setTimeout(300_000);
     const v = world.user('V1');
     const ip = world.ip(1);
@@ -983,8 +983,12 @@ test.describe('accounts: the per-account lock', { tag: ['@desktop'] }, () => {
     const ipBucket = await db.rateLimit.findUnique({ where: { key: `login:ip:${ip}` } });
     expect(ipBucket?.tokens ?? 5).toBeGreaterThan(4.5);
     expect(await auditKinds(v.id)).not.toContain('LOGIN:');
+    // Finding 10 (code review 2026-11-10): the lock names its wait, one refill at most.
+    const wait = Number(ACCOUNT_LOCKED.exec((await loginAlert(page).innerText()).trim())![1]);
+    expect(wait).toBeGreaterThanOrEqual(1);
+    expect(wait).toBeLessThanOrEqual(12);
 
-    await page.waitForTimeout(26_000);
+    await page.waitForTimeout((wait + 2) * 1000);
     await submitLogin(page, v.username, v.password);
     await expectHome(page, 'VIEWER');
   });
@@ -1062,13 +1066,10 @@ test.describe('accounts: the shared-network throttle', { tag: ['@phone'] }, () =
     }
   }
 
-  test('five typos across three salesmen hold back a fourth with the right password; he gets in after the wait he is told', async ({ browser }) => {
+  test('five typos across three salesmen no longer hold back a fourth with the right password', async ({ browser }) => {
+    // Code review 2026-11-10, finding 10: the network bucket holds 30 failed
+    // sign-ins (lib/rate-limit.ts LOGIN_NETWORK_CAPACITY), not 5.
     test.setTimeout(300_000);
-    test.info().annotations.push({
-      type: 'owner decision',
-      description:
-        'Hand-out day: five failed sign-ins per minute from one office address hold back everyone behind it for ~12-24 s. Hand out in small groups, or raise the network bucket.',
-    });
     const ip = world.ip(1);
     const [a, b, c, d] = ['S1', 'S2', 'S3', 'S4'].map((k) => world.user(k)) as [FixtureUser, FixtureUser, FixtureUser, FixtureUser];
     await resetLimits({ users: [a, b, c, d], ips: [ip] });
@@ -1077,19 +1078,44 @@ test.describe('accounts: the shared-network throttle', { tag: ['@phone'] }, () =
     await failFrom(ip, [a.username, a.username, b.username, b.username, c.username]);
 
     await submitLogin(page, d.username, d.password);
+    await expectHome(page, 'SALESMAN');
+  });
+
+  test('once the network is held back, retries do not keep it held: he gets in after the wait he is told', async ({ browser }) => {
+    test.setTimeout(300_000);
+    test.info().annotations.push({
+      type: 'owner decision',
+      description:
+        'Finding 10: 30 failed sign-ins from one address, then one every 12 s. A refused attempt costs nothing, so a room retrying does not keep itself locked.',
+    });
+    const ip = world.ip(4);
+    const [a, d] = ['S1', 'S4'].map((k) => world.user(k)) as [FixtureUser, FixtureUser];
+    await resetLimits({ users: [a, d], ips: [ip] });
+    // The network's failed sign-ins spent: pre-drained rather than raced.
+    await drainLimit(`login:ip:${ip}`);
+    const page = await (await contextAt(browser, null, ip)).newPage();
+    await openLoginPage(page);
+    await submitLogin(page, d.username, d.password);
     await expect(loginAlert(page)).toHaveText(NETWORK_THROTTLED);
     const wait = Number(NETWORK_THROTTLED.exec((await loginAlert(page).innerText()).trim())![1]);
     expect(wait).toBeGreaterThanOrEqual(1);
-    expect(wait).toBeLessThanOrEqual(60);
+    expect(wait).toBeLessThanOrEqual(12);
     // The network bucket refused first, so his own account was not charged.
     expect(await db.rateLimit.findUnique({ where: { key: `login:user:${d.username}` } })).toBeNull();
+    // A colleague keeps pressing Sign in meanwhile: refused, and the wait is not restarted.
+    const before = await db.rateLimit.findUnique({ where: { key: `login:ip:${ip}` } });
+    await failFrom(ip, [a.username, a.username, a.username]);
+    const after = await db.rateLimit.findUnique({ where: { key: `login:ip:${ip}` } });
+    expect(after?.lastRefill.getTime()).toBe(before?.lastRefill.getTime());
 
     await page.waitForTimeout((wait + 2) * 1000);
     await submitLogin(page, d.username, d.password);
     await expectHome(page, 'SALESMAN');
   });
 
-  test('a lone salesman who mistypes five times is held back by the network wait, never told his account is locked', async ({ browser }) => {
+  test('a lone salesman who mistypes five times is told his account is locked and for how long, then gets in', async ({ browser }) => {
+    // Finding 10: the network bucket is larger than five, so his own account's
+    // bucket is the one that runs dry.
     test.setTimeout(300_000);
     const ip = world.ip(2);
     const l1 = world.user('L1');
@@ -1099,9 +1125,9 @@ test.describe('accounts: the shared-network throttle', { tag: ['@phone'] }, () =
     await failFrom(ip, Array.from({ length: 5 }, () => l1.username));
 
     await submitLogin(page, l1.username, l1.password);
-    await expect(loginAlert(page)).toHaveText(NETWORK_THROTTLED);
-    await expect(loginAlert(page)).not.toHaveText(ACCOUNT_LOCKED);
-    const wait = Number(NETWORK_THROTTLED.exec((await loginAlert(page).innerText()).trim())![1]);
+    await expect(loginAlert(page)).toHaveText(ACCOUNT_LOCKED);
+    await expect(loginAlert(page)).not.toHaveText(NETWORK_THROTTLED);
+    const wait = Number(ACCOUNT_LOCKED.exec((await loginAlert(page).innerText()).trim())![1]);
     await page.waitForTimeout((wait + 2) * 1000);
     await submitLogin(page, l1.username, l1.password);
     await expectHome(page, 'SALESMAN');
@@ -1459,6 +1485,10 @@ test.describe('accounts: a disable or a role change ends the live session', { ta
     const admin = await (await contextAt(browser, stw, world.ip(1), { device: 'desktop' })).newPage();
     await admin.goto('/users');
     await settle(admin);
+    // Code review 2026-11-10, finding 9: a second admin's screen, opened before the disable.
+    const staleAdmin = await (await contextAt(browser, world.user('MG'), world.ip(5), { device: 'desktop' })).newPage();
+    await staleAdmin.goto('/users');
+    await settle(staleAdmin);
     let asked = '';
     admin.once('dialog', (d) => {
       asked = d.message();
@@ -1467,6 +1497,14 @@ test.describe('accounts: a disable or a role change ends the live session', { ta
     await usersAction(admin, () => usersRow(admin, t.username).getByRole('button', { name: 'Disable', exact: true }).click());
     expect(asked).toBe(`Disable user "${t.username}"? They can no longer sign in, and the row leaves the Active list.`);
     await expect(usersBanner(admin)).toContainText(`Disabled "${t.username}". It is on the Disabled tab, where Enable puts it back.`);
+
+    // Finding 9: the stale screen still offers Disable; its click must not switch him back on.
+    const auditsBefore = await db.auditLog.count({ where: { entityId: t.id, reason: { in: ['enabled', 'disabled'] } } });
+    staleAdmin.once('dialog', (d) => void d.accept());
+    await usersAction(staleAdmin, () => usersRow(staleAdmin, t.username).getByRole('button', { name: 'Disable', exact: true }).click());
+    await expect(usersBanner(staleAdmin)).toContainText(`"${t.username}" was already disabled. Nothing changed.`);
+    expect((await db.user.findUniqueOrThrow({ where: { id: t.id } })).isActive, 'still disabled').toBe(false);
+    expect(await db.auditLog.count({ where: { entityId: t.id, reason: { in: ['enabled', 'disabled'] } } })).toBe(auditsBefore);
 
     // Within the 30 s per-instance cache, every way in refuses him.
     await expect

@@ -71,7 +71,7 @@ describe.skipIf(!ENABLED)('gap 23: sign-in events and session cut-offs', () => {
 
   it('a disable by the Steward: one cut-off, under users:toggle, by him, "deactivated"', async () => {
     current = { id: w.steward, role: 'STEWARD', username: w.steward };
-    const res = await users.toggleUserActiveAction(fd({ userId: w.sup }));
+    const res = await users.toggleUserActiveAction(fd({ userId: w.sup, active: 'false' }));
     expect(res, JSON.stringify(res)).toMatchObject({ ok: true });
     const rows = await revokes(w.sup);
     expect(rows.map((r) => [r.source, r.actorId, r.reason])).toEqual([[`users:toggle:${w.sup}`, w.steward, 'deactivated']]);

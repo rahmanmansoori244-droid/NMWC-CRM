@@ -13,6 +13,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog } from '../support/audit';
 import { randomUUID } from 'node:crypto';
+import { RESERVED_USERNAME_MESSAGE } from '@/lib/demo-accounts';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 const ENABLED = process.env.RUN_USER_PROVISION === '1' && !!process.env.DATABASE_URL;
@@ -134,5 +135,16 @@ describe.skipIf(!ENABLED)('Steward may provision the approver tier; Manager may 
     expect(ok.ok).toBe(true);
     const row = await prisma.user.findUnique({ where: { id: sales.id }, select: { role: true } });
     expect(row?.role).toBe('ACCOUNTANT');
+  });
+
+  // Code review 2026-11-10, finding 25: refused at creation, nothing written.
+  it('finding 25: a reserved username is refused at creation, on Postgres, and no account exists', async () => {
+    asUser(stewardId, 'STEWARD');
+    for (const uname of [`supervisor.zzup${tag}`, 'viewer']) {
+      const before = await prisma.user.count({ where: { username: uname } });
+      const res = await users.createUserAction(fd({ username: uname, fullName: 'ZZ Reserved', role: 'SUPERVISOR', password: 'Provision-2026-xy' }));
+      expect(res).toMatchObject({ ok: false, code: 'VALIDATION_FAILED', fields: { username: RESERVED_USERNAME_MESSAGE } });
+      expect(await prisma.user.count({ where: { username: uname } })).toBe(before);
+    }
   });
 });

@@ -42,6 +42,12 @@ const h = vi.hoisted(() => ({
   clashMeta: undefined as undefined | { meta?: unknown },
   /** Cache tags the actions revalidated (next/cache revalidateTag). */
   tags: [] as string[],
+  /**
+   * Finding 9: another admin's switch that commits just after this action read
+   * the row. The next findUnique of this id returns the row as read, then the
+   * table holds `isActive` (the other click's result).
+   */
+  raceSwitch: null as null | { id: string; isActive: boolean },
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => h.session }));
@@ -87,6 +93,12 @@ vi.mock('@/lib/db', () => {
       }
       const row = [...tables()[name].values()].find((r) => matches(r, where));
       if (!row) return null;
+      if (h.raceSwitch && row.id === h.raceSwitch.id && via === 'prisma') {
+        const read = { ...row };
+        tables()[name].set(row.id, { ...row, isActive: h.raceSwitch.isActive });
+        h.raceSwitch = null;
+        if (!include?.reports) return read;
+      }
       if (!include?.reports) return { ...row };
       const reports = [...tables().user.values()].filter((u) => u.supervisorId === row.id).map((u) => ({ id: u.id }));
       return { ...row, reports };
@@ -184,6 +196,8 @@ import {
   toggleRouteActiveAction,
 } from '@/services/routes';
 
+import { RESERVED_USERNAME_MESSAGE } from '@/lib/demo-accounts';
+
 const STEWARD = 'ckstewardactor0000000001';
 const TARGET = 'cktargetuser000000000001';
 const REGION = 'ckregionexisting00000001';
@@ -230,6 +244,8 @@ beforeEach(() => {
 const ACTIONS: Array<{
   name: string;
   run: () => Promise<unknown>;
+  /** What the action answers on success (finding 9: the switches say what they did). */
+  data?: unknown;
   /** What the successful change looks like, and that its audit row names it. */
   changed: () => void;
 }> = [
@@ -249,7 +265,8 @@ const ACTIONS: Array<{
   },
   {
     name: 'toggleUserActiveAction',
-    run: () => toggleUserActiveAction(form({ userId: TARGET })),
+    run: () => toggleUserActiveAction(form({ userId: TARGET, active: 'false' })),
+    data: { isActive: false, changed: true },
     changed: () => {
       expect(h.tables.user.get(TARGET)).toMatchObject({ isActive: false });
       expect(h.tables.user.get(TARGET)!.sessionsRevokedAt).toBeInstanceOf(Date);
@@ -292,7 +309,8 @@ const ACTIONS: Array<{
   },
   {
     name: 'toggleRegionActiveAction',
-    run: () => toggleRegionActiveAction(form({ id: REGION })),
+    run: () => toggleRegionActiveAction(form({ id: REGION, active: 'false' })),
+    data: { isActive: false, changed: true },
     changed: () => {
       expect(h.tables.region.get(REGION)).toMatchObject({ isActive: false });
       expect([...h.tables.auditLog.values()]).toMatchObject([
@@ -302,7 +320,8 @@ const ACTIONS: Array<{
   },
   {
     name: 'toggleRouteActiveAction',
-    run: () => toggleRouteActiveAction(form({ id: ROUTE })),
+    run: () => toggleRouteActiveAction(form({ id: ROUTE, active: 'false' })),
+    data: { isActive: false, changed: true },
     changed: () => {
       expect(h.tables.route.get(ROUTE)).toMatchObject({ isActive: false });
       expect([...h.tables.auditLog.values()]).toMatchObject([
@@ -313,8 +332,8 @@ const ACTIONS: Array<{
 ];
 
 describe('an admin change and its audit row are one transaction', () => {
-  it.each(ACTIONS)('$name: when it succeeds, the change and its audit row are both saved', async ({ run, changed }) => {
-    expect(await run()).toEqual({ ok: true, data: undefined });
+  it.each(ACTIONS)('$name: when it succeeds, the change and its audit row are both saved', async ({ run, changed, data }) => {
+    expect(await run()).toEqual({ ok: true, data });
     changed();
     expect(h.autocommit, 'nothing written outside the transaction').toEqual([]);
   });
@@ -478,7 +497,7 @@ describe('the unique-code answers survive the move into a transaction', () => {
 describe('a change to who exists, is active or holds which role refreshes the cached people list', () => {
   it.each([
     ['createUserAction', () => createUserAction(form({ username: 'new.sup', fullName: 'New Supervisor', role: 'SUPERVISOR', password: 'A-long-password-1' }))],
-    ['toggleUserActiveAction', () => toggleUserActiveAction(form({ userId: TARGET }))],
+    ['toggleUserActiveAction', () => toggleUserActiveAction(form({ userId: TARGET, active: 'false' }))],
     ['updateUserRoleAction', () => updateUserRoleAction(form({ userId: TARGET, newRole: 'VIEWER' }))],
   ])('%s revalidates ref:users', async (_name, run) => {
     expect(await run()).toMatchObject({ ok: true });
@@ -524,7 +543,7 @@ describe('disabling a salesman whose credit request waits at his signed-applicat
     h.tables.notification.set('n-mgr', { id: 'n-mgr', editId: EDIT, userId: 'ckmanager0000000000000001', kind: 'EDIT_STAGE_ADVANCED', readAt: null });
   });
   const disable = (withdraw: boolean) =>
-    toggleUserActiveAction(form({ userId: SALES, ...(withdraw ? { withdrawCreates: 'on' } : {}) }));
+    toggleUserActiveAction(form({ userId: SALES, active: 'false', ...(withdraw ? { withdrawCreates: 'on' } : {}) }));
 
   it('without the withdraw: refused, naming why, and nothing is written', async () => {
     const before = snapshot();
@@ -542,7 +561,7 @@ describe('disabling a salesman whose credit request waits at his signed-applicat
   });
 
   it('with it: the request is withdrawn, its alerts answered, and the account disabled — in one transaction', async () => {
-    expect(await disable(true)).toEqual({ ok: true, data: undefined });
+    expect(await disable(true)).toEqual({ ok: true, data: { isActive: false, changed: true } });
     expect(h.tables.customerEdit.get(EDIT)).toMatchObject({
       state: 'REJECTED',
       pendingRole: null,
@@ -575,15 +594,144 @@ describe('disabling a salesman whose credit request waits at his signed-applicat
 
   it('a draft or a sent-back request does not hold a disable back (a leaver’s no longer hold its shop)', async () => {
     h.tables.customerEdit.set(EDIT, { ...h.tables.customerEdit.get(EDIT)!, state: 'NEEDS_CORRECTION', pendingRole: null });
-    expect(await disable(false)).toEqual({ ok: true, data: undefined });
+    expect(await disable(false)).toEqual({ ok: true, data: { isActive: false, changed: true } });
     expect(h.tables.customerEdit.get(EDIT)).toMatchObject({ state: 'NEEDS_CORRECTION' });
     expect(h.tables.user.get(SALES)).toMatchObject({ isActive: false });
   });
 
   it('enabling is never held back', async () => {
     h.tables.user.set(SALES, { ...h.tables.user.get(SALES)!, isActive: false });
-    expect(await disable(false)).toEqual({ ok: true, data: undefined });
+    expect(await toggleUserActiveAction(form({ userId: SALES, active: 'true' }))).toEqual({
+      ok: true,
+      data: { isActive: true, changed: true },
+    });
     expect(h.tables.user.get(SALES)).toMatchObject({ isActive: true });
     expect(h.tables.customerEdit.get(EDIT)).toMatchObject({ state: 'SUBMITTED' });
+  });
+});
+
+// Code review 2026-11-10, finding 9: Disable / Enable was a blind flip. A second
+// click from a screen opened earlier (another Manager acting on the same leaver,
+// or the same admin after a lost reply) switched the leaver back ON, and the
+// banner, built from the stale screen, said "Disabled".
+describe('finding 9: Disable and Enable set the state the click wants', () => {
+  const click = (active: 'true' | 'false' | null, userId = TARGET) =>
+    toggleUserActiveAction(form({ userId, ...(active === null ? {} : { active }) }));
+  const audits = () => [...h.tables.auditLog.values()];
+
+  it('a double click on Disable: disabled once, the second click answers "already disabled" and writes nothing', async () => {
+    expect(await click('false')).toEqual({ ok: true, data: { isActive: false, changed: true } });
+    const after = snapshot();
+    expect(await click('false')).toEqual({ ok: true, data: { isActive: false, changed: false } });
+    expect(snapshot()).toEqual(after);
+    expect(audits()).toHaveLength(1);
+  });
+
+  it('two admins on stale screens: the second Disable never re-enables the leaver', async () => {
+    // Admin A disabled him at 09:00; admin B's screen, opened at 08:55, still
+    // shows him Active and B clicks Disable at 09:05.
+    h.tables.user.set(TARGET, { ...h.tables.user.get(TARGET)!, isActive: false });
+    expect(await click('false')).toEqual({ ok: true, data: { isActive: false, changed: false } });
+    expect(h.tables.user.get(TARGET)).toMatchObject({ isActive: false });
+    expect(audits()).toEqual([]);
+  });
+
+  it('an Enable from a stale screen on an account someone already enabled: "already enabled", nothing written', async () => {
+    expect(await click('true')).toEqual({ ok: true, data: { isActive: true, changed: false } });
+    expect(h.tables.user.get(TARGET)).toMatchObject({ isActive: true });
+    expect(h.tables.user.get(TARGET)!.sessionsRevokedAt).toBeUndefined();
+    expect(audits()).toEqual([]);
+  });
+
+  it('Enable on a disabled account enables it, with one audit row', async () => {
+    h.tables.user.set(TARGET, { ...h.tables.user.get(TARGET)!, isActive: false });
+    expect(await click('true')).toEqual({ ok: true, data: { isActive: true, changed: true } });
+    expect(audits()).toMatchObject([
+      { entityId: TARGET, reason: 'enabled', before: { isActive: false }, after: { isActive: true } },
+    ]);
+  });
+
+  it('a race: another admin\u2019s Disable commits between this one\u2019s read and its write; nothing is written twice', async () => {
+    h.raceSwitch = { id: TARGET, isActive: false };
+    expect(await click('false')).toEqual({ ok: true, data: { isActive: false, changed: false } });
+    expect(h.tables.user.get(TARGET)).toMatchObject({ isActive: false });
+    expect(h.tables.user.get(TARGET)!.sessionsRevokedAt).toBeUndefined();
+    expect(audits()).toEqual([]);
+  });
+
+  it('a click that does not say what it wants is refused and changes nothing (no guessing)', async () => {
+    const before = snapshot();
+    const res = await click(null);
+    expect(res).toMatchObject({
+      ok: false,
+      code: 'VALIDATION_FAILED',
+      fields: { active: expect.stringMatching(/Reload the page/) },
+    });
+    expect(snapshot()).toEqual(before);
+    for (const bad of ['on', '1', 'TRUE', '']) {
+      const r = await toggleUserActiveAction(form({ userId: TARGET, active: bad }));
+      expect(r, bad).toMatchObject({ ok: false, code: 'VALIDATION_FAILED' });
+    }
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('a second Disable after a lost reply, with a credit request at his signed-form step, is not asked to withdraw again', async () => {
+    const SALES = 'cksalesmanatform00000009';
+    h.tables.user.set(SALES, {
+      id: SALES,
+      username: 'm09',
+      fullName: 'Leaver',
+      role: 'SALESMAN',
+      isActive: false,
+      supervisorId: null,
+      ownedRouteId: ROUTE,
+    });
+    h.tables.customerEdit.set('ckedit9', {
+      id: 'ckedit9',
+      process: 'CREATE',
+      state: 'SUBMITTED',
+      pendingRole: 'SALESMAN',
+      currentStepIndex: 2,
+      cycle: 1,
+      submittedById: SALES,
+    });
+    expect(await click('false', SALES)).toEqual({ ok: true, data: { isActive: false, changed: false } });
+    expect(audits()).toEqual([]);
+  });
+});
+
+// Code review 2026-11-10, finding 25: /users created an account on a demo-account
+// name without complaint; in production it could then never sign in.
+describe('finding 25: a reserved username is refused at creation', () => {
+  it.each(['supervisor.salalah', 'salesman.ali', 'viewer', 'steward', 'admin', 'manager.b'])(
+    '%s is refused under Username with the plain message, and nothing is written',
+    async (username) => {
+      const before = snapshot();
+      const res = await createUserAction(
+        form({ username, fullName: 'New Person', role: 'SUPERVISOR', password: 'A-long-password-1' })
+      );
+      expect(res).toEqual({
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        message: 'Validation failed',
+        fields: { username: RESERVED_USERNAME_MESSAGE },
+      });
+      expect(snapshot()).toEqual(before);
+    }
+  );
+
+  it('typed with capitals or spaces it is still refused (the form lower-cases and trims first)', async () => {
+    const res = await createUserAction(
+      form({ username: '  Supervisor.Sur ', fullName: 'New Person', role: 'SUPERVISOR', password: 'A-long-password-1' })
+    );
+    expect(res).toMatchObject({ ok: false, fields: { username: RESERVED_USERNAME_MESSAGE } });
+  });
+
+  it('a name that only looks like one is created: data.steward', async () => {
+    h.session = { user: { id: STEWARD, role: 'STEWARD', username: 'steward.one', mustChangePassword: false } };
+    const res = await createUserAction(
+      form({ username: 'data.steward', fullName: 'Data Steward Two', role: 'VIEWER', password: 'A-long-password-1' })
+    );
+    expect(res).toMatchObject({ ok: true });
   });
 });

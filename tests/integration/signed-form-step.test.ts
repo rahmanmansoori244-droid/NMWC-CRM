@@ -333,6 +333,7 @@ describe.skipIf(!ENABLED)('the signed-application step on Postgres (owner decisi
     const form = (withdraw: boolean) => {
       const fd = new FormData();
       fd.set('userId', ids.salesman);
+      fd.set('active', 'false');
       if (withdraw) fd.set('withdrawCreates', 'on');
       return fd;
     };

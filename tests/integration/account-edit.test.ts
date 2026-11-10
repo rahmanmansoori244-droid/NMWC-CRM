@@ -407,8 +407,8 @@ describe.skipIf(!ENABLED)(
 
     it('leaver/joiner: disable the leaver, create the joiner onto his route under the route code', async () => {
       as(ids.stw, 'STEWARD');
-      const off = await users.toggleUserActiveAction(fd({ userId: ids.leaver }));
-      expect(off, JSON.stringify(off)).toEqual({ ok: true, data: undefined });
+      const off = await users.toggleUserActiveAction(fd({ userId: ids.leaver, active: 'false' }));
+      expect(off, JSON.stringify(off)).toEqual({ ok: true, data: { isActive: false, changed: true } });
       const signIn = code('A1').toLowerCase();
       const joiner = {
         username: signIn,
@@ -709,8 +709,8 @@ describe.skipIf(!ENABLED)(
 
     it('review: the leaver keeps his sign-in name when the joiner signs in with a name of his own', async () => {
       as(ids.stw, 'STEWARD');
-      const off = await users.toggleUserActiveAction(fd({ userId: ids.leaver5 }));
-      expect(off, JSON.stringify(off)).toEqual({ ok: true, data: undefined });
+      const off = await users.toggleUserActiveAction(fd({ userId: ids.leaver5, active: 'false' }));
+      expect(off, JSON.stringify(off)).toEqual({ ok: true, data: { isActive: false, changed: true } });
       const res = await users.createUserAction(
         fd({
           username: `own.${sfx}`,

@@ -520,6 +520,7 @@ import { loadExcelJS } from '@/lib/excel';
 import { logger } from '@/lib/logger';
 import { assertPasswordNotReused } from '@/lib/password-policy';
 import { ROUTE_REGION_FIXED_MESSAGE } from '@/lib/route-region';
+import { RESERVED_USERNAME_MESSAGE } from '@/lib/demo-accounts';
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 const user = (over: Partial<U> & { id: string; username: string; role: string }): U => ({
@@ -2261,5 +2262,50 @@ describe('finding 23: the row lists the Steward reads', () => {
     expect(ACCOUNT_IMPORT_TIME_BUDGET_MS + 10_000 + 20_000).toBeLessThanOrEqual(max - 5_000);
     const src = readFileSync('services/imports.ts', 'utf8');
     expect(src).toContain('{ timeout: 20_000, maxWait: 10_000 }');
+  });
+});
+
+// Code review 2026-11-10, finding 25: a new account on a demo-account name was
+// created without complaint and could then never sign in in production.
+describe('finding 25: a reserved username is refused for a new account', () => {
+  it.each(['supervisor.salalah', 'salesman.ali', 'viewer', 'steward', 'admin', 'manager.a', 'Supervisor.Sur'])(
+    '%s: the row is held back with the plain message, and no account is created',
+    async (name) => {
+      const { res, messages } = await upload(
+        usersSheet({ username: name, full_name: 'New Person', role: 'SUPERVISOR', password: '1234', must_change_password: 'yes' })
+      );
+      expect(res.ok, JSON.stringify(res)).toBe(true);
+      expect(messages).toEqual([`Users 2: ${RESERVED_USERNAME_MESSAGE}`]);
+      expect(find(name.toLowerCase())).toBeUndefined();
+      expect(rowAudits()).toEqual([]);
+    }
+  );
+
+  it('a near miss is not reserved: data.steward, supervisor-sur and manager.c are created', async () => {
+    const { res, messages } = await upload(
+      usersSheet(
+        { username: 'data.steward', full_name: 'Viewer One', role: 'VIEWER', password: '1234', must_change_password: 'yes' },
+        { username: 'supervisor-sur', full_name: 'Sup One', role: 'SUPERVISOR', password: '1234', must_change_password: 'yes' },
+        { username: 'manager.c', full_name: 'Sup Two', role: 'SUPERVISOR', password: '1234', must_change_password: 'yes' }
+      )
+    );
+    expect(okData(res).clean, JSON.stringify(messages)).toBe(3);
+    for (const n of ['data.steward', 'supervisor-sur', 'manager.c']) expect(find(n), n).toBeDefined();
+  });
+
+  it('an account that already holds such a name is not touched by the rule (only creation is refused)', async () => {
+    addUser({ id: 'old-demo', username: 'supervisor.old', role: 'SUPERVISOR', fullName: 'Old Demo' });
+    const { messages } = await upload(
+      usersSheet({ username: 'supervisor.old', full_name: 'Old Demo', role: 'SUPERVISOR' })
+    );
+    expect(messages.join(' ')).not.toContain('reserved');
+  });
+
+  it('the import calls the shared validator once, and does not carry a copy of the patterns', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { stripComments } = await import('../support/strip-comments');
+    const src = stripComments(readFileSync('services/imports.ts', 'utf8'), 'services/imports.ts');
+    expect(src.match(/reservedUsernameRefusal\(/g)).toHaveLength(1);
+    expect(src).not.toMatch(/isDemoAccount|DEMO_USERNAME_PATTERN|salesman\\\.|supervisor\\\./);
   });
 });

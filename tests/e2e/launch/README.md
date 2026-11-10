@@ -346,7 +346,8 @@ test.describe('today', { tag: ['@phone'] }, () => {
 - SLA seeds ("OVERDUE 3h") are in WORKING minutes: `workingMinutesAgo(180)`,
   `slaDeadline`, `workingMinutesBetween` — never `Date.now() - 3h`.
 - Login throttles: the per-user bucket is 5 tokens refilling one per 12 s and
-  the per-address bucket counts failures only; a "sixth attempt locks" test
+  the per-address bucket (30 tokens since finding 10 of the 2026-11-10 review)
+  counts failures only; a refused attempt charges neither; a "sixth attempt locks" test
   pre-drains the bucket with `drainLimit('login:user:<name>')` instead of racing
   the refill. `resetLimits({ users, ips })` gives a heavy test full buckets.
 

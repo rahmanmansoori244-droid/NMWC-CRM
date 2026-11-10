@@ -36,9 +36,11 @@ describe.skipIf(!ENABLED)(
     const as = (id: string, role: string) => {
       current = { id, role, username: id };
     };
-    const fd = (id: string) => {
+    // Finding 9 (code review 2026-11-10): each click says the state it wants.
+    const fd = (id: string, active: 'true' | 'false' = 'false') => {
       const f = new FormData();
       f.set('id', id);
+      f.set('active', active);
       return f;
     };
     const audits = (entityId: string) => prisma.auditLog.count({ where: { entityId } });
@@ -147,7 +149,7 @@ describe.skipIf(!ENABLED)(
     it('a Manager who manages the region alone still switches its route', async () => {
       as(ids.mA, 'MANAGER');
       const res = await routes.toggleRouteActiveAction(fd(ids.rSolo));
-      expect(res, JSON.stringify(res)).toEqual({ ok: true, data: undefined });
+      expect(res, JSON.stringify(res)).toEqual({ ok: true, data: { isActive: false, changed: true } });
       expect((await prisma.route.findUniqueOrThrow({ where: { id: ids.rSolo } })).isActive).toBe(
         false
       );
@@ -157,7 +159,7 @@ describe.skipIf(!ENABLED)(
       await prisma.user.update({ where: { id: ids.mB }, data: { isActive: false } });
       as(ids.mA, 'MANAGER');
       const res = await routes.toggleRouteActiveAction(fd(ids.rShared));
-      expect(res, JSON.stringify(res)).toEqual({ ok: true, data: undefined });
+      expect(res, JSON.stringify(res)).toEqual({ ok: true, data: { isActive: false, changed: true } });
       expect((await prisma.route.findUniqueOrThrow({ where: { id: ids.rShared } })).isActive).toBe(
         false
       );
@@ -167,12 +169,12 @@ describe.skipIf(!ENABLED)(
     it('the Steward switches a shared region and its route, each with an audit row', async () => {
       as(ids.stw, 'STEWARD');
       const region = await routes.toggleRegionActiveAction(fd(ids.shared));
-      expect(region, JSON.stringify(region)).toEqual({ ok: true, data: undefined });
+      expect(region, JSON.stringify(region)).toEqual({ ok: true, data: { isActive: false, changed: true } });
       expect((await prisma.region.findUniqueOrThrow({ where: { id: ids.shared } })).isActive).toBe(
         false
       );
-      const route = await routes.toggleRouteActiveAction(fd(ids.rShared));
-      expect(route, JSON.stringify(route)).toEqual({ ok: true, data: undefined });
+      const route = await routes.toggleRouteActiveAction(fd(ids.rShared, 'true'));
+      expect(route, JSON.stringify(route)).toEqual({ ok: true, data: { isActive: true, changed: true } });
       expect((await prisma.route.findUniqueOrThrow({ where: { id: ids.rShared } })).isActive).toBe(
         true
       );

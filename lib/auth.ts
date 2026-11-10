@@ -8,7 +8,7 @@ import { prisma } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import { Role } from '@prisma/client';
 import { authConfig } from '../auth.config';
-import { checkLimit, LOGIN_LIMIT, refundLimit } from '@/lib/rate-limit';
+import { checkLimit, LOGIN_LIMIT, LOGIN_NETWORK_LIMIT, refundLimit } from '@/lib/rate-limit';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { isDemoAccount } from '@/lib/demo-accounts';
 import { LoginThrottledError } from '@/lib/login-throttle';
@@ -332,14 +332,20 @@ const {
         // no longer throttled by its colleagues' successes. The per-user bucket
         // is unchanged — every attempt costs it one token, success or not; it is
         // the brute-force control.
+        //
+        // Code review 2026-11-10, finding 10: the network bucket is now much
+        // larger than the per-account one (lib/rate-limit.ts LOGIN_NETWORK_LIMIT),
+        // and a refused attempt no longer charges or restarts either bucket
+        // (checkLimit), so a room behind one Wi-Fi cannot hold itself locked by
+        // retrying, and the wait each person is told is the real one.
         const ip = await clientIp();
         const ipKey = `login:ip:${ip}`;
         const buckets = [
-          ['ip', ipKey],
-          ['user', `login:user:${username}`],
+          ['ip', ipKey, LOGIN_NETWORK_LIMIT],
+          ['user', `login:user:${username}`, LOGIN_LIMIT],
         ] as const;
-        for (const [bucket, key] of buckets) {
-          const lim = await checkLimit(key, LOGIN_LIMIT);
+        for (const [bucket, key, limit] of buckets) {
+          const lim = await checkLimit(key, limit);
           if (!lim.ok) {
             logger.warn(
               { key, retryAfterSec: lim.retryAfterSec },
@@ -356,7 +362,7 @@ const {
             // locked, keeping it locked costs the address doing so no network
             // tokens — no worse than before X-AUTH-2, when this bucket was charged
             // first, and no help for guessing: these attempts never reach bcrypt.
-            if (bucket === 'user') await refundLimit(ipKey, LOGIN_LIMIT);
+            if (bucket === 'user') await refundLimit(ipKey, LOGIN_NETWORK_LIMIT);
             // Gap 23: a throttle refusal is kept, at most once per bucket per
             // five minutes, with the name as a fingerprint only.
             await recordRateLimited(bucket, username, await signInSeen(ip));
@@ -429,7 +435,7 @@ const {
         // X-AUTH-2: a successful sign-in gives back the network token it was
         // charged above. refundLimit never throws; a refund it could not write
         // leaves the token spent, as every sign-in was charged before.
-        await refundLimit(ipKey, LOGIN_LIMIT);
+        await refundLimit(ipKey, LOGIN_NETWORK_LIMIT);
 
         return {
           id: user.id,

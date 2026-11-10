@@ -223,6 +223,27 @@ describe('launch browser suite — every change-password error is read out, and 
     expect((await screen.findByRole('alert')).textContent).toBe('Too many attempts. Try again in a minute.');
   });
 
+
+  // Code review 2026-11-10, finding 22: no answer may mean the change was saved.
+  it('a network error says the new password may already be active, and to sign in with it if this keeps failing', async () => {
+    h.change.mockRejectedValue(new TypeError('Failed to fetch'));
+    submit();
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe(
+      'Failed to fetch Your new password may already be active: type the same passwords again and press Change password. If this keeps failing, sign in with your new password.'
+    );
+  });
+
+  it('a save the database may have finished says the same', async () => {
+    h.change.mockResolvedValue({
+      ok: false,
+      code: 'DB_INTERRUPTED',
+      message: 'The connection to the database dropped mid-request, so this may or may not have been saved. Check before you try again.',
+    });
+    submit();
+    expect((await screen.findByRole('alert')).textContent).toMatch(/If this keeps failing, sign in with your new password\.$/);
+  });
+
   it('the change itself is said in a status', async () => {
     vi.useFakeTimers();
     try {

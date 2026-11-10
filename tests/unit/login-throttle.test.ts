@@ -135,7 +135,7 @@ vi.mock('@/lib/rate-limit', async (importOriginal) => {
   return { ...real, checkLimit: vi.fn(real.checkLimit), refundLimit: vi.fn(real.refundLimit) };
 });
 
-import { checkLimit, LOGIN_LIMIT, refundLimit } from '@/lib/rate-limit';
+import { checkLimit, LOGIN_LIMIT, LOGIN_NETWORK_LIMIT, refundLimit, type RateLimitConfig } from '@/lib/rate-limit';
 import { loginAction } from '@/app/actions/auth';
 import { LoginThrottledError, loginFailureMessage } from '@/lib/login-throttle';
 import { AuthError, CredentialsSignin } from '@auth/core/errors';
@@ -149,7 +149,8 @@ afterAll(() => {
 });
 
 const INVALID = 'Invalid username or password.';
-const LOCKED = 'Account temporarily locked due to repeated attempts. Try again in a minute.';
+// Finding 10 (code review 2026-11-10): the lock says how long to wait.
+const LOCKED = /^Account temporarily locked due to repeated attempts\. Try again in (\d+)s\.$/;
 const NETWORK = /^Too many attempts from your network\. Try again in (\d+)s\.$/;
 
 let n = 0;
@@ -206,11 +207,11 @@ describe('a form login charges each login bucket exactly once', () => {
     const { username, password } = freshUser();
     expect(await login(username, password)).toBe('redirect:/home');
     expect(vi.mocked(checkLimit).mock.calls).toEqual([
-      [`login:ip:${h.ip}`, LOGIN_LIMIT],
+      [`login:ip:${h.ip}`, LOGIN_NETWORK_LIMIT],
       [`login:user:${username}`, LOGIN_LIMIT],
     ]);
     // X-AUTH-2: the sign-in succeeded, so its network token is refunded.
-    expect(vi.mocked(refundLimit).mock.calls).toEqual([[`login:ip:${h.ip}`, LOGIN_LIMIT]]);
+    expect(vi.mocked(refundLimit).mock.calls).toEqual([[`login:ip:${h.ip}`, LOGIN_NETWORK_LIMIT]]);
   });
 
   it('two typos and then the right password signs in (it was told "Invalid" on the third try)', async () => {
@@ -255,33 +256,41 @@ describe('a throttled attempt is told so, not "Invalid username or password"', (
     }
     anotherNetwork();
     h.lookups = [];
-    expect(await login(username, password)).toBe(LOCKED);
+    expect(await login(username, password)).toMatch(LOCKED);
     // Refused before the account is even looked up (the buckets come first).
     expect(h.lookups).not.toContain(username);
   });
 
-  it('the sixth FAILED sign-in from one network says "too many attempts from your network", with the wait', async () => {
-    // X-AUTH-2: five wrong passwords on five accounts spend the network's five
-    // tokens; the sixth person is refused even with the right password.
+  it('once the network has spent its failed sign-ins, the next person is told "too many attempts from your network", with the wait', async () => {
+    // X-AUTH-2: wrong passwords on as many accounts as the network bucket holds
+    // spend it; the next person is refused even with the right password.
+    // Finding 10: that is LOGIN_NETWORK_LIMIT.capacity failures, not five.
+    const failures = LOGIN_NETWORK_LIMIT.capacity;
     const first = freshUser();
     const ip = h.ip;
-    const others = [first, ...Array.from({ length: 5 }, () => freshUser())];
+    const others = [first, ...Array.from({ length: failures }, () => freshUser())];
     const answers: string[] = [];
     for (const [i, c] of others.entries()) {
       h.ip = ip;
-      answers.push(await login(c.username, i < 5 ? `typo-${i}` : c.password));
+      answers.push(await login(c.username, i < failures ? `typo-${i}` : c.password));
     }
-    expect(answers.slice(0, 5)).toEqual(Array(5).fill(INVALID));
-    const wait = Number(answers[5]!.match(NETWORK)?.[1]);
+    expect(answers.slice(0, failures)).toEqual(Array(failures).fill(INVALID));
+    const wait = Number(answers[failures]!.match(NETWORK)?.[1]);
     // One token refills in 60/5 = 12 s.
     expect(wait).toBeGreaterThanOrEqual(1);
     expect(wait).toBeLessThanOrEqual(12);
   });
 
-  it('a lone user who mistypes five times from one network is told about the network: it is checked first', async () => {
+  it('a lone user who mistypes five times from one network is told his account is locked, and for how long', async () => {
+    // Finding 10: the network bucket is far larger than five, so his own
+    // account's bucket is the one that runs dry, and the message says so.
     const { username, password } = freshUser();
     for (let i = 0; i < 5; i += 1) expect(await login(username, `typo-${i}`)).toBe(INVALID);
-    expect(await login(username, password)).toMatch(NETWORK);
+    const answer = await login(username, password);
+    expect(answer).toMatch(LOCKED);
+    const wait = Number(answer.match(LOCKED)?.[1]);
+    expect(wait).toBeGreaterThanOrEqual(1);
+    expect(wait).toBeLessThanOrEqual(12);
   });
 
   it('an unreachable limiter still fails closed, now with the throttle message', async () => {
@@ -355,14 +364,16 @@ describe('X-AUTH-2 at authorize(): the network bucket counts failed sign-ins onl
   }
   /** How many attempts a login bucket grants at this instant. Drains it, so call it last. */
   async function tokensLeft(key: string): Promise<number> {
+    const cfg: RateLimitConfig = key.startsWith('login:ip:') ? LOGIN_NETWORK_LIMIT : LOGIN_LIMIT;
     let left = 0;
-    while ((await checkLimit(key, LOGIN_LIMIT)).ok) {
+    while ((await checkLimit(key, cfg)).ok) {
       left += 1;
-      if (left > LOGIN_LIMIT.capacity) throw new Error(`${key} granted more than its capacity`);
+      if (left > cfg.capacity) throw new Error(`${key} granted more than its capacity`);
     }
     return left;
   }
   const FULL = LOGIN_LIMIT.capacity;
+  const NET_FULL = LOGIN_NETWORK_LIMIT.capacity;
 
   // The in-memory buckets read Date.now(); with the clock frozen nothing refills
   // between an attempt and the count, so every count below is exact.
@@ -377,7 +388,7 @@ describe('X-AUTH-2 at authorize(): the network bucket counts failed sign-ins onl
   it('a successful sign-in leaves the network bucket where it was; the per-user bucket still pays', async () => {
     const { username, password } = freshUser();
     expect((await authorize()({ username, password }))?.username).toBe(username);
-    expect(await tokensLeft(`login:ip:${h.ip}`)).toBe(FULL);
+    expect(await tokensLeft(`login:ip:${h.ip}`)).toBe(NET_FULL);
     expect(await tokensLeft(`login:user:${username}`)).toBe(FULL - 1);
   });
 
@@ -385,7 +396,7 @@ describe('X-AUTH-2 at authorize(): the network bucket counts failed sign-ins onl
     const { username } = freshUser();
     expect(await authorize()({ username, password: 'typo' })).toBeNull();
     expect(refundLimit).not.toHaveBeenCalled();
-    expect(await tokensLeft(`login:ip:${h.ip}`)).toBe(FULL - 1);
+    expect(await tokensLeft(`login:ip:${h.ip}`)).toBe(NET_FULL - 1);
     expect(await tokensLeft(`login:user:${username}`)).toBe(FULL - 1);
   });
 
@@ -393,7 +404,7 @@ describe('X-AUTH-2 at authorize(): the network bucket counts failed sign-ins onl
     freshUser();
     expect(await authorize()({ username: `ghost.${n}`, password: 'anything' })).toBeNull();
     expect(refundLimit).not.toHaveBeenCalled();
-    expect(await tokensLeft(`login:ip:${h.ip}`)).toBe(FULL - 1);
+    expect(await tokensLeft(`login:ip:${h.ip}`)).toBe(NET_FULL - 1);
   });
 
   it('the network bucket is charged first, then the per-user bucket, and refunded after both', async () => {
@@ -402,14 +413,14 @@ describe('X-AUTH-2 at authorize(): the network bucket counts failed sign-ins onl
     const charges = vi.mocked(checkLimit).mock;
     expect(charges.calls.map(([key]) => key)).toEqual([`login:ip:${h.ip}`, `login:user:${username}`]);
     const refund = vi.mocked(refundLimit).mock;
-    expect(refund.calls).toEqual([[`login:ip:${h.ip}`, LOGIN_LIMIT]]);
+    expect(refund.calls).toEqual([[`login:ip:${h.ip}`, LOGIN_NETWORK_LIMIT]]);
     expect(refund.invocationCallOrder[0]).toBeGreaterThan(Math.max(...charges.invocationCallOrder));
   });
 
   it('an attempt the network bucket refuses does not touch the per-user bucket', async () => {
     const { username, password } = freshUser();
     const ipKey = `login:ip:${h.ip}`;
-    for (let i = 0; i < FULL; i += 1) expect((await checkLimit(ipKey, LOGIN_LIMIT)).ok).toBe(true);
+    for (let i = 0; i < NET_FULL; i += 1) expect((await checkLimit(ipKey, LOGIN_NETWORK_LIMIT)).ok).toBe(true);
     vi.mocked(checkLimit).mockClear();
     await expect(authorize()({ username, password })).rejects.toMatchObject({ code: 'throttled_ip' });
     expect(vi.mocked(checkLimit).mock.calls.map(([key]) => key)).toEqual([ipKey]);
@@ -424,14 +435,14 @@ describe('X-AUTH-2 at authorize(): the network bucket counts failed sign-ins onl
     const userKey = `login:user:${username}`;
     for (let i = 0; i < FULL; i += 1) expect((await checkLimit(userKey, LOGIN_LIMIT)).ok).toBe(true);
     await expect(authorize()({ username, password })).rejects.toMatchObject({ code: 'locked_user' });
-    expect(vi.mocked(refundLimit).mock.calls).toEqual([[`login:ip:${h.ip}`, LOGIN_LIMIT]]);
-    expect(await tokensLeft(`login:ip:${h.ip}`)).toBe(FULL);
+    expect(vi.mocked(refundLimit).mock.calls).toEqual([[`login:ip:${h.ip}`, LOGIN_NETWORK_LIMIT]]);
+    expect(await tokensLeft(`login:ip:${h.ip}`)).toBe(NET_FULL);
   });
 
   it('one network cycling through many usernames cannot drain the accounts it is refused for', async () => {
     // Charged second, the network bucket used to refuse each of these only after
     // the account's own bucket had paid — one address could keep many locked.
-    const victims = Array.from({ length: 20 }, () => freshUser());
+    const victims = Array.from({ length: NET_FULL + 20 }, () => freshUser());
     anotherNetwork();
     const attacker = h.ip;
     let refused = 0;
@@ -441,8 +452,8 @@ describe('X-AUTH-2 at authorize(): the network bucket counts failed sign-ins onl
         refused += 1;
       });
     }
-    expect(refused).toBe(victims.length - FULL);
-    for (const v of victims.slice(FULL)) expect(await tokensLeft(`login:user:${v.username}`)).toBe(FULL);
+    expect(refused).toBe(victims.length - NET_FULL);
+    for (const v of victims.slice(NET_FULL)) expect(await tokensLeft(`login:user:${v.username}`)).toBe(FULL);
   });
 
   it('a refund that cannot be written does not fail a sign-in that succeeded', async () => {
@@ -459,9 +470,148 @@ describe('X-AUTH-2 at authorize(): the network bucket counts failed sign-ins onl
   });
 });
 
+// Code review 2026-11-10, finding 10: a room behind one Wi-Fi locked itself out,
+// because every refused retry restarted the network bucket. Now a refused
+// attempt changes no bucket, the network bucket is far larger than the
+// per-account one, and the per-account guard is exactly as strong as before.
+describe('finding 10: a refused attempt changes no bucket, and a room behind one address gets in', () => {
+  type Authorize = (creds: Record<string, unknown>) => Promise<{ username: string } | null>;
+  function authorize(): Authorize {
+    const providers = (h.config as { providers?: Array<{ options?: { authorize?: unknown } }> } | null)?.providers;
+    const fn = providers?.[0]?.options?.authorize;
+    if (typeof fn !== 'function') throw new Error('the Credentials provider has no authorize()');
+    return fn as Authorize;
+  }
+  /** One attempt: 'in', 'invalid', or the throttle code and its wait. */
+  async function attempt(username: string, password: string) {
+    try {
+      return (await authorize()({ username, password })) ? { got: 'in' as const } : { got: 'invalid' as const };
+    } catch (e) {
+      if (e instanceof LoginThrottledError) return { got: e.code as string, wait: e.retryAfterSec };
+      throw e;
+    }
+  }
+  const T0 = Date.UTC(2020, 0, 1);
+  let now = 0;
+  const at = (sec: number) => {
+    now = sec;
+    vi.setSystemTime(new Date(T0 + sec * 1000));
+  };
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    at(0);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('the per-account lock is not restarted by retries: whoever waits what he is told gets in', async () => {
+    const { username, password } = freshUser();
+    for (let i = 0; i < LOGIN_LIMIT.capacity; i += 1) {
+      anotherNetwork();
+      expect((await attempt(username, `typo-${i}`)).got).toBe('invalid');
+    }
+    // Retried every second: each refusal reports the time left, which shrinks.
+    const waits: number[] = [];
+    for (let t = 1; t <= 11; t += 1) {
+      at(t);
+      anotherNetwork();
+      const r = await attempt(username, password);
+      expect(r.got).toBe('locked_user');
+      waits.push(r.wait!);
+    }
+    // One token refills in 12 s; the wait told at second t is what is left of
+    // those 12 s (rounded up), so it never grows and runs down to a second.
+    waits.forEach((w, i) => {
+      expect(w).toBeGreaterThanOrEqual(1);
+      expect(w).toBeLessThanOrEqual(12 - (i + 1) + 1);
+      if (i > 0) expect(w).toBeLessThanOrEqual(waits[i - 1]!);
+    });
+    expect(waits.at(-1)).toBeLessThanOrEqual(2);
+    at(12);
+    anotherNetwork();
+    expect((await attempt(username, password)).got).toBe('in');
+  });
+
+  it('the network refusal is not restarted either: two people waiting exactly what they are told both get in', async () => {
+    const office = freshUser();
+    const ip = h.ip;
+    const colleagues = Array.from({ length: LOGIN_NETWORK_LIMIT.capacity }, () => freshUser());
+    for (const c of colleagues) {
+      h.ip = ip;
+      expect((await attempt(c.username, 'typo')).got).toBe('invalid');
+    }
+    const other = freshUser();
+    h.ip = ip;
+    const a = await attempt(office.username, office.password);
+    expect(a.got).toBe('throttled_ip');
+    at(3);
+    h.ip = ip;
+    const b = await attempt(other.username, other.password);
+    expect(b.got).toBe('throttled_ip');
+    expect(b.wait).toBe(a.wait! - 3); // the second refusal did not move the clock
+    at(a.wait!);
+    h.ip = ip;
+    expect((await attempt(office.username, office.password)).got).toBe('in');
+    at(a.wait! + 12);
+    h.ip = ip;
+    expect((await attempt(other.username, other.password)).got).toBe('in');
+  });
+
+  it('a hand-out morning: sixty people on one address, three typos in ten, retrying every ten seconds, all get in', async () => {
+    // The review's simulation of the old arithmetic left 54 of these 60 locked
+    // out after half an hour. Deterministic: person i mistypes on attempts
+    // where (i + attempt) % 10 < 3.
+    const ip = h.ip;
+    const people = Array.from({ length: 60 }, () => freshUser());
+    const state = people.map((p, i) => ({ ...p, next: (i * 120) / 60, tries: 0, inAt: -1 }));
+    let refusedByNetwork = 0;
+    for (let guard = 0; guard < 10_000; guard += 1) {
+      const waiting = state.filter((p) => p.inAt < 0).sort((x, y) => x.next - y.next);
+      const p = waiting[0];
+      if (!p || p.next > 1800) break;
+      at(p.next);
+      h.ip = ip;
+      const typo = (state.indexOf(p) + p.tries) % 10 < 3;
+      p.tries += 1;
+      const r = await attempt(p.username, typo ? 'typo' : p.password);
+      if (r.got === 'in') p.inAt = now;
+      else {
+        if (r.got === 'throttled_ip') refusedByNetwork += 1;
+        p.next = now + Math.max(10, r.wait ?? 0);
+      }
+    }
+    expect(state.filter((p) => p.inAt < 0)).toEqual([]);
+    expect(Math.max(...state.map((p) => p.inAt))).toBeLessThan(300);
+    // The typos bunch at the start (36 in the first two minutes), so some
+    // refusals happen; what matters is that they end.
+    expect(refusedByNetwork).toBeLessThan(state.length * 10);
+  });
+
+  it('the per-account guard is exactly as strong: however an attacker paces his guesses, at most 5 + 5 a minute reach the password check', async () => {
+    for (const every of [1, 5, 12, 30]) {
+      const { username } = freshUser();
+      h.lookups = [];
+      at(0);
+      for (let t = 0; t <= 600; t += every) {
+        at(t);
+        anotherNetwork(); // a fresh address each time, so only the account's own bucket can stop him
+        await attempt(username, `guess-${t}`);
+      }
+      const checked = h.lookups.filter((u) => u === username).length;
+      const ceiling = LOGIN_LIMIT.capacity + Math.floor(600 * LOGIN_LIMIT.refillPerSec);
+      expect(checked, `one guess every ${every}s`).toBeLessThanOrEqual(ceiling);
+    }
+    // The numbers themselves are pinned: changing them is the owner's call.
+    expect(LOGIN_LIMIT).toEqual({ capacity: 5, refillPerSec: 5 / 60 });
+  });
+});
+
 describe('loginFailureMessage', () => {
   it('maps the two throttle codes and nothing else', () => {
-    expect(loginFailureMessage(new LoginThrottledError('user', 40))).toBe(LOCKED);
+    expect(loginFailureMessage(new LoginThrottledError('user', 40))).toBe(
+      'Account temporarily locked due to repeated attempts. Try again in 40s.'
+    );
     expect(loginFailureMessage(new LoginThrottledError('ip', 7))).toBe(
       'Too many attempts from your network. Try again in 7s.'
     );
