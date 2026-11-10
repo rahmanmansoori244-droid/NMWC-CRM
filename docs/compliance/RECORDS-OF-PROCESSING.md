@@ -142,13 +142,18 @@ which always populates both columns; a lint rule in `eslint.config.mjs` and
 | **Retention** | Results and seals indefinitely, append-only (DATA-RETENTION-SCHEDULE.md); the R2 copies indefinitely. |
 | **Lawful basis** | **[COUNSEL]** |
 
-**Dated note — the go-live clean start (owner decision, November 2026).** Before the pilot
-the test period's customer data, requests, imports, exports, notifications, logs, history,
-integrity results and seals were removed from production once, and the test photos at
-least 7 days later (`docs/OPERATIONS.md` §5m; DATA-RETENTION-SCHEDULE.md, the same note).
-The records of every activity above begin again at the reset; accounts, routes and regions
-were kept unchanged. Until the pre-reset backups expire (30 days) and Neon's history ages
-out (7 days), the test period remains recoverable there; that is the intended way back.
+**Dated note, 2026-11-11 — the go-live clean start (owner decision of 2026-11-11).** Once,
+before the pilot, the test period's customer data, requests, imports, exports,
+notifications, saved filters, logs, history, integrity results and seals are removed from
+production in one approved transaction, and the test photos at least 7 days later
+(`docs/OPERATIONS.md` §5m; DATA-RETENTION-SCHEDULE.md, the note of the same date). The
+records of every activity above begin again at the reset; accounts, routes and regions
+are kept unchanged. The evidence: the AuditLog row `cleanstart-<run>` in the CRM (it also
+dates the reset), the GitHub runs and their approvals, the encrypted reports and the
+archived old seals under `cleanstart/<run>/` in the backups bucket, and the owner's
+private operations log. Until the pre-reset backups expire (30 days) and Neon's history
+ages out (7 days), the test period remains recoverable there; that is the intended way
+back.
 
 ## Cross-border transfer
 

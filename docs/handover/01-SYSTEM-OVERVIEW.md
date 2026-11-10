@@ -960,6 +960,7 @@ never prints a value.
 | What the tests really exercise | [AUDITOR-BRIEF §13](../../AUDITOR-BRIEF.md#13-how-the-team-verifies-changes--and-what-the-tests-exercise) |
 | Running production: deploy, roll back, backups, incidents, day-1 support | [03 — operations and deployment](03-OPERATIONS-AND-DEPLOYMENT.md) and [`docs/OPERATIONS.md`](../OPERATIONS.md) |
 | The go-live load | [`docs/GO-LIVE-RUNBOOK.md`](../GO-LIVE-RUNBOOK.md) |
+| The go-live clean start (removing the test period before the pilot) | [`docs/GO-LIVE-CLEAN-START.md`](../GO-LIVE-CLEAN-START.md) (the owner's steps) and [`docs/OPERATIONS.md` §5m](../OPERATIONS.md) |
 | Accounts and secrets (names, holders, what must match) | [02 — access, accounts and secrets](02-ACCESS-ACCOUNTS-AND-SECRETS.md), [`docs/SECRETS-INVENTORY.md`](../SECRETS-INVENTORY.md), [`docs/CREDENTIAL-ROTATION.md`](../CREDENTIAL-ROTATION.md), [AUDITOR-BRIEF §14](../../AUDITOR-BRIEF.md#14-sensitive-material-in-the-repository) |
 | Terms (Temix, Steward, lane, cycle, EXACT_TRIPLE) | [AUDITOR-BRIEF §19](../../AUDITOR-BRIEF.md#19-glossary) |
 | History | [`CHANGELOG.md`](../../CHANGELOG.md) and `git log` (recent commit messages are the design record) |

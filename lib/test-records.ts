@@ -9,6 +9,15 @@
  * the flag moves only in the owner's maintenance window: a trigger refuses every
  * other writer (docs/OPERATIONS.md section 7 says how the owner flags a new one).
  *
+ * The go-live clean start (owner decision 2026-11-11, docs/OPERATIONS.md 5m)
+ * removes every customer, the walk-through customer NMWC-2026-000001 with them,
+ * and the customer-code counter. From then on NMWC-<year>-000001 is NOT reserved
+ * for a test customer: the first customer created in the CRM after the reset
+ * takes it, and it is real. KNOWN_TEST_RECORDS.customerCode below only records
+ * what the migration marked (the test pins it to the migration); nothing here
+ * flags a customer by its code. The zz.test.* accounts, ZZTEST and ZZTEST-R1 are
+ * kept and stay flagged.
+ *
  * The rule: test rows are LEFT OUT of the dashboards, the /status approval
  * figures, the exports, the Temix workbook, verify-load and the nightly data
  * checks, unless
@@ -38,7 +47,10 @@ export const KNOWN_TEST_RECORDS = {
   regionCode: 'ZZTEST',
   /** The test route. */
   routeCode: 'ZZTEST-R1',
-  /** The walk-through customer. */
+  /**
+   * The walk-through customer the migration marked. The go-live clean start
+   * removes it; after that this code belongs to the first real CRM-created customer.
+   */
   customerCode: 'NMWC-2026-000001',
 } as const;
 

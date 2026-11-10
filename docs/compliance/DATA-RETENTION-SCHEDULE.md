@@ -46,15 +46,31 @@ Two columns matter more than the periods themselves: **Enforced by** and **Prove
 | Error telemetry (Sentry) | **[OWNER]** — Sentry org retention, typically 90 days | Sentry | — | — |
 | Application logs (Vercel) | 30 days on Pro with Observability Plus (since 2026-09-27; 1 day without it). The app's own lines and Prisma's error lines are scrubbed of phones, e-mails and 7–12 digit runs before they are written. **Not scrubbed:** the request path and query string Vercel records for every request (a customer search carries the typed phone number or name in `?q=`), and Next's own printout of an unhandled server error. **Known gap** — see gap 7 below | Vercel | — | — |
 
-**Dated note — the go-live clean start (owner decision, November 2026).** The ledgers and
-the history above are "indefinite, by design" from the clean start (`docs/OPERATIONS.md`
-§5m). Before it, the test period's rows of every ledger, history table and log were
-removed once, in the owner's maintenance window, by owner decision: the test period was
-test data, and its records begin again at the reset. The clean start is recorded by one
-AuditLog row (`cleanstart-<run>`), the history's BASELINE rows written in the same
-transaction, the encrypted reports and the archived old seals under `cleanstart/<run>/`
-in the backups bucket, and the owner's private operations log. The test photos are
-deleted from the photo bucket at least 7 days after it, in a separate approved run.
+**Dated note, 2026-11-11 — the go-live clean start (owner decision of 2026-11-11).** The
+ledgers, logs and history above that are "indefinite, by design" are indefinite **from the
+clean start** (`docs/OPERATIONS.md` §5m), which runs once, before the pilot; the day it
+ran is in its AuditLog row and the owner's operations log. It removes the test period's
+rows from production, in the owner's maintenance window (`docs/OPERATIONS.md` §5e), by
+the owner's decision: everything about customers in production was test data, so its
+records are restarted rather than carried into live use. Emptied: the customer and
+request tables, imports, exports, Temix batches, notifications, saved filters,
+`AuditLog`, `EditApproval`, `EditRevision`, `ExportJob`, `AuthEvent`, `JobRunDay`,
+`PurgeSummary`, `IntegrityCheckResult`, `SealRecord`, the login rate-limit rows and every
+history table; also the customer-code counter and job-run rows older than the day before.
+Kept unchanged: accounts, password history, regions, routes, manager links, channels and
+job heartbeats; the kept records' history starts again with one BASELINE row each. The
+old off-site seal copies are moved out of `seals/` into the backups bucket, not deleted.
+The test photos are deleted from the photo bucket at least 7 days later, in a separate
+approved run.
+
+Where the evidence is: in the CRM, the AuditLog row `cleanstart-<run>` (the first row of
+the new log: what was removed and kept, by count, and the hashes of what was exported)
+and the photo run's row `cleanstart-photos-<run>`; the GitHub Actions runs of the
+`Clean start` and `Clean start photos` workflows and their approvals; the age-encrypted
+exports, reports and the archived old seals under `cleanstart/<run>/` in the backups
+bucket (outside the 30-day `db/` rule); and the owner's private operations log. The test
+period stays recoverable only until the pre-reset dumps expire (30 days) and Neon's
+history ages out (7 days); that is the intended way back, and after that it is gone.
 
 ## Why the rate-limit period is one day and not thirty
 

@@ -512,74 +512,283 @@ It prints the FIRST mismatch (every one with `--all`) as seq, day, table, kind, 
 
 **Open owner questions (the safe default built is in brackets).** At what count a check alerts [any non-zero count]; how `customer-status-follows-shops` treats **review** cases [information, not counted: the rule leaves them, and a person decides each]; how often the Steward is told [once per Steward per Oman day]; whether the seal findings should alert every night while they stay [once per event, then information]; whether a planned change (a PDPL erasure, a repair in a maintenance window) may be **acknowledged** in the system so it does not raise the critical alert [no: an acknowledgement the owner login can write would let that same login silence the alert for its own change; the explanation goes in the private operations log]; whether `integrity-watch` should be a critical heartbeat [warning]; the thresholds of the two behaviour checks [information only].
 
-## 5m. Go-live clean start (owner decision, November 2026)
+## 5m. Go-live clean start (owner decision 2026-11-11)
 
 Before the pilot, everything the TEST period left in production is removed once, and the
-real customer file is then loaded through the Import screen. Kept: every account
-(the hidden `zz.test` ones too), route and region, the ZZTEST region and route, the
-manager links, the channels, the password history and the job heartbeats. Removed: the
-customers, shops, photos' records, requests and their drafts, decisions and rounds,
-notifications, imports, exports, Temix batches, saved views, the audit log, the history
-of every kind, sign-in events, job-run days, purge summaries, integrity results and the
-seal chain; the customer-code counter; job runs older than the Oman day before the reset.
-The test photos themselves are deleted at least 7 days later, in a separate run.
+real customer file is then loaded through the Import screen. The owner presses every
+button that changes production himself, in GitHub; his step-by-step, in plain words, is
+[`docs/GO-LIVE-CLEAN-START.md`](GO-LIVE-CLEAN-START.md). This section is the operator's
+reference: what the run does, in the order the workflows do it. Where the workflows and
+the design notes differ, this section and the owner's guide follow the workflows (the
+differences are listed at the end).
 
-**What does it.** `scripts/ops/clean-start/` and two workflows the owner runs by hand:
+### What it removes and what it keeps
+
+By owner decision of 2026-11-11 (each open point built with the recommended default):
+
+| | Tables (`scripts/ops/clean-start/tables.json`, pinned to `prisma/schema.prisma` by `tests/unit/clean-start-tables.test.ts`) |
+|---|---|
+| **Emptied** (one `TRUNCATE … CONTINUE IDENTITY RESTRICT`) | customer data: `Customer`, `Branch`, `Attachment`, `CustomerEdit`, `EditCustomerDraft`, `EditBranchDraft`, `EditApproval`, `EditRevision`, `Notification`, `ImportBatch`, `ImportRow`, `TemixSyncBatch`, `ExportJob`; logs: `AuditLog`, `AuthEvent`, `JobRunDay`, `PurgeSummary`, `IntegrityCheckResult`, `SealRecord`, `RateLimit`, `SavedView`; history: `CustomerHistory`, `BranchHistory`, `AttachmentHistory`, `UserHistory`, `RouteHistory`, `RouteOwnerHistory`, `RegionHistory` |
+| **Partly** | `CodeSequence`: the `CUSTOMER-YYYY` counters (the next CRM-created customer is `NMWC-<year>-000001`, unless the real file brings NMWC codes, which the counter then skips past by itself). `CronRun`: rows older than the start of the Oman day before the reset (yesterday's and today's stay, so the first night's job check is true) |
+| **Kept, byte for byte** | `User` (the hidden `zz.test.*` accounts too), `PasswordHistory`, `Region`, `Route` (`ZZTEST`, `ZZTEST-R1` and any `UNASSIGNED` region and route too), `_ManagerRegions`, `Channel`, `SubChannel`, `CronHeartbeat`; `_prisma_migrations` is not touched |
+
+In the same transaction the four history tables of kept records get one `BASELINE` row
+per region, route, account and route holder (the SQL of
+`20261013100100_history_foundation`, with only the source, kind and actor changed), and
+`AuditLog` gets exactly one row, `cleanstart-<run>`, with the run, commit, plan id,
+backup, the hashes of the exported photo-key list and seals, the old chain, the archive
+prefix, the Neon safety branch and the removed and kept counts. Its counts are visible
+only inside the CRM (Audit). No sequence is reset. Nobody is signed out: the accounts are
+not touched, which is part of the proof that nothing real changed. Saved filters are
+deleted (they were built on test data).
+
+Outside the database: the old seal files under `seals/v1/<old chain>/` in the photo
+bucket are copied to the backups bucket (`cleanstart/<run>/seal-archive/`), each copy
+re-read and hash-checked, and only then removed from the live folder; any other object
+under `seals/` is left alone. The test photos are deleted **at least 7 days later**, in a
+separate run, only the keys production's `Attachment` rows held at the reset; an upload
+no record pointed to is never touched, and (with the read-only test-environment secret)
+a key the test environment also uses is kept.
+
+### What does it
 
 | Piece | What |
 |---|---|
 | `tables.json` | every table: EMPTY, PARTIAL (CodeSequence, CronRun) or KEEP |
-| `plan.sql`, `guards.sql`, `fingerprint.sql` | the read-only checks (CS001-CS012) and the encrypted exports, bound by one plan id |
-| `reset.sql`, `selfcheck.sql` | ONE transaction as the owner login in the §5e window: the checks again under SHARE locks, the plan id again (CS013), one `TRUNCATE … CONTINUE IDENTITY RESTRICT`, two partial DELETEs, one AuditLog row `cleanstart-<run>`, the history baselines, the self-check (CS101-CS113), COMMIT |
-| `verify.sql` | after COMMIT, read-only (CS301 = the reset did not commit) |
-| `run.sh`, `target-guard.sh` | targets (the shared host list; the typed `confirm_host` and phrase), the public-log discipline, encryption, storage, GitHub and Neon calls |
-| `seal-archive.sh` | the old seal files: verified, archived to `nmwc-backups/cleanstart/<run>/seal-archive/`, then removed from `seals/`; `restore` puts them back after a rollback |
-| `photo-delete.sh` | the day-7 photo deletion |
-| `.github/workflows/clean-start.yml` | modes `dry-run`, `neon-rehearsal`, `apply`, `finish`, `seal-restore` |
+| `plan.sql`, `guards.sql`, `fingerprint.sql` | the read-only checks (SQLSTATE `CS001`-`CS012`) and the exports (photo-key list, seals, plan, plan id), bound together by one plan id |
+| `reset.sql`, `selfcheck.sql` | ONE transaction as the owner login in the §5e window: the checks again under SHARE locks, the plan id again (`CS013`), the `TRUNCATE`, two partial DELETEs, the AuditLog row, the baselines, the self-check (`CS101`-`CS113`), COMMIT |
+| `verify.sql` | after COMMIT, read-only; `CS301` means the reset row is not there, so nothing changed |
+| `facts.sql`, `counter.sql`, `photos-record.sql` | small read-only questions; the next customer number in a rolled-back transaction; the photo run's one AuditLog row |
+| `run.sh`, `target-guard.sh` | the targets (the shared host list `config/production-hosts.txt`; the typed `confirm_host` and phrase), the public-log rule, encryption, storage, the GitHub and Neon calls. Neither names a database client: every database command is written in the workflow file and writes to a file |
+| `seal-archive.sh` | the old seal files: `verify`, `archive`, `retire`; `restore` after a rollback |
+| `photo-delete.sh` | the day-7 photo deletion: `check`, then `delete` |
+| `rehearse-watch.ts`, `compare-watch.ts`, `expected-watch.json` | the first two nights of the integrity watch on a reset copy, and the first night on production, against the expected status table |
+| `.github/workflows/clean-start.yml` | jobs `Plan (read-only)`, `Rehearse on the restored backup`, `Neon rehearsal`, `Apply (the owner's approval)`, `Finish an apply (steps e-j)`, `Seal restore (after a rollback)`; modes `dry-run`, `neon-rehearsal`, `apply`, `finish`, `seal-restore` |
 | `.github/workflows/clean-start-photos.yml` | the photo deletion (phrase `DELETE TEST PHOTOS`) |
 
-**The modes.** `dry-run` changes nothing: PLAN reads production and stores the exports
-encrypted; REHEARSE restores the fresh backup in the runner, checks it holds exactly what
-production holds (same plan id), runs the identical `reset.sql` there, verifies, runs the
-nightly integrity watch twice (the reset evening and the next morning) and checks the
-first backup after the reset passes the backup's gates. `neon-rehearsal` (approval-gated)
-does the reset on a temporary Neon branch of production, restores that branch to the
-noted time through the Neon API and proves the fingerprint returns exactly; the branch
-is always deleted. `apply` (approval-gated: the owner's Approve on environment
-`production-reset` is the yes) re-runs every check, needs a green `neon-rehearsal` of the
-same scripts within 14 days, the evening window 15:30-23:30 UTC and the phrase
-`REMOVE ALL TEST DATA <today's Oman date>`, makes the Neon safety branch
-`pre-clean-start-<date>-<run>`, archives the old seals, runs the reset, settles and
-verifies it, removes the old seal files, runs the first watch and compares it with
-`expected-watch.json`, smokes, and stores an encrypted report. `finish <run>` repeats
-the steps after COMMIT when the answer to the COMMIT was lost (it settles it first:
-nothing changed, or committed). `seal-restore <run>` follows a rollback.
+Every run is started by hand (`workflow_dispatch`), on `main` only (`run on the default
+branch` is checked first), one at a time (`concurrency: clean-start`, never cancelled).
+Every job that holds the Neon key, the read-write photo token or `PROD_CRON_SECRET` waits
+for the owner's **Approve** on the GitHub environment `production-reset`. No artifact is
+uploaded; every plaintext file is shredded in an `always()` step.
 
-**Public log.** The repository is public. Every database command writes to a file; the
-log and the step summary show only step names, yes/no lines, SQLSTATE codes, check ids
-with their statuses, durations and hashes. Counts, names, keys and the integrity results
-are only in the age-encrypted copies under `cleanstart/<run>/` in the backups bucket (kept
-outside the 30-day `db/` rule) and in the reset's own AuditLog row.
+**The inputs, as the Run workflow form shows them.** `mode`; `confirm_host` (required in
+every mode; the first part of the production database host, the first line of
+`config/production-hosts.txt`); `confirm_phrase` (apply only:
+`REMOVE ALL TEST DATA <today's date in Oman, YYYY-MM-DD>`); `run_id` (finish and
+seal-restore only: the apply run's id, the long number in its address after `/runs/`).
+The photo run: `run_id`, `list_sha256`, `confirm_host`, `confirm_phrase`
+(`DELETE TEST PHOTOS`).
 
-**Rollback** (only before the real file is loaded): Neon console → Branches → the
-production branch → Restore to the "reset started" time in the run summary minus one
-minute (or restore from the safety branch); then mode `seal-restore`; then restore
-`MIN_DUMP_BYTES` if it was lowered. The point of no return for the database is the
-owner's real import; for the photos, the photo run (it deletes the safety branch first).
+### The checks before anything changes (job "Plan (read-only)", every mode but finish and seal-restore)
 
-**After it** (separate changes): the setup secrets and the two R2 tokens and the Neon key
-are deleted (`lib/ops/required-secrets.ts` names them under "the go-live clean start");
-`lib/insights/policy.ts` `HISTORY_BASELINE_DAY` moves to the reset day;
-`lib/test-records.ts` stops naming `NMWC-2026-000001` as the test customer (after the
-reset it is the first real CRM-created code). The owner's step-by-step runbook is in the
-private handover pack, with the operations-log entry written before and completed after.
+- every setting the job needs is present (each missing one is named); the run is on `main`;
+  in mode apply the evening window 15:30-23:30 UTC (19:30-03:30 Oman);
+- `DIRECT_URL` is production now (the first line of the host list) and `confirm_host`
+  names it; in mode apply also the phrase (`target-guard.sh apply`), before the rehearsal;
+- `/api/health` serves this run's commit; environment `production-reset` has a required
+  reviewer; no DB Backup run is queued or running; in mode apply a green `neon-rehearsal`
+  run of the same `scripts/ops/clean-start` tree within 14 days;
+- the newest `db/*.sql.gz.age` has a manifest and is at most 4 hours old (so **every**
+  mode, the Neon rehearsal included, starts with a fresh DB Backup run); the DB Backup
+  heartbeat is at most 4 hours old;
+- `plan.sql` in a read-only session: the table list, ownership, foreign keys, triggers,
+  migrations equal to the checkout's, only `CUSTOMER-YYYY` counters, no export or Temix
+  file key, no photo under `seals/`, the actor (`CLEANSTART_ACTOR_USERNAME`) exactly one
+  active real account, no clean start recorded yet; then the exports, bound to the plan id;
+- the old seal copies (read-only photo token): a copy that differs from its seal refuses;
+  a missing copy is allowed (its body is archived from the export); objects under
+  `seals/` that are not production's chain are listed;
+- the exports are stored age-encrypted under `cleanstart/<run>/plan/` in the backups bucket.
 
-**Tests.** `tests/unit/clean-start-*.test.ts` (rules of the SQL, the tables, the
-workflows, the shell scripts against local stand-ins and the public-log rule);
-`tests/integration/clean-start.test.ts` (`RUN_CLEAN_START=1`, in CI);
-`tests/integration/clean-start-flow.test.ts` (`RUN_CLEAN_START_FLOW=1`, a local
-cluster): every mode of both workflows end to end against a seeded "production",
-including a connection lost at COMMIT in both directions.
+### Dry runs (mode `dry-run`; changes nothing on production)
+
+"Rehearse on the restored backup" downloads the dump the plan picked, decrypts it,
+restores it into a Postgres 17 service container, runs `restore-verify.ts --manifest`,
+and runs `plan.sql` on it: its plan id must equal production's (`backup equals
+production: yes`), which proves the backup holds exactly what the reset will remove and
+keep. A sign-in or any other write between the backup and the plan changes the plan id
+(a sign-in writes `User.lastLoginAt`), so nobody may use the CRM from the DB Backup run
+until the dry run is green. Then: the old chain verified on the copy (recorded only), the
+identical `reset.sql` (timed) and `verify.sql`, the integrity watch run twice (the reset
+evening and the next Oman morning) against `expected-watch.json`, `pg_dump` of the result
+through the nightly backup's own gates and size floors (`first nightly backup would be
+below the size floor: yes; set MIN_DUMP_BYTES to <n>` names the value to set), and the
+next customer number (`next customer code would be number 000001: yes`).
+
+### The Neon dress rehearsal (mode `neon-rehearsal`; once, approval-gated)
+
+Plan, then (after Approve) a temporary branch `cleanstart-rehearsal-<run>` of the
+default branch with a compute; its host must not be production. Its fingerprint is taken
+and the time noted; the reset and verify run on it, then the watch; then the branch is
+restored through the Neon API to the noted time (`preserve_under_name`
+`cleanstart-rehearsal-<run>-after`), the reset row must be gone and the plan id must
+return exactly (`the Neon restore returned the exact fingerprint: yes`). Both branches
+are deleted in an `always()` step; if one is left, the run says so and the owner deletes
+it by hand. `branch equals production's plan` is only recorded: the proof is that the
+restore returns the branch's own fingerprint. Apply needs a green run of this mode with
+the same scripts within 14 days, so it is repeated after any change to
+`scripts/ops/clean-start/`.
+
+### Reset day (mode `apply`)
+
+The owner first writes the private operations-log entry (§5e step 1) and tells staff to
+stay out of the CRM; runs DB Backup; then starts `apply` between 19:30 and about 22:30
+Oman time (the phrase carries the Oman date, which changes at 20:00 UTC, and is checked
+again at the reset). Plan and Rehearse run as in a dry run (about 20 minutes). The Apply
+job then waits for **Approve** on `production-reset`: that click is the yes. Apply:
+
+- a. the checks again (window, production, release, reviewer, backups idle, the green
+  Neon rehearsal; the newest backup at most 6 hours old and still the one rehearsed;
+  `plan.sql` again: `production unchanged since the plan: yes`; heartbeat); the exports
+  stored again under `cleanstart/<run>/apply/` (the later modes read this copy);
+- b. Neon safety branch `pre-clean-start-<Oman date>-<run>` of production, no compute;
+  `Neon history kept at least 7 days` recorded;
+- c. the old seals archived (additive), re-read and chained;
+- d. `target-guard.sh apply` (production, `confirm_host`, the phrase), `reset started at
+  (UTC): …` printed, then `reset.sql` on production;
+- e-f. `verify.sql` read-only settles it: `reset committed: yes`, `no (nothing changed)`
+  or `unknown (no connection); run mode finish with this run id`; `kept accounts, routes
+  and regions verified after the reset: yes`;
+- g. the old seal files removed from `seals/`, each only with a verified archive copy;
+- h. the integrity watch through the app (`/api/cron/integrity-watch`), its first run
+  compared with night 1 of `expected-watch.json` (`first integrity checks as expected:
+  yes`; `seal-written: info` is the new chain's first seal);
+- i. `npm run smoke -- <APP_BASE_URL> --expect-commit <sha>` (`smoke ok: yes`);
+- j. the encrypted report under `cleanstart/<run>/report/`, then `run_id for the photo
+  step`, `list_sha256 for the photo step` and `reset started at (UTC)`.
+
+The safety branch is deleted only when it is certain the reset did not commit (it never
+started, Postgres refused it, or verify read `CS301`); otherwise `Neon safety branch
+kept: yes`. Production is left alone for about 75-90 minutes, from the backup to green;
+the tables are locked for seconds.
+
+**When objects under `seals/` are not production's chain** (another environment's chain
+folder, a non-seal object), `seal-offsite-copies` is `fail` on the first night and
+`info` after, by design (`expected-watch.json` `withForeignSeals`): the integrity
+watch's critical alert to the operators fires once, on reset night. It is explained in
+the operations log; nothing is to be done about it.
+
+**Mode `finish`** (input `run_id`, approval-gated) repeats e-j for an apply run whose
+answer to the COMMIT was lost: it settles first; when the reset did not commit it
+deletes that run's safety branch and fails with "the reset of that run did not commit;
+nothing changed on production". It calls the watch only when no watch has run since the
+reset, so there is never a second "first" run. A second `apply` after a committed one
+is refused by `CS012`.
+
+### The next morning
+
+Service status → Integrity: "Tonight's seal was written" (`seal-written`) is pass (seal 1)
+and nothing fails except, at most, the one explained `seal-offsite-copies` line. The
+night's DB Backup run is green (if the dry run said the first backup would be below the
+size floor, the repository variable `MIN_DUMP_BYTES` was set to the value it named on
+reset evening; it is deleted again after the real import and one more green nightly
+backup). Only then is the real customer file loaded through the Import screen (codes in
+capitals, as in the preview). That import is the database's point of no return.
+
+### The photo step (day 7 or later; `clean-start-photos.yml`)
+
+Approval-gated, phrase `DELETE TEST PHOTOS`, inputs `run_id` and `list_sha256` from the
+apply run's summary. It refuses unless the reset row `cleanstart-<run_id>` exists and is
+at least 7 days old, the sha256 of the stored list (`cleanstart/<run_id>/apply/photo-keys.txt.age`)
+equals both the typed value and the reset row's value, and no production `Attachment`
+row references a listed key (one hit means a rollback happened: everything is refused).
+Then it deletes the Neon safety branch FIRST (no rollback may be left pointing at missing
+files), skips keys without the photo shape, keeps keys the test environment references
+(only when `UAT_DATABASE_URL_RO` is set; otherwise `test environment checked for shared
+photos: no (no read-only UAT connection set)`), deletes the rest in batches of at most
+1000 and HEAD-checks each, writes one AuditLog row `cleanstart-photos-<run>` and stores an
+encrypted report under `cleanstart/<run_id>/photos/`. It cannot be undone. If bucket
+versioning is on, the bytes linger up to 30 days.
+
+### Going back
+
+**Before COMMIT** every failure (a guard, a changed plan id, a lock or statement timeout,
+the self-check, a lost connection) rolls the one transaction back. The seal archive and
+the safety branch are additive.
+
+**After COMMIT and before the real import**, the database, in order of preference:
+
+1. Neon console → Branches → the production branch → Restore, to the `reset started at
+   (UTC)` time in the run summary minus one minute (Oman time is UTC + 4). Same host, no
+   redeploy. The Neon rehearsal proved such a restore returns the exact fingerprint.
+2. The same Restore, from the branch `pre-clean-start-<date>-<run>`. Independent of the
+   history window.
+3. §6.5: the pre-reset dump into a new Neon branch, then repoint. Hours, and a redeploy.
+
+Then mode `seal-restore` (input `run_id`, approval-gated): `production is back to before
+the reset (old chain, no reset row): yes`, the archived old seal files copied back
+(hash-checked), the new chain's objects moved to `cleanstart/<run>/abandoned-chain/`, the
+watch once (`a check failing or in error: no`). Then delete `MIN_DUMP_BYTES` if it was set.
+
+**Points of no return**, each as late as possible: the database, at the first real write
+(the owner's import of the real file); from then on, fix forward only. The photos, at the
+photo run (it deletes the safety branch first). By themselves: Neon history ages out
+(7 days documented) and the pre-reset dumps expire after 30 days (the `db/` lifecycle);
+after that the test period cannot be recovered, which is the intent. **Never restore a
+pre-reset dump or point in time after the photo deletion**: its `Attachment` rows would
+point at nothing.
+
+### Clean-up of tokens and secrets
+
+After the photo step: delete the two Cloudflare R2 tokens made for this; delete the Neon
+API key made for this; delete the repository secrets `CLEANSTART_ACTOR_USERNAME`,
+`CLEANSTART_R2_RO_ACCESS_KEY_ID`, `CLEANSTART_R2_RO_SECRET_ACCESS_KEY` and the
+environment secrets of `production-reset` (`CLEANSTART_R2_RW_ACCESS_KEY_ID`,
+`CLEANSTART_R2_RW_SECRET_ACCESS_KEY`, `NEON_API_KEY`, `NEON_PROJECT_ID`,
+`UAT_DATABASE_URL_RO`). The repository-level `NEON_API_KEY` and `NEON_PROJECT_ID`, when
+they exist, belong to the monthly restore drill (§6) and stay. The environment
+`production-reset` itself stays, with its required reviewer: a workflow naming a deleted
+environment would recreate it with no reviewer. `lib/ops/required-secrets.ts` names the
+clean-start secrets under "the go-live clean start".
+
+### Public log, and where the record lives
+
+The repository is public, so are its Actions logs and run inputs. Every database command
+writes to a file; the log and the step summary show only step names, `<label>: yes|no`
+lines, SQLSTATE codes, check ids with statuses, durations and hashes (12 or 64 hex); a
+refusal is one fixed sentence, `clean start refused: …`. Counts, names, keys and the
+integrity results exist only in the age-encrypted copies under `cleanstart/<run>/` in the
+backups bucket (outside the 30-day `db/` rule) and in the reset's own AuditLog row.
+`tests/support/clean-start/public-log.ts` is the allowlist the tests hold every printed
+line to.
+
+The record of the clean start: in the CRM, the AuditLog row `cleanstart-<run>` (the
+first row of the new log) and the BASELINE history rows sharing its transaction; outside
+it, the GitHub run and its approval, the encrypted plan, apply, report (and photos)
+copies and the seal archive under `cleanstart/<run>/`, and the owner's private
+operations-log entry, written before and completed after. The compliance notes:
+`docs/compliance/DATA-RETENTION-SCHEDULE.md` and `RECORDS-OF-PROCESSING.md` (dated notes).
+
+### After it (separate changes)
+
+`lib/insights/policy.ts` `HISTORY_BASELINE_DAY` moves to the reset day; `db-backup.yml`
+stops printing the total row count; `lib/test-records.ts` `KNOWN_TEST_RECORDS.customerCode`
+is no longer a test record (§7, "Flag a test record").
+
+### Tests
+
+`tests/unit/clean-start-tables.test.ts`, `clean-start-sql.test.ts` (the SQL's rules and
+mutations), `clean-start-run.test.ts` (the shell scripts against local stand-ins, every
+refusal, the public-log rule) and `clean-start-workflows.test.ts` (both YAML files);
+`tests/integration/clean-start.test.ts` (`RUN_CLEAN_START=1`, CI's db-tests);
+`tests/integration/clean-start-watch.test.ts` (`RUN_CLEAN_START_WATCH=1`, the watch
+runner the workflow calls); `tests/integration/clean-start-flow.test.ts`
+(`RUN_CLEAN_START_FLOW=1`, a local cluster): every mode of both workflows end to end
+against a seeded "production", including a connection lost at COMMIT in both directions.
+Not testable before the day: Neon, R2 and the GitHub API themselves (stand-ins only).
+
+### Where the workflows differ from the design notes
+
+- `PROD_DB_HOST_MARKER` is not read: it was retired for `config/production-hosts.txt`
+  (2026-11-10) and a test forbids a workflow to read it. The owner does not create it.
+- `confirm_host` is required in every mode, the photo run included.
+- The plan job runs in `neon-rehearsal` too, so the Neon rehearsal also needs a DB Backup
+  run of at most 4 hours.
+- Some yes/no lines report a fact rather than a pass (listed in the owner's guide,
+  "Lines that may say no"); "every line says yes" is not the rule, a green job is.
+- The repository-level `NEON_*` secrets of the restore drill are not deleted at the
+  clean-up; only the environment's.
 
 ## 5l. Database rules added NOT VALID, and the VALIDATE step (data audit gap 31)
 
@@ -940,6 +1149,8 @@ and put each right through the customer-master import (the shop takes its route'
 ### Flag a test record (owner only; gap 30)
 
 The test and synthetic records in production carry `isTest = true` (migration `20261024120000_test_records` marked only accounts starting `zz.test.`, region `ZZTEST`, route `ZZTEST-R1` and customer `NMWC-2026-000001`). Flagged rows are left out of the dashboards, the `/status` approval figures, the exports (the Steward may tick **Include test records**), the `/customers` list (the Steward's **Show test records**), the Temix workbook, verify-load and the nightly data checks. A test account still sees its own records, so a production walk works. Nothing is deleted.
+
+**After the go-live clean start (§5m, owner decision 2026-11-11)** the customer `NMWC-2026-000001` no longer exists, and `NMWC-<year>-000001` is **no longer reserved for a test customer**: the clean start removes the `CUSTOMER-<year>` counter, so the first customer created in the CRM after it takes number 000001 (unless the real file brought NMWC codes of that year, which the counter skips past), and that customer is real. The `zz.test.*` accounts, `ZZTEST` and `ZZTEST-R1` are kept and stay flagged. `lib/test-records.ts` `KNOWN_TEST_RECORDS.customerCode` only records what the migration marked; it marks nothing. A production test walk before the first real customer is created would take number 000001 with an unflagged customer, so none is run until then; a test customer made later must be flagged as below.
 
 Only the table owner, inside the maintenance window (§5e), can set or clear the flag — a trigger refuses the application and every other session, on insert or update. To flag a new one, log the reason first (§5e step 1), then, as the owner:
 
@@ -1411,9 +1622,17 @@ synthetic-data wipe scripts. Of those scripts only
 `prisma/synthetic.ts` (`--reset`, `--clear-only`) is left: `scripts/wipe-synthetic-data.ts`
 and `scripts/cleanup-synthetic-test.ts` were deleted on 2026-10-11 (owner decision, data
 audit 2026-10-10; §5j). The **go-live clean start** (§5m) is a legitimate
-use, once, by owner decision (November 2026): one `TRUNCATE` of the test period's
-ledgers and history in this window, through `scripts/ops/clean-start/reset.sql`
-only, recorded by its own AuditLog row and the owner's operations-log entry. An erasure
+use, once, by owner decision of 2026-11-11: one `TRUNCATE` of the test period's
+customer data, ledgers, logs and history, two partial DELETEs and the new baselines in
+this window, in one transaction, through `scripts/ops/clean-start/reset.sql` only, run
+by `.github/workflows/clean-start.yml` mode `apply` after the owner's Approve. The steps
+above apply as follows: step 1 is the owner's operations-log entry written before the
+run; step 2 is the DB Backup run the workflow refuses to start without (and the Neon
+safety branch it makes); step 4's counts are in the reset's own AuditLog row
+`cleanstart-<run>` and the encrypted report, never in the public log. The seal chain is
+restarted rather than reporting the deletion: the old seals are archived first
+(`cleanstart/<run>/seal-archive/`). The photo deletion at day 7 or later is a separate
+approved run and writes its own AuditLog row. An erasure
 request is **not** yet a legitimate use — see `docs/compliance/PDPL-ASSESSMENT.md`
 Q4, which is open with counsel.
 
