@@ -9,6 +9,8 @@
  *
  *   requestReasonOf   the requester's own words — never a reviewer's;
  *   roundSendBacks    every rejection of one round, oldest first;
+ *   sentBackTrail     for a request known to stand sent back: the latest of
+ *                     them, and the ones before it;
  *   currentReason     what a reader must be told NOW (nothing, once a request
  *                     moves forward or is approved);
  *   the notification  the reason he was given, then the earlier ones.
@@ -25,6 +27,7 @@ import {
   needsCorrectionBody,
   requestReasonOf,
   roundSendBacks,
+  sentBackTrail,
   type DecisionRow,
   type ReasonEdit,
 } from '@/lib/request-reasons';
@@ -182,6 +185,56 @@ describe('roundSendBacks: every rejection of one round, oldest first', () => {
       { cycle: 1, stepIndex: 4, role: 'FINANCE_MANAGER', decision: 'REJECTED', reason: '  Stamp missing  ', at: T(1) },
     ]);
     expect(fm).toEqual({ step: 'Finance Manager', stepIndex: 4, by: null, at: T(1), reason: 'Stamp missing' });
+  });
+});
+
+describe('sentBackTrail: a request that stands sent back to its salesman', () => {
+  const relay = [
+    approved('SUPERVISOR', 0, 10),
+    rejected('ACCOUNTANT', 1, 30, A, 'Acc One'),
+    rejected('SUPERVISOR', 0, 50, B, 'Mgr One'),
+    rejected('SUPERVISOR', 0, 55, 'from another round', 'Mgr One', 2),
+  ];
+
+  it('the latest send-back of its round, with the ones before it, oldest first', () => {
+    expect(sentBackTrail({ cycle: 1, decisionReason: B }, relay)).toEqual({
+      latest: { step: 'Supervisor', stepIndex: 0, by: 'Mgr One', at: T(50), reason: B },
+      earlier: [{ step: 'Accountant', stepIndex: 1, by: 'Acc One', at: T(30), reason: A }],
+    });
+  });
+
+  it('reads the decision row, not the request’s own copy, when they differ', () => {
+    const got = sentBackTrail(
+      { cycle: 1, decisionReason: 'the row’s copy', reviewedAt: T(59), reviewedBy: { fullName: 'Someone Else' } },
+      relay
+    );
+    expect(got.latest).toMatchObject({ by: 'Mgr One', at: T(50), reason: B });
+  });
+
+  it('a decision row with no reason: the row’s copy of that same send-back stands in', () => {
+    const got = sentBackTrail({ cycle: 1, decisionReason: B }, [
+      row({ decision: 'REJECTED', role: 'SUPERVISOR', at: T(50), reason: '  ', actor: { fullName: 'Mgr One' } }),
+    ]);
+    expect(got).toEqual({ latest: { step: 'Supervisor', stepIndex: 0, by: 'Mgr One', at: T(50), reason: B }, earlier: [] });
+  });
+
+  it('no decision rows (an older row, a seeded fixture, a row read without them): off the request itself', () => {
+    const at = T(55);
+    for (const decisions of [[], null, undefined, [approved('SUPERVISOR', 0, 10)]]) {
+      expect(sentBackTrail({ cycle: 1, decisionReason: B, reviewedAt: at, reviewedBy: { fullName: 'Mgr One' } }, decisions)).toEqual({
+        latest: { step: null, stepIndex: null, by: 'Mgr One', at, reason: B },
+        earlier: [],
+      });
+    }
+    expect(sentBackTrail({ cycle: 1 }, [])).toEqual({
+      latest: { step: null, stepIndex: null, by: null, at: null, reason: null },
+      earlier: [],
+    });
+  });
+
+  it('is what currentReason says of a NEEDS_CORRECTION request', () => {
+    const e = edit({ state: 'NEEDS_CORRECTION', decisionReason: B });
+    expect(currentReason(e, relay)).toEqual({ kind: 'SENT_BACK', ...sentBackTrail(e, relay) });
   });
 });
 

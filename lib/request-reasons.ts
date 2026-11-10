@@ -139,7 +139,7 @@ function sendBackOf(d: DecisionRow): SendBack {
 }
 
 /** A send-back read off the request row alone: rows with no decision rows (older rows, seeded fixtures). */
-function sendBackFromRow(edit: ReasonEdit, reason: string | null): SendBack {
+function sendBackFromRow(edit: Pick<ReasonEdit, 'reviewedAt' | 'reviewedBy'>, reason: string | null): SendBack {
   return {
     step: null,
     stepIndex: null,
@@ -190,6 +190,27 @@ export function roundSendBacks(cycle: number, decisions: readonly DecisionRow[] 
 }
 
 /**
+ * The send-back of a request that STANDS sent back to its salesman: the latest
+ * one of its round with who, where and when, and the ones before it.
+ *
+ * For a row the caller already knows is sent back — the lists and banners fed
+ * by lib/returned-work.ts read only NEEDS_CORRECTION rows. In that state the
+ * row's own decisionReason is that same latest send-back's reason, so it stands
+ * in when the decision row carries none, and a row with no decision rows at all
+ * (an older row, a seeded fixture) is read off the request itself.
+ */
+export function sentBackTrail(
+  edit: Pick<ReasonEdit, 'cycle' | 'decisionReason' | 'reviewedAt' | 'reviewedBy'>,
+  decisions: readonly DecisionRow[] | null | undefined
+): { latest: SendBack; earlier: SendBack[] } {
+  const sendBacks = roundSendBacks(edit.cycle, decisions);
+  const note = text(edit.decisionReason);
+  const latest = sendBacks.at(-1);
+  if (!latest) return { latest: sendBackFromRow(edit, note), earlier: [] };
+  return { latest: { ...latest, reason: latest.reason ?? note }, earlier: sendBacks.slice(0, -1) };
+}
+
+/**
  * What a request's reader must be told NOW about a decision against it — or
  * null when nothing is current (it is moving forward, or it was approved).
  */
@@ -221,20 +242,12 @@ export function currentReason(edit: ReasonEdit, decisions: readonly DecisionRow[
       // step-back that a later approval answered.
       return lastIsRejection && latest ? { kind: 'RETURNED_TO_STEP', latest, earlier } : null;
     case 'NEEDS_CORRECTION':
-      if (latest) {
-        // In this state the row's own copy is that same send-back's reason: it
-        // stands in only if the decision row carries none.
-        return { kind: 'SENT_BACK', latest: { ...latest, reason: latest.reason ?? note }, earlier };
-      }
-      return { kind: 'SENT_BACK', latest: sendBackFromRow(edit, note), earlier: [] };
+      return { kind: 'SENT_BACK', ...sentBackTrail(edit, decisions) };
     case 'DRAFT':
       // A sent-back request saved as a draft since: the round is the same, and
       // he still has to read why. A draft never sent has no decisions and no note.
-      if (lastIsRejection && latest) {
-        return { kind: 'SENT_BACK', latest: { ...latest, reason: latest.reason ?? note }, earlier };
-      }
-      if (round.length === 0 && note && edit.decisionCategory !== WITHDRAWN_CATEGORY) {
-        return { kind: 'SENT_BACK', latest: sendBackFromRow(edit, note), earlier: [] };
+      if (lastIsRejection || (round.length === 0 && note && edit.decisionCategory !== WITHDRAWN_CATEGORY)) {
+        return { kind: 'SENT_BACK', ...sentBackTrail(edit, decisions) };
       }
       return null;
     case 'REJECTED':

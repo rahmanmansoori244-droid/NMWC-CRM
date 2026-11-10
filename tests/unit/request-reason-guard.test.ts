@@ -21,6 +21,13 @@
  *   - a refusal of a close or a reactivation writes no reason to the request.
  *
  *  READERS
+ *   - every screen that says why a request came back reads it through
+ *     lib/request-reasons.ts — from the decision rows (EditApproval), with the
+ *     request row's own copy only as the fallback that module defines. No page
+ *     prints CustomerEdit.decisionReason itself: that is how an approved request
+ *     came to show an answered send-back, and a salesman only the last
+ *     approver's words;
+ *   - the requester's own reason is shown through requestReasonOf only;
  *   - the printouts and the e-mail read neither column: a printed trail comes
  *     from the decision rows (EditApproval), and an e-mail carries no reason.
  *
@@ -85,6 +92,7 @@ const EDITS = code.get('services/edits.ts')!;
 describe('requestReason: written once, by the submit, and by nothing else', () => {
   it('the files that name the column at all are the ones that define, write, seal or classify it', () => {
     const naming = [...code].filter(([, s]) => /\brequestReason\b/.test(s)).map(([f]) => f).sort();
+    // No page is among them: the two screens that show it call requestReasonOf.
     expect(naming).toEqual([
       // The personal-data inventory's classification.
       'lib/compliance/pii-classification.ts',
@@ -208,6 +216,65 @@ describe('a decision never replaces the requester’s reason, and never leaves a
     expect(body).toContain('needsCorrectionBody(rejectRequestName, reason, earlierSendBacks)');
     expect(body).toContain('earlier: earlierSendBacks,');
     expect(body.match(/earlierSendBacks/g)).toHaveLength(3);
+  });
+});
+
+describe('every screen reads a reason through lib/request-reasons.ts', () => {
+  /** The salesman's pages for work that came back to him, and the function each reads it by. */
+  const SALESMAN_PAGES: Array<[string, string]> = [
+    ['app/(app)/customers/new/page.tsx', 'currentReason('],
+    ['app/(app)/rejected/page.tsx', 'sentBackTrail('],
+    ['app/(app)/work/page.tsx', 'sentBackTrail('],
+    ['app/(app)/customers/[id]/page.tsx', 'sentBackTrail('],
+    ['app/(app)/customers/[id]/edit/page.tsx', 'sentBackTrail('],
+  ];
+  const APPROVER_PAGES = ['app/(app)/approvals/[id]/page.tsx', 'app/(app)/reactivations/page.tsx'];
+
+  it.each(SALESMAN_PAGES)('%s reads the round’s decisions, through %s', (f, reader) => {
+    const s = code.get(f)!;
+    expect(s, f).toContain(reader);
+    // With the decisions: the one trail, loaded with the request.
+    expect(s, f).toContain('steps: DECISION_TRAIL');
+    expect(s, f).toMatch(/from '@\/lib\/request-reasons'/);
+  });
+
+  it('no page prints a request’s decisionReason itself', () => {
+    const pages = [...code].filter(([f]) => f.startsWith('app/') || f.startsWith('components/'));
+    expect(pages.length).toBeGreaterThan(50);
+    const offenders = pages
+      // `decisionReason: true` (a select, for the fallback) and `decisionReason: null`
+      // (the new-customer page silencing the form's old banner) are not prints.
+      .filter(([, s]) => /\.decisionReason\b/.test(s))
+      .map(([f]) => f)
+      .sort();
+    // The form still has the banner the page no longer feeds; it goes when the
+    // form is next edited (docs/handover/04-PENDING-WORK.md).
+    expect(offenders).toEqual(['app/(app)/customers/new/CreateCustomerForm.tsx']);
+    const page = code.get('app/(app)/customers/new/page.tsx')!;
+    expect(page).toContain('decisionReason: null,');
+    expect(page).not.toMatch(/decisionReason: edit\./);
+  });
+
+  it('the approver’s page: the salesman’s reason through requestReasonOf, the decision box through currentReason', () => {
+    const s = code.get('app/(app)/approvals/[id]/page.tsx')!;
+    expect(s).toContain('const salesmanReason = requestReasonOf(edit, edit.steps);');
+    expect(s).toContain('const decidedNow = currentReason(edit, edit.steps);');
+    // The decision box prints a reason only for a send-back, a refusal or a closure note.
+    const kinds = [...s.matchAll(/decidedNow\?\.kind === '([A-Z_]+)'/g)].map((m) => m[1]);
+    expect([...new Set(kinds)].sort()).toEqual(['CLOSED', 'REFUSED', 'SENT_BACK']);
+    // …and the only quoted reasons on the page come from those, the salesman's note and the chain list.
+    expect(s).not.toMatch(/edit\.(decisionReason|requestReason)/);
+  });
+
+  it('the Reactivations queue shows the requester’s reason through requestReasonOf', () => {
+    const s = code.get('app/(app)/reactivations/page.tsx')!;
+    expect(s).toContain("<strong>Reason:</strong> {requestReasonOf(e) ?? '—'}");
+    for (const f of APPROVER_PAGES) expect(code.get(f), f).not.toMatch(/\.decisionReason\b/);
+  });
+
+  it('the earlier send-backs are rendered by the one component, on the pages a salesman reads', () => {
+    const users = [...code].filter(([f, s]) => f.startsWith('app/') && s.includes('EarlierSendBacks')).map(([f]) => f).sort();
+    expect(users).toEqual(['app/(app)/customers/new/page.tsx', 'app/(app)/rejected/page.tsx']);
   });
 });
 

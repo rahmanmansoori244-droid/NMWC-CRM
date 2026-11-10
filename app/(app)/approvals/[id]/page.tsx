@@ -34,6 +34,7 @@ import { decisionLaneFor } from '@/lib/decision-lane';
 import { requestScopeBranches } from '@/lib/permissions';
 import { parseSubmitGate } from '@/lib/edit-scope';
 import { canPrint } from '@/lib/print';
+import { currentReason, requestReasonOf, roundSendBacks } from '@/lib/request-reasons';
 import { AlertTriangle } from 'lucide-react';
 import {
   ApproveRejectActions,
@@ -128,9 +129,10 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
           route: { select: { code: true, regionId: true, region: { select: { name: true } } } },
         },
       },
-      // Per-step decision history for the chain timeline.
+      // Per-step decision history for the chain timeline — and the one source
+      // of every reviewer's reason on this page (finding 18). The id breaks a tie.
       steps: {
-        orderBy: { at: 'asc' },
+        orderBy: [{ at: 'asc' }, { id: 'asc' }],
         include: { actor: { select: { fullName: true } } },
       },
     },
@@ -229,6 +231,18 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
     rejectTarget.kind === 'STEP_BACK'
       ? { kind: 'STEP_BACK', toRole: chain[rejectTarget.toStepIndex]!.role }
       : { kind: 'TO_SALESMAN' };
+  // Finding 18. Three reasons, three sources, never mixed:
+  //  - the SALESMAN's own reason for a close or reactivation request (its own
+  //    column, frozen once sent) — shown to every approver, pending or decided;
+  //  - what is CURRENT about a decision against the request: a send-back or a
+  //    refusal, read from the decision rows. Nothing for an approved request,
+  //    whatever was said on the way;
+  //  - every decision with its reason, in the chain list below (unchanged).
+  const salesmanReason = requestReasonOf(edit, edit.steps);
+  const decidedNow = currentReason(edit, edit.steps);
+  // The rejections already made in this round: a rejection that reaches the
+  // salesman tells him those too (services/edits.ts), and the form says so.
+  const earlierSendBacks = roundSendBacks(edit.cycle, edit.steps).length;
   // Phase 2, ruling 8: the stored changes whose field has changed on the
   // customer since the request was sent — judged the way the final approval of
   // an update judges them (lib/edit-approval.ts, the same QA-013 re-check
@@ -499,16 +513,42 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                 Temix code <strong className="font-mono">{createdTemixCode}</strong>.
               </p>
             ) : null}
-            {edit.decisionReason ? (
+            {/* Finding 18: only what is current. An approved request shows no
+                reason at all — a step-back's reason used to stay here in italics
+                under "Decision: APPROVED". The salesman's own reason has its own
+                note below. */}
+            {decidedNow?.kind === 'SENT_BACK' && (decidedNow.latest.reason || decidedNow.latest.step) ? (
               <p className="mt-1 italic">
-                {/* A close or reactivation request keeps the salesman's own reason
-                    here (2026-10-07). The reviewer's is on the close's decision row
-                    below, and on a reactivation's REJECT audit row. */}
-                {edit.target === 'BRANCH' ? <span className="not-italic">Salesman&apos;s reason: </span> : null}
-                &ldquo;{edit.decisionReason}&rdquo;
+                {decidedNow.latest.step ? (
+                  <span className="not-italic">
+                    Sent back at the {decidedNow.latest.step} step{decidedNow.latest.reason ? ': ' : '.'}
+                  </span>
+                ) : null}
+                {decidedNow.latest.reason ? <>&ldquo;{decidedNow.latest.reason}&rdquo;</> : null}
               </p>
             ) : null}
+            {decidedNow?.kind === 'REFUSED' ? (
+              decidedNow.latest.reason ? (
+                <p className="mt-1 italic">
+                  <span className="not-italic">
+                    Refused{decidedNow.latest.step ? ` at the ${decidedNow.latest.step} step` : ''}:{' '}
+                  </span>
+                  &ldquo;{decidedNow.latest.reason}&rdquo;
+                </p>
+              ) : (
+                <p className="mt-1">The reviewer&apos;s reason is in the audit log.</p>
+              )
+            ) : null}
+            {decidedNow?.kind === 'CLOSED' ? <p className="mt-1 italic">&ldquo;{decidedNow.note}&rdquo;</p> : null}
           </div>
+        )}
+
+        {salesmanReason && (
+          // A close or reactivation request: why the salesman asked, for every
+          // approver — while it waits (it was shown only once decided) and after.
+          <p className="rounded-md bg-white px-3 py-2 text-sm text-slate-800 shadow-sm ring-1 ring-slate-200 [overflow-wrap:anywhere]">
+            <span className="font-semibold">Salesman&apos;s reason:</span> &ldquo;{salesmanReason}&rdquo;
+          </p>
         )}
 
         {lane.kind === 'reactivation' && (
@@ -1030,6 +1070,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
             )}
             outcome={approveOutcome}
             rejectOutcome={rejectOutcome}
+            earlierSendBacks={earlierSendBacks}
           />
         </div>
       )}

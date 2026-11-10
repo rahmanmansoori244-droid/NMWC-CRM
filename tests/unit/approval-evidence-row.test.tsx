@@ -227,6 +227,10 @@ describe('the approval page shows the evidence a close request was sent with', (
 function reactivation(id: string, over: Record<string, unknown> = {}) {
   return {
     id,
+    // What the queue's own query selects: a pending reactivation.
+    target: 'BRANCH',
+    state: 'SUBMITTED',
+    isReactivation: true,
     branchId: B1,
     submittedById: SALES,
     decisionReason: 'Open again.',
@@ -254,5 +258,34 @@ describe('the reactivation queue says when the evidence is gone', () => {
       /Evidence photo removed since the request was sent — it cannot be\s+approved; use Keep closed to reject it\./
     );
     expect(h.attachmentQueries).toHaveLength(1);
+    // Finding 18: beside the evidence, the salesman's reason for asking — a
+    // request an older build sent (decisionReason only), read as his.
+    expect(within(ok!).getByText('Reason:').parentElement!.textContent).toBe('Reason: Open again.');
+  });
+});
+
+// Code review 2026-11-10, finding 18: a PENDING close-shop request never showed
+// the approver why the salesman asked — his reason was printed only in the
+// "Decision" box of a decided request. It is beside the evidence he decides on now.
+describe('finding 18: the approver of a close request reads why the salesman asked', () => {
+  const note = () => screen.queryByText(/Salesman.s reason:/)?.parentElement?.textContent ?? null;
+
+  it('pending, with its evidence: the reason from requestReason', async () => {
+    h.rows = [photo()];
+    await renderApproval(closeEdit({ requestReason: 'The owner has left the country.', decisionReason: 'The owner has left the country.' }));
+    expect(note()).toBe("Salesman's reason: “The owner has left the country.”");
+    expect(within(evidenceSection()!).getAllByRole('img')).toHaveLength(1);
+  });
+
+  it('pending, sent by the build before this one: read from decisionReason, as that build wrote it', async () => {
+    h.rows = [photo()];
+    await renderApproval(closeEdit());
+    expect(note()).toBe("Salesman's reason: “Shop shut permanently.”");
+  });
+
+  it('none on record: no line', async () => {
+    h.rows = [photo()];
+    await renderApproval(closeEdit({ decisionReason: null }));
+    expect(note()).toBeNull();
   });
 });
