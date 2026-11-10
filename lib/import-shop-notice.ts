@@ -13,9 +13,15 @@
  * in Temix (2026-10-11), so this states only that decision. The owner is asked to
  * approve the wording. Used in the row note (lib/import-plan.ts
  * shopNotChangedNote), the "Before you promote" line and the end-of-load notice.
+ *
+ * Third round: the second round's sentence also said "No screen in the CRM
+ * changes a shop's route". Two import paths still can (a held-back row fixed on
+ * the batch page and then loaded, and a full-lane row with no temix_code:
+ * services/imports.ts), so that claim is gone; whether those paths should keep
+ * moving routes is an open owner question, and they are unchanged.
  */
 export const ROUTE_NOT_APPLIED =
-  "The route was NOT applied; the shop stays on its current route. No screen in the CRM changes a shop's route; route moves are made in Temix.";
+  "The route was NOT applied; the shop stays on its current route. Route moves are made in Temix.";
 
 /**
  * What "loaded with their shop NOT changed" counts, in the words of the

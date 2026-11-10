@@ -591,7 +591,7 @@ describe('addGroup and summaryLines — the counts and the words', () => {
       },
       {
         tone: 'warn',
-        text: "Loaded, shop NOT changed: 1 shop(s) of 1 customer(s) differ from the record and are not changed by a row that carries the customer's Temix code (1 of them a different route, and that route is NOT applied). The route was NOT applied; the shop stays on its current route. No screen in the CRM changes a shop's route; route moves are made in Temix.",
+        text: "Loaded, shop NOT changed: 1 shop(s) of 1 customer(s) differ from the record and are not changed by a row that carries the customer's Temix code (1 of them a different route, and that route is NOT applied). The route was NOT applied; the shop stays on its current route. Route moves are made in Temix.",
       },
       {
         tone: 'warn',
@@ -670,7 +670,7 @@ describe('planGroup — a new customer under another live customer\'s Temix code
 describe('shopNotChangedNote — a shop the import loaded without changing', () => {
   it('says the route was NOT applied and that route moves are made in Temix, before the other fields', () => {
     expect(shopNotChangedNote('C1-01', ['route', 'address', 'visit day'])).toBe(
-      "branch C1-01: loaded, shop NOT changed — a row that carries the customer's Temix code never changes an existing shop. The route was NOT applied; the shop stays on its current route. No screen in the CRM changes a shop's route; route moves are made in Temix. The address, visit day in this row differ from the CRM and were not applied either; they can be changed by an edit on the customer page."
+      "branch C1-01: loaded, shop NOT changed — a row that carries the customer's Temix code never changes an existing shop. The route was NOT applied; the shop stays on its current route. Route moves are made in Temix. The address, visit day in this row differ from the CRM and were not applied either; they can be changed by an edit on the customer page."
     );
   });
   it('without a route, only the fields — and never the words "on the customer page" about a route', () => {
@@ -687,10 +687,13 @@ describe('shopNotChangedNote — a shop the import loaded without changing', () 
   // a fixed held-back row, as the way to move a shop; nothing says that now.
   it('never offers an import row or a fix in the CRM as a way to move a route', () => {
     expect(ROUTE_NOT_APPLIED).toBe(
-      "The route was NOT applied; the shop stays on its current route. No screen in the CRM changes a shop's route; route moves are made in Temix."
+      "The route was NOT applied; the shop stays on its current route. Route moves are made in Temix."
     );
     for (const text of [ROUTE_NOT_APPLIED, shopNotChangedNote('C1-01', ['route'])]) {
       expect(text).not.toMatch(/temix_code left blank|held-back|rejected row|batch page|customer-import row/i);
+      // Third round: two import paths can still set a shop's route (a fixed
+      // held-back row, a row with no temix_code), so it must not claim none can.
+      expect(text).not.toMatch(/No screen/i);
     }
   });
 });
