@@ -513,6 +513,7 @@ export async function seedReactivationRow(world: World, o: { branch: string; sub
   const id = newId();
   world.adopt.edit(id);
   const now = new Date();
+  const reason = o.reason ?? world.name('Shop has reopened');
   await db.customerEdit.create({
     data: {
       id,
@@ -523,7 +524,9 @@ export async function seedReactivationRow(world: World, o: { branch: string; sub
       submittedById: world.user(o.submitter).id,
       submittedAt: now,
       isReactivation: true,
-      decisionReason: o.reason ?? world.name('Shop has reopened'),
+      // As the submit writes it (finding 18): his reason in its own column, and the rollback bridge's copy.
+      requestReason: reason,
+      decisionReason: reason,
       pendingRole: 'MANAGER',
       stageEnteredAt: now,
       slaDueAt: stepDeadline(now, 24 * 30),

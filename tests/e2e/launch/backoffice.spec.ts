@@ -2490,6 +2490,8 @@ test.describe('back office: dashboards and service status', { tag: ['@desktop'] 
         reviewedAt: new Date(now - hour),
         fieldChanges: [{ field: `branch.${w.branch('CLOS').id}.status`, before: 'ACTIVE', after: 'CLOSED' }],
         attachmentChanges: [],
+        // As the submit writes it (finding 18): his reason in its own column, and the rollback bridge's copy.
+        requestReason: 'The shop closed for good',
         decisionReason: 'The shop closed for good',
       },
     });

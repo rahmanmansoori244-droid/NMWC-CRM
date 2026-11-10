@@ -351,8 +351,9 @@ model CustomerEdit {
   reviewedById    String?
   reviewedBy      User?       @relation("EditReviewer", fields: [reviewedById], references: [id])
   reviewedAt      DateTime?
-  decisionReason  String?     @db.Text
+  decisionReason  String?     @db.Text  // closure note, or the latest send-back while it stands (lib/request-reasons.ts)
   decisionCategory String?    // bad_photo|wrong_gps|missing_field|wrong_info|other
+  requestReason   String?     @db.Text  // the requester's own reason (close / reactivation); frozen once sent (finding 18)
   fieldChanges    Json        // [{field, before, after}]
   attachmentChanges Json      // [{kind, action: ADD|REPLACE|DELETE, attachmentId}]
   isReactivation  Boolean     @default(false)

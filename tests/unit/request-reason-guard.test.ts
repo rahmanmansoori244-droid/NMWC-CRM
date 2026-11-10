@@ -248,11 +248,27 @@ describe('every screen reads a reason through lib/request-reasons.ts', () => {
       .map(([f]) => f)
       .sort();
     // The form still has the banner the page no longer feeds; it goes when the
-    // form is next edited (docs/handover/04-PENDING-WORK.md).
-    expect(offenders).toEqual(['app/(app)/customers/new/CreateCustomerForm.tsx']);
+    // form is next edited (docs/handover/04-PENDING-WORK.md B9.2). Until then the
+    // page must hand it no reason, so the banner can never render.
+    const FORM = 'app/(app)/customers/new/CreateCustomerForm.tsx';
+    expect(offenders.filter((f) => f !== FORM)).toEqual([]);
     const page = code.get('app/(app)/customers/new/page.tsx')!;
-    expect(page).toContain('decisionReason: null,');
+    if (offenders.includes(FORM)) expect(page).toContain('decisionReason: null,');
     expect(page).not.toMatch(/decisionReason: edit\./);
+  });
+
+  it('no library reads the column either, but the ones that define it or write a closure note', () => {
+    const naming = [...code].filter(([f, s]) => f.startsWith('lib/') && /\bdecisionReason\b/.test(s)).map(([f]) => f).sort();
+    expect(naming).toEqual([
+      // Closes a customer's drafts when it is archived: a closure note.
+      'lib/archive-open-requests.ts',
+      // The personal-data inventory's classification.
+      'lib/compliance/pii-classification.ts',
+      // The one definition of how it is read (the fallback for rows with no decision rows).
+      'lib/request-reasons.ts',
+      // Withdraws a request with an account change: a closure note.
+      'lib/stranded-creates.ts',
+    ]);
   });
 
   it('the approver’s page: the salesman’s reason through requestReasonOf, the decision box through currentReason', () => {
