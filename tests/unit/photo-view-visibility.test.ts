@@ -47,6 +47,9 @@ const READERS: Record<string, string> = {
   'services/imports.ts': 'one Customer CREATE row, to tell a finalize-born customer; returns only whether it exists',
   // Gap 29: the nightly sign-in-failures check counts LOGIN_FAIL rows; a count, never a row.
   'lib/integrity/checks.ts': 'a count of LOGIN_FAIL rows on User entities since the last run; returns a number by kind, never a row',
+  // Code review 2026-11-10, finding 23.
+  'app/(app)/import/[batchId]/page.tsx':
+    'the IMPORT summary row of the account batch on screen (rows done and passwords set, as row numbers); a Steward-only page, ImportBatch entity only',
 };
 
 /** The entity type each listed non-page reader is held to, read from its query. */
@@ -55,6 +58,7 @@ const READ_ONLY_ENTITY: Record<string, string> = {
   'services/duplicates.ts': 'CustomerPair',
   'services/imports.ts': 'Customer',
   'lib/integrity/checks.ts': 'User',
+  'app/(app)/import/[batchId]/page.tsx': 'ImportBatch',
 };
 
 const ROOTS = ['app', 'lib', 'services', 'components'];

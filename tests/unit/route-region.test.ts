@@ -49,7 +49,9 @@ describe('a route never changes region', () => {
     const src = stripComments(readFileSync('services/imports.ts', 'utf8'), 'imports.ts');
     // From the Routes row's cause to the end of that row (its applied()).
     const routes = src.slice(src.indexOf("src.importAccount(batch.id, 'Routes', sheetRow)"));
-    const block = routes.slice(0, routes.indexOf('applied();') + 'applied();'.length);
+    // (Finding 23, code review 2026-11-10: applied() names the sheet and row.)
+    const done = "applied('Routes', sheetRow);";
+    const block = routes.slice(0, routes.indexOf(done) + done.length);
     // The only Route update writes the name; a region is set only on create.
     expect(block.match(/tx\.route\.update\(/g)).toHaveLength(1);
     expect(block).toMatch(/tx\.route\.update\(\{ where: \{ id: before\.id \}, data: \{ name \} \}\)/);
