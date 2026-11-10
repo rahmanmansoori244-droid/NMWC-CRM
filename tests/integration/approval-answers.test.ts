@@ -15,7 +15,13 @@
  *      colleague who could have decided it is told who, and a Manager of
  *      another region reads where it stands in words, not "Edit is in state
  *      APPROVED."; a refused one says "refused";
- *  (3) a reactivation: the same three answers, in its own words.
+ *  (3) a reactivation: the same three answers, in its own words;
+ *  (4) second round: two of the same approver's requests in flight together
+ *      (a double tap, a batch re-sent after "No answer"). Both pass the checks
+ *      and wait at the claim, held there by a row lock this suite takes; the
+ *      loser reads "Your decision already arrived", for an approve, a refusal
+ *      and a reactivation, not a recorded lost race. Two different approvers racing the
+ *      same way still read "just decided by another reviewer", recorded.
  *
  * GATED: writes only rows it creates (prefix ZZAA-) and deletes them after.
  * Never production.
@@ -23,7 +29,7 @@
  *   RUN_APPROVAL_ANSWERS=1 DATABASE_URL=… DIRECT_URL=… \
  *     npx vitest run tests/integration/approval-answers.test.ts
  */
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals, purgeHistory } from '../support/audit';
@@ -417,6 +423,115 @@ describe.skipIf(!ENABLED)('finding 21: a decision already made is answered as on
       expect(JSON.stringify(elsewhere)).not.toMatch(/ZZ Manager One|in state/);
       expect((await footprint(id)).row).toEqual(before.row);
       expect((await footprint(id)).decisions).toBe(before.decisions);
+    });
+  });
+  // ── (4) second round: the same approver's two requests in flight together ──
+  /**
+   * Runs `work` while this suite holds the request's row lock, until `waiters`
+   * other transactions wait for it — each decision has passed every check and
+   * reached its claim — then lets them go. The first to get the row claims it;
+   * the other's claim then matches nothing.
+   */
+  async function atTheClaimTogether<T>(editId: string, waiters: number, work: () => Promise<T>): Promise<T> {
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    let locked!: () => void;
+    const isLocked = new Promise<void>((r) => (locked = r));
+    const holder = prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "CustomerEdit" WHERE id = ${editId} FOR UPDATE`;
+        locked();
+        await released;
+      },
+      { timeout: 90_000, maxWait: 10_000 }
+    );
+    await isLocked;
+    const running = work();
+    try {
+      const deadline = Date.now() + 60_000;
+      for (;;) {
+        const [{ n }] = await prisma.$queryRaw<Array<{ n: number }>>`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+        if (n >= waiters) break;
+        if (Date.now() > deadline) throw new Error(`only ${n} of ${waiters} decisions reached the claim`);
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    } finally {
+      release();
+      await holder;
+    }
+    return running;
+  }
+  const lostRaceRows = (actorId: string, editId: string) =>
+    prisma.auditLog.count({ where: { action: 'CONFLICT', actorId, entityId: editId } });
+  const ANOTHER = 'This edit was just decided by another reviewer. Refresh to see the current state.';
+
+  describe('(4) second round: a claim lost to the approver himself', () => {
+    // Each case closes the second shop again: open it first, whatever the case before did.
+    beforeEach(async () => {
+      await prisma.branch.update({ where: { id: ids.b2 }, data: { status: 'ACTIVE' } });
+      await prisma.customer.update({ where: { id: ids.customer }, data: { status: 'ACTIVE' } });
+    });
+
+    it('two approvals of a close request by the Supervisor at once: one approves, the other reads "Your decision already arrived"', async () => {
+      const id = await sendClose(ids.b2);
+      const page = await freshDecisionToken(prisma, id);
+      const results = await atTheClaimTogether(id, 2, () =>
+        Promise.all([approveWith(SUP, id, page), approveWith(SUP, id, page)])
+      );
+      const won = results.filter((r) => r.ok);
+      const lost = results.filter((r) => !r.ok);
+      expect(won, JSON.stringify(results)).toHaveLength(1);
+      expect(lost[0]).toMatchObject({ ok: false, code: ALREADY_DECIDED_CODE, message: ARRIVED('approved this request', 'Supervisor') });
+      expect(lost[0]!.message).not.toMatch(/another reviewer/);
+      // His own decision is not a lost race: no CONFLICT row. One decision, once.
+      expect(await lostRaceRows(ids.sup, id)).toBe(0);
+      expect(await prisma.editApproval.count({ where: { editId: id } })).toBe(1);
+      expect((await footprint(id)).row.state).toBe('APPROVED');
+    });
+
+    it('two refusals at once: the other reads "Your decision already arrived: you refused this request"', async () => {
+      const id = await sendClose(ids.b2);
+      const page = await freshDecisionToken(prisma, id);
+      const results = await atTheClaimTogether(id, 2, () =>
+        Promise.all([rejectWith(SUP, id, page), rejectWith(SUP, id, page)])
+      );
+      expect(results.filter((r) => r.ok), JSON.stringify(results)).toHaveLength(1);
+      expect(results.find((r) => !r.ok)).toMatchObject({ code: ALREADY_DECIDED_CODE, message: ARRIVED('refused this request', 'Supervisor') });
+      expect(await lostRaceRows(ids.sup, id)).toBe(0);
+      expect(await prisma.editApproval.count({ where: { editId: id } })).toBe(1);
+    });
+
+    it('a reactivation approved twice at once by Manager One: the other reads "Your decision already arrived"', async () => {
+      await prisma.branch.update({ where: { id: ids.b1 }, data: { status: 'CLOSED', lastStatusChangeAt: new Date(Date.now() - 2 * DAY) } });
+      as(...SALES);
+      const sent = (await reacts.requestReactivationAction(
+        form({ branchId: ids.b1, reason: 'Open again.', attachmentId: await evidence(ids.b1) })
+      )) as Result;
+      expect(sent.ok, JSON.stringify(sent)).toBe(true);
+      const id = sent.data!.editId!;
+      const results = (await atTheClaimTogether(id, 2, () => {
+        as(...M1);
+        return Promise.all([reacts.approveReactivationAction(form({ editId: id })), reacts.approveReactivationAction(form({ editId: id }))]);
+      })) as Result[];
+      expect(results.filter((r) => r.ok), JSON.stringify(results)).toHaveLength(1);
+      expect(results.find((r) => !r.ok)).toMatchObject({ code: ALREADY_DECIDED_CODE, message: ARRIVED('approved this reopening', 'Manager') });
+      expect(await lostRaceRows(ids.m1, id)).toBe(0);
+      expect(await prisma.editApproval.count({ where: { editId: id } })).toBe(1);
+    });
+
+    it('two different approvers at once: the loser still reads "just decided by another reviewer", recorded as a lost race', async () => {
+      const id = await sendClose(ids.b2);
+      const page = await freshDecisionToken(prisma, id);
+      const [sup, m2] = await atTheClaimTogether(id, 2, () =>
+        Promise.all([approveWith(SUP, id, page), approveWith(M2, id, page)])
+      );
+      const loser = sup!.ok ? { res: m2!, id: ids.m2 } : { res: sup!, id: ids.sup };
+      expect(sup!.ok !== m2!.ok, JSON.stringify([sup, m2])).toBe(true);
+      expect(loser.res).toMatchObject({ ok: false, code: 'NOT_PENDING', message: ANOTHER });
+      expect(await lostRaceRows(loser.id, id)).toBe(1);
+      expect(await prisma.editApproval.count({ where: { editId: id } })).toBe(1);
     });
   });
 });
