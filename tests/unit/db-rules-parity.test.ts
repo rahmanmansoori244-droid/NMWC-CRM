@@ -42,7 +42,9 @@ const check = (name: string) => {
   if (!r || r.kind !== 'check') throw new Error(`no check ${name}`);
   return r as DbCheckRule;
 };
-const editShape = branchPatchSchema.innerType().shape;
+// zod 4: superRefine no longer wraps the object, so the shape is read directly
+// (as tests/unit/edit-schema.test.ts does).
+const editShape = branchPatchSchema.shape;
 const createShape = createBranchDraftSchema.shape;
 const ok = (s: { safeParse: (v: unknown) => { success: boolean } }, v: unknown) => s.safeParse(v).success;
 const EPS = 1e-6;
