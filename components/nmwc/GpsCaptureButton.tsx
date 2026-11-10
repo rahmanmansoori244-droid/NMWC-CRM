@@ -147,6 +147,9 @@ export function GpsCaptureButton({
   // Finding 19, second round: the point "Go back to the saved location" took off
   // the chip, so a tap by mistake can be undone; cleared by any newer choice.
   const [replaced, setReplaced] = useState<{ gps: Gps; fresh: boolean } | null>(null);
+  // Finding 19, third round: the question opened by the quiet "Wrong place?" link
+  // under a point as good as or better than the one on file.
+  const [askBack, setAskBack] = useState(false);
 
   function take(next: Gps) {
     setGps(next);
@@ -155,6 +158,7 @@ export function GpsCaptureButton({
     setShowManual(false);
     setRougher(null);
     setReplaced(null);
+    setAskBack(false);
     setError(null);
   }
 
@@ -165,6 +169,7 @@ export function GpsCaptureButton({
     cancelListenRef.current = null;
     setRougher(null);
     setReplaced(null);
+    setAskBack(false);
     setOfferOutside(false);
     if (!('geolocation' in navigator)) {
       setError('GPS not available in this browser. Use manual entry below.');
@@ -243,6 +248,7 @@ export function GpsCaptureButton({
     setPending(false);
     setBestSoFar(null);
     setRougher(null);
+    setAskBack(false);
     setOfferOutside(false);
     setError(null);
     setShowManual(false);
@@ -297,6 +303,7 @@ export function GpsCaptureButton({
     setBestSoFar(null);
     setRougher(null);
     setReplaced(null);
+    setAskBack(false);
     setOfferOutside(false);
     const outside =
       latNum < OMAN_LAT_MIN ||
@@ -335,6 +342,14 @@ export function GpsCaptureButton({
   // it was one easy mis-tap from throwing that capture away. Also while
   // listening: it stops the listen (keepSaved).
   const canKeepSaved = !!saved && !!gps && !samePoint(gps, saved) && isRougher(gps, saved);
+  // Third round: a point as good or better can still be in the wrong place (a
+  // customer with several shops: Recapture pressed at the other shop). The way
+  // back is then a quiet link that only opens a question — "Keep the new
+  // location" leads — so one mis-tap cannot throw a good capture away, and going
+  // back can itself be undone.
+  const canGoBackFromBetter = !!saved && !!gps && !samePoint(gps, saved) && !isRougher(gps, saved);
+  const savedLabel = (s: Gps) =>
+    `the saved location${s.isManual ? ' (typed in)' : s.accuracy != null ? ` (±${Math.round(s.accuracy)} m)` : ''}`;
   const currentLabel = gps && saved && samePoint(gps, saved) ? 'the saved location' : 'the location already here';
 
   return (
@@ -462,6 +477,42 @@ export function GpsCaptureButton({
           <Undo2 className="h-4 w-4" />
           {`Go back to the saved location${saved.isManual ? ' (typed in)' : saved.accuracy != null ? ` (±${Math.round(saved.accuracy)} m)` : ''}`}
         </button>
+      )}
+      {canGoBackFromBetter && !rougher && !pending && saved && gps && !askBack && (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => !disabledRef.current && setAskBack(true)}
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 underline underline-offset-2 hover:text-slate-700"
+        >
+          <Undo2 className="h-3 w-3" />
+          Wrong place? Go back to the saved location…
+        </button>
+      )}
+      {canGoBackFromBetter && askBack && !rougher && !pending && saved && gps && (
+        <div role="alert" className="rounded-md border border-slate-300 bg-slate-50 p-3 text-sm text-slate-800">
+          <p className="font-medium" data-testid="gps-back-distance">
+            {`The location on the chip is ${distanceWords(distanceMetres(gps, saved))} from ${savedLabel(saved)}. Go back to the saved location?`}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => setAskBack(false)}
+              className="min-h-11 rounded-md bg-brand-600 px-3 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
+            >
+              Keep the new location
+            </button>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={keepSaved}
+              className="min-h-11 rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+            >
+              {`Go back to ${savedLabel(saved)}`}
+            </button>
+          </div>
+        </div>
       )}
       {/* Finding 19, second round: going back is undone with one more tap. */}
       {replaced && !rougher && !pending && (

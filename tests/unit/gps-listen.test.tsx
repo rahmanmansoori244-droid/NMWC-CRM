@@ -488,20 +488,73 @@ describe('the GPS button', () => {
     expect(screen.getByText('23.700000, 58.500000')).toBeTruthy();
   });
 
-  it('a reading as good or better replaces it without a question, and no button offers to throw it away (second round)', async () => {
+  it('a reading as good or better replaces it without a question, and no one tap throws it away (second round; third round: a quiet link asks first)', async () => {
     const onCapture = vi.fn();
     render(<GpsCaptureButton initial={ON_FILE} saved={ON_FILE} onCapture={onCapture} />);
     // Nothing to go back to while the chip shows the saved location.
-    expect(screen.queryByRole('button', { name: /Go back to the saved location/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /saved location/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
     await reading(8, 23.7, 58.5);
     expect(onCapture).toHaveBeenCalledTimes(1);
     expect(screen.getByText('23.700000, 58.500000')).toBeTruthy();
-    // Finding 19, second round: the better capture is not one mis-tap from being lost.
-    expect(screen.queryByRole('button', { name: /saved location/ })).toBeNull();
+    // Finding 19, second round: the better capture is not one mis-tap from being
+    // lost — no button that goes straight back.
+    expect(screen.queryByRole('button', { name: /^Go back to the saved location/ })).toBeNull();
+    // Third round: only a quiet link, which opens a question and changes nothing.
+    const link = screen.getByRole('button', { name: 'Wrong place? Go back to the saved location…' });
+    expect(link.className).not.toContain('bg-brand-600');
+    fireEvent.click(link);
+    expect(onCapture).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('23.700000, 58.500000')).toBeTruthy();
+    // The question leads with keeping the new location.
+    expect(screen.getByRole('button', { name: 'Keep the new location' }).className).toContain('bg-brand-600');
+    fireEvent.click(screen.getByRole('button', { name: 'Keep the new location' }));
+    expect(onCapture).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('23.700000, 58.500000')).toBeTruthy();
     // A sharper one too.
     fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
     await reading(4, 23.71, 58.51);
+    expect(screen.queryByRole('button', { name: /^Go back to the saved location/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Wrong place? Go back to the saved location…' })).toBeTruthy();
+  });
+
+  it('third round: a better reading taken at the wrong shop — the link, the distance, going back, and the undo', async () => {
+    const onCapture = vi.fn();
+    render(<GpsCaptureButton initial={ON_FILE} saved={ON_FILE} onCapture={onCapture} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    // ±5 m, about 1.1 km away: the customer's other shop.
+    await reading(5, 23.51, 58.3);
+    expect(onCapture.mock.calls.at(-1)![0]).toMatchObject({ lat: 23.51, lng: 58.3, accuracy: 5 });
+    fireEvent.click(screen.getByRole('button', { name: 'Wrong place? Go back to the saved location…' }));
+    expect(screen.getByTestId('gps-back-distance').textContent).toBe(
+      'The location on the chip is about 1,112 m (1.1 km) from the saved location (±8 m). Go back to the saved location?'
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Go back to the saved location (±8 m)' }));
+    expect(onCapture.mock.calls.at(-1)![0]).toBe(ON_FILE);
+    expect(screen.getByText('23.500000, 58.300000')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Wrong place/ })).toBeNull();
+    // Going back can itself be undone.
+    expect(screen.getByRole('status').textContent).toContain('The saved location is back. The ±5 m reading you had is not used.');
+    fireEvent.click(screen.getByRole('button', { name: 'Undo: use the ±5 m reading again' }));
+    expect(onCapture.mock.calls.at(-1)![0]).toMatchObject({ lat: 23.51, lng: 58.3, accuracy: 5 });
+    expect(screen.getByText('23.510000, 58.300000')).toBeTruthy();
+  });
+
+  it('third round: a new capture closes the question, and there is no link with nothing on file', async () => {
+    render(<GpsCaptureButton initial={ON_FILE} saved={ON_FILE} onCapture={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    await reading(6, 23.7, 58.5);
+    fireEvent.click(screen.getByRole('button', { name: 'Wrong place? Go back to the saved location…' }));
+    expect(screen.getByRole('button', { name: 'Keep the new location' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    expect(screen.queryByRole('button', { name: 'Keep the new location' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Wrong place/ }), 'not while listening').toBeNull();
+    await reading(7, 23.71, 58.51);
+    expect(screen.queryByRole('button', { name: 'Keep the new location' })).toBeNull();
+    cleanup();
+    render(<GpsCaptureButton saved={null} onCapture={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Capture GPS' }));
+    await reading(6, 23.7, 58.5);
     expect(screen.queryByRole('button', { name: /saved location/ })).toBeNull();
   });
 

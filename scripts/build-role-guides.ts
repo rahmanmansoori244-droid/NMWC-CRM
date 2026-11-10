@@ -404,7 +404,10 @@ const SALESMAN_EN: Guide = {
         },
         { html: 'Your phone asks permission — tap <strong>Allow</strong>.' },
         {
-          html: 'The phone listens for up to 25 seconds and keeps its best reading; it stops at once when the reading is ±30 m or better. If a new reading is rougher than the location already saved, the app asks before replacing it — tap <strong>Keep the saved location</strong> to keep the old one.',
+          html: 'The phone listens for up to 25 seconds, counted from the moment you tap <strong>Allow</strong> (or from its first reading), and keeps its best reading; it stops at once when the reading is ±30 m or better. If the phone has not started looking after 2 minutes (usually because the <strong>Allow location?</strong> question is still open), it stops and says so: tap <strong>Allow</strong>, then tap the GPS button again.',
+        },
+        {
+          html: 'If a new reading is rougher than the location already saved, the app asks before replacing it, and says how far apart the two are — tap <strong>Keep the saved location</strong> to keep the old one. Took a good reading at the wrong shop? Tap <strong>Wrong place? Go back to the saved location…</strong>, then <strong>Go back to the saved location</strong>. Changed your mind? Tap <strong>Undo</strong>.',
         },
         {
           html: "No fix at all? Step outside, away from roofs and walls, and tap <strong>Try again outside</strong>. If GPS still doesn't work, tap <strong>Enter coordinates manually</strong>. Tap the map at the shop's location, or type the lat/lng. Add a short reason so the supervisor sees it's manual.",
