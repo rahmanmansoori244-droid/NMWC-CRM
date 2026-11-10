@@ -594,7 +594,8 @@ describe.skipIf(!ENABLED)('fixing import rows in the app (item 20)', () => {
     const msgs = (r: (typeof rows)[number]) => ((r.issues ?? []) as { message: string }[]).map((i) => i.message).join(' | ');
     // Owner decision 2026-09-27: the released phone fills the customer's empty phone.
     expect(msgs(rows[0])).not.toMatch(/phone in this row was not written/);
-    expect(msgs(rows[1])).toMatch(/visit day in this row differ from the master and were not applied/);
+    // Code review 2026-11-10, finding 28: the note's new words.
+    expect(msgs(rows[1])).toMatch(/loaded, shop NOT changed .* The visit day in this row differs from the CRM and was not applied/);
     expect(msgs(rows[2])).toMatch(/no branch_code — the import cannot tell which branch this row is/);
     const after = await prisma.customer.findUniqueOrThrow({ where: { id: cust.id }, include: { branches: { orderBy: { branchCode: 'asc' } } } });
     // Nothing untouched was overwritten or reopened; the fixed row's branch is there.
