@@ -1724,6 +1724,31 @@ async function approveEditCore(formData: FormData) {
             });
       return { branches, managedRegionIds: actorScope.managedRegionIds };
     })());
+  // Second round of finding 21: whether the gate below would let this approver
+  // decide the step the request waits at now. Read only by the bulk card check
+  // below, to choose its words; the gate itself is unchanged and runs as before.
+  const canDecideLiveStep = async (): Promise<boolean> => {
+    let liveStep: ApprovalStep | undefined;
+    try {
+      liveStep = parseChain(edit.approvalChain)[edit.currentStepIndex];
+    } catch {
+      // An unreadable chain: the early answer runs as before; the decision refuses below.
+      return false;
+    }
+    if (!liveStep) return false;
+    const s = await scopeOfApprove();
+    const others = await prisma.editApproval.findMany({
+      where: { editId, cycle: edit.cycle, stepIndex: { not: edit.currentStepIndex } },
+      select: { actorId: true },
+    });
+    return (
+      stepAuthority(sessionUser, liveStep, edit.submittedBy, {
+        customerBranches: s.branches,
+        managedRegionIds: s.managedRegionIds,
+        priorStepActorIds: others.map((o) => o.actorId),
+      }) !== null
+    );
+  };
   if (edit.state !== EditState.SUBMITTED) {
     const lost = lostOnEdit(session.id, editId, 'edit.approve', { liveVersion: edit.state });
     if (!edit.isReactivation) {
@@ -1751,9 +1776,14 @@ async function approveEditCore(formData: FormData) {
   // answer was lost — is answered for what happened to it, before the bulk rules
   // below judge the step it is at NOW (a new customer moved on to its last step
   // read "approved one at a time"). Only the words: it is refused either way.
+  // Second round: not when the request now waits at a step this approver can
+  // decide — it came back to him (a new round after a send-back), and the
+  // single-request path's answer, STALE_VIEW below, is the true one; "already
+  // decided by a colleague" pointed the wrong way.
   if (
     formData.get(BULK_RUN_FIELD) === '1' &&
-    (expected.cycle !== edit.cycle || expected.stepIndex !== edit.currentStepIndex)
+    (expected.cycle !== edit.cycle || expected.stepIndex !== edit.currentStepIndex) &&
+    !(await canDecideLiveStep())
   ) {
     const answer = await decidedAlready(
       sessionUser,

@@ -21,7 +21,12 @@
  *      and wait at the claim, held there by a row lock this suite takes; the
  *      loser reads "Your decision already arrived", for an approve, a refusal
  *      and a reactivation, not a recorded lost race. Two different approvers racing the
- *      same way still read "just decided by another reviewer", recorded.
+ *      same way still read "just decided by another reviewer", recorded;
+ *  (5) second round: a bulk card whose request came back to the approver in a
+ *      new round (a colleague sent it back, the salesman sent it again) is
+ *      answered "This request changed since you opened it", as on its own
+ *      page, not "Already decided by a colleague"; a Manager elsewhere is
+ *      still FORBIDDEN.
  *
  * GATED: writes only rows it creates (prefix ZZAA-) and deletes them after.
  * Never production.
@@ -35,6 +40,7 @@ import { randomUUID } from 'node:crypto';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals, purgeHistory } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
 import { ALREADY_DECIDED_CODE } from '@/lib/already-decided';
+import { STALE_VIEW_CODE, STALE_VIEW_MESSAGE } from '@/lib/decision-token';
 import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
@@ -212,24 +218,27 @@ describe.skipIf(!ENABLED)('finding 21: a decision already made is answered as on
     });
     return a.id;
   }
-  async function submitCreate(): Promise<string> {
+  /** `again`: the salesman sends a request that came back to him; `salt`: another request, its own CR and phone. */
+  async function submitCreate(opts: { again?: string; salt?: number } = {}): Promise<string> {
+    const salt = opts.salt ?? 0;
     as(ids.sales, 'SALESMAN');
     const res = (await creates.submitCreateAction({
       isDraft: false,
+      ...(opts.again ? { editId: opts.again } : {}),
       customer: {
         legalName: NAME,
         paymentTerms: 'CASH',
         channelId,
         subChannelId,
-        primaryPhone: `+96893${digits(1)}`,
+        primaryPhone: `+96893${digits(1 + salt)}`,
         contactPerson: `ZZ Contact ${tag}`,
-        crNumber: `92${digits(2)}`,
+        crNumber: `92${digits(2 + salt)}`,
         crPhotoAttachmentId: await att('CR'),
       },
       branches: [
         {
-          branchName: `ZZ New Shop ${tag}`,
-          address: `ZZ Way 9, ${tag}`,
+          branchName: `ZZ New Shop ${tag}${salt ? ` ${salt}` : ''}`,
+          address: `ZZ Way ${9 + salt}, ${tag}`,
           gpsLat: 23.61,
           gpsLng: 58.44,
           gpsManualReason: 'GPS would not lock inside the mall',
@@ -532,6 +541,40 @@ describe.skipIf(!ENABLED)('finding 21: a decision already made is answered as on
       expect(loser.res).toMatchObject({ ok: false, code: 'NOT_PENDING', message: ANOTHER });
       expect(await lostRaceRows(loser.id, id)).toBe(1);
       expect(await prisma.editApproval.count({ where: { editId: id } })).toBe(1);
+    });
+  });
+  // ── (5) second round: a bulk card that came back to the approver ─────────────
+  describe('(5) second round: a bulk card whose request came back to the approver in a new round', () => {
+    it('Manager One sends it back, the salesman sends it again: Manager Two’s and Manager One’s old cards read STALE_VIEW', async () => {
+      const id = await submitCreate({ salt: 50 });
+      const page = await freshDecisionToken(prisma, id);
+      const back = await rejectWith(M1, id, page);
+      expect(back.ok, JSON.stringify(back)).toBe(true);
+      expect((await footprint(id)).row.state).toBe('NEEDS_CORRECTION');
+      expect(await submitCreate({ again: id, salt: 50 })).toBe(id);
+      const live = (await footprint(id)).row;
+      expect(live).toMatchObject({ state: 'SUBMITTED', currentStepIndex: 0 });
+      expect(live.cycle).toBeGreaterThan(JSON.parse(page).cycle as number);
+      const before = await footprint(id);
+
+      const bulk = async (by: [string, string]) => {
+        as(...by);
+        return (await edits.bulkApproveEditsAction(form({ decisions: JSON.stringify([{ editId: id, decisionToken: page }]) }))) as Result;
+      };
+      for (const who of [M2, M1]) {
+        const res = await bulk(who);
+        expect(res.ok, JSON.stringify(res)).toBe(true);
+        expect(res.data!.successes).toEqual([]);
+        expect(res.data!.failures, who[0]).toEqual([{ editId: id, code: STALE_VIEW_CODE, message: STALE_VIEW_MESSAGE }]);
+      }
+      // Someone who cannot decide it now is refused as before, nobody named.
+      const elsewhere = await bulk(MX);
+      expect(elsewhere.data!.failures).toEqual([{ editId: id, code: 'FORBIDDEN', message: 'You are not authorized to act on this step.' }]);
+      expect((await footprint(id)).row).toEqual(before.row);
+      expect((await footprint(id)).decisions).toBe(before.decisions);
+      // And from a fresh page Manager Two still decides it: no rule changed.
+      const fresh = await approveWith(M2, id, await freshDecisionToken(prisma, id));
+      expect(fresh.ok, JSON.stringify(fresh)).toBe(true);
     });
   });
 });
