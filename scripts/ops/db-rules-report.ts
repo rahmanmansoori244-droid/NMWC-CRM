@@ -31,6 +31,8 @@
  * needs a look, 2 when it could not run.
  */
 import { Prisma, PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '../../lib/pg-pool-config';
 import { connectWaking, requireExpectedHost } from './requeue-untracked';
 import { OperatorRefusal, operatorErrorLabel } from './error-label';
 import { DB_RULES, DB_RULE_NAMES, checkRulesOf, dbRulesCountSql } from '../../lib/db-rules';
@@ -104,7 +106,7 @@ async function main(): Promise<number> {
   const host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
   requireExpectedHost(args, url, host);
 
-  const prisma = new PrismaClient({ datasourceUrl: url });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
   try {
     console.log(`\nTarget: ${host}`);
     console.log('='.repeat(76));

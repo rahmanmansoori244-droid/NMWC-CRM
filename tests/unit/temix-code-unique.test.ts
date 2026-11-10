@@ -23,7 +23,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { stripComments } from '../support/strip-comments';
-import { TEMIX_CODE_UNIQUE_INDEX, temixCodeIndexViolated } from '@/lib/db-errors';
+import { TEMIX_CODE_UNIQUE_INDEX, temixCodeIndexViolated, uniqueTargetFields } from '@/lib/db-errors';
 import {
   TEMIX_CODE_UNIQUE_MESSAGE,
   temixCodeIndexMessage,
@@ -47,6 +47,27 @@ const RAW_WRITE = err('Raw query failed. Code: `23505`. Message: `Key (upper(btr
   meta: { code: '23505', message: 'Key (upper(btrim("temixCode")))=(CAA0367) already exists.' },
 });
 const ENGINE = err('duplicate key value violates unique constraint "Customer_temixCode_live_unique"');
+/**
+ * The two shapes Postgres 17 and Prisma 7.10.1 with the driver adapter gave on
+ * 2026-11-10: the index is named, its key is not quoted any more.
+ */
+const v7Cause = (index: string) =>
+  Object.assign(new Error('UniqueConstraintViolation'), {
+    name: 'DriverAdapterError',
+    cause: { originalCode: '23505', originalMessage: `duplicate key value violates unique constraint "${index}"`, kind: 'UniqueConstraintViolation', constraint: { index }, table: 'Customer' },
+  });
+const V7_MODEL_WRITE = err('\nInvalid `prisma.customer.update()` invocation:\n\n\nUnique constraint failed on the constraint: `Customer_temixCode_live_unique`', {
+  code: 'P2002',
+  meta: { driverAdapterError: v7Cause('Customer_temixCode_live_unique'), modelName: 'Customer' },
+});
+const V7_RAW_WRITE = err(
+  '\nInvalid `prisma.$executeRaw()` invocation:\n\n\nRaw query failed. Code: `23505`. Message: `duplicate key value violates unique constraint "Customer_temixCode_live_unique"`',
+  { code: 'P2010', meta: { driverAdapterError: v7Cause('Customer_temixCode_live_unique') } }
+);
+const V7_OTHER_UNIQUE = err('\nInvalid `prisma.customer.create()` invocation:\n\n\nUnique constraint failed on the constraint: `Customer_nmwcCode_key`', {
+  code: 'P2002',
+  meta: { driverAdapterError: v7Cause('Customer_nmwcCode_key'), modelName: 'Customer' },
+});
 
 describe('the migration', () => {
   const sql = stripSql(readFileSync(MIGRATION, 'utf8'));
@@ -93,6 +114,31 @@ describe('temixCodeIndexViolated', () => {
     expect(temixCodeIndexViolated({ code: 'P2002', message: 'x', meta: { target: 'Customer_temixCode_live_unique' } })).toBe(true);
   });
 
+  it('Prisma 7: a model write (P2002) and a raw write (P2010) name the index, and only that index counts', () => {
+    expect(temixCodeIndexViolated(V7_MODEL_WRITE)).toBe(true);
+    expect(temixCodeIndexViolated(V7_RAW_WRITE)).toBe(true);
+    expect(temixCodeIndexViolated(V7_OTHER_UNIQUE)).toBe(false);
+    // The promote's log names the key as Prisma 6 listed it, not the index.
+    expect(uniqueTargetFields(V7_MODEL_WRITE)).toEqual(['upper(btrim(temixCode))']);
+    expect(uniqueTargetFields(MODEL_WRITE)).toEqual(['upper(btrim(temixCode))']);
+    expect(uniqueTargetFields(V7_OTHER_UNIQUE)).toEqual(['nmwcCode']);
+  });
+
+  it('Prisma 7: the index the adapter names decides, not the index named in lines of code the message quotes', () => {
+    // Outside production Prisma quotes the calling code in its message (see db-rule-errors.test.ts).
+    const quoted = "\n  41 // 'Customer_temixCode_live_unique', upper(btrim(temixCode))\n→ 42 tx.customer.create(\n";
+    const other = err(`\nInvalid \`tx.customer.create()\` invocation in\nx.ts:42:3\n${quoted}Unique constraint failed on the constraint: \`Customer_nmwcCode_key\``, {
+      code: 'P2002',
+      meta: { driverAdapterError: v7Cause('Customer_nmwcCode_key'), modelName: 'Customer' },
+    });
+    expect(temixCodeIndexViolated(other)).toBe(false);
+    const ours = err(`\nInvalid \`tx.customer.create()\` invocation in\nx.ts:42:3\n${quoted}Unique constraint failed on the constraint: \`Customer_temixCode_live_unique\``, {
+      code: 'P2002',
+      meta: { driverAdapterError: v7Cause('Customer_temixCode_live_unique'), modelName: 'Customer' },
+    });
+    expect(temixCodeIndexViolated(ours)).toBe(true);
+  });
+
   it('no other unique violation, rule or error is taken for it', () => {
     expect(temixCodeIndexViolated({ code: 'P2002', message: 'x', meta: { target: ['nmwcCode'] } })).toBe(false);
     expect(temixCodeIndexViolated({ code: 'P2002', message: 'x', meta: { target: ['temixCode'] } })).toBe(false);
@@ -112,6 +158,17 @@ describe('temixCodeRefusal: the live customer holding the code, by name', () => 
     const queryRaw = vi.fn((_s: TemplateStringsArray, ..._v: unknown[]) => answer());
     return { db: { $queryRaw: queryRaw } as never, queryRaw };
   };
+
+  it('Prisma 7: the same refusal, by name, for the shapes the driver adapter gives', async () => {
+    for (const e of [V7_MODEL_WRITE, V7_RAW_WRITE]) {
+      const { db: d, queryRaw } = db(async () => [{ nmwcCode: 'NMWC-2026-000123' }]);
+      expect(await temixCodeRefusal(d, e, ' caa0367 ', 'cust-1')).toBe(temixCodeTakenMessage('CAA0367', 'NMWC-2026-000123'));
+      expect(queryRaw).toHaveBeenCalledTimes(1);
+    }
+    const { db: d, queryRaw } = db(async () => [{ nmwcCode: 'X' }]);
+    expect(await temixCodeRefusal(d, V7_OTHER_UNIQUE, 'CAA0367')).toBeNull();
+    expect(queryRaw).not.toHaveBeenCalled();
+  });
 
   it('names the holder in temixCodeHolder’s words, asking by the code as stored and the index compares it', async () => {
     const { db: d, queryRaw } = db(async () => [{ nmwcCode: 'NMWC-2026-000123' }]);
@@ -156,7 +213,7 @@ describe('temixCodeRefusal: the live customer holding the code, by name', () => 
 
 describe('runAction: a path that did not translate the refusal is told the rule', () => {
   it('TEMIX_CODE_TAKEN with the rule’s words for the index, in every shape; any other unique violation as before', async () => {
-    for (const e of [MODEL_WRITE, RAW_WRITE, ENGINE]) {
+    for (const e of [MODEL_WRITE, RAW_WRITE, ENGINE, V7_MODEL_WRITE, V7_RAW_WRITE]) {
       await expect(runAction(async () => Promise.reject(e))).resolves.toEqual({
         ok: false,
         code: 'TEMIX_CODE_TAKEN',
@@ -165,6 +222,7 @@ describe('runAction: a path that did not translate the refusal is told the rule'
     }
     const other = await runAction(async () => Promise.reject(err('x', { code: 'P2002', meta: { target: ['nmwcCode'] } })));
     expect(other).toMatchObject({ ok: false, code: 'UNIQUE_CONSTRAINT' });
+    await expect(runAction(async () => Promise.reject(V7_OTHER_UNIQUE))).resolves.toMatchObject({ ok: false, code: 'UNIQUE_CONSTRAINT' });
     // The words name the rule, never a value.
     expect(TEMIX_CODE_UNIQUE_MESSAGE).not.toMatch(/CAA0367/);
   });

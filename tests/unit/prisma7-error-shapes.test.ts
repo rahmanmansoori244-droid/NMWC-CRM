@@ -9,7 +9,11 @@
  * The shapes below are the ones the upgrade's probe captured from real Prisma
  * 7.10.0 errors against PostgreSQL (class, code, meta layout, message format),
  * with synthetic values. The Prisma 6 shape of the same fault sits beside each
- * where it differed, and both must decide alike.
+ * where it differed, and both must decide alike. On 7.10.1 (2026-11-10) the
+ * unique, foreign-key, CHECK and raw-query shapes were captured again on
+ * Postgres 17 and are the same; the rules main added since (a database rule's
+ * own words, the Temix-code index) are pinned on those shapes in
+ * db-rule-errors.test.ts and temix-code-unique.test.ts.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -28,7 +32,7 @@ import { accountRowFailure } from '@/lib/account-import';
 import { isSealRace } from '@/lib/seal/seal';
 import { describeError } from '../../scripts/ops/describe-error';
 
-const VERSION = '7.10.0';
+const VERSION = '7.10.1';
 /** The adapter's DriverAdapterError, as Prisma 7 puts it in meta. */
 const adapterError = (cause: Record<string, unknown>) =>
   Object.assign(new Error(String(cause.kind === 'postgres' ? cause.message : cause.kind)), { name: 'DriverAdapterError', cause });
@@ -119,6 +123,8 @@ describe('uniqueTargetFields: the columns of a unique clash, as Prisma 6 listed 
     ['Customer', 'Customer_primaryPhoneNorm_active_unique', ['primaryPhoneNorm']],
     ['CustomerEdit', 'CustomerEdit_open_per_customer', ['customerId']],
     ['CustomerEdit', 'CustomerEdit_open_per_branch', ['branchId']],
+    // An index on an expression: the expression, its quotes taken out, as Prisma 6 listed it.
+    ['Customer', 'Customer_temixCode_live_unique', ['upper(btrim(temixCode))']],
   ])('%s %s -> %j', (model, index, columns) => {
     expect(uniqueTargetFields(p2002(model, index))).toEqual(columns);
   });
@@ -149,9 +155,28 @@ describe('uniqueTargetFields: the columns of a unique clash, as Prisma 6 listed 
       .map((d) => readFileSync(join(dir, d, 'migration.sql'), 'utf8'))
       .join('\n');
     const found = new Map<string, string[]>();
-    for (const m of sql.matchAll(/CREATE UNIQUE INDEX (?:IF NOT EXISTS )?"([^"]+)"\s+ON\s+"([^"]+)"\s*\(([^)]*)\)/g)) {
-      const [, name, table, cols] = m;
-      const columns = cols!.split(',').map((c) => c.trim().replace(/^"|"$/g, '').replace(/\s+(ASC|DESC)$/i, ''));
+    for (const m of sql.matchAll(/CREATE UNIQUE INDEX (?:IF NOT EXISTS )?"([^"]+)"\s+ON\s+"([^"]+)"\s*\(/g)) {
+      const [, name, table] = m;
+      // The key list runs to the parenthesis that closes it, and is split on the
+      // commas outside any other: an index on an expression nests its own
+      // (Customer_temixCode_live_unique is on upper(btrim("temixCode"))).
+      const start = m.index! + m[0].length;
+      const parts: string[] = [];
+      let depth = 1;
+      let from = start;
+      let end = start;
+      for (; end < sql.length && depth > 0; end++) {
+        const ch = sql[end];
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+        if ((ch === ',' && depth === 1) || depth === 0) {
+          parts.push(sql.slice(from, end));
+          from = end + 1;
+        }
+      }
+      expect(depth, `${name}: its key list never closes`).toBe(0);
+      // Each key as Prisma 6 listed it in meta.target: the quotes taken out.
+      const columns = parts.map((c) => c.trim().replace(/"/g, '').replace(/\s+(ASC|DESC)$/i, ''));
       found.set(name!, columns);
       const conventional = name === `${table}_${columns.join('_')}_key`;
       if (!conventional) {
@@ -206,6 +231,9 @@ describe('isDbConflict / isTransientDbError / mayHaveCommitted on Prisma 7 shape
     ['P2039 57P01: a model write whose backend was terminated', p2039('Route', '57P01', 'terminating connection due to administrator command'), 'P2039', false, false, 'RETHROWN'],
     ['P2039 57014: a statement timeout', p2039('AuditLog', '57014', 'canceling statement due to statement timeout'), 'P2039', false, false, 'RETHROWN'],
     ['P2039 23514: a CHECK violation', p2039('Branch', '23514', 'new row for relation "Branch" violates check constraint "Branch_address_minlength"', 'Failing row contains (x).'), 'P2039', false, false, 'RETHROWN'],
+    // Main's gap 31, on Prisma 7: a CHECK that IS one of the database rules (lib/db-rules.ts) is answered in the rule's words.
+    ['P2039 23514: a CHECK that is a database rule', p2039('Branch', '23514', 'new row for relation "Branch" violates check constraint "Branch_gps_pair"', 'Failing row contains (x).'), 'P2039', false, false, 'DATA_RULE'],
+    ['P2010 23514: the same rule from a raw query', p2010('23514', 'new row for relation "Branch" violates check constraint "Branch_gps_pair"', { detail: 'Failing row contains (x).' }), 'P2010', false, false, 'DATA_RULE'],
     ['P2039 42501: the append-only trigger', p2039('AuditLog', '42501', 'B4: UPDATE on "AuditLog" is forbidden — the audit trail is append-only.'), 'P2039', false, false, 'RETHROWN'],
     ['P1000: wrong password', known('P1000', 'Authentication failed against the database server', { driverAdapterError: adapterError({ kind: 'AuthenticationFailed', originalCode: '28P01' }) }), 'P1000', false, false, 'RETHROWN'],
   ] as const)('%s', async (_label, err, code, transient, committed, told) => {

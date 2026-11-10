@@ -100,14 +100,18 @@ export function sqlStateOf(err: unknown): string | null {
 /**
  * Unique indexes created by raw SQL in prisma/migrations, whose names do not
  * follow Prisma's `<Model>_<column>[_<column>…]_key`, and the columns each one
- * covers — what Prisma 6 put in `meta.target` for them.
- * tests/unit/db-errors.test.ts checks this list against every CREATE UNIQUE
- * INDEX in the migrations.
+ * covers — what Prisma 6 put in `meta.target` for them. The Temix-code index is
+ * on an expression, and Prisma 6 listed that expression with its quotes taken
+ * out (seen on Postgres 17 with Prisma 6.19, 2026-10-25); temixCodeIndexViolated
+ * below reads the same words.
+ * tests/unit/prisma7-error-shapes.test.ts checks this list against every CREATE
+ * UNIQUE INDEX in the migrations.
  */
 export const RAW_UNIQUE_INDEX_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   CustomerEdit_open_per_customer: ['customerId'],
   CustomerEdit_open_per_branch: ['branchId'],
   Customer_primaryPhoneNorm_active_unique: ['primaryPhoneNorm'],
+  Customer_temixCode_live_unique: ['upper(btrim(temixCode))'],
 };
 
 /** The columns a unique constraint's name covers; the name itself when it cannot tell. */
@@ -223,6 +227,31 @@ export function mayHaveCommitted(err: unknown, code: string): boolean {
 }
 
 /**
+ * Postgres's words for a refused rule (`violates check constraint "<name>"`,
+ * `violates foreign key constraint "<name>"`) and Prisma's for a foreign key
+ * ("Foreign key constraint violated on the constraint: `<name>`" in Prisma 7,
+ * "…violated: `<name> (index)`" in Prisma 6). JSON writes the quotes escaped.
+ */
+const NAMED_CONSTRAINT =
+  /violates (?:check|foreign key) constraint \\?"([A-Za-z0-9_]+)\\?"|Foreign key constraint violated(?: on the constraint)?: `([A-Za-z0-9_]+)(?: \(index\))?`/g;
+
+/**
+ * The constraint a refused write names, from the most certain place that names
+ * one: the adapter's own field (Prisma 7, a foreign key), Prisma 6's
+ * meta.field_name, Postgres's words in the metadata, then in the message —
+ * there the LAST mention, where the error's own words are; the lines of calling
+ * code come before them. null when it names none in a form known here.
+ */
+function constraintNamed(err: object, message: string, meta: string): string | null {
+  const index = causeOf(err)?.constraint?.index;
+  if (typeof index === 'string' && index !== '') return index;
+  const field = (metaOf(err) as { field_name?: unknown } | null)?.field_name;
+  if (typeof field === 'string' && field !== '') return field.replace(/ \(index\)$/, '');
+  const read = (text: string) => [...text.matchAll(NAMED_CONSTRAINT)].map((m) => (m[1] ?? m[2]) as string);
+  return read(meta)[0] ?? read(message).at(-1) ?? null;
+}
+
+/**
  * Gap 31: which database rule (lib/db-rules.ts) refused a save, or null when the
  * error is not one of them. A rule added NOT VALID refuses every later save of an
  * older row that breaks it, by any path; without this the person saw a generic
@@ -234,6 +263,28 @@ export function mayHaveCommitted(err: unknown, code: string): boolean {
  * error Prisma did not map (no code) that quotes `violates check constraint
  * "<name>"` or `violates foreign key constraint "<name>"`. A name is matched
  * whole, so one rule's name inside another's never matches.
+ *
+ * Prisma 7 (seen on Postgres 17 with 7.10.1 and the driver adapter, 2026-11-10):
+ *   - a CHECK refused on a MODEL write is P2039 — the code Prisma 7 gives a
+ *     database error it has none for — where Prisma 6 gave an error with no code
+ *     at all. Its message and meta.driverAdapterError.cause quote Postgres's
+ *     words and the SQLSTATE 23514. Without P2039 here every such save was a 500
+ *     again instead of the rule's own words;
+ *   - a CHECK from a raw query is still P2010, the SQLSTATE now in
+ *     cause.originalCode (sqlStateOf), the words unchanged;
+ *   - a foreign key is still P2003 from a model write and P2010 from a raw one,
+ *     the name in the message and in cause.constraint.index.
+ * The adapter's cause also carries Postgres's DETAIL ("Failing row contains
+ * (…)"), the row's own values: it is read here for the rule's name only, and
+ * nothing of it is returned.
+ *
+ * The constraint the DATABASE named decides (constraintNamed), before any other
+ * mention of a rule's name. Outside production Prisma quotes the lines of code
+ * around the failing call in its message, and a rule's name written on one of
+ * those lines was taken for the rule refused: the gated suite on Postgres
+ * (tests/integration/db-rules.test.ts, first run 2026-11-10) was answered with
+ * another rule's words for a save Branch_createdById_fkey refused. Production's
+ * messages carry no such lines, so nothing changes there.
  */
 export function dbRuleViolated(err: unknown): DbRule | null {
   if (!err || typeof err !== 'object') return null;
@@ -249,9 +300,14 @@ export function dbRuleViolated(err: unknown): DbRule | null {
   const constraintError =
     code === 'P2003' ||
     code === 'P2004' ||
-    (code === 'P2010' && /23514|23503|check constraint|foreign key constraint/i.test(text)) ||
+    ((code === 'P2010' || code === 'P2039') && /23514|23503|check constraint|foreign key constraint/i.test(text)) ||
     ((code === undefined || code === null || code === '') && /violates (check|foreign key) constraint/i.test(text));
   if (!constraintError) return null;
+  // The constraint the database named: one of the rules, or not.
+  const named = constraintNamed(err, message, meta);
+  if (named !== null) return DB_RULE_BY_NAME.get(named) ?? null;
+  // A shape that names its constraint in no form known here: the rule's name
+  // anywhere in the error, whole, as before.
   for (const [name, rule] of DB_RULE_BY_NAME) {
     if (new RegExp(`(^|[^A-Za-z0-9_])${name}([^A-Za-z0-9_]|$)`).test(text)) return rule;
   }
@@ -279,6 +335,14 @@ const TEMIX_CODE_INDEX_KEY = /upper\(btrim\(temixCode(::text)?\)\)/i;
  *     (upper(btrim("temixCode")))=(…) already exists.`;
  *   - an engine error Prisma did not map (no code) that quotes `duplicate key
  *     value violates unique constraint "Customer_temixCode_live_unique"`.
+ * Prisma 7 with the driver adapter names the index instead of its key (seen on
+ * Postgres 17 with 7.10.1, 2026-11-10): a model write is P2002 and a raw write
+ * P2010, both with meta.driverAdapterError.cause.constraint.index
+ * "Customer_temixCode_live_unique" and Postgres's `duplicate key value violates
+ * unique constraint "…"` in cause.originalMessage; a unique violation is never
+ * P2039 (the adapter maps 23505 itself). When the adapter names the index, that
+ * name alone decides: the message may quote lines of calling code outside
+ * production (see dbRuleViolated), and those are not the database's words.
  * The index's name is matched whole; any other unique violation is not this one.
  */
 export function temixCodeIndexViolated(err: unknown): boolean {
@@ -297,6 +361,8 @@ export function temixCodeIndexViolated(err: unknown): boolean {
     (code === 'P2010' && /23505|duplicate key value|already exists/i.test(text)) ||
     ((code === undefined || code === null || code === '') && /duplicate key value violates unique constraint/i.test(text));
   if (!uniqueError) return false;
+  const index = causeOf(err)?.constraint?.index;
+  if (typeof index === 'string' && index !== '') return index === TEMIX_CODE_UNIQUE_INDEX;
   if (new RegExp(`(^|[^A-Za-z0-9_])${TEMIX_CODE_UNIQUE_INDEX}([^A-Za-z0-9_]|$)`).test(text)) return true;
   return TEMIX_CODE_INDEX_KEY.test(text.replace(/\\?"/g, ''));
 }

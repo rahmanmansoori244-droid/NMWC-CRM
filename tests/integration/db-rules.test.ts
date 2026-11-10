@@ -18,7 +18,11 @@
  *     not validated;
  *   - review of gap 31: the Temix-path count (scripts/ops/db-rules-report.ts)
  *     on the same kind of shadows: queued breakers, and the archived breakers of
- *     a batch not yet marked loaded, nothing else.
+ *     a batch not yet marked loaded, nothing else;
+ *   - Prisma 7: every one of those refusals, as the driver adapter really
+ *     reports it (a CHECK on a model write is P2039, on a raw one P2010; a
+ *     foreign key P2003 or P2010), is read as its rule by lib/db-errors.ts
+ *     dbRuleViolated and answered by runAction with the rule's own words.
  *
  * Synthetic ZZ rows only, all inside ONE transaction that is rolled back at the
  * end; each refusal runs under a SAVEPOINT. Aborts on the production endpoint.
@@ -26,12 +30,17 @@
  *   RUN_DB_RULES=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/db-rules.test.ts
  *
  * Written with the audit-gaps branch; NOT run there (no database was used).
+ * First run on Postgres 17 with the Prisma 7 upgrade, 2026-11-10.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { Prisma, PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { pgPoolConfig } from '@/lib/pg-pool-config';
 import { src, withChangeContext } from '@/lib/change-context';
 import { CHECK_BY_ID } from '@/lib/integrity/checks';
-import { DB_RULES, DB_RULE_NAMES, checkRulesOf, type DbRule } from '@/lib/db-rules';
+import { DB_RULES, DB_RULE_BY_NAME, DB_RULE_NAMES, checkRulesOf, type DbRule } from '@/lib/db-rules';
+import { dbRuleViolated } from '@/lib/db-errors';
+import { runAction } from '@/lib/errors';
 import { temixPathCountSql } from '../../scripts/ops/db-rules-report';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
@@ -61,6 +70,8 @@ async function inRolledBack(db: PrismaClient, fn: (tx: Prisma.TransactionClient)
 }
 
 let sp = 0;
+/** The Prisma code each kind of rule was refused with, model and raw writes together. */
+const seenCodes = new Set<string>();
 /** The write must be refused, naming `name`; the transaction goes on. */
 async function refused(tx: Prisma.TransactionClient, name: string, write: () => Promise<unknown>): Promise<void> {
   const p = `zz_sp_${++sp}`;
@@ -74,6 +85,20 @@ async function refused(tx: Prisma.TransactionClient, name: string, write: () => 
   await tx.$executeRawUnsafe(`ROLLBACK TO SAVEPOINT ${p}`);
   expect(err, `${name} accepted a row it should refuse`).not.toBeNull();
   expect(String((err as Error).message) + JSON.stringify((err as { meta?: unknown }).meta ?? {})).toContain(name);
+  // What the person is told. The real error, in whatever shape this Prisma and
+  // its driver give it, must be read as the rule and answered in the rule's
+  // words (a name that is only a prefix, for a delete two links refuse, is not
+  // one rule and is not asked).
+  const rule = DB_RULE_BY_NAME.get(name);
+  if (rule) {
+    const code = String((err as { code?: unknown }).code ?? 'no code');
+    expect(dbRuleViolated(err), `${name} (${code}) is not read as its rule`).toBe(rule);
+    const answer = await runAction(async () => {
+      throw err;
+    });
+    expect(answer, `${name} (${code})`).toEqual({ ok: false, code: 'DATA_RULE', message: rule.refusal });
+    seenCodes.add(`${rule.kind}:${code}`);
+  }
 }
 /** The write must be accepted; it is undone so the next case starts clean. */
 async function accepted(tx: Prisma.TransactionClient, write: () => Promise<unknown>): Promise<void> {
@@ -89,7 +114,7 @@ describe.skipIf(!ENABLED)('gap 31: the NOT VALID database rules on Postgres', ()
   beforeAll(() => {
     const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
     if (url.includes(PROD) || (process.env.DATABASE_URL ?? '').includes(PROD)) throw new Error('ABORT: production');
-    db = new PrismaClient({ datasourceUrl: url });
+    db = new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) });
   });
   afterAll(async () => {
     await db?.$disconnect();
@@ -174,7 +199,25 @@ describe.skipIf(!ENABLED)('gap 31: the NOT VALID database rules on Postgres', ()
       // Sub-channel of another channel: the composite foreign keys.
       await refused(tx, 'Customer_subChannelId_channelId_fkey', newCustomer('15', { channelId: b.id, subChannelId: a.subChannels[0]!.id }));
       await refused(tx, 'EditCustomerDraft_subChannelId_channelId_fkey', draft({ channelId: b.id, subChannelId: a.subChannels[0]!.id }));
+
+      // The same rules from a RAW statement and from a many-row write, which
+      // the driver reports in other shapes than a model write (lib/rescore.ts,
+      // the Temix batch paths and the operator scripts write this way).
+      await refused(tx, 'Branch_gps_pair', () => tx.$executeRaw`UPDATE "Branch" SET "gpsLat" = 23.6, "gpsLng" = NULL WHERE "id" = ${w.branch.id}`);
+      await refused(tx, 'Customer_credit_terms_only_credit', () =>
+        tx.$queryRaw`UPDATE "Customer" SET "creditLimit" = 7 WHERE "id" = ${w.customer.id} RETURNING "id"`
+      );
+      await refused(tx, 'Customer_createdById_fkey', () => tx.$executeRaw`UPDATE "Customer" SET "createdById" = ${`${sfx}-missing`} WHERE "id" = ${w.customer.id}`);
+      await refused(tx, 'Customer_credit_terms_only_credit', () => tx.customer.updateMany({ where: { id: w.customer.id }, data: { creditLimit: 1 } }));
+      await refused(tx, 'Customer_credit_terms_only_credit', () =>
+        tx.customer.createMany({ data: [{ nmwcCode: `C${SFX}-M1`, legalName: 'ZZ' }, { nmwcCode: `C${SFX}-M2`, legalName: 'ZZ', paymentTerms: 'CASH', creditLimit: 5 }] })
+      );
     });
+    // Every refusal above was read as its rule, whatever code it came with. On
+    // Prisma 7 with the driver adapter that is P2039 for a CHECK on a model write
+    // (Prisma 6: no code at all) and P2010 on a raw one.
+    expect([...seenCodes].filter((c) => c.startsWith('check:')).length).toBeGreaterThanOrEqual(2);
+    expect([...seenCodes].some((c) => c.startsWith('fk:'))).toBe(true);
   });
 
   it('every foreign key refuses a dangling id; SET NULL fires; RESTRICT keeps what a request names', async () => {

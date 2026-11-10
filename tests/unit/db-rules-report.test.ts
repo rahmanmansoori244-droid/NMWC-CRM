@@ -47,7 +47,7 @@ describe('db-rules-report', () => {
     expect(src).toContain("SET TRANSACTION READ ONLY");
     expect(src).toMatch(/SET LOCAL statement_timeout/);
     expect(src).toContain('requireExpectedHost(args, url, host)');
-    expect(src).toContain('new PrismaClient({ datasourceUrl: url })');
+    expect(src).toContain('new PrismaClient({ adapter: new PrismaPg(pgPoolConfig(url)) })');
     // The count query takes no samples (0), and only rule and n are selected.
     expect(src).toContain('dbRulesCountSql(DB_RULES, 0)');
     expect(src).toContain('SELECT x.rule, x.n FROM');
