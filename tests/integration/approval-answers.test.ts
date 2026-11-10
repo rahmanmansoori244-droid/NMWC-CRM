@@ -451,28 +451,40 @@ describe.skipIf(!ENABLED)('finding 21: a decision already made is answered as on
    * other transactions wait for it — each decision has passed every check and
    * reached its claim — then lets them go. The first to get the row claims it;
    * the other's claim then matches nothing.
+   *
+   * Third round: only sessions held up by THIS lock are counted — waiting on the
+   * holder itself, or queued behind one that is (Postgres queues a second row
+   * waiter behind the first) — not every session in the database waiting on some
+   * lock, so another connection's wait cannot end the hold early.
    */
   async function atTheClaimTogether<T>(editId: string, waiters: number, work: () => Promise<T>): Promise<T> {
     let release!: () => void;
     const released = new Promise<void>((r) => (release = r));
-    let locked!: () => void;
-    const isLocked = new Promise<void>((r) => (locked = r));
+    let locked!: (pid: number) => void;
+    const isLocked = new Promise<number>((r) => (locked = r));
     const holder = prisma.$transaction(
       async (tx) => {
+        const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
         await tx.$queryRaw`SELECT id FROM "CustomerEdit" WHERE id = ${editId} FOR UPDATE`;
-        locked();
+        locked(pid);
         await released;
       },
       { timeout: 90_000, maxWait: 10_000 }
     );
-    await isLocked;
+    const holderPid = await isLocked;
     const running = work();
     try {
       const deadline = Date.now() + 60_000;
       for (;;) {
         const [{ n }] = await prisma.$queryRaw<Array<{ n: number }>>`
-          SELECT count(*)::int AS n FROM pg_stat_activity
-          WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+          WITH RECURSIVE held_up(pid) AS (
+            SELECT a.pid FROM pg_stat_activity a
+            WHERE a.datname = current_database() AND pg_blocking_pids(a.pid) @> ARRAY[${holderPid}::int]
+            UNION
+            SELECT a.pid FROM pg_stat_activity a JOIN held_up h ON pg_blocking_pids(a.pid) @> ARRAY[h.pid]
+            WHERE a.datname = current_database()
+          )
+          SELECT count(*)::int AS n FROM held_up`;
         if (n >= waiters) break;
         if (Date.now() > deadline) throw new Error(`only ${n} of ${waiters} decisions reached the claim`);
         await new Promise((r) => setTimeout(r, 50));
