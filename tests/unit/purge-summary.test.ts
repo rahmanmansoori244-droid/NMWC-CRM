@@ -80,12 +80,36 @@ describe('one statement removes the batch and writes its summary', () => {
     // Second round: a discarded batch, or one staged before the cut-off and never
     // loaded, is a batch that can never load its rows — restated on the row's own
     // batch too, with the "never loaded" test and no live promote lease.
-    expect(update).toContain(`xb."status" = 'DISCARDED' OR (`);
-    expect(update).toContain(`xb."status" IN ('READY', 'FAILED', 'PROMOTING')`);
-    expect(update).toContain(`xb."uploadedAt" < (?::timestamptz AT TIME ZONE 'UTC')`);
-    expect(update).toMatch(/xb\."promoteLeaseUntil" IS NULL OR xb\."promoteLeaseUntil" < /);
-    expect(update).toMatch(/NOT EXISTS \(\s*SELECT 1 FROM "ImportRow" lr\s+WHERE lr\."batchId" = xb\."id"\s+AND \(lr\."state" IN \('PROMOTED', 'REJECTED'\)/);
-    expect(update).toContain(`lr."parsed"->>'fixedAfterLoad' = 'true'`);
+    expect(update).toMatch(/xb\."status" <> 'PROMOTING' AND .*\)\) OR xb\."id" IN \(SELECT dead\."id" FROM dead\)\)\)/s);
+    const doomed = imp.slice(imp.indexOf('doomed AS ('), imp.indexOf('gone AS ('));
+    expect(doomed).toContain(`OR b."id" IN (SELECT dead."id" FROM dead))`);
+    const dead = imp.slice(imp.indexOf('dead AS MATERIALIZED ('), imp.indexOf('doomed AS ('));
+    expect(dead).toContain(`db."status" = 'DISCARDED'`);
+    expect(dead).toContain(`db."status" IN ('READY', 'FAILED', 'PROMOTING')`);
+    expect(dead).toContain(`db."uploadedAt" < (?::timestamptz AT TIME ZONE 'UTC')`);
+    expect(dead).toMatch(/db\."promoteLeaseUntil" IS NULL OR db\."promoteLeaseUntil" < /);
+    expect(dead).toMatch(/NOT EXISTS \(\s*SELECT 1 FROM "ImportRow" lr\s+WHERE lr\."batchId" = db\."id"\s+AND \(lr\."state" IN \('PROMOTED', 'REJECTED'\)/);
+    expect(dead).toContain(`lr."parsed"->>'fixedAfterLoad' = 'true'`);
+  });
+
+  it('the "never loaded" test runs once per batch, never once per candidate row (second round, adversarial review)', () => {
+    // A correlated NOT EXISTS under the OR of the row predicate cannot become an
+    // anti-join: it ran as a SubPlan per row and read a whole never-loaded batch
+    // each time. The dead batches are worked out once, materialised, and the row
+    // predicate only tests membership.
+    const imp = STATEMENTS['import-payload-90d'].sql;
+    expect(imp.trimStart()).toMatch(/^WITH dead AS MATERIALIZED \(/);
+    expect(imp.match(/NOT EXISTS/g)).toHaveLength(1);
+    expect(imp.match(/FROM "ImportRow" lr/g)).toHaveLength(1);
+    const dead = imp.slice(imp.indexOf('dead AS MATERIALIZED ('), imp.indexOf('doomed AS ('));
+    // The NOT EXISTS is a top-level AND of its own SELECT, not inside an OR.
+    const second = dead.slice(dead.indexOf('UNION'));
+    const where = second.slice(second.indexOf('WHERE'), second.indexOf('NOT EXISTS'));
+    expect(where.replace(/\([^()]*\)/g, '').replace(/\([^()]*\)/g, '')).not.toMatch(/\bOR\b/);
+    // Outside the CTE, nothing reads ImportRow's jsonb per batch.
+    const rest = imp.slice(imp.indexOf('doomed AS ('));
+    expect(rest).not.toContain('fixedFrom');
+    expect(rest).not.toContain('fixedAfterLoad');
   });
 
   it('a photo is purged by its own id and only past the cut-off; a password prune keeps the newest five it was given', () => {

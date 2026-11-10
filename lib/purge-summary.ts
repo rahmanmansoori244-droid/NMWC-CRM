@@ -159,21 +159,35 @@ export function importPayloadPurgeSql(now: Date, limit: number, run: PurgeRun): 
     Prisma.raw(`(${r}."raw" <> '{}'::jsonb OR ${r}."parsed" IS NOT NULL OR ${r}."issues" IS NOT NULL OR ${r}."corrections" IS NOT NULL)`);
   // A batch that can never load its rows again: discarded, or staged before the
   // cut-off and never loaded, with no promote running on it.
-  const deadBatch = (b: string) => {
-    const t = Prisma.raw(b);
-    return Prisma.sql`(${t}."status" = 'DISCARDED' OR (
-           ${t}."kind" = 'CUSTOMER'
-       AND ${t}."status" IN ('READY', 'FAILED', 'PROMOTING')
-       AND ${t}."uploadedAt" < ${ts(cutoff)}
-       AND (${t}."promoteLeaseUntil" IS NULL OR ${t}."promoteLeaseUntil" < ${ts(now)})
+  //
+  // Worked out ONCE per statement, in a MATERIALIZED CTE (code review 2026-11-10,
+  // second round, adversarial review). Written inline under the OR of the row
+  // predicate, the "never loaded" NOT EXISTS could not become an anti-join. The
+  // planner hashed it only while the rows a load touched fit in work_mem; past
+  // that it ran as a correlated SubPlan for every candidate row, and for a
+  // never-loaded batch each run read every row of that batch, jsonb and all,
+  // because none matched - twice per row (here and in the UPDATE). Measured on
+  // PostgreSQL 17: over 120 s for one 2,000-row statement against a 6,000-row
+  // abandoned master, past the transaction timeout every night. Here the
+  // NOT EXISTS sits at the top level of its own WHERE (an anti-join, once per
+  // batch), and the row predicate tests membership in an uncorrelated list.
+  const dead = Prisma.sql`dead AS MATERIALIZED (
+    SELECT db."id" FROM "ImportBatch" db WHERE db."status" = 'DISCARDED'
+    UNION
+    SELECT db."id" FROM "ImportBatch" db
+     WHERE db."kind" = 'CUSTOMER'
+       AND db."status" IN ('READY', 'FAILED', 'PROMOTING')
+       AND db."uploadedAt" < ${ts(cutoff)}
+       AND (db."promoteLeaseUntil" IS NULL OR db."promoteLeaseUntil" < ${ts(now)})
        AND NOT EXISTS (
          SELECT 1 FROM "ImportRow" lr
-          WHERE lr."batchId" = ${t}."id"
+          WHERE lr."batchId" = db."id"
             AND (lr."state" IN ('PROMOTED', 'REJECTED')
                  OR lr."parsed"->'fixedFrom'->>'state' = 'REJECTED'
-                 OR lr."parsed"->>'fixedAfterLoad' = 'true'))))`;
-  };
-  return Prisma.sql`WITH doomed AS (
+                 OR lr."parsed"->>'fixedAfterLoad' = 'true'))
+  )`;
+  const deadBatch = (b: string) => Prisma.sql`${Prisma.raw(b)}."id" IN (SELECT dead."id" FROM dead)`;
+  return Prisma.sql`WITH ${dead}, doomed AS (
     SELECT r."id"
       FROM "ImportRow" r
       JOIN "ImportBatch" b ON b."id" = r."batchId"

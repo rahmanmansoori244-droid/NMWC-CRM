@@ -11,6 +11,7 @@
  *
  *   RUN_RETENTION_SWEEP=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/retention-sweep.test.ts
  */
+import { Prisma } from '@prisma/client';
 import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeJobRunDays } from '../support/audit';
@@ -426,5 +427,143 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
     const left = await prisma.notification.findMany({ where: { userId }, select: { title: true, readAt: true } });
     expect(left.map((n) => n.title)).toEqual([`${sfx} new`]);
     expect(left[0]!.readAt).not.toBeNull();
+  });
+});
+
+/**
+ * Code review 2026-11-10, second round (adversarial review): the "never loaded"
+ * test of a dead batch sat inside the OR of the row predicate, where PostgreSQL
+ * cannot make a correlated NOT EXISTS an anti-join. It ran once per candidate
+ * row, and for an abandoned READY master (uploaded, re-uploaded corrected, never
+ * discarded) each run read every row of the batch — some 2 x 2,000 x N row
+ * visits per 2,000-row statement, enough to run past the transaction timeout
+ * every night and sweep nothing. The dead batches are now worked out once per
+ * statement.
+ *
+ * Measured on a throwaway PostgreSQL 17 (2026-11-11): while the planner can hash
+ * that subquery it reads ImportRow once per statement, but it hashes only while
+ * the rows a load touched fit in work_mem. Past that (many promoted rows; forced
+ * here with the smallest work_mem) the old statement ran a correlated SubPlan per
+ * row: over 120 s for 2,000 rows of a 6,000-row never-loaded master, against
+ * some 0.3 s now. Here: such a master next to a batch with thousands of loaded
+ * rows, one statement under the route's own default transaction (20 s, lib/db.ts) with the
+ * smallest work_mem, the rows the "never loaded" test reads (from the executed
+ * plan), and the sweep itself, inside its budget.
+ */
+describe.skipIf(!ENABLED)('second round: a large never-loaded batch is swept inside the budget', () => {
+  let prisma: import('@prisma/client').PrismaClient;
+  let GET: (req: Request) => Promise<Response>;
+  let userId = '';
+  let abandonedId = '';
+  let loadedId = '';
+  const ROWS = 6000;
+  const WAITING = 1000;
+  const ssfx = `${sfx}big`;
+
+  beforeAll(async () => {
+    if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
+    process.env.CRON_SECRET = SECRET;
+    ({ prisma } = await import('@/lib/db'));
+    ({ GET } = (await import('@/app/api/cron/retention-sweep/route')) as unknown as {
+      GET: (req: Request) => Promise<Response>;
+    });
+    const u = await prisma.user.create({
+      data: { username: `${ssfx}.op`, fullName: 'Retention Operator Big', role: 'STEWARD', passwordHash: 'x' },
+    });
+    userId = u.id;
+    const old = new Date(Date.now() - 120 * 86_400_000);
+    // The abandoned master: READY, uploaded 120 days ago, no row ever loaded.
+    // And a batch of the same size a load stopped part-way through: thousands of
+    // PROMOTED rows (what keeps the planner from hashing the "loaded" test) and
+    // CLEAN rows still to load, which are kept.
+    for (const [key, loadedUpTo] of [
+      ['abandoned', 0],
+      ['loaded', ROWS - WAITING],
+    ] as const) {
+      const b = await prisma.importBatch.create({
+        data: { filename: `${ssfx}-${key}.xlsx`, kind: 'CUSTOMER', status: 'READY', uploadedById: userId, uploadedAt: old },
+      });
+      if (key === 'abandoned') abandonedId = b.id;
+      else loadedId = b.id;
+      // One set-based insert: thousands of rows one round trip at a time would be slow.
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO "ImportRow" ("id", "batchId", "rowNumber", "raw", "parsed", "issues", "state", "createdAt")
+         SELECT $1 || '-' || g, $2, g,
+                jsonb_build_object('legal_name', 'Synthetic Trading ' || g, 'phone', '9689' || lpad(g::text, 7, '0')),
+                jsonb_build_object('legal_name', 'Synthetic Trading ' || g, 'phone', '9689' || lpad(g::text, 7, '0'),
+                                   'note', repeat('x', 400)),
+                jsonb_build_array(jsonb_build_object('field', 'phone', 'message', 'needs review')),
+                (CASE WHEN g <= $4 THEN 'PROMOTED' ELSE 'CLEAN' END)::"ImportRowState", $5
+           FROM generate_series(1, $3::int) g`,
+        `${ssfx}-${key}`,
+        b.id,
+        ROWS,
+        loadedUpTo,
+        old
+      );
+    }
+    await prisma.$executeRawUnsafe(`ANALYZE "ImportRow"`);
+    await prisma.$executeRawUnsafe(`ANALYZE "ImportBatch"`);
+  });
+
+  afterAll(async () => {
+    if (!prisma) return;
+    const ours = [abandonedId, loadedId].filter(Boolean);
+    await prisma.importRow.deleteMany({ where: { batchId: { in: ours } } });
+    await prisma.importBatch.deleteMany({ where: { id: { in: ours } } });
+    await purgeAuditLog(prisma, { where: { actorId: userId } });
+    await prisma.user.deleteMany({ where: { id: userId } });
+    await prisma.$disconnect();
+  });
+
+  it('the "never loaded" test reads each batch once per statement, not once per row, inside the default transaction timeout', async () => {
+    const { importPayloadPurgeSql, purgeRunId } = await import('@/lib/purge-summary');
+    const { withChangeContext, src } = await import('@/lib/change-context');
+    const now = new Date();
+    const stmt = importPayloadPurgeSql(now, 2000, { runId: purgeRunId('retention-sweep-explain', now) });
+    let plan: unknown;
+    const ROLLBACK = new Error('rollback');
+    // No transaction options: the route's own default (20 s, lib/db.ts transactionOptions), as it runs each statement.
+    await withChangeContext(prisma, { actorId: null, source: src.cron('retention-sweep') }, async (tx) => {
+      // The smallest work_mem: the loaded rows no longer fit a hash, as on a large table.
+      await tx.$executeRawUnsafe(`SET LOCAL work_mem = '64kB'`);
+      const rows = await tx.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(Prisma.sql`EXPLAIN (ANALYZE, FORMAT JSON) ${stmt}`);
+      plan = rows[0]!['QUERY PLAN'];
+      throw ROLLBACK; // EXPLAIN ANALYZE runs the statement: undo it.
+    }).catch((e) => {
+      if (e !== ROLLBACK) throw e;
+    });
+    // Every ImportRow row the "never loaded" test (alias lr) visited, over all its loops.
+    let visited = 0;
+    const walk = (n: Record<string, unknown>) => {
+      if (n['Alias'] === 'lr') {
+        const loops = Number(n['Actual Loops'] ?? 1);
+        visited += (Number(n['Actual Rows'] ?? 0) + Number(n['Rows Removed by Filter'] ?? 0) + Number(n['Rows Removed by Index Recheck'] ?? 0)) * loops;
+      }
+      for (const c of (n['Plans'] as Record<string, unknown>[] | undefined) ?? []) walk(c);
+    };
+    walk((plan as Array<{ Plan: Record<string, unknown> }>)[0]!.Plan);
+    // Once per batch: the two batches here (plus the few small ones the database
+    // may hold). Per candidate row it was in the tens of millions.
+    expect(plan).toBeDefined();
+    expect(visited).toBeLessThan(4 * ROWS);
+  });
+
+  it('the sweep empties the abandoned master, keeps the CLEAN rows of the batch a load touched, and stays inside its budget', async () => {
+    const started = Date.now();
+    const res = await GET(
+      new Request('https://example.test/api/cron/retention-sweep', { headers: { authorization: `Bearer ${SECRET}` } })
+    );
+    const took = Date.now() - started;
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { errors: number; swept: Record<string, number> };
+    expect(body.errors).toBe(0);
+    expect(body.swept.importRowPayloads).toBeGreaterThanOrEqual(2 * ROWS - WAITING);
+    expect(body.swept.importRowPayloadsBehind).toBeUndefined();
+    expect(took).toBeLessThan(30_000);
+    const left = await prisma.importRow.count({ where: { batchId: abandonedId, NOT: { parsed: { equals: Prisma.DbNull } } } });
+    expect(left).toBe(0);
+    const kept = await prisma.importRow.count({ where: { batchId: loadedId, state: 'CLEAN', NOT: { parsed: { equals: Prisma.DbNull } } } });
+    expect(kept).toBe(WAITING);
   });
 });
