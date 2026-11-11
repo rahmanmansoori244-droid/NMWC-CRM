@@ -15,7 +15,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { sandbox, type Sandbox } from '../support/clean-start/sandbox';
@@ -902,6 +902,28 @@ describe('compare-watch.ts: production\'s first run against night 1', () => {
 });
 
 // ── the public log rule, over everything printed above ──────────────────
+
+describe('the work folder: no default, refused when missing (it was a job env: value GitHub refused)', () => {
+  // Each job's first step sets CS_DIR from RUNNER_TEMP. A step that ran without
+  // it (an always() step after that first step failed) must not invent a folder:
+  // shred removes the folder, and the scripts write plaintext into it.
+  const calls = [
+    ['run.sh shred', 'bash scripts/ops/clean-start/run.sh shred', 'clean start refused'],
+    ['run.sh safety-cleanup', 'bash scripts/ops/clean-start/run.sh safety-cleanup', 'clean start refused'],
+    ['seal-archive.sh verify', 'bash scripts/ops/clean-start/seal-archive.sh verify x.jsonl none', 'seal archive refused'],
+    ['photo-delete.sh check', 'bash scripts/ops/clean-start/photo-delete.sh check a b c', 'photo deletion refused'],
+  ] as const;
+  it.each(calls)('%s refuses an unset, empty, relative or root CS_DIR, before anything else', (_n, cmd, who) => {
+    for (const v of ['', 'relative/work', '/']) {
+      const before = readdirSync(sb.root).sort();
+      const r = sh(`${v === '' ? 'unset CS_DIR; ' : ''}${cmd}`, { CS_DIR: v, RUNNER_TEMP: sb.root });
+      expect(r.code, `CS_DIR=${JSON.stringify(v)}`).toBe(1);
+      expect(r.lines).toEqual([`::error::${who}: the private work folder is not set, or not an absolute path`]);
+      expect(readdirSync(sb.root).sort(), 'nothing created or removed').toEqual(before);
+    }
+    expect(existsSync(sb.csDir)).toBe(true);
+  });
+});
 
 describe('the public log rule', () => {
   it('everything these commands printed is a step, yes/no, SQLSTATE, check status, duration or hash — and nothing secret', () => {

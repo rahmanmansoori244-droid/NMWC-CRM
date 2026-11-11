@@ -89,6 +89,21 @@ describe('shape', () => {
     }
   });
 
+  it('every job sets its work folder (CS_DIR) in its FIRST step, from RUNNER_TEMP; no job env: names it', () => {
+    // GitHub refused both files on 2026-11-11 for `CS_DIR: ${{ runner.temp }}/clean-start`
+    // in a job's env: (the runner context exists in steps only). Every step that
+    // reads $CS_DIR, the always() ones included, comes after this one.
+    for (const [f, id, j] of allJobs()) {
+      expect(j.env?.CS_DIR, `${f} ${id}`).toBeUndefined();
+      const first = j.steps[0]!;
+      expect(first.name, `${f} ${id}`).toBe('The private work folder');
+      expect(first.env, `${f} ${id}: reads nothing of its own`).toBeUndefined();
+      expect(first.run, `${f} ${id}`).toMatch(/if \[ -z "\$\{RUNNER_TEMP:-\}" \]; then echo "::error::clean start refused: [^"]+"; exit 1; fi\n\s*echo "CS_DIR=\$RUNNER_TEMP\/clean-start" >> "\$GITHUB_ENV"\n?$/);
+      expect(first.run, `${f} ${id}: runs no script`).not.toMatch(/scripts\//);
+      for (const s of j.steps.slice(1)) expect(s.run ?? '', `${f} ${id}: ${s.name}`).not.toMatch(/CS_DIR=/);
+    }
+  });
+
   it('no artifacts; actions pinned the way the other workflows pin them', () => {
     const others = readdirSync('.github/workflows')
       .filter((f) => !f.startsWith('clean-start'))

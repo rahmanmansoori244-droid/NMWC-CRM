@@ -34,9 +34,6 @@
 set -euo pipefail
 umask 077
 
-CS_DIR="${CS_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/clean-start}"
-mkdir -p "$CS_DIR"
-REPORT="$CS_DIR/photo-delete.report"
 PHOTO_KEY_RE='^[0-9]{4}/[0-9]{2}/[0-9]{2}/[A-Za-z0-9]+/[A-Z_]+/[0-9a-f-]{36}\.(jpg|png|webp)$'
 MIN_AGE_SECONDS=$((7 * 86400))
 
@@ -50,6 +47,16 @@ refuse() {
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then printf -- '- **refused: %s**\n' "$1" >> "$GITHUB_STEP_SUMMARY"; fi
   exit 1
 }
+# CS_DIR: the private work folder, set by the workflow's first step from
+# RUNNER_TEMP. No default: an unset, empty or relative value would put the
+# plaintext (and shred's removal) somewhere else, so it is refused. A drive path
+# (C:...) is accepted only for the local tests on Windows.
+case "${CS_DIR:-}" in
+  /?* | [A-Za-z]:?*) ;;
+  *) refuse "the private work folder is not set, or not an absolute path" ;;
+esac
+mkdir -p "$CS_DIR"
+REPORT="$CS_DIR/photo-delete.report"
 note() { printf '%s\n' "$*" >> "$REPORT"; }
 sha_file() { sha256sum < "$1" | cut -d' ' -f1; }
 aws_rw() {

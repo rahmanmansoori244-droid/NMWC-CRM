@@ -28,7 +28,7 @@
 # Usage: bash scripts/ops/clean-start/run.sh <subcommand> [args]   (see dispatch at the end)
 #
 # Environment (each subcommand names what it reads): CS_DIR (private work
-# folder, default $RUNNER_TEMP/clean-start), GITHUB_* (set by Actions),
+# folder, set by the workflow from RUNNER_TEMP; refused when missing), GITHUB_* (set by Actions),
 # BACKUP_R2_* and CLEANSTART_R2_* (storage), BACKUP_AGE_RECIPIENTS /
 # BACKUP_AGE_IDENTITY, NEON_API_KEY / NEON_PROJECT_ID, HEALTH_BEARER,
 # PROD_CRON_SECRET, APP_BASE_URL, GH_TOKEN.
@@ -39,10 +39,6 @@ case "${BASH_SOURCE[0]}" in */*) CS_HERE="${BASH_SOURCE[0]%/*}" ;; *) CS_HERE=. 
 CS_ROOT="$(cd "$CS_HERE/../../.." && pwd)"
 # shellcheck source=../production-hosts.sh
 . "$CS_HERE/../production-hosts.sh"
-
-CS_DIR="${CS_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/clean-start}"
-mkdir -p "$CS_DIR"
-chmod 700 "$CS_DIR" 2>/dev/null || true
 
 NEON_API="${NEON_API_BASE:-https://console.neon.tech/api/v2}"
 GH_API="${GITHUB_API_URL:-https://api.github.com}"
@@ -76,6 +72,17 @@ need() {
     if [ -z "${!v:-}" ]; then refuse "the setting $v is missing"; fi
   done
 }
+# CS_DIR: the private work folder, set by the workflow's first step from
+# RUNNER_TEMP. No default: an unset, empty or relative value would put the
+# plaintext (and shred's removal) somewhere else, so it is refused. A drive path
+# (C:...) is accepted only for the local tests on Windows.
+case "${CS_DIR:-}" in
+  /?* | [A-Za-z]:?*) ;;
+  *) refuse "the private work folder is not set, or not an absolute path" ;;
+esac
+mkdir -p "$CS_DIR"
+chmod 700 "$CS_DIR" 2>/dev/null || true
+
 oman_date() { date -u -d "@$(( $(date -u +%s) + 4 * 3600 ))" +%Y-%m-%d; }
 run_id() {
   local r="${GITHUB_RUN_ID:-}"

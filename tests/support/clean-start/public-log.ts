@@ -101,6 +101,10 @@ export const ENV_HEADER_SHAPES: Record<string, RegExp> = {
   CS_RESET_RC: /^(?:started|\d{1,3})$/,
   CS_RESET_STARTED: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/,
   CS_RESTORE_TO: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/,
+  // The runner's own temporary folder + /clean-start, written by each job's first
+  // step (GitHub offers runner.temp to steps only). It was a job env: value before,
+  // so it was already in every env header. A drive path only in the local tests.
+  CS_DIR: /^(?:\/|[A-Za-z]:)[^\s"'`$;&|<>]*\/clean-start$/,
 };
 /** Written to GITHUB_ENV only after `::add-mask::` of the same value. */
 export const MASKED_ENV = ['DIRECT_URL', 'CS_BRANCH_URL', 'AUTH_SECRET', 'NEXTAUTH_SECRET'] as const;

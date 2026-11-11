@@ -64,7 +64,6 @@ jobs:
     timeout-minutes: 60
     environment: production-reset
     env:
-      CS_DIR: ${{ runner.temp }}/clean-start
       TARGET_RUN: ${{ inputs.run_id }}
       LIST_SHA256: ${{ inputs.list_sha256 }}
       CONFIRM_HOST: ${{ inputs.confirm_host }}
@@ -89,6 +88,15 @@ jobs:
       AWS_DEFAULT_REGION: auto
       AWS_EC2_METADATA_DISABLED: 'true'
     steps:
+      # The private work folder. GitHub offers the runner context to steps only,
+      # not to a job's env: block, so CS_DIR is set here, as the job's first step,
+      # from RUNNER_TEMP. Every later step (the always() ones included) reads it;
+      # this step reads no secret and runs no script.
+      - name: The private work folder
+        run: |
+          set -euo pipefail
+          if [ -z "${RUNNER_TEMP:-}" ]; then echo "::error::clean start refused: the runner has no temporary folder"; exit 1; fi
+          echo "CS_DIR=$RUNNER_TEMP/clean-start" >> "$GITHUB_ENV"
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -187,6 +195,8 @@ jobs:
         if: always()
         run: |
           set -uo pipefail
+          # Nothing to report when the work folder was never set (the first step failed).
+          if [ -z "${CS_DIR:-}" ] || [ ! -d "$CS_DIR" ]; then exit 0; fi
           FILES=()
           for f in photo-delete.report record.out; do
             if [ -f "$CS_DIR/$f" ]; then FILES+=("$CS_DIR/$f"); fi

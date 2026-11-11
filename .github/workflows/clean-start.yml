@@ -84,7 +84,6 @@ jobs:
       old_chain: ${{ steps.plan.outputs.old_chain }}
       backup_key: ${{ steps.backup.outputs.backup_key }}
     env:
-      CS_DIR: ${{ runner.temp }}/clean-start
       MODE: ${{ inputs.mode }}
       CONFIRM_HOST: ${{ inputs.confirm_host }}
       CONFIRM_PHRASE: ${{ inputs.confirm_phrase }}
@@ -106,6 +105,15 @@ jobs:
       AWS_DEFAULT_REGION: auto
       AWS_EC2_METADATA_DISABLED: 'true'
     steps:
+      # The private work folder. GitHub offers the runner context to steps only,
+      # not to a job's env: block, so CS_DIR is set here, as the job's first step,
+      # from RUNNER_TEMP. Every later step (the always() ones included) reads it;
+      # this step reads no secret and runs no script.
+      - name: The private work folder
+        run: |
+          set -euo pipefail
+          if [ -z "${RUNNER_TEMP:-}" ]; then echo "::error::clean start refused: the runner has no temporary folder"; exit 1; fi
+          echo "CS_DIR=$RUNNER_TEMP/clean-start" >> "$GITHUB_ENV"
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -235,7 +243,6 @@ jobs:
     outputs:
       backup_sha256: ${{ steps.fetch.outputs.backup_sha256 }}
     env:
-      CS_DIR: ${{ runner.temp }}/clean-start
       CS_PG_ADMIN_URL: postgresql://ci:ci@localhost:5432/postgres
       REHEARSE_URL: postgresql://ci:ci@localhost:5432/cs_restore
       PGPASSWORD: ci
@@ -257,6 +264,15 @@ jobs:
       AWS_DEFAULT_REGION: auto
       AWS_EC2_METADATA_DISABLED: 'true'
     steps:
+      # The private work folder. GitHub offers the runner context to steps only,
+      # not to a job's env: block, so CS_DIR is set here, as the job's first step,
+      # from RUNNER_TEMP. Every later step (the always() ones included) reads it;
+      # this step reads no secret and runs no script.
+      - name: The private work folder
+        run: |
+          set -euo pipefail
+          if [ -z "${RUNNER_TEMP:-}" ]; then echo "::error::clean start refused: the runner has no temporary folder"; exit 1; fi
+          echo "CS_DIR=$RUNNER_TEMP/clean-start" >> "$GITHUB_ENV"
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -407,7 +423,6 @@ jobs:
     timeout-minutes: 45
     environment: production-reset
     env:
-      CS_DIR: ${{ runner.temp }}/clean-start
       NODE_ENV: test
       PLAN_ID: ${{ needs.plan.outputs.plan_id }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -421,6 +436,15 @@ jobs:
       AWS_DEFAULT_REGION: auto
       AWS_EC2_METADATA_DISABLED: 'true'
     steps:
+      # The private work folder. GitHub offers the runner context to steps only,
+      # not to a job's env: block, so CS_DIR is set here, as the job's first step,
+      # from RUNNER_TEMP. Every later step (the always() ones included) reads it;
+      # this step reads no secret and runs no script.
+      - name: The private work folder
+        run: |
+          set -euo pipefail
+          if [ -z "${RUNNER_TEMP:-}" ]; then echo "::error::clean start refused: the runner has no temporary folder"; exit 1; fi
+          echo "CS_DIR=$RUNNER_TEMP/clean-start" >> "$GITHUB_ENV"
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -561,7 +585,6 @@ jobs:
     timeout-minutes: 40
     environment: production-reset
     env:
-      CS_DIR: ${{ runner.temp }}/clean-start
       MODE: ${{ inputs.mode }}
       CONFIRM_HOST: ${{ inputs.confirm_host }}
       CONFIRM_PHRASE: ${{ inputs.confirm_phrase }}
@@ -592,6 +615,15 @@ jobs:
       AWS_DEFAULT_REGION: auto
       AWS_EC2_METADATA_DISABLED: 'true'
     steps:
+      # The private work folder. GitHub offers the runner context to steps only,
+      # not to a job's env: block, so CS_DIR is set here, as the job's first step,
+      # from RUNNER_TEMP. Every later step (the always() ones included) reads it;
+      # this step reads no secret and runs no script.
+      - name: The private work folder
+        run: |
+          set -euo pipefail
+          if [ -z "${RUNNER_TEMP:-}" ]; then echo "::error::clean start refused: the runner has no temporary folder"; exit 1; fi
+          echo "CS_DIR=$RUNNER_TEMP/clean-start" >> "$GITHUB_ENV"
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -747,7 +779,8 @@ jobs:
         if: always()
         run: |
           set -uo pipefail
-          [ -d "$CS_DIR" ] || exit 0
+          # Nothing to report when the work folder was never set (the first step failed).
+          if [ -z "${CS_DIR:-}" ] || [ ! -d "$CS_DIR" ]; then exit 0; fi
           if [ "${CS_COMMITTED:-}" = yes ]; then
             PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
               -v fact=reset-report -v run_id="$GITHUB_RUN_ID" > "$CS_DIR/reset-report.json" 2>&1 || true
@@ -784,7 +817,6 @@ jobs:
     timeout-minutes: 30
     environment: production-reset
     env:
-      CS_DIR: ${{ runner.temp }}/clean-start
       TARGET_RUN: ${{ inputs.run_id }}
       CONFIRM_HOST: ${{ inputs.confirm_host }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -810,6 +842,15 @@ jobs:
       AWS_DEFAULT_REGION: auto
       AWS_EC2_METADATA_DISABLED: 'true'
     steps:
+      # The private work folder. GitHub offers the runner context to steps only,
+      # not to a job's env: block, so CS_DIR is set here, as the job's first step,
+      # from RUNNER_TEMP. Every later step (the always() ones included) reads it;
+      # this step reads no secret and runs no script.
+      - name: The private work folder
+        run: |
+          set -euo pipefail
+          if [ -z "${RUNNER_TEMP:-}" ]; then echo "::error::clean start refused: the runner has no temporary folder"; exit 1; fi
+          echo "CS_DIR=$RUNNER_TEMP/clean-start" >> "$GITHUB_ENV"
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -923,7 +964,8 @@ jobs:
         if: always()
         run: |
           set -uo pipefail
-          [ -d "$CS_DIR" ] || exit 0
+          # Nothing to report when the work folder was never set (the first step failed).
+          if [ -z "${CS_DIR:-}" ] || [ ! -d "$CS_DIR" ]; then exit 0; fi
           FILES=()
           for f in verify.out watch-results.tsv compare.out smoke.out seal-archive.report; do
             if [ -f "$CS_DIR/$f" ]; then FILES+=("$CS_DIR/$f"); fi
@@ -947,7 +989,6 @@ jobs:
     timeout-minutes: 20
     environment: production-reset
     env:
-      CS_DIR: ${{ runner.temp }}/clean-start
       TARGET_RUN: ${{ inputs.run_id }}
       CONFIRM_HOST: ${{ inputs.confirm_host }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -970,6 +1011,15 @@ jobs:
       AWS_DEFAULT_REGION: auto
       AWS_EC2_METADATA_DISABLED: 'true'
     steps:
+      # The private work folder. GitHub offers the runner context to steps only,
+      # not to a job's env: block, so CS_DIR is set here, as the job's first step,
+      # from RUNNER_TEMP. Every later step (the always() ones included) reads it;
+      # this step reads no secret and runs no script.
+      - name: The private work folder
+        run: |
+          set -euo pipefail
+          if [ -z "${RUNNER_TEMP:-}" ]; then echo "::error::clean start refused: the runner has no temporary folder"; exit 1; fi
+          echo "CS_DIR=$RUNNER_TEMP/clean-start" >> "$GITHUB_ENV"
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -1033,6 +1083,7 @@ jobs:
         if: always()
         run: |
           set -uo pipefail
+          if [ -z "${CS_DIR:-}" ]; then exit 0; fi
           if [ -f "$CS_DIR/seal-archive.report" ] && [[ ${TARGET_RUN:-} =~ ^[0-9]{1,20}$ ]]; then
             bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$TARGET_RUN/seal-restore" "$CS_DIR/seal-archive.report"
           fi
