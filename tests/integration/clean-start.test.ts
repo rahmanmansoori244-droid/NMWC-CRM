@@ -628,6 +628,13 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
         status: 'PROMOTED',
         totalRows: 1,
         promotedRows: 1,
+        // The 42nd migration (20261111120000_import_shop_notice_ack): an emptied
+        // table pointing into a kept one. Filled so the TRUNCATE ... RESTRICT
+        // and the byte-identical User check run with the key in use.
+        shopNotChangedRows: 1,
+        shopNotChangedAckRows: 1,
+        shopNotChangedAckAt: t0,
+        shopNotChangedAckById: w.steward,
       },
     });
     const row = await db.importRow.create({
@@ -786,6 +793,8 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     const holder = await db.$queryRaw<Array<{ n: number }>>`
       SELECT count(*)::int AS n FROM "Route" r JOIN "User" o ON o."ownedRouteId" = r."id" WHERE o."createdAt" > r."createdAt"`;
     expect(holder[0]!.n).toBeGreaterThanOrEqual(1);
+    // The 42nd migration's key is in use: an import batch acknowledged by a kept account.
+    expect(await db.importBatch.count({ where: { shopNotChangedAckById: w.steward } })).toBe(1);
   });
 
   it('PLAN: read-only exports whose hashes are the ones the fingerprint binds', async () => {

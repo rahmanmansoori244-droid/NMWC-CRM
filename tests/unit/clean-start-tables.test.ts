@@ -43,6 +43,59 @@ function truncateGuarded(): string[] {
   return [...out].sort();
 }
 
+/**
+ * Every foreign key the migrations' own SQL creates, as [migration, from, to]:
+ * ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ... REFERENCES and inline
+ * REFERENCES in CREATE TABLE. Dollar-quoted bodies and comments are left out.
+ * Dropped keys are not subtracted, so the rule below can only be stricter than
+ * the live catalog (which guards.sql CS003 checks on the night).
+ */
+function migrationForeignKeys(
+  migrations = migrationsInOrder()
+): Array<{ migration: string; from: string; to: string }> {
+  const out: Array<{ migration: string; from: string; to: string }> = [];
+  for (const m of migrations) {
+    const sql = m.sql
+      .replace(/\$([A-Za-z_]*)\$[\s\S]*?\$\1\$/g, "''")
+      .replace(/--[^\n]*/g, '');
+    for (const st of sql.split(';')) {
+      const head =
+        /^\s*(?:ALTER\s+TABLE(?:\s+ONLY)?|CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?)\s+(?:public\.)?"?([A-Za-z_][A-Za-z0-9_]*)"?/i.exec(
+          st
+        );
+      if (!head) continue;
+      for (const r of st.matchAll(/REFERENCES\s+(?:public\.)?"?([A-Za-z_][A-Za-z0-9_]*)"?/gi))
+        out.push({ migration: m.name, from: head[1]!, to: r[1]! });
+    }
+  }
+  return out;
+}
+
+/** The same rule as the schema's, read from the migrations: no kept table points into an emptied one. */
+function migrationFkRules(t: Tables, fks = migrationForeignKeys()): string[] {
+  const emptied = new Set(t.EMPTY);
+  const known = new Set([...t.EMPTY, ...Object.keys(t.PARTIAL), ...t.KEEP]);
+  const problems: string[] = [];
+  for (const k of fks) {
+    for (const side of [k.from, k.to])
+      if (!known.has(side)) problems.push(`${k.migration}: ${side} has a foreign key but is not classified`);
+    if (!emptied.has(k.from) && emptied.has(k.to))
+      problems.push(`${k.migration}: ${k.from} (kept) points into ${k.to} (emptied)`);
+  }
+  return problems;
+}
+
+/**
+ * The newest migration this inventory was checked against, by hand, table by
+ * table, with its triggers, foreign keys, sequences and enums (the 2026-11-11
+ * merge of 85c026e: 42 migrations, the last adding four ImportBatch columns and
+ * ImportBatch_shopNotChangedAckById_fkey into User - an emptied table pointing
+ * into a kept one, which TRUNCATE ... RESTRICT allows and which leaves User
+ * untouched). A later migration fails the pin below on purpose: re-check
+ * tables.json, guards.sql and the fingerprint against it, then move the pin.
+ */
+const REVIEWED_THROUGH = { count: 42, last: '20261111120000_import_shop_notice_ack' };
+
 /** The rules; each returns what is wrong (empty = right). */
 function tableRules(t: Tables, schema: ParsedSchema): string[] {
   const problems: string[] = [];
@@ -126,6 +179,23 @@ describe('clean start: tables.json classifies every table', () => {
   it('every ledger the migrations guard against TRUNCATE is in the list (17 of them)', () => {
     expect(truncateGuarded()).toHaveLength(17);
   });
+
+  it('no foreign key in any migration points from a kept table into an emptied one', () => {
+    const fks = migrationForeignKeys();
+    expect(fks.length).toBeGreaterThan(50);
+    expect(migrationFkRules(TABLES, fks)).toEqual([]);
+    // The 42nd migration's key: emptied ImportBatch into kept User (allowed).
+    expect(fks).toContainEqual({
+      migration: '20261111120000_import_shop_notice_ack',
+      from: 'ImportBatch',
+      to: 'User',
+    });
+  });
+
+  it('the inventory was checked against every migration there is', () => {
+    const all = migrationsInOrder();
+    expect({ count: all.length, last: all[all.length - 1]!.name }).toEqual(REVIEWED_THROUGH);
+  });
 });
 
 describe('clean start: the table rules fail on a wrong list', () => {
@@ -175,5 +245,33 @@ describe('clean start: the table rules fail on a wrong list', () => {
       `${readFileSync('prisma/schema.prisma', 'utf8')}\nmodel Brandnew {\n  id String @id\n}\n`
     );
     expect(tableRules(TABLES, extra).join('\n')).toMatch(/Brandnew \(schema\) is not classified/);
+  });
+  it('a migration whose foreign key points from a kept table into an emptied one', () => {
+    const extra = [
+      ...migrationsInOrder(),
+      {
+        name: '29991231000000_zz_wrong',
+        sql: 'ALTER TABLE "Region" ADD CONSTRAINT "Region_x_fkey" FOREIGN KEY ("x") REFERENCES "ImportBatch"("id") ON DELETE SET NULL;',
+      },
+    ];
+    expect(migrationFkRules(TABLES, migrationForeignKeys(extra)).join('\n')).toMatch(
+      /29991231000000_zz_wrong: Region \(kept\) points into ImportBatch \(emptied\)/
+    );
+  });
+  it('a migration whose foreign key names a table the list does not know', () => {
+    const extra = [
+      ...migrationsInOrder(),
+      {
+        name: '29991231000000_zz_new',
+        sql: 'CREATE TABLE "Brandnew" ("id" TEXT NOT NULL, "u" TEXT REFERENCES "User"("id"));',
+      },
+    ];
+    expect(migrationFkRules(TABLES, migrationForeignKeys(extra)).join('\n')).toMatch(
+      /Brandnew has a foreign key but is not classified/
+    );
+  });
+  it('the pin fails when a migration is added after the inventory was checked', () => {
+    const all = [...migrationsInOrder().map((m) => m.name), '29991231000000_zz_later'];
+    expect({ count: all.length, last: all[all.length - 1] }).not.toEqual(REVIEWED_THROUGH);
   });
 });

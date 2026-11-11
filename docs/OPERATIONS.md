@@ -808,7 +808,10 @@ yes; today they are only in the encrypted report).
 
 ### Tests
 
-`tests/unit/clean-start-tables.test.ts`, `clean-start-sql.test.ts` (the SQL's rules and
+`tests/unit/clean-start-tables.test.ts` (the table list against `prisma/schema.prisma` and
+against every foreign key in the migrations; it pins the newest migration the list was
+checked against, `20261111120000_import_shop_notice_ack`, the 42nd, so a later migration
+fails it until the list, `guards.sql` and the fingerprint are checked again), `clean-start-sql.test.ts` (the SQL's rules and
 mutations), `clean-start-run.test.ts` (the shell scripts against local stand-ins, every
 refusal, the public-log rule), `clean-start-workflows.test.ts` (both YAML files),
 `clean-start-codes.test.ts` (every refusal code raised once under a real condition; the
