@@ -184,7 +184,9 @@ describe('loadPromoteSummary', () => {
       customers: 3,
       created: { customers: 1, shops: 1, shopsOnExisting: 0 },
       // Route codes are matched without case, as at Promote: 'R2' is the route stored as 'r2'.
-      temix: { shopsRouteMoved: 1 },
+      // Owner's answer 2026-11-11 ("A1 stop"): the shop is not moved to it any more
+      // (this pinned temix.shopsRouteMoved: 1); the row is counted as route NOT applied.
+      routeNotApplied: 1,
       crm: { customersDiffer: 0, shopsDiffer: 1, byField: [{ field: 'address', count: 1 }] },
       unchangedCustomers: 1,
     });

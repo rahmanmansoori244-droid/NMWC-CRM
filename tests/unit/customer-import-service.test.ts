@@ -76,6 +76,7 @@ import { readFileSync } from 'node:fs';
 import { matchesWhere } from '../support/where-eval';
 import { loadExcelJS } from '@/lib/excel';
 import { ADDRESS_PLACEHOLDER } from '@/lib/import-crm-rule';
+import { ROUTE_NOT_APPLIED } from '@/lib/import-shop-notice';
 import {
   SUMMARY_ADDRESS_MIN,
   planGroup,
@@ -910,8 +911,31 @@ describe('promoteCustomerBatchAction — F21: an import writes a branch only whe
       const ups = branchUpserts();
       expect(ups).toHaveLength(1);
       expect(ups[0].where.branchCode).toBe('ARC1-02');
-      expect(ups[0].update).toMatchObject({ regionId: 'rgB', routeId: 'rt1', version: { increment: 1 } });
+      // Owner's answer 2026-11-11 ("A1 stop"): the region is repaired; the route is
+      // not written at all (it was written with the same value before).
+      expect(ups[0].update).toMatchObject({ regionId: 'rgB', version: { increment: 1 } });
+      expect(ups[0].update).not.toHaveProperty('routeId');
       expect(ups[0].update.lastStatusChangeAt).toBeUndefined();
+    });
+
+    it('full lane: a row naming ANOTHER route still repairs the region of the shop’s own route, and moves nothing', async () => {
+      const two = [...routes, { id: 'rt2', code: 'R2', regionId: 'rgC' }];
+      h.audit.mockClear();
+      setup(live(), [parsed({ routeCode: 'R2' })], [], { routes: two, branches: onR1('rgA') });
+      const out = await promote();
+      expect(out).toMatchObject({ promoted: 1, failed: 0 });
+      const ups = branchUpserts();
+      expect(ups).toHaveLength(1);
+      // rgB is R1's region (the shop's own route), not R2's rgC.
+      expect(ups[0].update).toMatchObject({ regionId: 'rgB', version: { increment: 1 } });
+      expect(ups[0].update).not.toHaveProperty('routeId');
+      expect(auditRows().filter((r) => r.entityType === 'Branch')).toEqual([
+        expect.objectContaining({ before: { regionId: 'rgA' }, after: expect.objectContaining({ regionId: 'rgB' }) }),
+      ]);
+      expect(notesWritten()['row-0']).toContainEqual({
+        field: '_route',
+        message: `shop ARC1-02: the sheet names route R2; the shop is on route R1. ${ROUTE_NOT_APPLIED}`,
+      });
     });
 
     it('full lane: a branch already in its route’s region is not written', async () => {
@@ -1598,34 +1622,87 @@ describe('finding 1 — a customer that exists keeps its CRM fields (the option 
   });
 });
 
-describe('finding 1 — a shop that exists keeps its CRM fields, and is still moved to the sheet’s route', () => {
+// Owner's answer 2026-11-11 ("A1 stop"): this used to say "and is still moved to
+// the sheet's route" and pinned the move; a shop that exists now keeps its route.
+describe('finding 1 — a shop that exists keeps its CRM fields, and its route', () => {
   const routes = [{ id: 'rt1', code: 'R1', regionId: 'rgB' }];
   beforeEach(() => h.audit.mockClear());
 
-  it('shop name, address and visit day on record are kept; the route (Temix’s) is written, with version + 1', async () => {
+  it('shop name, address and visit day on record are kept; a different route is NOT applied, and the row says so', async () => {
     setup(AS_SHEET, [parsed({ branchName: 'Renamed', address: 'An older address', dayOfVisit: 'MON', routeCode: 'R1' })], [], {
       routes,
       branches: { 'ARC1-02': storedBranch({ branchName: 'On record', address: 'Approved address', dayOfVisit: 'SUN' }) },
     });
     (tx.branch as Record<string, Fn>).upsert.mockResolvedValue({ id: 'b-02' });
     const out = await promote();
-    expect(out).toMatchObject({ promoted: 1, failed: 0, notes: { kept: 1 } });
-    const [u] = branchUpserts();
-    expect(u.update).toMatchObject({ routeId: 'rt1', regionId: 'rgB', version: { increment: 1 } });
-    for (const k of ['branchName', 'address', 'dayOfVisit', 'status', 'lastStatusChangeAt']) {
-      expect(u.update[k], k).toBeUndefined();
-    }
-    const row = auditRows().find((r) => r.entityType === 'Branch')!;
-    expect(row).toMatchObject({
-      action: 'UPDATE',
-      entityId: 'b-02',
-      before: { routeId: 'rtU', regionId: 'rgU' },
-      after: { routeId: 'rt1', regionId: 'rgB', lane: 'full' },
-    });
-    expect(Object.keys(row.before as object).sort()).toEqual(['regionId', 'routeId']);
+    expect(out).toMatchObject({ promoted: 1, failed: 0, notes: { kept: 1, routeNotApplied: 1 } });
+    // Nothing else differed, so the shop is not written at all: no route, no version bump.
+    expect(branchUpserts()).toEqual([]);
+    expect(auditRows().filter((r) => r.entityType === 'Branch')).toEqual([]);
     expect(notesWritten()['row-0']).toEqual([
+      {
+        field: '_route',
+        message: `shop ARC1-02: the sheet names route R1; the shop is on route UNASSIGNED. ${ROUTE_NOT_APPLIED}`,
+      },
       { field: '_kept', message: KEPT('shop ARC1-02', 'shop name, address and visit day in this row differ') },
     ]);
+    // The end-of-load notice counts the row, in the customer's own transaction.
+    expect(shopNotChangedOnBatch.map((a) => a.data.shopNotChangedRows.increment)).toEqual([1]);
+  });
+
+  it('the rest of the row is still written (a blank filled), the route is not, and the history has no route change', async () => {
+    setup(AS_SHEET, [parsed({ dayOfVisit: 'MON', routeCode: 'R1' })], [], {
+      routes,
+      branches: { 'ARC1-02': storedBranch({ dayOfVisit: null }) },
+    });
+    (tx.branch as Record<string, Fn>).upsert.mockResolvedValue({ id: 'b-02' });
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0, notes: { routeNotApplied: 1 } });
+    const [u] = branchUpserts();
+    expect(u.update).toMatchObject({ dayOfVisit: 'MON', version: { increment: 1 } });
+    expect(u.update).not.toHaveProperty('routeId');
+    // The region written is the shop's own route's (UNASSIGNED's rgU), never R1's rgB.
+    expect(u.update.regionId).toBe('rgU');
+    const row = auditRows().find((r) => r.entityType === 'Branch')!;
+    expect(Object.keys(row.before as object)).toEqual(['dayOfVisit']);
+    expect(row.after).not.toHaveProperty('routeId');
+    expect(notesWritten()['row-0']).toEqual([
+      {
+        field: '_route',
+        message: `shop ARC1-02: the sheet names route R1; the shop is on route UNASSIGNED. ${ROUTE_NOT_APPLIED}`,
+      },
+    ]);
+  });
+
+  it('with the overwrite option ON, the route is still NOT applied', async () => {
+    overwriteOption = true;
+    try {
+      setup(AS_SHEET, [parsed({ address: 'Way 10, Muscat', routeCode: 'R1' })], [], {
+        routes,
+        branches: { 'ARC1-02': storedBranch() },
+      });
+      (tx.branch as Record<string, Fn>).upsert.mockResolvedValue({ id: 'b-02' });
+      const out = await promote();
+      expect(out).toMatchObject({ promoted: 1, failed: 0, notes: { routeNotApplied: 1 } });
+    } finally {
+      overwriteOption = false;
+    }
+    const [u] = branchUpserts();
+    expect(u.update).toMatchObject({ address: 'Way 10, Muscat', version: { increment: 1 } });
+    expect(u.update).not.toHaveProperty('routeId');
+    // The region of the shop's own route (UNASSIGNED's rgU, as stored), never R1's rgB.
+    expect(u.update.regionId).toBe('rgU');
+  });
+
+  it('a NEW shop of a customer in the CRM is still created on the route the sheet names', async () => {
+    setup(AS_SHEET, [parsed({ routeCode: 'R1' })], [], { routes });
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0, notes: { routeNotApplied: 0 } });
+    const [u] = branchUpserts();
+    expect(u.create).toMatchObject({ branchCode: 'ARC1-02', routeId: 'rt1', regionId: 'rgB' });
+    // The update half (a shop inserted by someone else since the read) moves nothing.
+    expect(u.update).not.toHaveProperty('routeId');
+    expect(u.update.regionId).toBeUndefined();
   });
 
   it('only CRM values differ: the shop is not written at all — no version or updatedAt bump — and the row says they were kept', async () => {
@@ -1835,20 +1912,91 @@ describe('finding 1 — a row fixed in the app, for a customer linked to Temix, 
   const branchUpdates = () =>
     ((tx.branch as Record<string, Fn>).update.mock.calls as Array<[{ data: Record<string, unknown> }]>).map(([a]) => a.data);
 
-  it('the address on record is kept and the route is still written; the row says so', async () => {
+  // Owner's answer 2026-11-11 ("A1 stop"): this used to say "and the route is
+  // still written" and pinned the move to rt1/rgB. A fixed row never moves a shop
+  // that exists to another route now.
+  it('the address on record is kept and the route is NOT applied; the shop is not written and the row says both', async () => {
+    h.audit.mockClear();
     setup(linkedCustomer, [parsed({ fixedInApp: true, address: 'Way 10, Muscat', routeCode: 'R1' })], [], {
       routes,
       branches: { 'ARC1-02': storedBranch() },
     });
     const out = await promote();
-    expect(out).toMatchObject({ promoted: 1, failed: 0, notes: { kept: 1 } });
-    const [data] = branchUpdates();
-    expect(data).toMatchObject({ routeId: 'rt1', regionId: 'rgB', version: { increment: 1 } });
-    expect(data.address).toBeUndefined();
-    expect(data.status).toBeUndefined();
+    expect(out).toMatchObject({ promoted: 1, failed: 0, notes: { kept: 1, routeNotApplied: 1 } });
+    expect((tx.branch as Record<string, Fn>).update).not.toHaveBeenCalled();
+    expect(auditRows().filter((r) => r.entityType === 'Branch')).toEqual([]);
     expect(notesWritten()['row-0']).toEqual([
+      {
+        field: '_route',
+        message: `shop ARC1-02: the sheet names route R1; the shop is on route UNASSIGNED. ${ROUTE_NOT_APPLIED}`,
+      },
       { field: '_kept', message: KEPT('shop ARC1-02', 'address in this row differs') },
     ]);
+    // The end-of-load notice counts it.
+    expect(shopNotChangedOnBatch.map((a) => a.data.shopNotChangedRows.increment)).toEqual([1]);
+  });
+
+  it('a blank the fixed row fills is written; its different route is not, and no audit row names a route', async () => {
+    h.audit.mockClear();
+    setup(linkedCustomer, [parsed({ fixedInApp: true, dayOfVisit: 'MON', routeCode: 'R1' })], [], {
+      routes,
+      branches: { 'ARC1-02': storedBranch({ dayOfVisit: null }) },
+    });
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0, notes: { routeNotApplied: 1 } });
+    const [data] = branchUpdates();
+    expect(data).toMatchObject({ dayOfVisit: 'MON', version: { increment: 1 } });
+    expect(data).not.toHaveProperty('routeId');
+    // The region of the shop's own route, never R1's rgB.
+    expect(data.regionId).toBe('rgU');
+    const row = auditRows().find((r) => r.entityType === 'Branch')!;
+    expect(Object.keys(row.before as object)).toEqual(['dayOfVisit']);
+    expect(row.after).not.toHaveProperty('routeId');
+    expect(notesWritten()['row-0']).toContainEqual({
+      field: '_route',
+      message: `shop ARC1-02: the sheet names route R1; the shop is on route UNASSIGNED. ${ROUTE_NOT_APPLIED}`,
+    });
+  });
+
+  it('with the overwrite option ON the address is replaced, and the route is still NOT applied', async () => {
+    overwriteOption = true;
+    try {
+      setup(linkedCustomer, [parsed({ fixedInApp: true, address: 'Way 10, Muscat', routeCode: 'R1' })], [], {
+        routes,
+        branches: { 'ARC1-02': storedBranch() },
+      });
+      const out = await promote();
+      expect(out).toMatchObject({ promoted: 1, failed: 0, notes: { routeNotApplied: 1 } });
+    } finally {
+      overwriteOption = false;
+    }
+    const [data] = branchUpdates();
+    expect(data).toMatchObject({ address: 'Way 10, Muscat', version: { increment: 1 } });
+    expect(data).not.toHaveProperty('routeId');
+    expect(data.regionId).toBe('rgU');
+  });
+
+  it('a stale region of the shop’s own route is still repaired by a fixed row that names that route', async () => {
+    setup(linkedCustomer, [parsed({ fixedInApp: true, dayOfVisit: 'MON', routeCode: 'R1' })], [], {
+      routes,
+      branches: { 'ARC1-02': storedBranch({ routeId: 'rt1', regionId: 'rgA', dayOfVisit: null }) },
+    });
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0, notes: { routeNotApplied: 0 } });
+    const [data] = branchUpdates();
+    expect(data).toMatchObject({ dayOfVisit: 'MON', regionId: 'rgB' });
+    expect(data).not.toHaveProperty('routeId');
+  });
+
+  it('a NEW shop the fixed row creates lands on the route the sheet names', async () => {
+    setup(linkedCustomer, [parsed({ fixedInApp: true, branchCode: 'ARC1-07', routeCode: 'R1' })], [], {
+      routes,
+      branches: { 'ARC1-02': storedBranch() },
+    });
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0, notes: { routeNotApplied: 0 } });
+    const created = (tx.branch as Record<string, Fn>).create.mock.calls[0]![0] as { data: Record<string, unknown> };
+    expect(created.data).toMatchObject({ branchCode: 'ARC1-07', routeId: 'rt1', regionId: 'rgB' });
   });
 
   it('only a CRM value differs: the shop is not written, and the customer is not queued for Temix', async () => {
@@ -1996,7 +2144,8 @@ const SCENARIOS: Scenario[] = [
   { name: 'everything differs, the option off: kept', stored: liveActive(), rows: [parsed({ address: 'Older', dayOfVisit: 'MON' })], opts: { branches: { 'ARC1-02': storedBranch({ dayOfVisit: 'SUN' }) } } },
   { name: 'everything differs, the option ON: replaced', stored: liveActive(), rows: [parsed({ address: 'Older', dayOfVisit: 'MON' })], opts: { branches: { 'ARC1-02': storedBranch({ dayOfVisit: 'SUN', status: 'CLOSED' }) } }, overwrite: true },
   { name: 'blanks filled, the name kept', stored: liveActive({ primaryPhoneNorm: null as unknown as string, contactPerson: null as unknown as string }), rows: [parsed({ crNumber: '12 34', channelKey: 'HORECA' })], opts: { branches: { 'ARC1-02': storedBranch({ address: 'Address pending' }) }, channels: CHANNELS } },
-  { name: 'a shop moved to the sheet’s route, its CRM values kept', stored: AS_SHEET, rows: [parsed({ routeCode: 'R1', address: 'Older', branchName: 'Renamed' })], opts: { routes: R1, branches: { 'ARC1-02': storedBranch() } } },
+  // Owner's answer 2026-11-11 ("A1 stop"): this and the two fixed rows below used to move the shop.
+  { name: 'a shop that exists names another route: the route NOT applied, its CRM values kept', stored: AS_SHEET, rows: [parsed({ routeCode: 'R1', address: 'Older', branchName: 'Renamed' })], opts: { routes: R1, branches: { 'ARC1-02': storedBranch() } } },
   { name: 'a second, new shop on a customer that exists', stored: AS_SHEET, rows: [parsed(), parsed({ branchCode: 'ARC1-09', customerStatus: 'CLOSED' })], opts: { branches: { 'ARC1-02': storedBranch() } } },
   { name: 'a channel change with the option ON clears the old sub-channel', stored: { ...AS_SHEET, channelId: 'ch-retail', subChannelId: 'sub-retail', subChannel: { channelId: 'ch-retail' } }, rows: [parsed({ channelKey: 'HORECA' })], opts: { branches: { 'ARC1-02': storedBranch() }, channels: CHANNELS }, overwrite: true },
   { name: 'the same channel change with the option off', stored: { ...AS_SHEET, channelId: 'ch-retail', subChannelId: 'sub-retail', subChannel: { channelId: 'ch-retail' } }, rows: [parsed({ channelKey: 'HORECA' })], opts: { branches: { 'ARC1-02': storedBranch() }, channels: CHANNELS } },
@@ -2012,7 +2161,7 @@ const SCENARIOS: Scenario[] = [
   { name: 'refresh lane: a row naming a branch of another customer', stored: LINKED, rows: [parsed({ temixCode: 'ARC1', address: 'Older' })], opts: { branches: { 'ARC1-02': storedBranch({ customerId: 'someone-else', customer: { nmwcCode: 'OTH1' } }) } } },
   { name: 'refresh lane: a row naming an archived branch', stored: LINKED, rows: [parsed({ temixCode: 'ARC1', address: 'Older' })], opts: { branches: { 'ARC1-02': storedBranch({ deletedAt: new Date('2026-09-01T08:00:00Z') }) } } },
   { name: 'refresh lane: one shop differs, one not in the CRM, one without branch_code', stored: LINKED, rows: [parsed({ temixCode: 'ARC1', address: 'Older' }), parsed({ temixCode: 'ARC1', branchCode: 'ARC1-05' }), parsed({ temixCode: 'ARC1', branchCode: null, address: null, branchName: null })], opts: { branches: { 'ARC1-02': storedBranch() } } },
-  { name: 'a fixed row of a linked customer: route written, address kept', stored: LINKED, rows: [parsed({ fixedInApp: true, routeCode: 'R1', address: 'Older' })], opts: { routes: R1, branches: { 'ARC1-02': storedBranch() } } },
+  { name: 'a fixed row of a linked customer: route NOT applied, address kept', stored: LINKED, rows: [parsed({ fixedInApp: true, routeCode: 'R1', address: 'Older' })], opts: { routes: R1, branches: { 'ARC1-02': storedBranch() } } },
   { name: 'the same fixed row with the option ON', stored: LINKED, rows: [parsed({ fixedInApp: true, routeCode: 'R1', address: 'Older' })], opts: { routes: R1, branches: { 'ARC1-02': storedBranch() } }, overwrite: true },
   { name: 'a fixed row that creates its shop, beside a plain refresh row', stored: LINKED, rows: [parsed({ temixCode: 'ARC1' }), parsed({ fixedInApp: true, branchCode: 'ARC1-07' })], opts: { branches: { 'ARC1-02': storedBranch() } } },
   { name: 'rejected: payment terms differ', stored: AS_SHEET, rows: [parsed({ paymentTerms: 'CREDIT' })], opts: { branches: { 'ARC1-02': storedBranch() } } },
@@ -2100,10 +2249,13 @@ describe('finding 1 — parity: the plan the summary is built from is what the p
       creditNotApplied: plan.rejected ? 0 : plan.credit.length,
       // Finding 28: the rows loaded with their shop left as it was, as the summary counts them.
       shopNotChanged: plan.rejected ? 0 : plan.linkedShops + plan.linkedNotAdded,
+      // Owner's answer 2026-11-11: the rows whose different route was NOT applied, as the summary counts them.
+      routeNotApplied: plan.rejected ? 0 : plan.routeNotApplied,
     });
     // Second round: the same count is added to the batch, in the customer's own transaction, after its rows are PROMOTED.
+    // Since 2026-11-11 the notice counts the route-not-applied rows too (no row is both).
     const onBatch = shopNotChangedOnBatch.reduce((n, a) => n + a.data.shopNotChangedRows.increment, 0);
-    expect(onBatch).toBe(out.notes!.shopNotChanged);
+    expect(onBatch).toBe(out.notes!.shopNotChanged! + out.notes!.routeNotApplied!);
     for (const a of shopNotChangedOnBatch) expect(a.where).toEqual({ id: 'batch-9' });
     if (onBatch > 0) expect(order.indexOf('batch.shopNotChanged')).toBeGreaterThan(order.indexOf('importRow.promoted'));
     expect(out.notes!.kept > 0, 'a kept CRM value').toBe(!plan.rejected && !overwrite && differs);

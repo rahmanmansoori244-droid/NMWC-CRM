@@ -15,10 +15,11 @@
  * shopNotChangedNote), the "Before you promote" line and the end-of-load notice.
  *
  * Third round: the second round's sentence also said "No screen in the CRM
- * changes a shop's route". Two import paths still can (a held-back row fixed on
- * the batch page and then loaded, and a full-lane row with no temix_code:
- * services/imports.ts), so that claim is gone; whether those paths should keep
- * moving routes is an open owner question, and they are unchanged.
+ * changes a shop's route". Two import paths still could then (a held-back row
+ * fixed on the batch page and then loaded, and a full-lane row with no
+ * temix_code), so the sentence does not say it. The owner answered on
+ * 2026-11-11 ("A1 stop"): neither moves a route now (lib/import-shop-route.ts),
+ * and this sentence is the row's note on every row whose route was not applied.
  */
 export const ROUTE_NOT_APPLIED =
   "The route was NOT applied; the shop stays on its current route. Route moves are made in Temix.";
@@ -29,7 +30,19 @@ export const ROUTE_NOT_APPLIED =
  * rows: the review's crm.linkedShops + crm.linkedNotAdded (lib/import-plan.ts)
  * and the promote's notes.shopNotChanged (services/imports.ts
  * LaneOutcome.shopNotChanged). A row with no branch_code, or naming another
- * customer's or an archived branch, is not one of them.
+ * customer's or an archived branch, is not one of them. Since 2026-11-11 the
+ * end-of-load notice also counts the rows whose route was not applied
+ * (ROUTE_ONLY_MEANING below), each row once.
  */
 export const SHOP_NOT_CHANGED_MEANING =
   "Each is a row that carries the customer's Temix code and names a shop of that customer (branch_code) whose details in the sheet differ from the CRM, or that the CRM does not have; such a row never changes or adds a shop.";
+
+/**
+ * What the other rows the end-of-load notice counts are (owner's answer of
+ * 2026-11-11, "A1 stop"): a row for a shop already in the CRM that names a
+ * different route. Its other cells may have been loaded, so it is NOT called
+ * "shop NOT changed"; only its route was not applied. Used by the "Before you
+ * promote" tick and the notice (ShopsNotChangedNotice.tsx).
+ */
+export const ROUTE_ONLY_MEANING =
+  'the rest of such a row is loaded as usual, but its route is not: the shop stays on its current route. Route moves are made in Temix.';

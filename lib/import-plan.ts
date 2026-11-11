@@ -22,8 +22,11 @@
  *   fixed   — a row the Data Steward fixed in the app, for a customer linked to
  *             Temix: its own shop only.
  *   full    — every other row: creates the customer and its shops; for one that
- *             exists, fills blank CRM fields and moves a shop to the sheet's route
- *             (lib/import-crm-rule.ts).
+ *             exists, fills blank CRM fields (lib/import-crm-rule.ts).
+ *
+ * On every lane, a shop that already exists keeps its route (owner's answer of
+ * 2026-11-11, "A1 stop"; lib/import-shop-route.ts): a row naming another route
+ * is loaded otherwise as its lane says, and its route is NOT applied.
  */
 import type { ImportLane } from './change-context';
 import { subChannelClearedByChannelChange } from './channel-pair';
@@ -41,6 +44,7 @@ import { differingCells, sameStoredValue } from './import-lineage';
 import { composeBranchCode } from './import-row-fix';
 import { normalizeTemixCode } from './temix-code';
 import { ROUTE_NOT_APPLIED } from './import-shop-notice';
+import { existingShopWrite, holdShopRoute, type RouteById } from './import-shop-route';
 
 // ── What a row gives a shop ─────────────────────────────────────────────────
 
@@ -488,7 +492,13 @@ export type GroupPlan = {
   onRefresh: boolean;
   /** The refresh would change the Temix code, cash/credit, credit limit or credit days. */
   temixChanged: boolean;
-  shopsRouteMoved: number;
+  /**
+   * Owner's answer 2026-11-11 ("A1 stop"): full-lane and fixed rows that name a
+   * route other than their existing shop's. The route is NOT applied; the rest
+   * of the row is, as its lane says. (A refresh-lane plain row that does is in
+   * linkedRouteNotMoved instead: it changes nothing on the shop.)
+   */
+  routeNotApplied: number;
   customerFilled: boolean;
   shopsFilled: number;
   /** A CRM value on record differs from the sheet: kept, or replaced with the option on. */
@@ -521,7 +531,7 @@ const emptyPlan = (rows: number): GroupPlan => ({
   reopensCustomer: false,
   onRefresh: false,
   temixChanged: false,
-  shopsRouteMoved: 0,
+  routeNotApplied: 0,
   customerFilled: false,
   shopsFilled: 0,
   customerDiffers: false,
@@ -602,14 +612,10 @@ export function planGroup(input: {
     plan.writes.shops.push({ branchCode: shop.branchCode, kind: 'create', fields: [] });
     if (existing && existing.status !== 'ACTIVE' && (shop.status ?? 'ACTIVE') === 'ACTIVE') plan.reopensCustomer = true;
   };
-  const branchWrite = (r: LaneBranch): Record<string, unknown> => ({
-    branchName: r.nameGiven ? r.branchName : undefined,
-    regionId: r.routeResolved ? r.regionId : undefined,
-    routeId: r.routeResolved ? r.routeId : undefined,
-    address: r.sheetAddress ?? undefined,
-    dayOfVisit: r.dayOfVisit ?? undefined,
-    status: r.status ?? undefined,
-  });
+  // What Promote writes on a shop that exists: never a route (lib/import-shop-route.ts).
+  const branchWrite = (r: LaneBranch): Record<string, unknown> => existingShopWrite(r);
+  // Every route by its id, for the route a shop that exists keeps.
+  const routeById: RouteById = new Map([...routeByCode.values()].map((r) => [r.id, r] as const));
 
   // In the promote's own order: a row with no branch_code on a customer that has
   // shops is refused before the lane writes anything.
@@ -705,10 +711,12 @@ export function planGroup(input: {
         newShop(shop);
         continue;
       }
-      const rule = branchCrmRule(overwrite, shop, stored);
+      // As the promote: the shop keeps its route; one the row names that differs is counted.
+      const held = holdShopRoute(shop, stored, routeById);
+      if (held.notApplied) plan.routeNotApplied += 1;
+      const rule = branchCrmRule(overwrite, held.row, stored);
       countShop(rule);
       const differs = differingBranchCells(rule.row, stored);
-      if (differs.includes('route')) plan.shopsRouteMoved += 1;
       if (differs.length > 0) {
         plan.writes.shops.push({
           branchCode: shop.branchCode,
@@ -752,10 +760,13 @@ export function planGroup(input: {
       if (differs.includes('route')) plan.linkedRouteNotMoved += 1;
       continue;
     }
-    const rule = branchCrmRule(overwrite, shop, stored);
+    // As the promote's fixed lane: the shop keeps its route (lib/import-shop-route.ts).
+    const held = holdShopRoute(shop, stored, routeById);
+    if (held.notApplied) plan.routeNotApplied += 1;
+    if (differingBranchCells(held.row, { ...stored, regionId: undefined }).length === 0) continue;
+    const rule = branchCrmRule(overwrite, held.row, stored);
     countShop(rule);
     const written = differingBranchCells(rule.row, { ...stored, regionId: undefined });
-    if (written.includes('route')) plan.shopsRouteMoved += 1;
     if (written.length > 0) {
       plan.writes.shops.push({
         branchCode: shop.branchCode,
@@ -796,6 +807,7 @@ export function planGroup(input: {
     plan.shopsDiffer === 0 &&
     plan.linkedShops === 0 &&
     plan.linkedNotAdded === 0 &&
+    plan.routeNotApplied === 0 &&
     plan.credit.length === 0;
   return plan;
 }
@@ -805,7 +817,9 @@ export type PromoteSummary = {
   rows: number;
   customers: number;
   created: { customers: number; shops: number; shopsOnExisting: number; closedCustomersReopened: number };
-  temix: { customersOnRefresh: number; customersChanged: number; shopsRouteMoved: number };
+  temix: { customersOnRefresh: number; customersChanged: number };
+  /** Owner's answer 2026-11-11: rows naming another route for a shop that exists (GroupPlan.routeNotApplied). */
+  routeNotApplied: number;
   crm: {
     customersFilled: number;
     shopsFilled: number;
@@ -831,7 +845,8 @@ export function emptySummary(): PromoteSummary {
     rows: 0,
     customers: 0,
     created: { customers: 0, shops: 0, shopsOnExisting: 0, closedCustomersReopened: 0 },
-    temix: { customersOnRefresh: 0, customersChanged: 0, shopsRouteMoved: 0 },
+    temix: { customersOnRefresh: 0, customersChanged: 0 },
+    routeNotApplied: 0,
     crm: {
       customersFilled: 0,
       shopsFilled: 0,
@@ -874,7 +889,7 @@ export function addGroup(s: PromoteSummary, plan: GroupPlan): PromoteSummary {
   if (plan.reopensCustomer) s.created.closedCustomersReopened += 1;
   if (plan.onRefresh) s.temix.customersOnRefresh += 1;
   if (plan.temixChanged) s.temix.customersChanged += 1;
-  s.temix.shopsRouteMoved += plan.shopsRouteMoved;
+  s.routeNotApplied += plan.routeNotApplied;
   if (plan.customerFilled) s.crm.customersFilled += 1;
   s.crm.shopsFilled += plan.shopsFilled;
   if (plan.customerDiffers) s.crm.customersDiffer += 1;
@@ -913,10 +928,18 @@ export function summaryLines(s: PromoteSummary, overwrite: boolean): SummaryLine
       text: `New: ${n(s.created.customers)} customer(s) and ${n(s.created.shops)} shop(s) will be created (${n(s.created.shopsOnExisting)} of the shops on customers already in the CRM).`,
     });
   }
-  if (s.temix.customersChanged + s.temix.shopsRouteMoved > 0) {
+  // Owner's answer 2026-11-11 ("A1 stop"): no shop moves to the route in the
+  // sheet any more; the line said how many would.
+  if (s.temix.customersChanged > 0) {
     lines.push({
       tone: 'plain',
-      text: `Temix-owned fields: ${n(s.temix.customersChanged)} customer(s) will have their Temix code, cash/credit, credit limit or credit days refreshed, and ${n(s.temix.shopsRouteMoved)} shop(s) will move to the route in the sheet.`,
+      text: `Temix-owned fields: ${n(s.temix.customersChanged)} customer(s) will have their Temix code, cash/credit, credit limit or credit days refreshed.`,
+    });
+  }
+  if (s.routeNotApplied > 0) {
+    lines.push({
+      tone: 'warn',
+      text: `Route NOT applied: ${n(s.routeNotApplied)} row(s) name a route other than the current route of their shop, which is already in the CRM. The rest of each row loads as the lines here say; the route does not. ${ROUTE_NOT_APPLIED}`,
     });
   }
   if (s.crm.customersFilled + s.crm.shopsFilled > 0) {

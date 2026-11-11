@@ -428,10 +428,42 @@ describe('planGroup — what Promote would do with one customer', () => {
     });
   });
 
-  it('the route is Temix’s: a shop moves to the sheet’s route while its CRM values are kept', () => {
+  // Owner's answer 2026-11-11 ("A1 stop"): this used to say "a shop moves to the
+  // sheet's route" and pinned a write of regionId and routeId. A shop that exists
+  // keeps its route on every lane; the row is counted as route NOT applied.
+  it('a shop that exists keeps its route: a different one is counted as NOT applied, and nothing is written for it', () => {
     const p = plan([prow({ routeCode: 'R2', address: 'Older address' })], customer(), { 'C1-01': pshop() });
-    expect(p).toMatchObject({ shopsRouteMoved: 1, shopsDiffer: 1 });
-    expect(p.writes.shops).toEqual([{ branchCode: 'C1-01', kind: 'update', fields: ['regionId', 'routeId'] }]);
+    expect(p).toMatchObject({ routeNotApplied: 1, shopsDiffer: 1, unchanged: false });
+    expect(p.writes.shops).toEqual([]);
+  });
+
+  it('only the route differs: the row is still not "no change", and nothing is written', () => {
+    const p = plan([prow({ routeCode: 'R2' })], customer(), { 'C1-01': pshop() });
+    expect(p).toMatchObject({ routeNotApplied: 1, shopsDiffer: 0, shopsFilled: 0, unchanged: false });
+    expect(p.writes).toEqual({ customer: [], shops: [] });
+  });
+
+  it('with the option on, the route is still NOT applied; the other cells are replaced', () => {
+    const p = plan([prow({ routeCode: 'R2', address: 'Older address' })], customer(), { 'C1-01': pshop() }, true);
+    expect(p).toMatchObject({ routeNotApplied: 1 });
+    expect(p.writes.shops).toEqual([{ branchCode: 'C1-01', kind: 'update', fields: ['address'] }]);
+  });
+
+  it('a stale region of the shop’s own route is repaired, which is not a route move', () => {
+    const own = plan([prow({ routeCode: 'R1' })], customer(), { 'C1-01': pshop({ regionId: 'rgOld' }) });
+    expect(own).toMatchObject({ routeNotApplied: 0 });
+    expect(own.writes.shops).toEqual([{ branchCode: 'C1-01', kind: 'update', fields: ['regionId'] }]);
+    // Naming another route: the region of the shop's OWN route, and the route counted as not applied.
+    const other = plan([prow({ routeCode: 'R2' })], customer(), { 'C1-01': pshop({ regionId: 'rgOld' }) });
+    expect(other).toMatchObject({ routeNotApplied: 1 });
+    expect(other.writes.shops).toEqual([{ branchCode: 'C1-01', kind: 'update', fields: ['regionId'] }]);
+  });
+
+  it('a NEW shop of a customer in the CRM, and a new customer’s shops, are created on the sheet’s route', () => {
+    const onExisting = plan([prow({ branchCode: '02', routeCode: 'R2' })], customer(), { 'C1-01': pshop() });
+    expect(onExisting).toMatchObject({ shopsCreated: 1, routeNotApplied: 0 });
+    const fresh = plan([prow({ routeCode: 'R2' }), prow({ branchCode: '02', routeCode: 'R1' })], null);
+    expect(fresh).toMatchObject({ newCustomer: true, shopsCreated: 2, routeNotApplied: 0 });
   });
 
   it('a sheet’s ACTIVE on a CLOSED shop would reopen it: counted, and kept', () => {
@@ -496,8 +528,15 @@ describe('planGroup — what Promote would do with one customer', () => {
   it('a row fixed in the app, for a linked customer: its own shop, by the same rule', () => {
     const linked = customer({ temixCode: 'T1', recordedCode: 'T1' });
     const kept = plan([prow({ fixedInApp: true, routeCode: 'R2', address: 'Older address' })], linked, { 'C1-01': pshop() });
-    expect(kept).toMatchObject({ onRefresh: false, shopsRouteMoved: 1, shopsDiffer: 1, linkedShops: 0 });
-    expect(kept.writes.shops).toEqual([{ branchCode: 'C1-01', kind: 'update', fields: ['regionId', 'routeId'] }]);
+    // Owner's answer 2026-11-11 ("A1 stop"): its different route is NOT applied
+    // (this used to pin a write of regionId and routeId); the address is kept.
+    expect(kept).toMatchObject({ onRefresh: false, routeNotApplied: 1, shopsDiffer: 1, linkedShops: 0 });
+    expect(kept.writes.shops).toEqual([]);
+    const filled = plan([prow({ fixedInApp: true, routeCode: 'R2', dayOfVisit: 'SUN' })], linked, {
+      'C1-01': pshop({ dayOfVisit: null }),
+    });
+    expect(filled).toMatchObject({ routeNotApplied: 1, shopsFilled: 1 });
+    expect(filled.writes.shops).toEqual([{ branchCode: 'C1-01', kind: 'update', fields: ['dayOfVisit'] }]);
     const made = plan([prow({ fixedInApp: true, branchCode: '09' })], linked, { 'C1-01': pshop() });
     expect(made).toMatchObject({ shopsCreated: 1 });
   });
@@ -553,7 +592,8 @@ describe('addGroup and summaryLines — the counts and the words', () => {
       rows: 9,
       customers: 7,
       created: { customers: 1, shops: 3, shopsOnExisting: 1, closedCustomersReopened: 1 },
-      temix: { customersOnRefresh: 1, customersChanged: 1, shopsRouteMoved: 0 },
+      temix: { customersOnRefresh: 1, customersChanged: 1 },
+      routeNotApplied: 0,
       crm: {
         customersFilled: 0,
         shopsFilled: 0,
@@ -583,7 +623,8 @@ describe('addGroup and summaryLines — the counts and the words', () => {
       { tone: 'plain', text: 'New: 1 customer(s) and 3 shop(s) will be created (1 of the shops on customers already in the CRM).' },
       {
         tone: 'plain',
-        text: 'Temix-owned fields: 1 customer(s) will have their Temix code, cash/credit, credit limit or credit days refreshed, and 0 shop(s) will move to the route in the sheet.',
+        // Owner's answer 2026-11-11: no shop moves to the sheet's route any more.
+        text: 'Temix-owned fields: 1 customer(s) will have their Temix code, cash/credit, credit limit or credit days refreshed.',
       },
       {
         tone: 'warn',
@@ -616,6 +657,23 @@ describe('addGroup and summaryLines — the counts and the words', () => {
     expect(lines.some((l) => l.text.startsWith('CRM fields kept'))).toBe(false);
     // The refresh lane is the same with the option on: it never writes a CRM field.
     expect(lines.some((l) => l.text.startsWith('Loaded, shop NOT changed: 1 shop(s) of 1 customer(s)'))).toBe(true);
+  });
+
+  it('rows naming another route for a shop that exists: one warning line with the count and the sentence', () => {
+    const s = emptySummary();
+    addGroup(s, plan([prow({ routeCode: 'R2' })], customer(), { 'C1-01': pshop() }));
+    addGroup(s, plan([prow({ routeCode: 'R2', fixedInApp: true })], customer({ temixCode: 'T1', recordedCode: 'T1' }), { 'C1-01': pshop() }));
+    // A new shop on its sheet route is not counted.
+    addGroup(s, plan([prow({ branchCode: '02', routeCode: 'R2' })], customer(), { 'C1-01': pshop() }));
+    expect(s.routeNotApplied).toBe(2);
+    expect(summaryLines(s, false).filter((l) => l.text.startsWith('Route NOT applied'))).toEqual([
+      {
+        tone: 'warn',
+        text: 'Route NOT applied: 2 row(s) name a route other than the current route of their shop, which is already in the CRM. The rest of each row loads as the lines here say; the route does not. The route was NOT applied; the shop stays on its current route. Route moves are made in Temix.',
+      },
+    ]);
+    // The overwrite option does not change it.
+    expect(summaryLines(s, true).some((l) => l.text.startsWith('Route NOT applied: 2 row(s)'))).toBe(true);
   });
 
   it('an empty batch, and one with nothing to say, read as two plain lines', () => {
