@@ -9,10 +9,17 @@ import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
 import { bulkApproveEditsAction, bulkRejectEditsAction } from '@/services/edits';
 import {
   BULK_DECISION_LIMIT,
+  ALREADY_DECIDED_BY_YOU,
+  ALREADY_DECIDED_OTHERWISE,
+  BULK_LINES_SHOWN,
   CREDIT_BULK_REFUSED_MESSAGE,
   NO_ANSWER_MESSAGE,
   TEMIX_CODE_BULK_REFUSED_MESSAGE,
+  bulkHeadline,
+  notByThisBatch,
+  splitBulkFailures,
 } from '@/lib/bulk-run';
+import type { BulkAsked } from '@/lib/bulk-run';
 
 /**
  * B-11 (Senior-audit 2026-05-10): bulk-approval queue.
@@ -69,8 +76,10 @@ export type ApprovalQueueItem = {
 export type BulkOutcomeView =
   | {
       kind: 'answered';
+      /** Third round: what the batch asked for, so "already decided" counts as done only when it is what stands. */
+      asked: BulkAsked;
       successes: number;
-      failures: Array<{ editId: string; code: string; message: string }>;
+      failures: Array<{ editId: string; code: string; message: string; decided?: string }>;
       // REL-04: selected but never started, because the batch ran out of time.
       // Distinct from a failure: nothing was attempted, so running it again is safe.
       notAttempted: number;
@@ -164,6 +173,7 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
    * decided answers so, and nothing is decided twice.
    */
   function runBatch(
+    asked: BulkAsked,
     send: (fd: FormData) => ReturnType<typeof bulkApproveEditsAction>,
     fill: (fd: FormData) => void,
     onDone: () => void
@@ -185,6 +195,7 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
       if (res.ok) {
         setOutcome({
           kind: 'answered',
+          asked,
           successes: res.data.successes.length,
           failures: res.data.failures,
           notAttempted: res.data.notAttempted.length,
@@ -200,13 +211,14 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
 
   function handleBulkApprove() {
     setShowApprove(false);
-    runBatch(bulkApproveEditsAction, () => {}, () => {});
+    runBatch('APPROVED', bulkApproveEditsAction, () => {}, () => {});
   }
 
   function handleBulkReject() {
     if (rejectReason.length < 5) return;
     setShowReject(false);
     runBatch(
+      'REJECTED',
       bulkRejectEditsAction,
       (fd) => {
         fd.set('reason', rejectReason);
@@ -435,8 +447,21 @@ export function BulkOutcomeBanner({
   outcome: BulkOutcomeView;
   innerRef?: React.Ref<HTMLDivElement>;
 }) {
+  // Finding 21, second round: a request whose decision had already arrived did
+  // not fail — it is counted and listed apart. Third round: alone it leaves the
+  // batch done only when the decision that stands is the one this batch sent.
+  // One decided otherwise (he had sent it back, and now bulk-approved it) is
+  // counted and listed apart again, each line saying what stands, and the
+  // banner is an alert.
+  const split =
+    outcome.kind === 'answered'
+      ? splitBulkFailures(outcome.failures, outcome.asked)
+      : { arrived: [], otherwise: [], failed: [] };
   const allDone =
-    outcome.kind === 'answered' && outcome.failures.length === 0 && outcome.notAttempted === 0;
+    outcome.kind === 'answered' &&
+    split.failed.length === 0 &&
+    split.otherwise.length === 0 &&
+    outcome.notAttempted === 0;
   return (
     <div
       ref={innerRef}
@@ -464,26 +489,44 @@ export function BulkOutcomeBanner({
       ) : (
         <>
           <p className="font-semibold">
-            {outcome.successes} processed
-            {outcome.failures.length > 0 ? `, ${outcome.failures.length} failed` : ''}
-            {outcome.notAttempted > 0
-              ? `, ${outcome.notAttempted} not attempted — run it again to finish`
-              : ''}
-            .
+            {bulkHeadline({
+              processed: outcome.successes,
+              arrived: split.arrived.length,
+              otherwise: split.otherwise.length,
+              failed: split.failed.length,
+              notAttempted: outcome.notAttempted,
+            })}
           </p>
-          {outcome.failures.length > 0 && (
-            <ul className="mt-2 list-disc pl-5 text-xs">
-              {outcome.failures.slice(0, 5).map((f) => (
-                <li key={f.editId}>
-                  {f.editId.slice(-8)}: {f.message}
-                </li>
-              ))}
-              {outcome.failures.length > 5 && <li>… and {outcome.failures.length - 5} more.</li>}
-            </ul>
-          )}
+          <BulkLines lines={split.failed} more={(n) => `… and ${n} more failed.`} />
+          <BulkLines
+            lines={split.otherwise.map((f) => ({ ...f, message: `${notByThisBatch(outcome.asked)} ${f.message}` }))}
+            more={(n) => `… and ${n} more ${ALREADY_DECIDED_OTHERWISE}.`}
+          />
+          <BulkLines lines={split.arrived} more={(n) => `… and ${n} more ${ALREADY_DECIDED_BY_YOU}.`} />
         </>
       )}
     </div>
+  );
+}
+
+/** One kind of line of the banner: the request's reference and its message, the first few, then how many more. */
+function BulkLines({
+  lines,
+  more,
+}: {
+  lines: Array<{ editId: string; message: string }>;
+  more: (n: number) => string;
+}) {
+  if (lines.length === 0) return null;
+  return (
+    <ul className="mt-2 list-disc pl-5 text-xs">
+      {lines.slice(0, BULK_LINES_SHOWN).map((f) => (
+        <li key={f.editId}>
+          {f.editId.slice(-8)}: {f.message}
+        </li>
+      ))}
+      {lines.length > BULK_LINES_SHOWN && <li>{more(lines.length - BULK_LINES_SHOWN)}</li>}
+    </ul>
   );
 }
 

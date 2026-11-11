@@ -70,6 +70,22 @@ describe('every fix action', () => {
     expect(w).toContain("'BATCH_PROMOTING'");
   });
 
+  // Code review 2026-11-10, finding 28 (second round): the acknowledgement of
+  // the rows loaded with their shop NOT changed. Not through withBatch, which
+  // refuses a discarded batch — whose earlier load may still have such rows —
+  // but by the same rules: the role first, then the batch row lock, then the
+  // write and its audit row.
+  it('the acknowledgement checks the role first, locks the batch row, and leaves an audit row', () => {
+    const b = body(fixes, 'acknowledgeShopsNotChangedCore');
+    const role = b.indexOf('Role.STEWARD');
+    expect(role).toBeGreaterThan(-1);
+    expect(role).toBeLessThan(b.indexOf('withChangeContext('));
+    expect(b).toMatch(/FROM "ImportBatch" WHERE "id" = \$\{batchId\} FOR UPDATE/);
+    expect(b).toContain("'BATCH_PROMOTING'");
+    expect(b.indexOf('FOR UPDATE')).toBeLessThan(b.indexOf('tx.importBatch.update('));
+    expect(b).toMatch(/\bwriteAudit\(tx,/);
+  });
+
   it('only the Data Steward', () => {
     const r = body(fixes, 'requireSteward');
     expect(r).toContain('Role.STEWARD');
@@ -89,5 +105,21 @@ describe('the empty-phone fill never overwrites a phone', () => {
     const fill = imports.slice(at, at + 2000);
     expect(fill).toMatch(/tx\.customer\.updateMany\(\{\s*where: \{ id: customerId, OR: \[\{ primaryPhoneNorm: null \}, \{ primaryPhoneNorm: '' \}\] \}/);
     expect(fill).toMatch(/if \(wrote\.count === 1\)/);
+  });
+});
+
+// Code review 2026-11-10, finding 28 (second round): the rows a promote loaded
+// with their shop NOT changed are counted on the batch in the same transaction
+// that marks them PROMOTED, so the batch page's notice counts exactly the rows
+// that committed, whatever happens to the slice afterwards.
+describe('the count behind the "shop NOT changed" notice', () => {
+  it('is added to the batch right after the rows are marked PROMOTED, inside the customer transaction', () => {
+    const at = imports.indexOf('data: { state: ImportRowState.PROMOTED, reviewedById: me.id, reviewedAt: new Date() }');
+    expect(at).toBeGreaterThan(-1);
+    const after = imports.slice(at, at + 900);
+    expect(after).toMatch(/rowNotes\.filter\(\(n\) => n\?\.shopNotChanged === true\)\.length/);
+    expect(after).toMatch(/await tx\.importBatch\.update\(\{\s*where: \{ id: batchId \},\s*data: \{ shopNotChangedRows: \{ increment: notChangedHere \} \}/);
+    // and not by the slice's finalize, which a slice that dies after committing never reaches
+    expect(imports).not.toMatch(/shopNotChangedRows: sliceNotes/);
   });
 });

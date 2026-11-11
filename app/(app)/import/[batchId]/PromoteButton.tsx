@@ -29,6 +29,7 @@ export function PromoteButton({
   resume = false,
   leaseHeld = false,
   canSetOverwrite = false,
+  finished = false,
 }: {
   batchId: string;
   remainingCount: number;
@@ -36,6 +37,12 @@ export function PromoteButton({
   leaseHeld?: boolean;
   /** The batch's overwrite option may be changed now: ready to promote, nobody promoting it. */
   canSetOverwrite?: boolean;
+  /**
+   * The batch is PROMOTED. The page keeps this component mounted then, so the
+   * result of the load that just finished ("✓ Done — …") survives the refresh
+   * that ends it (finding 28, second round); the button itself is not offered.
+   */
+  finished?: boolean;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -44,9 +51,6 @@ export function PromoteButton({
   const [msg, setMsg] = useState<string | null>(null);
   const [tone, setTone] = useState<'ok' | 'warn'>('ok');
   const [live, setLive] = useState<{ promoted: number; failed: number; left: number } | null>(null);
-  // Code review 2026-11-10, finding 28: rows this run loaded without changing
-  // their shop, which the Steward acknowledges before the result is shown.
-  const [unchangedShops, setUnchangedShops] = useState<{ rows: number; done: string } | null>(null);
 
   function say(text: string, t: 'ok' | 'warn' = 'ok') {
     setMsg(text);
@@ -73,7 +77,6 @@ export function PromoteButton({
       // the previous run's totals and its stale warning for the whole first pass.
       setMsg(null);
       setLive(null);
-      setUnchangedShops(null);
       let promoted = 0;
       let failed = 0;
       // Finding 1: rows that kept a CRM value the sheet differed from, and rows
@@ -128,12 +131,11 @@ export function PromoteButton({
               `✓ Done — ${promoted.toLocaleString('en-US')} rows promoted in this run${failed ? ` · ${failed} customer(s) failed` : ''}.${
                 noted.length > 0 ? ` ${noted.join('; ')} — see "Loaded with a warning".` : ''
               }`;
-            if (shopNotChanged > 0) {
-              // Finding 28: acknowledged first (below); the result follows.
-              setUnchangedShops({ rows: shopNotChanged, done: doneText });
-              router.refresh();
-              return;
-            }
+            // Finding 28, second round: the result is shown at once. Rows loaded
+            // with their shop NOT changed are counted on the batch, and the page
+            // shows that notice until the Steward acknowledges it
+            // (ShopsNotChangedNotice) — it no longer lives in this component,
+            // whose alert the refresh to PROMOTED used to take away unseen.
             say(doneText);
             router.refresh();
             return;
@@ -198,46 +200,22 @@ export function PromoteButton({
           {msg}
         </span>
       )}
-      {unchangedShops && (
-        <div
-          role="alert"
-          data-testid="shops-not-changed"
-          className="max-w-md rounded-md bg-amber-50 p-3 text-xs text-amber-900 ring-1 ring-inset ring-amber-300"
-        >
-          <p className="font-semibold">
-            {unchangedShops.rows.toLocaleString('en-US')} row(s) were loaded, but their shop was NOT changed.
-          </p>
-          <p className="mt-1">
-            Their rows carry the customer&rsquo;s Temix code, and such a row never changes an existing shop: a route in
-            those rows was NOT applied, and the shop stays on its current route. Each row says what was not applied,
-            under &ldquo;Loaded with a warning&rdquo;.
-          </p>
-          <button
-            type="button"
-            onClick={() => {
-              say(unchangedShops.done);
-              setUnchangedShops(null);
-            }}
-            className="mt-2 rounded-md border border-amber-400 bg-white px-3 py-1 font-semibold text-amber-900 hover:bg-amber-100"
-          >
-            I have read this
-          </button>
-        </div>
-      )}
-      {!pending && leaseHeld && (
+      {!pending && leaseHeld && !finished && (
         <span className="text-xs font-medium text-slate-500">
           Another promote is running — wait for it to finish.
         </span>
       )}
-      <button
-        type="button"
-        disabled={pending || (remainingCount === 0 && !resume)}
-        onClick={onClick}
-        className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:bg-slate-300"
-      >
-        {label}
-      </button>
-      {reviewing && (
+      {(!finished || pending) && (
+        <button
+          type="button"
+          disabled={pending || (remainingCount === 0 && !resume)}
+          onClick={onClick}
+          className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:bg-slate-300"
+        >
+          {label}
+        </button>
+      )}
+      {reviewing && !finished && (
         <Suspense fallback={null}>
           <PromoteReviewDialog
             batchId={batchId}

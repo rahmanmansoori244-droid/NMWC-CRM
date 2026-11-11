@@ -937,6 +937,86 @@ async function discardCore(formData: FormData): Promise<{ status: 'DISCARDED' }>
   return { status: 'DISCARDED' };
 }
 
+// ── Rows loaded with their shop NOT changed: acknowledged ───────────────────
+
+/**
+ * Code review 2026-11-10, finding 28 (second round). A promote counts on the
+ * batch the rows it loaded with their shop NOT changed (ImportBatch
+ * .shopNotChangedRows, services/imports.ts). The batch page shows that notice
+ * until the Data Steward acknowledges it — after a refresh, a reload or on any
+ * later visit — and this records the acknowledgement: how many rows, when and
+ * who on the batch, and an AuditLog UPDATE row on the batch.
+ *
+ * `rows` is the total the notice showed. Rows a later promote of the batch adds
+ * (a fixed row loaded afterwards) are not covered by it: the notice comes back
+ * for them. A second tap on the same notice changes nothing and writes no
+ * audit row. Refused while a promote is running on the batch (its count is
+ * still rising). Steward only, like every action on the batch page.
+ */
+export async function acknowledgeShopsNotChangedAction(
+  formData: FormData
+): SafeAction<{ acknowledged: number; total: number }> {
+  return runAction(() => acknowledgeShopsNotChangedCore(formData));
+}
+
+async function acknowledgeShopsNotChangedCore(formData: FormData): Promise<{ acknowledged: number; total: number }> {
+  const me = await requireActor();
+  if (me.role !== Role.STEWARD) {
+    throw new ForbiddenError('Only the Data Steward can acknowledge this notice.');
+  }
+  const batchId = String(formData.get('batchId') ?? '');
+  if (!batchId) throw new ValidationError({ _form: 'Batch required.' });
+  const seen = Number(String(formData.get('rows') ?? ''));
+  if (!Number.isInteger(seen) || seen < 1) {
+    throw new ValidationError({ _form: 'Say how many rows the notice showed.' });
+  }
+  const env = await getAuditEnvelope(me.id);
+  const out = await withChangeContext(
+    prisma,
+    { actorId: me.id, source: src.importFix(batchId, 'shops-not-changed') },
+    async (tx) => {
+      const [batch] = await tx.$queryRaw<
+        Array<{ id: string; status: string; promoteLeaseUntil: Date | null; rows: number; acked: number }>
+      >`
+        SELECT "id", "status"::text AS "status", "promoteLeaseUntil",
+               "shopNotChangedRows" AS "rows", "shopNotChangedAckRows" AS "acked"
+          FROM "ImportBatch" WHERE "id" = ${batchId} FOR UPDATE`;
+      if (!batch) throw new NotFoundError('Import batch not found.');
+      if (batch.status === 'PROMOTING' && batch.promoteLeaseUntil && batch.promoteLeaseUntil > new Date()) {
+        throw new ConflictError(
+          'BATCH_PROMOTING',
+          'This batch is being promoted right now — wait for it to finish, then acknowledge the notice.'
+        );
+      }
+      if (seen > batch.rows) {
+        throw new ValidationError({ _form: 'This page is out of date — reload it and read the notice again.' });
+      }
+      // Already acknowledged (a second tap, or another tab): nothing to record.
+      if (seen <= batch.acked) return { acknowledged: 0, total: batch.rows };
+      await tx.importBatch.update({
+        where: { id: batch.id },
+        data: { shopNotChangedAckRows: seen, shopNotChangedAckAt: new Date(), shopNotChangedAckById: me.id },
+      });
+      await writeAudit(tx, env, {
+        action: 'UPDATE',
+        entityType: 'ImportBatch',
+        entityId: batch.id,
+        before: { shopNotChangedAckRows: batch.acked } as Prisma.InputJsonValue,
+        after: {
+          shopNotChangedAckRows: seen,
+          shopNotChangedRows: batch.rows,
+          acknowledged: seen - batch.acked,
+        } as Prisma.InputJsonValue,
+        reason: `Rows loaded with their shop NOT changed acknowledged by the Data Steward: ${seen - batch.acked}`,
+      });
+      return { acknowledged: seen - batch.acked, total: batch.rows };
+    },
+    { timeout: 20_000, maxWait: 10_000 }
+  );
+  done(batchId);
+  return out;
+}
+
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 async function audit(

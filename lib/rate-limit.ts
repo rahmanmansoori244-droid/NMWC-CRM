@@ -27,10 +27,36 @@ export type RateLimitConfig = {
   refillPerSec: number;
 };
 
+/**
+ * What the change-password form says when its guess limit could not be checked
+ * (the store did not answer). Nothing was checked or changed.
+ */
+export const PASSWORD_CHANGE_CHECK_UNAVAILABLE =
+  'Your password could not be checked just now, so nothing was changed. Please try again in a minute.';
+
+/**
+ * The kind of a limiter key, for logs: never the key itself, which holds the
+ * typed username (login:user:<name>) or the client's IP (login:ip:<ip>), both
+ * classed as personal data (lib/compliance/pii-classification.ts). Code review
+ * 2026-11-10, third round; the same idea as lib/purge-summary.ts rateLimitKind.
+ */
+export function rateLimitKeyKind(key: string): 'login:user' | 'login:ip' | 'passwordreset' | 'pwchange:user' | 'other' {
+  if (key.startsWith('login:user:')) return 'login:user';
+  if (key.startsWith('login:ip:')) return 'login:ip';
+  if (key.startsWith('passwordreset')) return 'passwordreset';
+  if (key.startsWith(PASSWORD_CHANGE_KEY_PREFIX)) return 'pwchange:user';
+  return 'other';
+}
+
+/**
+ * `unavailable` is set only on a fail-closed refusal: the durable store could
+ * not be reached, so no count was made. A caller can then say so, instead of
+ * "too many attempts" (code review 2026-11-10, finding 22, second round).
+ */
 export async function checkLimit(
   key: string,
   cfg: RateLimitConfig
-): Promise<{ ok: boolean; retryAfterSec: number }> {
+): Promise<{ ok: boolean; retryAfterSec: number; unavailable?: true }> {
   const forceMemory = process.env.RATE_LIMIT_BACKEND === 'memory';
   if (forceMemory || !process.env.DATABASE_URL) {
     return checkLimitMemory(key, cfg);
@@ -49,7 +75,10 @@ export async function checkLimit(
       key.startsWith('passwordreset:') ||
       key.startsWith(PASSWORD_CHANGE_KEY_PREFIX);
     if (isSecurityCritical) {
-      return { ok: false, retryAfterSec: 30 };
+      // Logged at the level a failed refund is: the store being down is not a
+      // guess count. Third round: the key's kind only, never the key.
+      logger.warn({ err: String(err), keyKind: rateLimitKeyKind(key) }, 'rate-limit.store.unavailable');
+      return { ok: false, retryAfterSec: 30, unavailable: true };
     }
     void err;
     return checkLimitMemory(key, cfg);

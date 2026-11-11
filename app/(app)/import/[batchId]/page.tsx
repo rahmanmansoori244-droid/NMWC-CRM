@@ -10,6 +10,7 @@ import { notReadNote, reportHeadings } from '@/lib/import-headings';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { PromoteButton } from './PromoteButton';
 import { DiscardBatch } from './DiscardBatch';
+import { ShopsNotChangedNotice } from './ShopsNotChangedNotice';
 import {
   DISCARDED_BATCH_MESSAGE,
   batchAgeText,
@@ -210,6 +211,16 @@ export default async function ImportBatchPage({
         )?.after as { timeLimit?: boolean; done?: string; passwordsSet?: string; notProcessed?: number } | null)
       : null;
   const timeLimited = accountSummary?.timeLimit === true ? accountSummary : null;
+  // Code review 2026-11-10, finding 28 (second round): rows a promote of this
+  // batch loaded with their shop NOT changed, not yet acknowledged. Read from the
+  // batch, so the notice survives the refresh that ends the load, a reload and a
+  // later visit, until the Data Steward acknowledges it. Not while a promote is
+  // running (its count is still rising; the action refuses then too).
+  const shopsNotChanged =
+    batch.kind === 'CUSTOMER' && !leaseHeld ? batch.shopNotChangedRows - batch.shopNotChangedAckRows : 0;
+  // The Promote button stays mounted on a PROMOTED batch, so the result of the
+  // load that just finished survives that refresh (finding 28, second round).
+  const finished = batch.status === 'PROMOTED';
 
   return (
     <main>
@@ -217,7 +228,7 @@ export default async function ImportBatchPage({
         title={batch.filename}
         subtitle={`${batch.kind} import · ${batch.totalRows} rows · ${batch.status}`}
         actions={
-          batch.kind === 'CUSTOMER' && promotable ? (
+          batch.kind === 'CUSTOMER' && (promotable || finished) ? (
             <div className="flex flex-wrap items-center justify-end gap-2">
               {!tooOld && (
                 <PromoteButton
@@ -226,10 +237,11 @@ export default async function ImportBatchPage({
                   resume={batch.status === 'PROMOTING' || batch.status === 'FAILED'}
                   leaseHeld={leaseHeld}
                   canSetOverwrite={canSetOverwrite}
+                  finished={finished}
                 />
               )}
               {/* Finding 6: the Steward alone sees this page; the action refuses anyone else. */}
-              {!leaseHeld && (
+              {promotable && !leaseHeld && (
                 <DiscardBatch
                   batchId={batch.id}
                   waiting={remainingClean}
@@ -240,6 +252,9 @@ export default async function ImportBatchPage({
           ) : null
         }
       />
+      {shopsNotChanged > 0 && (
+        <ShopsNotChangedNotice batchId={batch.id} rows={shopsNotChanged} total={batch.shopNotChangedRows} />
+      )}
       {discarded && (
         <div
           role="status"

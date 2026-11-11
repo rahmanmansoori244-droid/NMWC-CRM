@@ -33,7 +33,13 @@ import { REACTIVATION_STATE_CHANGED_MESSAGE, assertStatusEvidence } from '@/lib/
 import { closeRequestChain, freezeChain, reactivationChain, stepDeadline } from '@/lib/approval-chains';
 import { STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN, stageSnapshot } from '@/lib/working-hours';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
-import { REACTIVATION_DECISION_WORDS, alreadyDecidedRefusal, notPendingMessage } from '@/lib/already-decided';
+import {
+  LostClaimError,
+  REACTIVATION_DECISION_WORDS,
+  alreadyDecidedRefusal,
+  answerLostClaim,
+  notPendingMessage,
+} from '@/lib/already-decided';
 import {
   answerIfLanded,
   findReceipt,
@@ -131,6 +137,24 @@ async function reactivationNotPending(
   if (answer) throw answer;
   const message = notPendingMessage(edit.state);
   throw new ValidationError({ editId: message }, message);
+}
+
+/**
+ * Code review 2026-11-10, finding 21, second round: the claim of a Manager's
+ * second request (a double tap) lost to his own first one. He reads "Your
+ * decision already arrived"; a claim lost to a colleague keeps its words
+ * (lib/already-decided.ts answerLostClaim). The claim itself is unchanged.
+ */
+function ownReactivationClaim<T>(
+  me: { id: string },
+  edit: Pick<CustomerEdit, 'id' | 'approvalChain'>,
+  run: () => Promise<T>
+): Promise<T> {
+  return answerLostClaim(
+    prisma,
+    { editId: edit.id, viewerId: me.id, visit: null, approvalChain: edit.approvalChain, words: REACTIVATION_DECISION_WORDS },
+    run
+  );
 }
 
 /**
@@ -630,7 +654,7 @@ async function approveReactivationCore(formData: FormData) {
   // (lib/request-reasons.ts requestReasonOf). Nothing is written to the request.
   const requestReason = requestReasonOf(edit);
 
-  await withChangeContext(prisma, { actorId: me.id, source: src.edit(editId) }, async (tx) => {
+  await ownReactivationClaim(me, edit, () => withChangeContext(prisma, { actorId: me.id, source: src.edit(editId) }, async (tx) => {
     // QA-C12: claim the edit atomically FIRST (PROD-001 pattern, mirroring
     // services/edits.ts approveEditCore). The pre-tx state read above is a fast
     // reject; this is the authoritative guard. Two Managers (or a double-click)
@@ -648,7 +672,7 @@ async function approveReactivationCore(formData: FormData) {
       },
     });
     if (claim.count === 0) {
-      throw new ConflictError(
+      throw new LostClaimError(
         'NOT_PENDING',
         'This reactivation was just decided by another reviewer. Refresh to see the current state.',
         reactivationConflict(me.id, editId, 'reactivation.approve')
@@ -786,7 +810,7 @@ async function approveReactivationCore(formData: FormData) {
       editId,
       customerId: edit.customerId ?? undefined,
     });
-  });
+  }));
 
   logger.info({ editId, by: me.id }, 'reactivation.approve');
   revalidatePath('/reactivations');
@@ -845,7 +869,7 @@ async function rejectReactivationCore(formData: FormData) {
   // already rejected, with no REJECT row in the audit ledger. The envelope is
   // built before the transaction opens (DG-06).
   const env = await getAuditEnvelope(me.id);
-  await withChangeContext(prisma, { actorId: me.id, source: src.edit(editId) }, async (tx) => {
+  await ownReactivationClaim(me, edit, () => withChangeContext(prisma, { actorId: me.id, source: src.edit(editId) }, async (tx) => {
     // QA-C13: atomic claim (PROD-001) so a reject racing a concurrent approve/reject
     // can't double-decide — the loser aborts before writing an audit row.
     // Launch fix (2026-10-07): "Keep closed" is final, so it ends REJECTED, not
@@ -865,7 +889,7 @@ async function rejectReactivationCore(formData: FormData) {
       },
     });
     if (claim.count === 0) {
-      throw new ConflictError(
+      throw new LostClaimError(
         'NOT_PENDING',
         'This reactivation was just decided by another reviewer. Refresh to see the current state.',
         reactivationConflict(me.id, editId, 'reactivation.reject')
@@ -892,6 +916,6 @@ async function rejectReactivationCore(formData: FormData) {
       editId,
       customerId: edit.customerId ?? undefined,
     });
-  });
+  }));
   revalidatePath('/reactivations');
 }

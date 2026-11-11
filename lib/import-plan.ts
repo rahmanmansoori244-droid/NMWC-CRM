@@ -40,6 +40,7 @@ import {
 import { differingCells, sameStoredValue } from './import-lineage';
 import { composeBranchCode } from './import-row-fix';
 import { normalizeTemixCode } from './temix-code';
+import { ROUTE_NOT_APPLIED } from './import-shop-notice';
 
 // ── What a row gives a shop ─────────────────────────────────────────────────
 
@@ -110,17 +111,8 @@ export function differingBranchCells(
 
 // ── A shop the row did not change (code review 2026-11-10, finding 28) ──────
 
-/**
- * What can change a shop's route TODAY, in the words the import and the batch
- * page use. Checked against the code on 2026-11-10: no edit form has a route
- * field (lib/edit-values.ts BRANCH_EDIT_FIELDS), no screen writes Branch.routeId,
- * and the import writes it only on the full lane (a row of the shop that does not
- * carry the customer's Temix code) or for a held-back or rejected row the Steward
- * fixed on its batch page. Promises nothing that is not built. The owner is asked
- * to approve the wording.
- */
-export const ROUTE_CHANGE_TODAY =
-  "Today a shop's route changes only through a customer-import row for that shop that does not carry the customer's Temix code (temix_code left blank), or through a held-back or rejected row of that shop fixed on its batch page; no screen in the CRM changes it.";
+// What the Steward is told when a row's route was not applied: ROUTE_NOT_APPLIED
+// (lib/import-shop-notice.ts, also used by the batch page's end-of-load notice).
 
 /**
  * The note on a row of a customer linked to Temix that the import loaded
@@ -134,7 +126,7 @@ export function shopNotChangedNote(branchCode: string, differs: readonly string[
   const others = differs.filter((d) => d !== 'route' && d !== 'region');
   const parts = [`branch ${branchCode}: loaded, shop NOT changed — a row that carries the customer's Temix code never changes an existing shop.`];
   if (route) {
-    parts.push(`The route in this row was NOT applied: the shop stays on its current route. ${ROUTE_CHANGE_TODAY}`);
+    parts.push(ROUTE_NOT_APPLIED);
   }
   if (others.length > 0) {
     const one = others.length === 1;
@@ -955,8 +947,8 @@ export function summaryLines(s: PromoteSummary, overwrite: boolean): SummaryLine
     lines.push({
       tone: 'warn',
       // Code review 2026-11-10, finding 28: the route said plainly, and what
-      // can change one today (ROUTE_CHANGE_TODAY).
-      text: `Loaded, shop NOT changed: ${n(s.crm.linkedShops)} shop(s) of ${n(s.crm.linkedCustomers)} customer(s) differ from the record and are not changed by a row that carries the customer's Temix code (${n(s.crm.linkedRouteNotMoved)} of them a different route, and that route is NOT applied)${s.crm.linkedNotAdded > 0 ? `; ${n(s.crm.linkedNotAdded)} shop(s) in the sheet are not in the CRM and are not added` : ''}.${s.crm.linkedRouteNotMoved > 0 ? ` ${ROUTE_CHANGE_TODAY}` : ''}`,
+      // happens to a route instead (ROUTE_NOT_APPLIED, second round).
+      text: `Loaded, shop NOT changed: ${n(s.crm.linkedShops)} shop(s) of ${n(s.crm.linkedCustomers)} customer(s) differ from the record and are not changed by a row that carries the customer's Temix code (${n(s.crm.linkedRouteNotMoved)} of them a different route, and that route is NOT applied)${s.crm.linkedNotAdded > 0 ? `; ${n(s.crm.linkedNotAdded)} shop(s) in the sheet are not in the CRM and are not added` : ''}.${s.crm.linkedRouteNotMoved > 0 ? ` ${ROUTE_NOT_APPLIED}` : ''}`,
     });
   }
   if (s.credit.rows > 0) {

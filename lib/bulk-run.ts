@@ -24,7 +24,8 @@
  *      wondering which half worked.
  */
 
-export type BulkFailure = { editId: string; code: string; message: string };
+/** `decided`: on ALREADY_DECIDED, the decision that stands (lib/errors.ts AlreadyDecidedError). */
+export type BulkFailure = { editId: string; code: string; message: string; decided?: string };
 
 export type BulkOutcome = {
   successes: string[];
@@ -33,7 +34,7 @@ export type BulkOutcome = {
   notAttempted: string[];
 };
 
-export type BulkItemResult = { ok: true } | { ok: false; code: string; message: string };
+export type BulkItemResult = { ok: true } | { ok: false; code: string; message: string; decided?: string };
 
 /**
  * The most requests one bulk approve or reject may carry. The server refuses a
@@ -75,11 +76,84 @@ export const TEMIX_CODE_BULK_REFUSED_MESSAGE =
  * Code review 2026-11-10, finding 21: a decision sent, and no answer came back (a
  * weak signal, a dropped connection). The server may have saved some or all of
  * it, so the screen must not say "failed" or "nothing was processed": it says
- * what is known. Shown by the bulk queue and the single-request page; a second
- * tap is safe either way, because the server answers "Your decision already
- * arrived" for a decision it already has (services/edits.ts).
+ * what is known. Shown by the bulk queue only. The single-request page
+ * (app/(app)/approvals/[id]/ApproveRejectActions.tsx) still shows the browser's
+ * own error in place (e.g. "Failed to fetch"); changing that is a separate
+ * decision. A second tap is safe on both, because the server answers "Your
+ * decision already arrived" for a decision it already has (services/edits.ts,
+ * lib/already-decided.ts — a second tap that loses the claim to the first
+ * included).
  */
 export const NO_ANSWER_MESSAGE = 'No answer — reload to see what was decided.';
+
+/**
+ * Code review 2026-11-10, finding 21, second round: in a batch sent again after
+ * "No answer", the requests whose decision had already arrived come back with
+ * this code (lib/already-decided.ts ALREADY_DECIDED_CODE; a unit test keeps
+ * the two equal — this module has no imports, so the client can share it).
+ * They did not fail: the approver's decision is in. The banner counts them
+ * apart, in these words, so "failed" means failed.
+ */
+export const BULK_ALREADY_DECIDED_CODE = 'ALREADY_DECIDED';
+export const ALREADY_DECIDED_BY_YOU = 'already decided by you';
+
+/**
+ * Third round: what a bulk batch asks for, as the decision ledger records it
+ * (EditApproval.decision). A request "already decided by you" counts as done
+ * only when the decision that stands is this one.
+ */
+export type BulkAsked = 'APPROVED' | 'REJECTED';
+export const ALREADY_DECIDED_OTHERWISE = 'already decided otherwise by you';
+
+/** The line said before each request whose standing decision is not the batch's. */
+export function notByThisBatch(asked: BulkAsked): string {
+  return asked === 'APPROVED' ? 'Not approved by this batch.' : 'Not rejected by this batch.';
+}
+
+/** How many lines of each kind the banner lists before it says how many more. */
+export const BULK_LINES_SHOWN = 5;
+
+/**
+ * A batch's failures, split: decisions that had already arrived and are what
+ * this batch asked for (`arrived`), decisions that had already arrived but are
+ * NOT what it asked for (`otherwise`: say he had sent it back, and now
+ * bulk-approved it), and real failures. Third round: an already-decided request
+ * whose standing decision is not known is put with `otherwise`, so the banner is
+ * green only when everything the batch asked for is what stands.
+ */
+export function splitBulkFailures<F extends { code: string; decided?: string }>(
+  failures: F[],
+  asked: BulkAsked
+): { arrived: F[]; otherwise: F[]; failed: F[] } {
+  const already = (f: F) => f.code === BULK_ALREADY_DECIDED_CODE;
+  return {
+    arrived: failures.filter((f) => already(f) && f.decided === asked),
+    otherwise: failures.filter((f) => already(f) && f.decided !== asked),
+    failed: failures.filter((f) => !already(f)),
+  };
+}
+
+/**
+ * The banner's first line: "2 processed, 3 already decided by you, 1 already
+ * decided otherwise by you, 1 failed, 4 not attempted — run it again to finish."
+ */
+export function bulkHeadline(counts: {
+  processed: number;
+  arrived: number;
+  otherwise?: number;
+  failed: number;
+  notAttempted: number;
+}): string {
+  const otherwise = counts.otherwise ?? 0;
+  return (
+    `${counts.processed} processed` +
+    (counts.arrived > 0 ? `, ${counts.arrived} ${ALREADY_DECIDED_BY_YOU}` : '') +
+    (otherwise > 0 ? `, ${otherwise} ${ALREADY_DECIDED_OTHERWISE}` : '') +
+    (counts.failed > 0 ? `, ${counts.failed} failed` : '') +
+    (counts.notAttempted > 0 ? `, ${counts.notAttempted} not attempted — run it again to finish` : '') +
+    '.'
+  );
+}
 
 /** Set by bulkApproveEditsAction on each item it hands to approveEditAction. */
 export const BULK_RUN_FIELD = 'viaBulk';
@@ -126,7 +200,13 @@ export async function runBulk(
     try {
       const res = await perItem(id);
       if (res.ok) successes.push(id);
-      else failures.push({ editId: id, code: res.code, message: res.message });
+      else
+        failures.push({
+          editId: id,
+          code: res.code,
+          message: res.message,
+          ...(typeof res.decided === 'string' ? { decided: res.decided } : {}),
+        });
     } catch (err) {
       opts.onItemError?.(id, err);
       failures.push({

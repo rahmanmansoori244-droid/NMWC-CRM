@@ -19,13 +19,15 @@ import {
   ALREADY_DECIDED_CODE,
   CLOSE_REQUEST_DECISION_WORDS,
   REACTIVATION_DECISION_WORDS,
+  LostClaimError,
   REQUEST_DECISION_WORDS,
   alreadyDecidedRefusal,
+  answerLostClaim,
   colleagueDecidedMessage,
   notPendingMessage,
   yourDecisionArrivedMessage,
 } from '@/lib/already-decided';
-import { ConflictError } from '@/lib/errors';
+import { AlreadyDecidedError, ConflictError, runAction } from '@/lib/errors';
 import { freezeChain, reactivationChain, resolveChain } from '@/lib/approval-chains';
 
 const CHAIN = freezeChain(resolveChain('CREATE', 'CASH'));
@@ -162,6 +164,26 @@ describe('alreadyDecidedRefusal', () => {
   });
 });
 
+describe('third round: "Your decision already arrived" carries the decision that stands', () => {
+  it.each(['APPROVED', 'REJECTED', 'FORM_UPLOADED'])('%s: on the error, and on the action result as `decided`', async (d) => {
+    const { db } = dbWith(decision({ actorId: 'm1', decision: d }));
+    const err = await alreadyDecidedRefusal(db, base({ viewerId: 'm1' }));
+    expect(err).toBeInstanceOf(AlreadyDecidedError);
+    expect((err as AlreadyDecidedError).decided).toBe(d);
+    const res = await runAction(async () => {
+      throw err;
+    });
+    expect(res).toEqual({ ok: false, code: ALREADY_DECIDED_CODE, message: err!.message, decided: d });
+  });
+
+  it("a colleague's decision is not one: no `decided` on its result", async () => {
+    const { db } = dbWith(decision({ actorId: 'm1', decision: 'REJECTED' }));
+    const err = await alreadyDecidedRefusal(db, base({ viewerId: 'm2' }));
+    expect(err).not.toBeInstanceOf(AlreadyDecidedError);
+    expect(err!.code).toBe('NOT_PENDING');
+  });
+});
+
 describe('notPendingMessage: where a request stands, never its enum', () => {
   it.each(Object.values(EditState))('%s', (state) => {
     const m = notPendingMessage(state);
@@ -185,5 +207,60 @@ describe('the sentences', () => {
       'Already decided by a colleague: A. N. Other (Accountant) approved this request at the Accountant step. Nothing more was saved. Reload to see where it is now.'
     );
     expect(colleagueDecidedMessage('approved this request', 'SUPERVISOR', { fullName: 'X', role: null })).toContain('X approved');
+  });
+});
+
+describe('answerLostClaim (finding 21, second round): a claim lost to his own earlier request', () => {
+  const ANOTHER = 'This edit was just decided by another reviewer. Refresh to see the current state.';
+  const lostClaim = () => new LostClaimError('NOT_PENDING', ANOTHER, LOST);
+  const args = { editId: 'e1', viewerId: 'm1', visit: { cycle: 1, stepIndex: 0, stageEnteredAt: STAGE }, approvalChain: CHAIN, words: REQUEST_DECISION_WORDS };
+
+  it('his own decision on that visit (a double tap, a re-sent batch): "Your decision already arrived", not a lost race', async () => {
+    const { db, findMany } = dbWith(decision({ actorId: 'm1' }));
+    const err = await answerLostClaim(db, args, async () => {
+      throw lostClaim();
+    }).catch((e: unknown) => e as ConflictError);
+    expect(err.code).toBe(ALREADY_DECIDED_CODE);
+    expect(err.message).toBe(
+      'Your decision already arrived: you approved this request at the Supervisor step. Nothing more was saved. Reload to see where it is now.'
+    );
+    expect(err.conflict).toBeUndefined();
+    // The visit the page showed, read once.
+    expect(findMany).toHaveBeenCalledTimes(1);
+    expect(findMany.mock.calls[0]![0].where).toEqual({ editId: 'e1', cycle: 1, stepIndex: 0, stageEnteredAt: STAGE });
+  });
+
+  it("a colleague's decision keeps the words it had, and stays a recorded lost race — nobody is named here", async () => {
+    const { db } = dbWith(decision({ actorId: 'm2' }), []);
+    const original = lostClaim();
+    const err = await answerLostClaim(db, args, async () => {
+      throw original;
+    }).catch((e: unknown) => e);
+    expect(err).toBe(original);
+    expect((err as ConflictError).message).toBe(ANOTHER);
+    expect((err as ConflictError).conflict).toEqual(LOST);
+  });
+
+  it('nothing recorded for that visit, or the ledger cannot be read: the original refusal', async () => {
+    const original = lostClaim();
+    let { db } = dbWith(null);
+    expect(await answerLostClaim(db, args, async () => Promise.reject(original)).catch((e: unknown) => e)).toBe(original);
+    db = { editApproval: { findMany: vi.fn(async () => Promise.reject(new Error('db down'))) } } as never;
+    expect(await answerLostClaim(db, args, async () => Promise.reject(original)).catch((e: unknown) => e)).toBe(original);
+  });
+
+  it('any other error passes through untouched, without reading anything; a success is returned as is', async () => {
+    const { db, findMany } = dbWith(decision({ actorId: 'm1' }));
+    const other = new ConflictError('NOT_PENDING', 'This request changed since you opened it.', LOST);
+    expect(await answerLostClaim(db, args, async () => Promise.reject(other)).catch((e: unknown) => e)).toBe(other);
+    expect(await answerLostClaim(db, args, async () => 42)).toBe(42);
+    expect(findMany).not.toHaveBeenCalled();
+  });
+
+  it('a LostClaimError is still the ConflictError it was: same code, same words, same record', () => {
+    const e = lostClaim();
+    expect(e).toBeInstanceOf(ConflictError);
+    expect(e.code).toBe('NOT_PENDING');
+    expect(e.httpStatus).toBe(409);
   });
 });

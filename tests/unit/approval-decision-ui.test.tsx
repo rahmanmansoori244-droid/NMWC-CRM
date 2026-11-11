@@ -75,7 +75,7 @@ import {
   type ApproveOutcome,
   type RejectOutcome,
 } from '@/app/(app)/approvals/[id]/ApproveRejectActions';
-import { BulkApprovalQueue, type ApprovalQueueItem } from '@/app/(app)/approvals/BulkApprovalQueue';
+import { BulkApprovalQueue, BulkOutcomeBanner, type ApprovalQueueItem } from '@/app/(app)/approvals/BulkApprovalQueue';
 import { resolveRejectTarget } from '@/lib/approval-chains';
 
 const TOKEN = '{"v":1,"cycle":2,"step":1,"stage":1758618900789,"limit":"10000.000","days":90}';
@@ -853,6 +853,101 @@ describe('the bulk queue', () => {
       fireEvent.change(screen.getByPlaceholderText(/Be specific/), { target: { value: 'Photos are blurry, retake.' } });
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Reject 1' }));
       expect((await screen.findByRole('alert')).textContent).toBe(NO_ANSWER_MESSAGE);
+    });
+  });
+
+  describe('finding 21, second round: a batch sent again after "No answer"', () => {
+    const arrived = (id: string) => ({
+      editId: id,
+      code: 'ALREADY_DECIDED',
+      message: `Your decision already arrived: you approved this request at the Supervisor step. Nothing more was saved. Reload to see where it is now.`,
+      decided: 'APPROVED',
+    });
+    // Third round: he had sent it back from another tab, and now bulk-approves it.
+    const sentBack = (id: string) => ({
+      editId: id,
+      code: 'ALREADY_DECIDED',
+      message: `Your decision already arrived: you sent this request back at the Supervisor step. Nothing more was saved. Reload to see where it is now.`,
+      decided: 'REJECTED',
+    });
+    const send = () => {
+      render(<BulkApprovalQueue items={ITEMS} />);
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
+      fireEvent.click(screen.getByRole('button', { name: '✓ Approve 2' }));
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
+    };
+
+    it('every one had already arrived: counted as already decided, not failed, and the batch is done', async () => {
+      h.bulkApprove.mockResolvedValue({ ok: true, data: { successes: [], failures: [arrived('c2'), arrived('u1')], notAttempted: [] } });
+      send();
+      const status = await screen.findByRole('status');
+      expect(status.querySelector('p')!.textContent).toBe('0 processed, 2 already decided by you.');
+      expect(status.textContent).not.toMatch(/failed/);
+      expect(within(status).getByText(`u1: ${arrived('u1').message}`)).toBeTruthy();
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    it('mixed with a real failure: each counted apart, the failure first, and the banner is an alert', async () => {
+      h.bulkApprove.mockResolvedValue({
+        ok: true,
+        data: { successes: [], failures: [arrived('c2'), { editId: 'u1', code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE }], notAttempted: [] },
+      });
+      send();
+      const alert = await screen.findByRole('alert');
+      expect(alert.querySelector('p')!.textContent).toBe('0 processed, 1 already decided by you, 1 failed.');
+      const lines = within(alert).getAllByRole('listitem').map((li) => li.textContent);
+      expect(lines).toEqual([`u1: ${STALE_VIEW_MESSAGE}`, `c2: ${arrived('c2').message}`]);
+    });
+
+    it('past five of a kind, the banner says how many more of that kind', () => {
+      const ids = Array.from({ length: 7 }, (_, i) => `arrived-${i}`);
+      const fails = Array.from({ length: 6 }, (_, i) => ({ editId: `failed-${i}`, code: 'STALE_VIEW', message: 'Changed.' }));
+      render(
+        <BulkOutcomeBanner
+          outcome={{ kind: 'answered', asked: 'APPROVED', successes: 0, failures: [...ids.map(arrived), ...fails], notAttempted: 0 }}
+        />
+      );
+      const alert = screen.getByRole('alert');
+      expect(alert.querySelector('p')!.textContent).toBe('0 processed, 7 already decided by you, 6 failed.');
+      expect(within(alert).getByText('… and 1 more failed.')).toBeTruthy();
+      expect(within(alert).getByText('… and 2 more already decided by you.')).toBeTruthy();
+      expect(within(alert).getAllByRole('listitem')).toHaveLength(5 + 1 + 5 + 1);
+    });
+
+    it('third round: a decision that arrived but is NOT the one this batch sent is not success — an alert, saying what stands', async () => {
+      h.bulkApprove.mockResolvedValue({ ok: true, data: { successes: [], failures: [sentBack('c2'), arrived('u1')], notAttempted: [] } });
+      send();
+      const alert = await screen.findByRole('alert');
+      expect(screen.queryByRole('status')).toBeNull();
+      expect(alert.className).toContain('bg-amber-50');
+      expect(alert.querySelector('p')!.textContent).toBe('0 processed, 1 already decided by you, 1 already decided otherwise by you.');
+      const lines = within(alert).getAllByRole('listitem').map((li) => li.textContent);
+      expect(lines).toEqual([`c2: Not approved by this batch. ${sentBack('c2').message}`, `u1: ${arrived('u1').message}`]);
+    });
+
+    it('third round: a bulk reject whose request he had approved earlier is not success either', async () => {
+      h.bulkReject.mockResolvedValue({ ok: true, data: { successes: [], failures: [arrived('c2')], notAttempted: [] } });
+      render(<BulkApprovalQueue items={ITEMS} />);
+      fireEvent.click(screen.getByLabelText('Select edit for Shop c2'));
+      fireEvent.click(screen.getByRole('button', { name: '✗ Reject 1' }));
+      fireEvent.change(screen.getByPlaceholderText(/Be specific/), { target: { value: 'Photos are blurry, retake.' } });
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Reject 1' }));
+      const alert = await screen.findByRole('alert');
+      expect(alert.querySelector('p')!.textContent).toBe('0 processed, 1 already decided otherwise by you.');
+      expect(within(alert).getByText(`c2: Not rejected by this batch. ${arrived('c2').message}`)).toBeTruthy();
+    });
+
+    it('third round: a bulk reject whose send-back had already arrived is done, as before', () => {
+      render(
+        <BulkOutcomeBanner outcome={{ kind: 'answered', asked: 'REJECTED', successes: 1, failures: [sentBack('c2')], notAttempted: 0 }} />
+      );
+      expect(screen.getByRole('status').querySelector('p')!.textContent).toBe('1 processed, 1 already decided by you.');
+    });
+
+    it('third round: an already-decided answer that does not say what stands is not shown as success', () => {
+      const { decided: _decided, ...unknown } = arrived('c2');
+      render(<BulkOutcomeBanner outcome={{ kind: 'answered', asked: 'APPROVED', successes: 0, failures: [unknown], notAttempted: 0 }} />);
+      expect(screen.getByRole('alert').querySelector('p')!.textContent).toBe('0 processed, 1 already decided otherwise by you.');
     });
   });
 

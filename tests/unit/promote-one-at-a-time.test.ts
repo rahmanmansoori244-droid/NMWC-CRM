@@ -409,6 +409,34 @@ describe('finding 6: an old, discarded or overtaken batch is not loaded', () => 
     await expect(promoteWith({ leaseToken: 'stew:tok' })).rejects.toThrow('the promote went past the refusal');
   });
 
+  // Second round (finding 6): "continuing" is the run's own token AND a live
+  // lease. A tab whose lease lapsed is a resume like any other: another batch may
+  // have promoted meanwhile, so the age limit and the newer-loads check apply.
+  it('a lapsed lease, even with the run’s own token, is asked the age limit again', async () => {
+    table = [batch({ status: 'PROMOTING', promoteLeaseBy: 'stew:tok', promoteLeaseUntil: new Date(Date.now() - 1_000), uploadedAt: new Date(Date.now() - 8 * DAY) })];
+    const res = await promoteWith({ leaseToken: 'stew:tok' });
+    expect(res.ok).toBe(false);
+    expect(message(res)).toMatch(/^This batch was uploaded 8 days ago, and a staged batch older than 7 days/);
+    expect(writes).toEqual([]);
+  });
+
+  it('a lapsed lease, even with the run’s own token, cannot load older values over a newer upload', async () => {
+    table = [batch({ status: 'PROMOTING', promoteLeaseBy: 'stew:tok', promoteLeaseUntil: new Date(Date.now() - 1_000) })];
+    const q = vi.fn(async (strings: TemplateStringsArray) =>
+      /nr\."state" = 'PROMOTED'/.test(strings.join('?')) ? [{ code: 'C1', filename: 'newer.xlsx', rowNumber: 4 }] : []
+    );
+    (h.db as { $queryRaw: unknown }).$queryRaw = q;
+    const res = await promoteWith({ leaseToken: 'stew:tok' });
+    expect(res.ok).toBe(false);
+    expect(message(res)).toMatch(/^1 customer\(s\) in this batch \(for example C1\) were loaded since from a newer upload \("newer\.xlsx"\)/);
+    expect(writes).toEqual([]);
+    // The same token with its lease still live is the run continuing: not asked again.
+    table = [batch({ status: 'PROMOTING', promoteLeaseBy: 'stew:tok', promoteLeaseUntil: live() })];
+    q.mockClear();
+    await expect(promoteWith({ leaseToken: 'stew:tok' })).rejects.toThrow('the promote went past the refusal');
+    expect(q.mock.calls.some(([strings]) => /nr\."state" = 'PROMOTED'/.test((strings as TemplateStringsArray).join('?')))).toBe(false);
+  });
+
   it('customers a newer upload already loaded: refused before the claim unless the Steward confirmed leaving them out', async () => {
     table = [batch({})];
     (h.db as { $queryRaw: unknown }).$queryRaw = vi.fn(async () => [

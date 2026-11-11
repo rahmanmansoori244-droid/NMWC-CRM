@@ -203,7 +203,7 @@ jobs:
           # Absolute path, as the old workflow did: Ubuntu pre-installs a v16
           # client and it wins on PATH, and v16 refuses to talk to a v17 server.
           /usr/lib/postgresql/17/bin/psql "$PGURL" -At -f scripts/ops/backup-manifest.sql > "${STAMP}.manifest.json" \
-            || { echo "::warning::manifest query failed — continuing without row counts; the restore verifier will fall back to its schema checks"; rm -f "${STAMP}.manifest.json"; }
+            || { echo "::warning::manifest query failed — continuing without row counts; the restore verifier will fall back to its schema checks. This alone does not fail the run: the freshness check after the upload asks the database for its newest record with its own query (scripts/ops/backup-newest-write.sql)."; rm -f "${STAMP}.manifest.json"; }
           if [ -s "${STAMP}.manifest.json" ]; then
             jq -r '"source: \(.tableCount) tables, \(.triggerCount) triggers, newest audit \(.newestAuditAt // "none"), newest record \(.newestWriteAt // "none")"' "${STAMP}.manifest.json"
             # An UNLOGGED table would have its DATA silently omitted by the dump.
@@ -352,18 +352,40 @@ jobs:
       # the age without a red run. After the upload (nothing is lost) and before the
       # dead-man report, which then says the backup failed. The rule and why it does
       # not cry wolf on a quiet database: scripts/ops/backup-freshness.sh.
+      # Second round: the age comes from its own small query, not only from the
+      # manifest, so a failed manifest (a row count) stays the warning it says it
+      # is and does not turn a backup that was taken red. The manifest's value is
+      # the fallback; with neither, a scheduled run still fails (it cannot show the
+      # database is live).
+      # Third round: that query runs AFTER the dump and the upload, so its value is
+      # the newest record in this database at check time — the right measure for
+      # "is this the live database", but not a statement of what the dump holds (a
+      # sign-in or a heartbeat between the dump and the check is not in it). The
+      # summary says which it is (NEWEST_WRITE_FROM), and shows the manifest's
+      # value, taken BEFORE the dump, as what the backup holds at least.
       - name: Is this the database the app writes to? (newest record within a day)
         env:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           SINCE=''
-          if [ -s "${STAMP}.manifest.json" ]; then
-            SINCE="$(jq -r '.secondsSinceNewestWrite // empty' "${STAMP}.manifest.json")"
-            NEWEST="$(jq -r '.newestWriteAt // "none"' "${STAMP}.manifest.json")"
-            echo "NEWEST_WRITE_AT=${NEWEST}" >> "$GITHUB_ENV"
+          NEWEST=''
+          FROM=''
+          if ROW="$(/usr/lib/postgresql/17/bin/psql "$PGURL" -At -v ON_ERROR_STOP=1 -f scripts/ops/backup-newest-write.sql)"; then
+            SINCE="${ROW%%|*}"
+            NEWEST="${ROW#*|}"
+            FROM='checked after the upload'
+          else
+            echo "::warning::the newest-record query failed; using the manifest's value, if it has one"
+            if [ -s "${STAMP}.manifest.json" ]; then
+              SINCE="$(jq -r '.secondsSinceNewestWrite // empty' "${STAMP}.manifest.json")"
+              NEWEST="$(jq -r '.newestWriteAt // empty' "${STAMP}.manifest.json")"
+              FROM='from the manifest, taken before the dump'
+            fi
           fi
-          bash scripts/ops/backup-freshness.sh "$SINCE" "$EVENT_NAME"
+          echo "NEWEST_WRITE_AT=${NEWEST:-none}" >> "$GITHUB_ENV"
+          echo "NEWEST_WRITE_FROM=${FROM:-not known}" >> "$GITHUB_ENV"
+          bash scripts/ops/backup-freshness.sh "$SINCE" "$EVENT_NAME" "${FROM:-not known}"
 
       - name: Report the outcome to the app (dead man)
         if: always()
@@ -412,7 +434,15 @@ jobs:
             echo "- manifest: \`${BASE_KEY:-?}.manifest.json\`"
             echo "- size: ${BYTES:-?} bytes"
             echo "- encrypted: ${ENCRYPTED:-unknown}"
-            echo "- newest record in the dumped database (UTC): ${NEWEST_WRITE_AT:-unknown}"
+            # Third round: the freshness check's value is this database's newest
+            # record when it was checked, after the upload; the manifest's, taken
+            # before the dump, is the newest record the backup is sure to hold.
+            echo "- newest record in this database (UTC, ${NEWEST_WRITE_FROM:-not known}): ${NEWEST_WRITE_AT:-unknown}"
+            BEFORE=''
+            if [ -s "${STAMP:-none}.manifest.json" ]; then
+              BEFORE="$(jq -r '.newestWriteAt // empty' "${STAMP}.manifest.json" 2>/dev/null || true)"
+            fi
+            echo "- newest record before the dump (UTC, from the manifest; the backup holds at least this): ${BEFORE:-unknown}"
             echo "- job status: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"
 

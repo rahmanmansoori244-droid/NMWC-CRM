@@ -40,6 +40,7 @@
  */
 import type { Role } from '@prisma/client';
 import { nameKey } from './name-key';
+import { reservedUsernameRefusal } from './demo-accounts';
 
 /** How /users names each role (the create form and the Edit account dialog). */
 export const ROLE_LABELS: Record<Role, string> = {
@@ -74,6 +75,23 @@ export function compareCodes(a: string, b: string): number {
 /** The sign-in name of the salesman who works the route with this code. */
 export function routeSignInName(routeCode: string): string {
   return routeCode.trim().toLowerCase();
+}
+
+/**
+ * Code review 2026-11-10, finding 25, second round: the Steward's "sign in with
+ * the route's code" rename on Edit account goes through the same reserved-name
+ * check as /users create and the account import (lib/demo-accounts.ts). A route
+ * whose code lower-cases to a demo-account name (`admin`, `steward`, `viewer`,
+ * `manager.a`, `manager.b`, or one starting `salesman.` or `supervisor.`) would
+ * otherwise give the account a sign-in name that production refuses at every
+ * sign-in. Null when the name may be used, or is the account's name already
+ * (nothing is renamed then).
+ */
+export function routeSignInRefusal(routeCode: string, currentUsername: string): string | null {
+  const wanted = routeSignInName(routeCode);
+  if (wanted === currentUsername) return null;
+  if (!reservedUsernameRefusal(wanted)) return null;
+  return `Route code ${routeCode} would give the sign-in name ${wanted}, which is reserved for the old demo accounts and could never sign in. Untick it to keep ${currentUsername}.`;
 }
 
 /**

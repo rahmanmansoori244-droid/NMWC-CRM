@@ -163,6 +163,32 @@ describe.skipIf(!ENABLED)('finding 6: an old staged customer batch is not loaded
     expect(await batchOf(older)).toMatchObject({ status: 'PROMOTED', rejectedRows: 1 });
   });
 
+  // Second round: a run is "continuing" only while its lease is live. A tab
+  // whose lease lapsed (a weak signal, a long pause) while a newer upload was
+  // loaded comes back with its old token; it is asked the newer-loads question
+  // again, and nothing of the older batch is loaded over the newer values.
+  it('a run whose lease lapsed cannot load older values over a newer upload with its old token', async () => {
+    const older = await upload([
+      { cust_code: `${P}-L1`, cust_name: 'ZZ Lapsed Older', address: 'Way L1, Older' },
+      { cust_code: `${P}-L2`, cust_name: 'ZZ Lapsed Two', address: 'Way L2, Older' },
+    ]);
+    // Its run took the batch, then its tab went quiet and the lease ran out.
+    await prisma.importBatch.update({
+      where: { id: older },
+      data: { status: 'PROMOTING', promoteLeaseBy: `${steward}:tab`, promoteLeaseUntil: new Date(Date.now() - 60_000) },
+    });
+    const newer = await upload([{ cust_code: `${P}-L1`, cust_name: 'ZZ Lapsed Newer', address: 'Way L1, Newer' }]);
+    await promoteFully(imports, newer);
+    expect(await nameOf(`${P}-L1`)).toBe('ZZ Lapsed Newer');
+
+    const res = await promoteOnce(older, { leaseToken: `${steward}:tab` });
+    expect(res.ok).toBe(false);
+    expect(msg(res)).toMatch(/^1 customer\(s\) in this batch \(for example .+-L1\) were loaded since from a newer upload/);
+    expect(await nameOf(`${P}-L1`)).toBe('ZZ Lapsed Newer');
+    expect((await rowsOf(older)).map((r) => r.state)).toEqual(['CLEAN', 'CLEAN']);
+    expect(await batchOf(older)).toMatchObject({ status: 'PROMOTING', promoteLeaseBy: `${steward}:tab` });
+  });
+
   it('a batch staged more than 7 days ago is not promoted, and a fix cannot bring a row of it back', async () => {
     const id = await upload([
       { cust_code: `${P}-3`, cust_name: 'ZZ Three', address: 'Way 3, Old' },
@@ -254,5 +280,82 @@ describe.skipIf(!ENABLED)('finding 6: an old staged customer batch is not loaded
     expect(msg(await fixes.excludeImportRowsAction(ex))).toMatch(/^This batch was discarded/);
     // Discarding twice says what it is.
     expect(msg(await fixes.discardImportBatchAction(f))).toMatch(/^This batch was discarded/);
+  });
+
+  // Code review 2026-11-10, finding 28 (second round). The rows a promote loads
+  // with their shop NOT changed are counted on the batch as they commit — only
+  // the rows that name a shop of the customer whose details differ, or that the
+  // CRM does not have; not one naming an archived shop — and the batch page shows
+  // that count until the Data Steward acknowledges it, which is stored and audited.
+  it('rows loaded with their shop NOT changed: counted on the batch, and acknowledged once by the Steward', async () => {
+    const code = `${P}-9`;
+    const temix = `TZZ${tag}9`;
+    const first = await upload([
+      { cust_code: code, cust_name: 'ZZ Nine', address: 'Way 9, First' },
+      { cust_code: code, cust_name: 'ZZ Nine', branch_code: '02', address: 'Way 9, Second' },
+    ]);
+    await promoteFully(imports, first);
+    expect((await batchOf(first)).shopNotChangedRows).toBe(0);
+    const cust = await prisma.customer.update({ where: { nmwcCode: code }, data: { temixCode: temix } });
+    await prisma.branch.update({ where: { branchCode: `${code}-02` }, data: { deletedAt: new Date() } });
+
+    const refresh = await upload([
+      // The shop differs: loaded, shop NOT changed — counted.
+      { cust_code: code, cust_name: 'ZZ Nine', temix_code: temix, address: 'Way 9, Differs' },
+      // An archived shop: not revived, and not counted.
+      { cust_code: code, cust_name: 'ZZ Nine', temix_code: temix, branch_code: '02', address: 'Way 9, Second' },
+      // A shop the CRM does not have: not added — counted, as the review's tick counts it.
+      { cust_code: code, cust_name: 'ZZ Nine', temix_code: temix, branch_code: '03', address: 'Way 9, Third' },
+    ]);
+    await promoteFully(imports, refresh);
+    expect((await rowsOf(refresh)).map((r) => r.state)).toEqual(['PROMOTED', 'PROMOTED', 'PROMOTED']);
+    expect(await batchOf(refresh)).toMatchObject({
+      status: 'PROMOTED',
+      shopNotChangedRows: 2,
+      shopNotChangedAckRows: 0,
+      shopNotChangedAckAt: null,
+      shopNotChangedAckById: null,
+    });
+    expect(await prisma.branch.findUniqueOrThrow({ where: { branchCode: `${code}-01` } })).toMatchObject({
+      customerId: cust.id,
+      address: 'Way 9, First',
+    });
+
+    const ack = (rows: string) => {
+      const f = new FormData();
+      f.set('batchId', refresh);
+      f.set('rows', rows);
+      return fixes.acknowledgeShopsNotChangedAction(f);
+    };
+    const ackAudits = () =>
+      prisma.auditLog.findMany({
+        where: { entityType: 'ImportBatch', entityId: refresh, action: 'UPDATE', reason: { startsWith: 'Rows loaded with their shop NOT changed' } },
+      });
+    current = { id: 'someone', role: 'MANAGER', username: 'someone' };
+    expect((await ack('2')).ok, 'nobody but the Data Steward').toBe(false);
+    current = { id: steward, role: 'STEWARD', username: steward };
+    const over = await ack('3');
+    expect(over.ok).toBe(false);
+    expect((over as { fields?: Record<string, string> }).fields?._form).toBe(
+      'This page is out of date — reload it and read the notice again.'
+    );
+    expect((await batchOf(refresh)).shopNotChangedAckRows).toBe(0);
+
+    const before = Date.now();
+    expect(await ack('2')).toEqual({ ok: true, data: { acknowledged: 2, total: 2 } });
+    const b = await batchOf(refresh);
+    expect(b).toMatchObject({ shopNotChangedRows: 2, shopNotChangedAckRows: 2, shopNotChangedAckById: steward });
+    expect(b.shopNotChangedAckAt!.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    const audits = await ackAudits();
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({
+      actorId: steward,
+      before: { shopNotChangedAckRows: 0 },
+      after: { shopNotChangedAckRows: 2, shopNotChangedRows: 2, acknowledged: 2 },
+      reason: 'Rows loaded with their shop NOT changed acknowledged by the Data Steward: 2',
+    });
+    // A second tap: nothing more stored or logged.
+    expect(await ack('2')).toEqual({ ok: true, data: { acknowledged: 0, total: 2 } });
+    expect(await ackAudits()).toHaveLength(1);
   });
 });

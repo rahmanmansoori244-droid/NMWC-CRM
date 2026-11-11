@@ -15,7 +15,18 @@
  *      colleague who could have decided it is told who, and a Manager of
  *      another region reads where it stands in words, not "Edit is in state
  *      APPROVED."; a refused one says "refused";
- *  (3) a reactivation: the same three answers, in its own words.
+ *  (3) a reactivation: the same three answers, in its own words;
+ *  (4) second round: two of the same approver's requests in flight together
+ *      (a double tap, a batch re-sent after "No answer"). Both pass the checks
+ *      and wait at the claim, held there by a row lock this suite takes; the
+ *      loser reads "Your decision already arrived", for an approve, a refusal
+ *      and a reactivation, not a recorded lost race. Two different approvers racing the
+ *      same way still read "just decided by another reviewer", recorded;
+ *  (5) second round: a bulk card whose request came back to the approver in a
+ *      new round (a colleague sent it back, the salesman sent it again) is
+ *      answered "This request changed since you opened it", as on its own
+ *      page, not "Already decided by a colleague"; a Manager elsewhere is
+ *      still FORBIDDEN.
  *
  * GATED: writes only rows it creates (prefix ZZAA-) and deletes them after.
  * Never production.
@@ -23,12 +34,13 @@
  *   RUN_APPROVAL_ANSWERS=1 DATABASE_URL=… DIRECT_URL=… \
  *     npx vitest run tests/integration/approval-answers.test.ts
  */
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals, purgeHistory } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
 import { ALREADY_DECIDED_CODE } from '@/lib/already-decided';
+import { STALE_VIEW_CODE, STALE_VIEW_MESSAGE } from '@/lib/decision-token';
 import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
@@ -206,24 +218,27 @@ describe.skipIf(!ENABLED)('finding 21: a decision already made is answered as on
     });
     return a.id;
   }
-  async function submitCreate(): Promise<string> {
+  /** `again`: the salesman sends a request that came back to him; `salt`: another request, its own CR and phone. */
+  async function submitCreate(opts: { again?: string; salt?: number } = {}): Promise<string> {
+    const salt = opts.salt ?? 0;
     as(ids.sales, 'SALESMAN');
     const res = (await creates.submitCreateAction({
       isDraft: false,
+      ...(opts.again ? { editId: opts.again } : {}),
       customer: {
         legalName: NAME,
         paymentTerms: 'CASH',
         channelId,
         subChannelId,
-        primaryPhone: `+96893${digits(1)}`,
+        primaryPhone: `+96893${digits(1 + salt)}`,
         contactPerson: `ZZ Contact ${tag}`,
-        crNumber: `92${digits(2)}`,
+        crNumber: `92${digits(2 + salt)}`,
         crPhotoAttachmentId: await att('CR'),
       },
       branches: [
         {
-          branchName: `ZZ New Shop ${tag}`,
-          address: `ZZ Way 9, ${tag}`,
+          branchName: `ZZ New Shop ${tag}${salt ? ` ${salt}` : ''}`,
+          address: `ZZ Way ${9 + salt}, ${tag}`,
           gpsLat: 23.61,
           gpsLng: 58.44,
           gpsManualReason: 'GPS would not lock inside the mall',
@@ -292,7 +307,10 @@ describe.skipIf(!ENABLED)('finding 21: a decision already made is answered as on
       const res = (await edits.bulkApproveEditsAction(form({ decisions: JSON.stringify([{ editId: id, decisionToken: page }]) }))) as Result;
       expect(res.ok, JSON.stringify(res)).toBe(true);
       expect(res.data!.successes).toEqual([]);
-      expect(res.data!.failures).toEqual([{ editId: id, code: ALREADY_DECIDED_CODE, message: ARRIVED('approved this request', 'Supervisor') }]);
+      // Third round: with the decision that stands, so the queue can tell it from the one the batch sent.
+      expect(res.data!.failures).toEqual([
+        { editId: id, code: ALREADY_DECIDED_CODE, message: ARRIVED('approved this request', 'Supervisor'), decided: 'APPROVED' },
+      ]);
     });
 
     it('Manager Two of the same region, on a page from before: told Manager One approved it — a lost race, recorded', async () => {
@@ -375,6 +393,14 @@ describe.skipIf(!ENABLED)('finding 21: a decision already made is answered as on
       const no = await rejectWith(SUP, id, page);
       expect(no.ok, JSON.stringify(no)).toBe(true);
       expect(await rejectWith(SUP, id, page)).toMatchObject({ code: ALREADY_DECIDED_CODE, message: ARRIVED('refused this request', 'Supervisor') });
+      // Third round: a bulk APPROVE of the request he had refused says the refusal
+      // stands (decided REJECTED), so the queue does not show it as done.
+      as(...SUP);
+      const bulk = (await edits.bulkApproveEditsAction(form({ decisions: JSON.stringify([{ editId: id, decisionToken: page }]) }))) as Result;
+      expect(bulk.ok, JSON.stringify(bulk)).toBe(true);
+      expect(bulk.data!.failures).toEqual([
+        { editId: id, code: ALREADY_DECIDED_CODE, message: ARRIVED('refused this request', 'Supervisor'), decided: 'REJECTED' },
+      ]);
       expect(await rejectWith(MX, id, page)).toMatchObject({
         message: 'This request is no longer waiting for a decision: it has already been turned down or closed. Reload to see where it is now.',
       });
@@ -417,6 +443,161 @@ describe.skipIf(!ENABLED)('finding 21: a decision already made is answered as on
       expect(JSON.stringify(elsewhere)).not.toMatch(/ZZ Manager One|in state/);
       expect((await footprint(id)).row).toEqual(before.row);
       expect((await footprint(id)).decisions).toBe(before.decisions);
+    });
+  });
+  // ── (4) second round: the same approver's two requests in flight together ──
+  /**
+   * Runs `work` while this suite holds the request's row lock, until `waiters`
+   * other transactions wait for it — each decision has passed every check and
+   * reached its claim — then lets them go. The first to get the row claims it;
+   * the other's claim then matches nothing.
+   *
+   * Third round: only sessions held up by THIS lock are counted — waiting on the
+   * holder itself, or queued behind one that is (Postgres queues a second row
+   * waiter behind the first) — not every session in the database waiting on some
+   * lock, so another connection's wait cannot end the hold early.
+   */
+  async function atTheClaimTogether<T>(editId: string, waiters: number, work: () => Promise<T>): Promise<T> {
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    let locked!: (pid: number) => void;
+    const isLocked = new Promise<number>((r) => (locked = r));
+    const holder = prisma.$transaction(
+      async (tx) => {
+        const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+        await tx.$queryRaw`SELECT id FROM "CustomerEdit" WHERE id = ${editId} FOR UPDATE`;
+        locked(pid);
+        await released;
+      },
+      { timeout: 90_000, maxWait: 10_000 }
+    );
+    const holderPid = await isLocked;
+    const running = work();
+    try {
+      const deadline = Date.now() + 60_000;
+      for (;;) {
+        const [{ n }] = await prisma.$queryRaw<Array<{ n: number }>>`
+          WITH RECURSIVE held_up(pid) AS (
+            SELECT a.pid FROM pg_stat_activity a
+            WHERE a.datname = current_database() AND pg_blocking_pids(a.pid) @> ARRAY[${holderPid}::int]
+            UNION
+            SELECT a.pid FROM pg_stat_activity a JOIN held_up h ON pg_blocking_pids(a.pid) @> ARRAY[h.pid]
+            WHERE a.datname = current_database()
+          )
+          SELECT count(*)::int AS n FROM held_up`;
+        if (n >= waiters) break;
+        if (Date.now() > deadline) throw new Error(`only ${n} of ${waiters} decisions reached the claim`);
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    } finally {
+      release();
+      await holder;
+    }
+    return running;
+  }
+  const lostRaceRows = (actorId: string, editId: string) =>
+    prisma.auditLog.count({ where: { action: 'CONFLICT', actorId, entityId: editId } });
+  const ANOTHER = 'This edit was just decided by another reviewer. Refresh to see the current state.';
+
+  describe('(4) second round: a claim lost to the approver himself', () => {
+    // Each case closes the second shop again: open it first, whatever the case before did.
+    beforeEach(async () => {
+      await prisma.branch.update({ where: { id: ids.b2 }, data: { status: 'ACTIVE' } });
+      await prisma.customer.update({ where: { id: ids.customer }, data: { status: 'ACTIVE' } });
+    });
+
+    it('two approvals of a close request by the Supervisor at once: one approves, the other reads "Your decision already arrived"', async () => {
+      const id = await sendClose(ids.b2);
+      const page = await freshDecisionToken(prisma, id);
+      const results = await atTheClaimTogether(id, 2, () =>
+        Promise.all([approveWith(SUP, id, page), approveWith(SUP, id, page)])
+      );
+      const won = results.filter((r) => r.ok);
+      const lost = results.filter((r) => !r.ok);
+      expect(won, JSON.stringify(results)).toHaveLength(1);
+      expect(lost[0]).toMatchObject({ ok: false, code: ALREADY_DECIDED_CODE, message: ARRIVED('approved this request', 'Supervisor') });
+      expect(lost[0]!.message).not.toMatch(/another reviewer/);
+      // His own decision is not a lost race: no CONFLICT row. One decision, once.
+      expect(await lostRaceRows(ids.sup, id)).toBe(0);
+      expect(await prisma.editApproval.count({ where: { editId: id } })).toBe(1);
+      expect((await footprint(id)).row.state).toBe('APPROVED');
+    });
+
+    it('two refusals at once: the other reads "Your decision already arrived: you refused this request"', async () => {
+      const id = await sendClose(ids.b2);
+      const page = await freshDecisionToken(prisma, id);
+      const results = await atTheClaimTogether(id, 2, () =>
+        Promise.all([rejectWith(SUP, id, page), rejectWith(SUP, id, page)])
+      );
+      expect(results.filter((r) => r.ok), JSON.stringify(results)).toHaveLength(1);
+      expect(results.find((r) => !r.ok)).toMatchObject({ code: ALREADY_DECIDED_CODE, message: ARRIVED('refused this request', 'Supervisor') });
+      expect(await lostRaceRows(ids.sup, id)).toBe(0);
+      expect(await prisma.editApproval.count({ where: { editId: id } })).toBe(1);
+    });
+
+    it('a reactivation approved twice at once by Manager One: the other reads "Your decision already arrived"', async () => {
+      await prisma.branch.update({ where: { id: ids.b1 }, data: { status: 'CLOSED', lastStatusChangeAt: new Date(Date.now() - 2 * DAY) } });
+      as(...SALES);
+      const sent = (await reacts.requestReactivationAction(
+        form({ branchId: ids.b1, reason: 'Open again.', attachmentId: await evidence(ids.b1) })
+      )) as Result;
+      expect(sent.ok, JSON.stringify(sent)).toBe(true);
+      const id = sent.data!.editId!;
+      const results = (await atTheClaimTogether(id, 2, () => {
+        as(...M1);
+        return Promise.all([reacts.approveReactivationAction(form({ editId: id })), reacts.approveReactivationAction(form({ editId: id }))]);
+      })) as Result[];
+      expect(results.filter((r) => r.ok), JSON.stringify(results)).toHaveLength(1);
+      expect(results.find((r) => !r.ok)).toMatchObject({ code: ALREADY_DECIDED_CODE, message: ARRIVED('approved this reopening', 'Manager') });
+      expect(await lostRaceRows(ids.m1, id)).toBe(0);
+      expect(await prisma.editApproval.count({ where: { editId: id } })).toBe(1);
+    });
+
+    it('two different approvers at once: the loser still reads "just decided by another reviewer", recorded as a lost race', async () => {
+      const id = await sendClose(ids.b2);
+      const page = await freshDecisionToken(prisma, id);
+      const [sup, m2] = await atTheClaimTogether(id, 2, () =>
+        Promise.all([approveWith(SUP, id, page), approveWith(M2, id, page)])
+      );
+      const loser = sup!.ok ? { res: m2!, id: ids.m2 } : { res: sup!, id: ids.sup };
+      expect(sup!.ok !== m2!.ok, JSON.stringify([sup, m2])).toBe(true);
+      expect(loser.res).toMatchObject({ ok: false, code: 'NOT_PENDING', message: ANOTHER });
+      expect(await lostRaceRows(loser.id, id)).toBe(1);
+      expect(await prisma.editApproval.count({ where: { editId: id } })).toBe(1);
+    });
+  });
+  // ── (5) second round: a bulk card that came back to the approver ─────────────
+  describe('(5) second round: a bulk card whose request came back to the approver in a new round', () => {
+    it('Manager One sends it back, the salesman sends it again: Manager Two’s and Manager One’s old cards read STALE_VIEW', async () => {
+      const id = await submitCreate({ salt: 50 });
+      const page = await freshDecisionToken(prisma, id);
+      const back = await rejectWith(M1, id, page);
+      expect(back.ok, JSON.stringify(back)).toBe(true);
+      expect((await footprint(id)).row.state).toBe('NEEDS_CORRECTION');
+      expect(await submitCreate({ again: id, salt: 50 })).toBe(id);
+      const live = (await footprint(id)).row;
+      expect(live).toMatchObject({ state: 'SUBMITTED', currentStepIndex: 0 });
+      expect(live.cycle).toBeGreaterThan(JSON.parse(page).cycle as number);
+      const before = await footprint(id);
+
+      const bulk = async (by: [string, string]) => {
+        as(...by);
+        return (await edits.bulkApproveEditsAction(form({ decisions: JSON.stringify([{ editId: id, decisionToken: page }]) }))) as Result;
+      };
+      for (const who of [M2, M1]) {
+        const res = await bulk(who);
+        expect(res.ok, JSON.stringify(res)).toBe(true);
+        expect(res.data!.successes).toEqual([]);
+        expect(res.data!.failures, who[0]).toEqual([{ editId: id, code: STALE_VIEW_CODE, message: STALE_VIEW_MESSAGE }]);
+      }
+      // Someone who cannot decide it now is refused as before, nobody named.
+      const elsewhere = await bulk(MX);
+      expect(elsewhere.data!.failures).toEqual([{ editId: id, code: 'FORBIDDEN', message: 'You are not authorized to act on this step.' }]);
+      expect((await footprint(id)).row).toEqual(before.row);
+      expect((await footprint(id)).decisions).toBe(before.decisions);
+      // And from a fresh page Manager Two still decides it: no rule changed.
+      const fresh = await approveWith(M2, id, await freshDecisionToken(prisma, id));
+      expect(fresh.ok, JSON.stringify(fresh)).toBe(true);
     });
   });
 });

@@ -247,6 +247,7 @@ model User {
   reviewedEdits       CustomerEdit[]    @relation("EditReviewer")
   capturedAttachments Attachment[]      @relation("AttachmentCapturer")
   uploadedImports     ImportBatch[]     @relation("ImportUploader")
+  shopNoticeAcks      ImportBatch[]     @relation("ImportShopNoticeAck")
   reviewedImports     ImportRow[]       @relation("ImportReviewer")
   excludedImports     ImportRow[]       @relation("ImportExcluder")
   requestedExports    ExportJob[]       @relation("ExportRequester")
@@ -706,7 +707,20 @@ model ImportBatch {
   overwriteCrmFields   Boolean   @default(false)
   overwriteCrmFieldsAt DateTime?
 
-  uploadedBy User        @relation("ImportUploader", fields: [uploadedById], references: [id])
+  // Code review 2026-11-10, finding 28 (second round). How many rows a promote
+  // of this batch loaded with their shop NOT changed (services/imports.ts
+  // LaneOutcome.shopNotChanged), added inside each customer's own transaction so
+  // it is exactly the rows that committed; and how many of them the Data Steward
+  // has acknowledged, when and who. The batch page shows the notice while
+  // shopNotChangedRows > shopNotChangedAckRows; each acknowledgement is also an
+  // AuditLog UPDATE row on the batch.
+  shopNotChangedRows    Int       @default(0)
+  shopNotChangedAckRows Int       @default(0)
+  shopNotChangedAckAt   DateTime?
+  shopNotChangedAckById String?
+
+  uploadedBy        User        @relation("ImportUploader", fields: [uploadedById], references: [id])
+  shopNotChangedAckBy User?     @relation("ImportShopNoticeAck", fields: [shopNotChangedAckById], references: [id])
   rows       ImportRow[]
   customers  Customer[]
 

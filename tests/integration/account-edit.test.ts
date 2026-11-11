@@ -87,6 +87,7 @@ describe.skipIf(!ENABLED)(
       accA: '',
       mU: '',
       leaver5: '',
+      RV: '',
     };
     let channelId = '';
     let subChannelId = '';
@@ -341,7 +342,7 @@ describe.skipIf(!ENABLED)(
       await prisma.user.deleteMany({ where: { id: { in: all } } });
       await prisma.route.deleteMany({
         where: {
-          id: { in: [ids.A1, ids.A2, ids.A3, ids.A4, ids.A5, ids.B1].filter(Boolean) },
+          id: { in: [ids.A1, ids.A2, ids.A3, ids.A4, ids.A5, ids.B1, ids.RV].filter(Boolean) },
         },
       });
       await prisma.region.deleteMany({
@@ -505,6 +506,44 @@ describe.skipIf(!ENABLED)(
         before: { username: code('A1').toLowerCase(), route: code('A1') },
         after: { username: code('A2').toLowerCase(), route: code('A2') },
       });
+    });
+
+    it('code review 2026-11-10, finding 25, second round: a route code that is a reserved name is never taken as the sign-in name', async () => {
+      as(ids.stw, 'STEWARD');
+      // A route whose code lower-cases to a demo-account name (salesman.*): the
+      // account would be renamed to a name production refuses at every sign-in.
+      const rv = await prisma.route.create({
+        data: { code: `SALESMAN.${sfx}`.toUpperCase(), name: 'RV', regionId: ids.A },
+      });
+      ids.RV = rv.id;
+      const mover = await prisma.user.create({
+        data: {
+          username: `mover.${sfx}`,
+          fullName: 'Moving Salesman',
+          role: 'SALESMAN',
+          passwordHash: 'x',
+          supervisorId: ids.mA,
+        },
+      });
+      const rows = await auditCount(mover.id);
+      const refused = await users.updateUserAccountAction(
+        fd({ userId: mover.id, role: 'SALESMAN', ownedRouteId: rv.id, supervisorId: ids.mA, routeSignIn: 'on' })
+      );
+      expect(refused, JSON.stringify(refused)).toMatchObject({ ok: false, code: 'VALIDATION_FAILED' });
+      const why = refused.ok ? '' : (refused.fields?.routeSignIn ?? '');
+      expect(why).toContain(`sign-in name salesman.${sfx}, which is reserved`);
+      expect(why).toMatch(new RegExp(`Untick it to keep mover\.${sfx}\.$`));
+      // Nothing saved: not the name, not the route, no audit row.
+      expect(await user(mover.id)).toMatchObject({ username: `mover.${sfx}`, ownedRouteId: null });
+      expect(await auditCount(mover.id)).toBe(rows);
+
+      // Unticked, the move itself is allowed and he keeps his own name.
+      const kept = await users.updateUserAccountAction(
+        fd({ userId: mover.id, role: 'SALESMAN', ownedRouteId: rv.id, supervisorId: ids.mA })
+      );
+      expect(kept, JSON.stringify(kept)).toMatchObject({ ok: true, data: { username: `mover.${sfx}` } });
+      expect(await user(mover.id)).toMatchObject({ username: `mover.${sfx}`, ownedRouteId: rv.id });
+      await prisma.user.update({ where: { id: mover.id }, data: { ownedRouteId: null } });
     });
 
     it('a route an active salesman works is refused', async () => {

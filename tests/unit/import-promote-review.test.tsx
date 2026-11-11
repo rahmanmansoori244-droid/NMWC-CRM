@@ -16,13 +16,19 @@ const h = vi.hoisted(() => ({
   summarise: vi.fn(),
   setOverwrite: vi.fn(),
   refresh: vi.fn(),
+  ack: vi.fn(),
 }));
 vi.mock('@/services/imports', () => ({ promoteCustomerBatchAction: h.promote }));
 vi.mock('@/services/import-review', () => ({ summariseCustomerBatchAction: h.summarise }));
-vi.mock('@/services/import-fixes', () => ({ setImportOverwriteAction: h.setOverwrite }));
+vi.mock('@/services/import-fixes', () => ({
+  setImportOverwriteAction: h.setOverwrite,
+  acknowledgeShopsNotChangedAction: h.ack,
+}));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: h.refresh, push: vi.fn() }) }));
 
 import { PromoteButton } from '@/app/(app)/import/[batchId]/PromoteButton';
+import { ShopsNotChangedNotice } from '@/app/(app)/import/[batchId]/ShopsNotChangedNotice';
+import { ROUTE_NOT_APPLIED, SHOP_NOT_CHANGED_MEANING } from '@/lib/import-shop-notice';
 
 const KEPT =
   'CRM fields kept: on 2 customer(s) and 1 shop(s) the sheet differs from the record. Their values stay as they are on record (name 2, address 1).';
@@ -58,8 +64,9 @@ afterEach(() => {
   confirmSpy.mockRestore();
 });
 
+let view: ReturnType<typeof render> | null = null;
 async function openReview(props: Partial<Parameters<typeof PromoteButton>[0]> = {}) {
-  render(<PromoteButton batchId="b1" remainingCount={3} canSetOverwrite {...props} />);
+  view = render(<PromoteButton batchId="b1" remainingCount={3} canSetOverwrite {...props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Promote 3 clean rows' }));
   return screen.findByRole('dialog', { name: 'Before you promote' });
 }
@@ -318,6 +325,11 @@ describe('rows loaded with their shop NOT changed are acknowledged', () => {
     expect(go.disabled).toBe(true);
     const tick = within(dialog).getByRole('checkbox', { name: /I understand that 3 row\(s\) will be loaded with their shop NOT changed/ });
     expect(tick.closest('label')!.textContent).toContain('1 of them carry a different route, and that route will NOT be applied');
+    // Finding 28, second round: the tick says which rows it counts — the same rows the end-of-load notice counts.
+    expect(tick.closest('label')!.textContent).toContain(SHOP_NOT_CHANGED_MEANING);
+    expect(SHOP_NOT_CHANGED_MEANING).toBe(
+      "Each is a row that carries the customer's Temix code and names a shop of that customer (branch_code) whose details in the sheet differ from the CRM, or that the CRM does not have; such a row never changes or adds a shop."
+    );
     fireEvent.click(tick);
     expect(go.disabled).toBe(false);
   });
@@ -328,21 +340,49 @@ describe('rows loaded with their shop NOT changed are acknowledged', () => {
     expect(within(dialog).queryByRole('checkbox')).toBeNull();
   });
 
-  it('after: the run ends on the count, which the Steward acknowledges before the result is shown', async () => {
+  // Second round: the count is no longer an alert inside this button. The
+  // refresh to PROMOTED took the button away, and the alert and the result
+  // behind it with it, unseen (launch suite, 3 runs of 3). The result is shown at
+  // once and the page keeps the button mounted on a finished batch; the notice
+  // is the page's, read from the batch (ShopsNotChangedNotice, below).
+  it('after: the result is shown at once, and stays when the page comes back finished', async () => {
     h.promote.mockResolvedValue(done({ kept: 0, replaced: 0, creditNotApplied: 0, shopNotChanged: 2 } as never));
     const dialog = await openReview();
     await within(dialog).findByText(KEPT);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Promote 3 clean rows now' }));
-    const note = await screen.findByTestId('shops-not-changed');
-    expect(note.textContent).toContain('2 row(s) were loaded, but their shop was NOT changed.');
-    expect(note.textContent).toContain('a route in those rows was NOT applied');
-    expect(screen.queryByText(/✓ Done/)).toBeNull();
-    fireEvent.click(within(note).getByRole('button', { name: 'I have read this' }));
-    expect(
-      await screen.findByText(
-        '✓ Done — 3 rows promoted in this run. 2 row(s) were loaded with their shop NOT changed — see "Loaded with a warning".'
-      )
-    ).toBeTruthy();
+    const DONE =
+      '✓ Done — 3 rows promoted in this run. 2 row(s) were loaded with their shop NOT changed — see "Loaded with a warning".';
+    expect(await screen.findByText(DONE)).toBeTruthy();
+    expect(h.refresh).toHaveBeenCalled();
     expect(screen.queryByTestId('shops-not-changed')).toBeNull();
+    // The refresh renders the page again with the batch PROMOTED: the same button, told it is finished.
+    view!.rerender(<PromoteButton batchId="b1" remainingCount={0} canSetOverwrite finished />);
+    expect(screen.getByText(DONE)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Promote|Resume|Finish/ })).toBeNull();
+  });
+});
+
+describe('the notice on the batch page, until the Data Steward acknowledges it', () => {
+  it('says how many rows, which rows they are and that a route was not applied; acknowledging sends the total', async () => {
+    h.ack.mockResolvedValue({ ok: true, data: { acknowledged: 3, total: 5 } });
+    render(<ShopsNotChangedNotice batchId="b1" rows={3} total={5} />);
+    const note = screen.getByTestId('shops-not-changed');
+    expect(note.getAttribute('role')).toBe('alert');
+    expect(note.textContent).toContain('3 row(s) were loaded, but their shop was NOT changed.');
+    expect(note.textContent).toContain(SHOP_NOT_CHANGED_MEANING);
+    expect(note.textContent).toContain(ROUTE_NOT_APPLIED);
+    fireEvent.click(within(note).getByRole('button', { name: 'I have read this' }));
+    await waitFor(() => expect(h.ack).toHaveBeenCalledTimes(1));
+    expect(fields(h.ack.mock.calls[0]![0])).toEqual({ batchId: 'b1', rows: '5' });
+    await waitFor(() => expect(h.refresh).toHaveBeenCalled());
+  });
+
+  it('a refusal is shown in words, and the notice stays', async () => {
+    h.ack.mockResolvedValue({ ok: false, code: 'VALIDATION', message: 'Validation failed', fields: { _form: 'This page is out of date — reload it and read the notice again.' } });
+    render(<ShopsNotChangedNotice batchId="b1" rows={2} total={2} />);
+    fireEvent.click(screen.getByRole('button', { name: 'I have read this' }));
+    expect(await screen.findByText('This page is out of date — reload it and read the notice again.')).toBeTruthy();
+    expect(screen.getByTestId('shops-not-changed')).toBeTruthy();
+    expect(h.refresh).not.toHaveBeenCalled();
   });
 });

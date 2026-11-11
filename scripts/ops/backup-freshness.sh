@@ -2,7 +2,7 @@
 # Is the database the nightly backup just dumped the one the app writes to?
 # (code review 2026-11-10, finding 14.)
 #
-#   bash scripts/ops/backup-freshness.sh <secondsSinceNewestWrite> <event name>
+#   bash scripts/ops/backup-freshness.sh <secondsSinceNewestWrite> <event name> [<where the value came from>]
 #
 # WHY. Every disaster-recovery runbook ends with production on a new host. The
 # runbooks repointed Vercel only; the backup reads the separate GitHub DIRECT_URL
@@ -26,8 +26,12 @@
 #   - A run by hand (`workflow_dispatch`) only warns, and always prints the age, so
 #     the runbooks' "run the backup by hand and check the newest record is today"
 #     step can be done right after a restore without a red run.
-#   - No value (no manifest, an empty database): a scheduled run fails — it cannot
-#     show the database is live; a hand run warns.
+#   - No value (the newest-record query failed and the manifest has none, or an
+#     empty database): a scheduled run fails — it cannot show the database is
+#     live; a hand run warns. The value comes from its own small query
+#     (scripts/ops/backup-newest-write.sql), with the manifest as the fallback,
+#     so a failed manifest — row counts — does not by itself fail a backup that
+#     was taken (second round of the review).
 #
 # Exit 0 fine (or warned), 1 failed. Prints GitHub annotations; never a URL.
 # tests/unit/backup-freshness.test.ts runs it.
@@ -39,6 +43,9 @@ MAX_QUIET_HOURS=24
 
 SECONDS_SINCE="${1:-}"
 EVENT="${2:-}"
+# Optional: how the caller measured the age ("checked after the upload", "from the
+# manifest, taken before the dump"). Printed with the age; never decides anything.
+SOURCE="${3:-}"
 
 fail_or_warn() {
   if [ "$EVENT" = "schedule" ]; then
@@ -50,13 +57,22 @@ fail_or_warn() {
 }
 
 if ! [[ $SECONDS_SINCE =~ ^-?[0-9]+$ ]]; then
-  fail_or_warn "The backup could not tell how old the newest record in this database is (no manifest, or no audit row and no scheduled-job heartbeat at all), so it cannot show that this is the database the app uses. The dump was uploaded. Check that the GitHub DIRECT_URL secret names the host on the first line of config/production-hosts.txt (docs/OPERATIONS.md, Runbook A)."
+  fail_or_warn "The backup could not tell how old the newest record in this database is (the newest-record query failed and the manifest has no value, or the database has no audit row and no scheduled-job heartbeat at all), so it cannot show that this is the database the app uses. The dump was uploaded. Check that the GitHub DIRECT_URL secret names the host on the first line of config/production-hosts.txt (docs/OPERATIONS.md, Runbook A)."
 fi
 
 # A clock a little ahead of the database's: as fresh as it gets.
 if [ "$SECONDS_SINCE" -lt 0 ]; then SECONDS_SINCE=0; fi
 HOURS=$((SECONDS_SINCE / 3600))
-echo "newest record in the dumped database: ${HOURS} h ago (limit ${MAX_QUIET_HOURS} h)"
+# Third round: the age is this database's newest record as the CALLER measured it:
+# after the upload (the nightly job's own query) or before the dump (the manifest
+# — the nightly job's fallback, and CI's first call). Only the caller knows which,
+# so it says so in the third argument and the line repeats it; with no third
+# argument the line claims neither.
+if [ -n "$SOURCE" ]; then
+  echo "newest record in this database (${SOURCE}): ${HOURS} h ago (limit ${MAX_QUIET_HOURS} h)"
+else
+  echo "newest record in this database: ${HOURS} h ago (limit ${MAX_QUIET_HOURS} h)"
+fi
 
 if [ "$SECONDS_SINCE" -le $((MAX_QUIET_HOURS * 3600)) ]; then
   echo "::notice::the newest record in this database is ${HOURS} h old: it is the database the app writes to."

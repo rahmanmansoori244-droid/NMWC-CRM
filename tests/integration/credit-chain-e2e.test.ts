@@ -408,7 +408,14 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     // R26: atomic claim — exactly one approval succeeds.
     expect(oks.length).toBe(1);
     expect(fails.length).toBe(1);
-    expect((fails[0] as { ok: false; code?: string }).code).toBe('NOT_PENDING');
+    // Both are the same Accountant (a double tap): since the code review of
+    // 2026-11-10 (finding 21, second round) the loser is told his own decision
+    // already arrived, not that another reviewer decided it. Still refused,
+    // still nothing written by it (the counts below).
+    expect(fails[0]).toMatchObject({
+      code: 'ALREADY_DECIDED',
+      message: expect.stringMatching(/^Your decision already arrived: you approved this request at the Accountant step\./),
+    });
 
     // R19: materialized exactly once, now.
     expect(await customerCount()).toBe(1);

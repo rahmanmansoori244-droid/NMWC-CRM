@@ -88,6 +88,12 @@ describe('the /routes switch button', () => {
     expect((h.region.mock.calls[0]![0] as FormData).get(ACTIVE_FIELD)).toBe('true');
   });
 
+  // Code review 2026-11-10, finding 9, second round: a tab still running the code
+  // from before the deploy sends no wanted state, and the alert says to reload.
+  // Third round: proved through the real action in
+  // tests/unit/region-route-toggle.test.tsx; a test here, with the action mocked
+  // to return the message, passed on the old code too.
+
   it('a refusal is still shown as before', async () => {
     h.route.mockResolvedValue({ ok: false, code: 'FORBIDDEN', message: 'That region is not one you manage.' });
     render(<ToggleButton id="r1" kind="route" isActive />);

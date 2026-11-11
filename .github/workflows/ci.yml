@@ -263,6 +263,11 @@ jobs:
           # seeded scratch database it creates and drops on this job's own
           # Postgres (clean-start). Needs psql and bash, both on the runner.
           RUN_CLEAN_START: '1'
+          # Owner decision 8 and code review 2026-11-10, finding 25 (third round):
+          # the Steward's Edit account and route hand-over through the real
+          # actions, including the refused route sign-in rename to a reserved name
+          # (account-edit).
+          RUN_ACCOUNT_EDIT: '1'
 
   # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
   # person typing `npm run test:e2e`. It shows: login.spec.ts asserted
@@ -497,8 +502,19 @@ jobs:
           # nightly job's freshness check reads. The synthetic audit rows above were just
           # written, so the rule must call this database live, on the nightly trigger.
           SINCE="$(jq -r '.secondsSinceNewestWrite // empty' manifest.json)"
-          echo "newest write $(jq -r '.newestWriteAt // "none"' manifest.json), ${SINCE:-?} s ago"
-          bash scripts/ops/backup-freshness.sh "$SINCE" schedule
+          echo "newest write before the dump (manifest) $(jq -r '.newestWriteAt // "none"' manifest.json), ${SINCE:-?} s ago"
+          bash scripts/ops/backup-freshness.sh "$SINCE" schedule 'from the manifest, taken before the dump'
+          # Second round: the nightly job reads the age from its own small query
+          # first (a failed manifest is only a warning). Run it on Postgres 17 too,
+          # through the same rule, and check it agrees with the manifest.
+          # Third round: in the nightly job that query runs after the dump and the
+          # upload (this database's newest record when checked) and the manifest
+          # before the dump (what the backup holds at least); the run summary labels
+          # them so. Here nothing writes between the two, so they must be equal.
+          ROW="$(psql "$DATABASE_URL" -At -v ON_ERROR_STOP=1 -f scripts/ops/backup-newest-write.sql)"
+          echo "newest-write query (this database when checked): ${ROW}"
+          test "${ROW#*|}" = "$(jq -r '.newestWriteAt' manifest.json)"
+          bash scripts/ops/backup-freshness.sh "${ROW%%|*}" schedule 'from the newest-record query, checked now'
 
       - name: Dump with the production flags, then check it like production does
         run: |

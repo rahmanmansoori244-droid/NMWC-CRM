@@ -93,6 +93,21 @@ export class ConflictError extends AppError {
   }
 }
 
+/**
+ * Code review 2026-11-10, finding 21, third round: "Your decision already
+ * arrived" (lib/already-decided.ts), carrying the decision that stands
+ * (EditApproval.decision: APPROVED, REJECTED, FORM_UPLOADED). A bulk batch that
+ * asked for something else (approve, where he had sent it back earlier) must not
+ * read as done, so runAction hands the decision on as `decided`.
+ */
+export class AlreadyDecidedError extends ConflictError {
+  readonly decided: string;
+  constructor(code: string, message: string, decided: string) {
+    super(code, message);
+    this.decided = decided;
+  }
+}
+
 export class RateLimitError extends AppError {
   constructor(message = 'Too many requests') {
     super('RATE_LIMITED', message, 429);
@@ -272,6 +287,8 @@ export type ActionResult<T = void> =
       fields?: Record<string, string>;
       /** STALE_FIELDS only: the value live now, by raw field path (StaleFieldsError). */
       current?: Record<string, LiveValue>;
+      /** ALREADY_DECIDED only: the decision that stands (AlreadyDecidedError). */
+      decided?: string;
     };
 
 /**
@@ -323,6 +340,7 @@ export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T
         message: err.message,
         ...(err.fields ? { fields: err.fields } : {}),
         ...(err instanceof StaleFieldsError ? { current: err.current } : {}),
+        ...(err instanceof AlreadyDecidedError ? { decided: err.decided } : {}),
       };
     }
     // Owner decision 2026-10-25: one live customer per Temix code, kept by the

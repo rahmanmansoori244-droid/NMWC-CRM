@@ -127,12 +127,93 @@ describe('BULK_DECISION_LIMIT — one limit, read by the server and by Select al
 
   it('the queue stops Select all at it', () => {
     const src = code('app/(app)/approvals/BulkApprovalQueue.tsx');
-    // One line or, past the print width, prettier's one name per line.
-    expect(src).toMatch(/import \{\s*BULK_DECISION_LIMIT(,\s*[A-Z_]+)*,?\s*\} from '@\/lib\/bulk-run';/);
+    // One line or, past the print width, prettier's one name per line (constants
+    // and, since finding 21's second round, the banner's helpers).
+    expect(src).toMatch(/import \{\s*BULK_DECISION_LIMIT(,\s*[A-Za-z_]+)*,?\s*\} from '@\/lib\/bulk-run';/);
     expect(src).toContain('const selectAllIds = allOnPage.slice(0, BULK_DECISION_LIMIT);');
     expect(src).toContain('setSelected(new Set(selectAllIds))');
     // The old Select all — every card on the page — is gone, and no numeric cap stands in.
     expect(src).not.toContain('new Set(allOnPage)');
     expect(src).not.toMatch(/allOnPage\.slice\(0,\s*\d/);
+  });
+});
+
+describe('finding 21, second round: a decision that had already arrived is not counted as failed', () => {
+  it('the code is the one lib/already-decided.ts answers with', async () => {
+    const { ALREADY_DECIDED_CODE } = await import('@/lib/already-decided');
+    const { BULK_ALREADY_DECIDED_CODE } = await import('@/lib/bulk-run');
+    expect(BULK_ALREADY_DECIDED_CODE).toBe(ALREADY_DECIDED_CODE);
+  });
+
+  it('splitBulkFailures keeps the order and leaves every other code a failure', async () => {
+    const { splitBulkFailures } = await import('@/lib/bulk-run');
+    const f = (editId: string, code: string) => ({ editId, code, message: code });
+    const ok = (editId: string) => ({ editId, code: 'ALREADY_DECIDED', message: '', decided: 'APPROVED' });
+    const { arrived, otherwise, failed } = splitBulkFailures(
+      [ok('a'), f('b', 'NOT_PENDING'), ok('c'), f('d', 'UNKNOWN')],
+      'APPROVED'
+    );
+    expect(arrived.map((x) => x.editId)).toEqual(['a', 'c']);
+    expect(otherwise).toEqual([]);
+    expect(failed.map((x) => x.editId)).toEqual(['b', 'd']);
+  });
+
+  it('third round: an already-decided request counts as done only when the decision that stands is what the batch asked for', async () => {
+    const { splitBulkFailures } = await import('@/lib/bulk-run');
+    const d = (editId: string, decided?: string) => ({
+      editId,
+      code: 'ALREADY_DECIDED',
+      message: '',
+      ...(decided ? { decided } : {}),
+    });
+    const list = [d('approved', 'APPROVED'), d('sentBack', 'REJECTED'), d('form', 'FORM_UPLOADED'), d('unknown')];
+    const forApprove = splitBulkFailures(list, 'APPROVED');
+    expect(forApprove.arrived.map((x) => x.editId)).toEqual(['approved']);
+    // Not known is not proof: kept apart, so the banner is not green.
+    expect(forApprove.otherwise.map((x) => x.editId)).toEqual(['sentBack', 'form', 'unknown']);
+    expect(forApprove.failed).toEqual([]);
+    const forReject = splitBulkFailures(list, 'REJECTED');
+    expect(forReject.arrived.map((x) => x.editId)).toEqual(['sentBack']);
+    expect(forReject.otherwise.map((x) => x.editId)).toEqual(['approved', 'form', 'unknown']);
+  });
+
+  it('third round: runBulk hands on the decision that stands', async () => {
+    const out = await runBulk(['a', 'b'], async (id) =>
+      id === 'a'
+        ? { ok: false, code: 'ALREADY_DECIDED', message: 'm', decided: 'REJECTED' }
+        : { ok: false, code: 'STALE_VIEW', message: 's' }
+    );
+    expect(out.failures).toEqual([
+      { editId: 'a', code: 'ALREADY_DECIDED', message: 'm', decided: 'REJECTED' },
+      { editId: 'b', code: 'STALE_VIEW', message: 's' },
+    ]);
+  });
+
+  it('bulkHeadline: each count in plain words, only when there is one', async () => {
+    const { bulkHeadline } = await import('@/lib/bulk-run');
+    expect(bulkHeadline({ processed: 2, arrived: 0, failed: 0, notAttempted: 0 })).toBe('2 processed.');
+    expect(bulkHeadline({ processed: 2, arrived: 0, failed: 1, notAttempted: 0 })).toBe('2 processed, 1 failed.');
+    expect(bulkHeadline({ processed: 0, arrived: 3, failed: 0, notAttempted: 0 })).toBe('0 processed, 3 already decided by you.');
+    expect(bulkHeadline({ processed: 1, arrived: 2, failed: 1, notAttempted: 4 })).toBe(
+      '1 processed, 2 already decided by you, 1 failed, 4 not attempted — run it again to finish.'
+    );
+    expect(bulkHeadline({ processed: 0, arrived: 1, otherwise: 2, failed: 0, notAttempted: 0 })).toBe(
+      '0 processed, 1 already decided by you, 2 already decided otherwise by you.'
+    );
+    // The launch suite's patterns still read a batch with nothing already decided.
+    expect(bulkHeadline({ processed: 1, arrived: 0, failed: 0, notAttempted: 1 })).toMatch(
+      /^\d+ processed(, \d+ failed)?(, \d+ not attempted — run it again to finish)?\.$/
+    );
+  });
+});
+
+describe('finding 21, second round: NO_ANSWER_MESSAGE is shown where its comment says', () => {
+  it('only the bulk queue shows it; the single-request page keeps its own error in place', async () => {
+    const { sourceFiles } = await import('../support/call-args');
+    const users = sourceFiles(['app', 'components'])
+      .filter((f) => /\bNO_ANSWER_MESSAGE\b/.test(stripComments(readFileSync(f, 'utf8'), f)))
+      .map((f) => f.split('\\').join('/'));
+    // lib/bulk-run.ts says "Shown by the bulk queue only": change the comment with this list.
+    expect(users).toEqual(['app/(app)/approvals/BulkApprovalQueue.tsx']);
   });
 });

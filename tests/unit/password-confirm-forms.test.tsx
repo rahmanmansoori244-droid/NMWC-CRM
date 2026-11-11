@@ -234,6 +234,11 @@ describe('launch browser suite — every change-password error is read out, and 
     );
   });
 
+  // Second round of the review: the guess limit could not be checked (its store
+  // did not answer). Third round: proved through the real action and limiter in
+  // tests/unit/password-change-unavailable-ui.test.tsx; a test here, with the
+  // action mocked to return the message, passed on the old code too.
+
   it('a save the database may have finished says the same', async () => {
     h.change.mockResolvedValue({
       ok: false,

@@ -381,6 +381,8 @@ let rescoreWrites: Array<{ table: string; sql: string; rows: Array<[unknown, unk
 let temixLocks: unknown[];
 /** Gap 24: the source each set_config named, in order (lib/change-context.ts). */
 let contexts: string[];
+/** Finding 28, second round: the batch increments of the rows loaded with their shop NOT changed. */
+let shopNotChangedOnBatch: Array<{ where: { id: string }; data: { shopNotChangedRows: { increment: number } } }>;
 
 /** Other customers in the master, as the crosswalk guard's findFirst reads them. */
 type Other = {
@@ -411,6 +413,7 @@ function setup(
   opts: SetupOptions = {}
 ) {
   order = [];
+  shopNotChangedOnBatch = [];
   lockSql = [];
   rejected = [];
   rescoreWrites = [];
@@ -484,6 +487,15 @@ function setup(
       update: w('branch.update'),
     },
     importRow: { updateMany: w('importRow.promoted', { count: rows.length }) },
+    // Finding 28, second round: the rows loaded with their shop NOT changed,
+    // counted on the batch inside the customer's transaction.
+    importBatch: {
+      update: vi.fn(async (a: { where: { id: string }; data: { shopNotChangedRows: { increment: number } } }) => {
+        order.push('batch.shopNotChanged');
+        shopNotChangedOnBatch.push(a);
+        return {};
+      }),
+    },
   };
   const now = new Date();
   Object.assign(h.db, {
@@ -1993,6 +2005,13 @@ const SCENARIOS: Scenario[] = [
   { name: 'refresh lane: the row says CREDIT for a CASH customer', stored: LINKED, rows: [parsed({ temixCode: 'ARC1', paymentTerms: 'CREDIT', creditLimit: 750 }), parsed({ temixCode: 'ARC1', branchCode: 'ARC1-05' })], opts: { branches: { 'ARC1-02': storedBranch() } } },
   { name: 'a linked customer whose temix_code cell is blank: the full lane, fill-only', stored: LINKED, rows: [parsed({ address: 'Older', creditLimit: 750 })], opts: { branches: { 'ARC1-02': storedBranch() } } },
   { name: 'a seeded customer whose row carries a code and credit figures', stored: AS_SHEET, rows: [parsed({ temixCode: 'ARC1', creditLimit: 750, paymentTermDays: 30 })], opts: { branches: { 'ARC1-02': storedBranch() } } },
+  // Finding 28, second round: rows of the refresh lane that leave a shop alone for
+  // ANOTHER reason are not "shop NOT changed" — the review's tick does not count
+  // them, and the end-of-load count used to (every unwritten lane note).
+  { name: 'refresh lane: a row with no branch_code (only cust_code, name and temix_code)', stored: LINKED, rows: [parsed({ temixCode: 'ARC1', branchCode: null, address: null, branchName: null })], opts: { branches: { 'ARC1-02': storedBranch() } } },
+  { name: 'refresh lane: a row naming a branch of another customer', stored: LINKED, rows: [parsed({ temixCode: 'ARC1', address: 'Older' })], opts: { branches: { 'ARC1-02': storedBranch({ customerId: 'someone-else', customer: { nmwcCode: 'OTH1' } }) } } },
+  { name: 'refresh lane: a row naming an archived branch', stored: LINKED, rows: [parsed({ temixCode: 'ARC1', address: 'Older' })], opts: { branches: { 'ARC1-02': storedBranch({ deletedAt: new Date('2026-09-01T08:00:00Z') }) } } },
+  { name: 'refresh lane: one shop differs, one not in the CRM, one without branch_code', stored: LINKED, rows: [parsed({ temixCode: 'ARC1', address: 'Older' }), parsed({ temixCode: 'ARC1', branchCode: 'ARC1-05' }), parsed({ temixCode: 'ARC1', branchCode: null, address: null, branchName: null })], opts: { branches: { 'ARC1-02': storedBranch() } } },
   { name: 'a fixed row of a linked customer: route written, address kept', stored: LINKED, rows: [parsed({ fixedInApp: true, routeCode: 'R1', address: 'Older' })], opts: { routes: R1, branches: { 'ARC1-02': storedBranch() } } },
   { name: 'the same fixed row with the option ON', stored: LINKED, rows: [parsed({ fixedInApp: true, routeCode: 'R1', address: 'Older' })], opts: { routes: R1, branches: { 'ARC1-02': storedBranch() } }, overwrite: true },
   { name: 'a fixed row that creates its shop, beside a plain refresh row', stored: LINKED, rows: [parsed({ temixCode: 'ARC1' }), parsed({ fixedInApp: true, branchCode: 'ARC1-07' })], opts: { branches: { 'ARC1-02': storedBranch() } } },
@@ -2082,6 +2101,11 @@ describe('finding 1 — parity: the plan the summary is built from is what the p
       // Finding 28: the rows loaded with their shop left as it was, as the summary counts them.
       shopNotChanged: plan.rejected ? 0 : plan.linkedShops + plan.linkedNotAdded,
     });
+    // Second round: the same count is added to the batch, in the customer's own transaction, after its rows are PROMOTED.
+    const onBatch = shopNotChangedOnBatch.reduce((n, a) => n + a.data.shopNotChangedRows.increment, 0);
+    expect(onBatch).toBe(out.notes!.shopNotChanged);
+    for (const a of shopNotChangedOnBatch) expect(a.where).toEqual({ id: 'batch-9' });
+    if (onBatch > 0) expect(order.indexOf('batch.shopNotChanged')).toBeGreaterThan(order.indexOf('importRow.promoted'));
     expect(out.notes!.kept > 0, 'a kept CRM value').toBe(!plan.rejected && !overwrite && differs);
     expect(out.notes!.replaced > 0, 'a replaced CRM value').toBe(!plan.rejected && overwrite && differs);
   });

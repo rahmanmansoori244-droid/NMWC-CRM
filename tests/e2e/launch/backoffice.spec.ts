@@ -1871,6 +1871,15 @@ test.describe('back office: Temix upload batches', { tag: ['@exclusive'] }, () =
       temixCode: `T${world.SFX}`,
     });
     expect(await snapshot(['Branch'], { Branch: { customerId: { in: [A.id, C.id] } } }), 'no branch changed').toBe(branchesBefore);
+
+    // Code review 2026-11-10, finding 28 (second round). The finished batch keeps the result on screen:
+    // the refresh to PROMOTED used to take the Promote button away, and its alert and "✓ Done" with it
+    // (this test timed out on 3 of 3 runs). And these rows carry no branch_code — they name no shop, so
+    // they are not rows "loaded with their shop NOT changed": no notice, and none counted on the batch.
+    await expect(pageSubtitle(page)).toHaveText('CUSTOMER import · 2 rows · PROMOTED', { timeout: 60_000 });
+    await expect(page.getByText(/✓ Done — 2 rows promoted in this run\./)).toBeVisible();
+    await expect(page.getByTestId('shops-not-changed')).toHaveCount(0);
+    expect((await db.importBatch.findUniqueOrThrow({ where: { id }, select: { shopNotChangedRows: true } })).shopNotChangedRows).toBe(0);
   });
 
   test('the inbound refresh back-fills the Temix code of a chain-created customer and tells its salesman', async () => {

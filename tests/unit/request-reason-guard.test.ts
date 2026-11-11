@@ -210,7 +210,8 @@ describe('a decision never replaces the requester’s reason, and never leaves a
       /const reachesSalesman =\s+\(target\.kind === 'TO_SALESMAN' && !isCloseRequest\) \|\|\s+\(target\.kind === 'STEP_BACK' && isSignedFormStep\(rejectChain\[target\.toStepIndex\]\)\);/
     );
     // Read before the transaction opens, like the loop guard's count.
-    expect(body.indexOf('const earlierSendBacks')).toBeLessThan(body.indexOf('await withChangeContext('));
+    // (The transaction runs inside ownLostClaim since finding 21's second round.)
+    expect(body.indexOf('const earlierSendBacks')).toBeLessThan(body.indexOf('() => withChangeContext('));
     expect(body.indexOf('const earlierSendBacks')).toBeGreaterThan(body.indexOf('const priorRejectsHere'));
     // And used by exactly the two alerts he receives.
     expect(body).toContain('needsCorrectionBody(rejectRequestName, reason, earlierSendBacks)');

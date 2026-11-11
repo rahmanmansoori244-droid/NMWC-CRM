@@ -133,6 +133,12 @@ async function handle(req: NextRequest) {
   //    READY — for ever, once the fix was withdrawn and nothing was left to
   //    promote (post-merge review). The CLEAN rows of such a batch are the ones
   //    promote still needs, and keep their payload.
+  //
+  //    Code review 2026-11-10, second round: and every row of a batch that can
+  //    never load it — DISCARDED, or uploaded before the cut-off and never
+  //    loaded, with no live promote lease. Such a batch is long past the 7-day
+  //    limit of a staged batch, so promote, resume and every fix refuse it, and
+  //    its CLEAN and held-back rows kept the customer's details for ever.
   try {
     const started = Date.now();
     let cleared = 0;

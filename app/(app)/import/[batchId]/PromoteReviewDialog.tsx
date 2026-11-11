@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useDialogFocus } from '@/components/nmwc/useDialogFocus';
 import { summariseCustomerBatchAction, type PromoteReview } from '@/services/import-review';
 import { setImportOverwriteAction } from '@/services/import-fixes';
+import { SHOP_NOT_CHANGED_MEANING } from '@/lib/import-shop-notice';
 
 /**
  * "Before you promote" (code review 2026-11-10, finding 1).
@@ -206,7 +207,7 @@ export function PromoteReviewDialog({
                 {routeNotChanged > 0
                   ? ` — ${routeNotChanged.toLocaleString('en-US')} of them carry a different route, and that route will NOT be applied`
                   : ''}
-                . Each such row is listed under &ldquo;Loaded with a warning&rdquo;.
+                . {SHOP_NOT_CHANGED_MEANING} Each such row is listed under &ldquo;Loaded with a warning&rdquo;.
               </span>
             </label>
           </div>

@@ -27,7 +27,7 @@
  *     to. Anyone else keeps the refusal he had.
  */
 import type { EditState, Prisma, PrismaClient, Role } from '@prisma/client';
-import { ConflictError, type ConflictMeta } from './errors';
+import { AlreadyDecidedError, ConflictError, type ConflictMeta } from './errors';
 import { parseChainOrNull, stepName, type ApprovalStep } from './approval-chains';
 import { ROLE_LABELS } from './account-edit';
 
@@ -144,7 +144,8 @@ export async function alreadyDecidedRefusal(db: Db, args: AlreadyDecidedArgs): P
   const did = args.words[row.decision];
   if (!did) return null;
   if (row.actorId === args.viewerId) {
-    return new ConflictError(ALREADY_DECIDED_CODE, yourDecisionArrivedMessage(did, row.role));
+    // Third round: with the decision that stands, so a bulk batch can tell it from the one it sent.
+    return new AlreadyDecidedError(ALREADY_DECIDED_CODE, yourDecisionArrivedMessage(did, row.role), row.decision);
   }
   const step = chain?.[row.stepIndex] ?? null;
   if (!step) return null;
@@ -158,4 +159,46 @@ export async function alreadyDecidedRefusal(db: Db, args: AlreadyDecidedArgs): P
     colleagueDecidedMessage(did, row.role, { fullName: row.actor.fullName, role: row.actorRole ?? row.actor.role }),
     args.lost
   );
+}
+
+/**
+ * Code review 2026-11-10, finding 21, second round: the lost claim. Two of the
+ * same approver's requests in flight together (a double tap, or a bulk batch
+ * re-sent after "No answer" while the first is still running) both pass the
+ * state check and the gate; the second loses the atomic claim. It was told the
+ * step "was just decided by another reviewer" — his own decision credited to a
+ * colleague.
+ *
+ * A claim that matched nothing throws a LostClaimError (still NOT_PENDING, still
+ * a lost race, same words). answerLostClaim catches only that, after the
+ * transaction has rolled back, and reads the decision ledger for the visit the
+ * page showed: when the decision there is the caller's own, he reads "Your
+ * decision already arrived". Anyone else's keeps the words it had. The claim,
+ * the tokens and every check before it are unchanged; this reads and writes
+ * nothing else.
+ */
+export class LostClaimError extends ConflictError {}
+
+export async function answerLostClaim<T>(
+  db: Db,
+  args: Omit<AlreadyDecidedArgs, 'couldDecide' | 'lost'>,
+  run: () => Promise<T>
+): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (!(err instanceof LostClaimError)) throw err;
+    let answer: ConflictError | null = null;
+    try {
+      // couldDecide false: a colleague is never named here — only his own decision changes the words.
+      answer = await alreadyDecidedRefusal(db, {
+        ...args,
+        couldDecide: () => false,
+        lost: err.conflict ?? { actorId: args.viewerId, entityType: 'CustomerEdit', entityId: args.editId, path: '' },
+      });
+    } catch {
+      // The ledger could not be read: the refusal that was coming stands.
+    }
+    throw answer && answer.code === ALREADY_DECIDED_CODE ? answer : err;
+  }
 }
