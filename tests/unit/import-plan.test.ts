@@ -594,6 +594,8 @@ describe('addGroup and summaryLines — the counts and the words', () => {
       created: { customers: 1, shops: 3, shopsOnExisting: 1, closedCustomersReopened: 1 },
       temix: { customersOnRefresh: 1, customersChanged: 1 },
       routeNotApplied: 0,
+      // Owner's answer 2026-11-11 (A5): counted by the loader, not by addGroup.
+      codesCapitalised: 0,
       crm: {
         customersFilled: 0,
         shopsFilled: 0,
@@ -720,6 +722,49 @@ describe('planGroup — a new customer under another live customer\'s Temix code
     const p = withHeld(null, ['OTHER']);
     expect(p.rejected).toBeNull();
     expect(p.newCustomer).toBe(true);
+  });
+});
+
+// Owner's answers 2026-11-11 (A5).
+describe('planGroup — a shop code that only looks like one of the customer’s shops or rows', () => {
+  const withShops = (rows: PlanRow[], existing: PlanCustomer | null, customerShops: string[]) =>
+    planGroup({
+      custCode: 'C1',
+      overwrite: false,
+      rows,
+      existing,
+      shopByCode: new Map(),
+      routeByCode: ROUTES,
+      channelIdByKey: CHANNELS,
+      customerShops,
+    });
+
+  it('is expected to be rejected, as the promote rejects it', () => {
+    expect(withShops([prow({ branchCode: '1' })], customer(), ['C1-01']).rejected).toBe(REJECT_REASONS.LOOKALIKE_CODE);
+    expect(withShops([prow({ branchCode: 'ab' })], customer(), ['C1-AB']).rejected).toBe(REJECT_REASONS.LOOKALIKE_CODE);
+    expect(withShops([prow({ branchCode: '01' }), prow({ branchCode: '1' })], null, []).rejected).toBe(
+      REJECT_REASONS.LOOKALIKE_CODE
+    );
+  });
+
+  it('an identical code, another code, or a row released as a different shop is not', () => {
+    expect(withShops([prow({ branchCode: '01' })], customer(), ['C1-01']).rejected).not.toBe(REJECT_REASONS.LOOKALIKE_CODE);
+    expect(withShops([prow({ branchCode: '02' })], customer(), ['C1-01']).rejected).toBeNull();
+    expect(
+      withShops([prow({ branchCode: '1', shopCodeReleased: true })], customer(), ['C1-01']).rejected
+    ).toBeNull();
+  });
+
+  it('the summary line counts the rows whose codes were read in capitals', () => {
+    const s = emptySummary();
+    s.codesCapitalised = 2;
+    expect(summaryLines(s, false).filter((l) => l.text.startsWith('Codes in capitals'))).toEqual([
+      {
+        tone: 'plain',
+        text: 'Codes in capitals: 2 row(s) have a customer code or Temix code typed in small letters. They are read in capital letters (cct0005 is CCT0005), so they load as that customer; each row says so.',
+      },
+    ]);
+    expect(summaryLines(emptySummary(), false).some((l) => l.text.startsWith('Codes in capitals'))).toBe(false);
   });
 });
 

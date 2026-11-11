@@ -82,14 +82,17 @@ import { earlierAccountUploadsOfFile, resetByEarlierUpload } from '@/lib/account
 import {
   checkCustomerRow,
   fileCollisions,
+  fileShopCodes,
   rowCustCode,
   type SheetRow,
 } from '@/lib/import-row-check';
+import { capitalisedNote, capitalisedOf, groupShopLookalike, shopLookalikeMessage } from '@/lib/import-shop-code';
 import {
   batchLoadHistory,
   fixTarget,
   linkedCustomerCodes,
   masterCollisionMaps,
+  masterShopCodes,
   newerLoadsOfBatch,
   newerUploadsCarrying,
 } from '@/lib/import-master-lookup';
@@ -1537,7 +1540,12 @@ async function uploadCustomerMasterCore(formData: FormData): Promise<CustomerUpl
 
   // The per-row rules live in lib/import-row-check.ts, shared with the Steward's
   // in-app fix of a held-back row (item 20), so the two can never disagree.
-  const ctx = { channelKeys, phonesInFile, crsInFile, masterPhones, masterCrs };
+  // Owner's answer 2026-11-11 (A5): each customer's shops in the CRM and its
+  // rows in this sheet, so a shop code that only LOOKS like one of them (01 / 1,
+  // Ab / AB) is held back on its branch_code cell instead of becoming a second shop.
+  const shopsInFile = fileShopCodes(sheetRows);
+  const masterShops = await masterShopCodes([...new Set(sheetRows.map((r) => rowCustCode(r.row)))]);
+  const ctx = { channelKeys, phonesInFile, crsInFile, masterPhones, masterCrs, masterShops, shopsInFile };
   for (const [i, row] of sheet.rows.entries()) {
     const { parsed, issues } = checkCustomerRow(row as SheetRow, ctx);
 
@@ -1933,6 +1941,10 @@ async function refreshLaneBranches(
  *   '_route'  the row named a route other than its existing shop's; the route
  *             was NOT applied (lib/import-shop-route.ts routeNotAppliedNote:
  *             both routes, and the ROUTE_NOT_APPLIED sentence exactly).
+ *
+ * Owner's answer 2026-11-11 (A5) — one more:
+ *   '_capitals' the row's customer code or Temix code was typed in small
+ *             letters and was read in capitals (lib/import-shop-code.ts).
  */
 type RowNote = {
   note: string | null;
@@ -1945,6 +1957,8 @@ type RowNote = {
   subChannel?: string | null;
   kept?: string[];
   credit?: string | null;
+  /** Owner's answer 2026-11-11 (A5): the codes read in capital letters (lib/import-shop-code.ts). */
+  capitals?: string | null;
 };
 
 /**
@@ -1971,6 +1985,7 @@ async function writeLaneNotes(
       ...(n?.written && !n.note ? resolveErrors.map((m) => ({ field: '_resolve', message: m })) : []),
       ...(n?.kept ?? []).map((m) => ({ field: '_kept', message: m })),
       ...(n?.credit ? [{ field: '_credit', message: n.credit }] : []),
+      ...(n?.capitals ? [{ field: '_capitals', message: n.capitals }] : []),
     ];
     if (issues.length === 0) continue;
     await prisma.importRow.update({
@@ -2279,6 +2294,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
       // recheck): the state before the first fix, and the acted row's id.
       fixedFrom?: unknown;
       fixGroup?: string;
+      // Owner's answer 2026-11-11 (A5): released as a different shop by the Steward.
+      shopCodeReleased?: boolean;
     };
     const groups = new Map<
       string,
@@ -2717,6 +2734,27 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   : 'CROSSWALK:customer is archived in the CRM, and an import does not bring an archived customer back — exclude the row; steward review'
               );
             }
+            // Owner's answer 2026-11-11 (A5): a shop code that only LOOKS like one
+            // of this customer's shops (01 / 1, Ab / AB), or like another of its
+            // rows, never becomes a second shop. The upload holds such a row back;
+            // this catches a batch staged before that check, or a shop added since
+            // the upload, under the customer's lock. A row the Steward released as
+            // a different shop is not compared. The reason names branch_code, so the
+            // batch page offers that cell to correct (lib/import-row-fix.ts).
+            const lookalike = groupShopLookalike(
+              custCode,
+              g.parsed.map((p, i) => ({
+                branchCode: p.branchCode,
+                shopCodeReleased: p.shopCodeReleased === true,
+                rowNumber: rowNo(i),
+              })),
+              existing
+                ? (
+                    await tx.branch.findMany({ where: { customerId: existing.id }, select: { branchCode: true } })
+                  ).map((b) => b.branchCode)
+                : []
+            );
+            if (lookalike) throw new Error(`CROSSWALK:branch_code: ${shopLookalikeMessage(lookalike)}`);
             // Owner decision 2026-09-25, "branch only" — decided PER ROW. For a
             // customer linked to Temix, a row the Steward fixed in the app writes
             // its own branch and nothing else about the customer, whatever its
@@ -3845,6 +3883,12 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         if (firstTemixCodeOf) {
           logger.info({ ...firstTemixCodeOf, batchId }, 'import.promote.first_temix_code');
         }
+        // Owner's answer 2026-11-11 (A5): a row whose customer or Temix code was
+        // read in capital letters says so.
+        g.parsed.forEach((p, i) => {
+          const capitals = capitalisedNote(capitalisedOf(p));
+          if (capitals) rowNotes[i] = { ...(rowNotes[i] ?? { note: null, written: false }), capitals };
+        });
         // A full-lane row carries a note only when its customer's sub-channel
         // was cleared (F16, on the lead row).
         // Finding 1: or a CRM value kept or replaced, or a credit cell not applied.
@@ -3852,7 +3896,12 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
           refreshedRow ||
           rowNotes.some(
             (n) =>
-              !!n?.extra || !!n?.subChannel || (n?.kept?.length ?? 0) > 0 || !!n?.credit || !!n?.route
+              !!n?.extra ||
+              !!n?.subChannel ||
+              (n?.kept?.length ?? 0) > 0 ||
+              !!n?.credit ||
+              !!n?.route ||
+              !!n?.capitals
           );
         sliceNotes.kept += rowNotes.filter((n) => (n?.kept?.length ?? 0) > 0).length;
         sliceNotes.replaced += replacedRows.size;

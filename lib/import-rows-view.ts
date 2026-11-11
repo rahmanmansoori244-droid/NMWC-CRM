@@ -151,6 +151,8 @@ const FIELD_LABEL: Record<string, string> = {
   _credit: 'Credit not applied',
   // Owner's answer 2026-11-11 ("A1 stop"): a shop that exists keeps its route.
   _route: 'Route not applied',
+  // Owner's answer 2026-11-11 (A5): a code typed in small letters, read in capitals.
+  _capitals: 'Code in capitals',
   cust_code: 'Customer code',
   cust_name: 'Name',
   phone: 'Phone',

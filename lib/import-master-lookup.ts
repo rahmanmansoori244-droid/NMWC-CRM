@@ -19,6 +19,33 @@ import {
 } from '@/lib/import-row-fix';
 import type { BatchLoadHistory, NewerLoad } from '@/lib/import-batch-guard';
 
+/**
+ * Owner's answer 2026-11-11 (A5): the codes of every shop (archived ones too) of
+ * the customers a sheet names, by customer code, so a row whose branch_code
+ * only LOOKS like one of them is held back (lib/import-shop-code.ts). Shared by
+ * the upload and the Steward's in-app fix, like the phone and CR maps above.
+ * Read in chunks, well under PostgreSQL's bind-parameter limit.
+ */
+export async function masterShopCodes(
+  custCodes: string[],
+  db: Pick<Prisma.TransactionClient, 'branch'> = prisma
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  const codes = [...new Set(custCodes.filter(Boolean))];
+  for (let i = 0; i < codes.length; i += 2000) {
+    const found = await db.branch.findMany({
+      where: { customer: { nmwcCode: { in: codes.slice(i, i + 2000) } } },
+      select: { branchCode: true, customer: { select: { nmwcCode: true } } },
+    });
+    for (const b of found ?? []) {
+      const a = out.get(b.customer.nmwcCode) ?? [];
+      a.push(b.branchCode);
+      out.set(b.customer.nmwcCode, a);
+    }
+  }
+  return out;
+}
+
 export async function masterCollisionMaps(
   phones: string[],
   crs: string[]

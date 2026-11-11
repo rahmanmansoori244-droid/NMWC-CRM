@@ -15,6 +15,13 @@ import { normalizeCR } from '@/lib/cr';
 import { normalizeTemixCode } from '@/lib/temix-code';
 import { stripHtml as stripTags } from '@/lib/validation/fields';
 import { readCell, readLooseCell } from '@/lib/import-headings';
+import {
+  capitalCode,
+  shopLookalike,
+  shopLookalikeMessage,
+  type Capitalised,
+  type SiblingShop,
+} from '@/lib/import-shop-code';
 
 export type SheetRow = Record<string, unknown>;
 export type RowIssue = { field: string; message: string };
@@ -39,6 +46,13 @@ export type ParsedCustomerRow = {
   temixCode: string | null;
   creditLimit: number | null;
   paymentTermDays: number | null;
+  /**
+   * Owner's answer 2026-11-11 (A5): the codes the import changed to capital
+   * letters, as the sheet had them. Present only when one was changed.
+   */
+  capitalised?: Capitalised[];
+  /** The Steward released this row's lookalike shop code as a different shop (A5). */
+  shopCodeReleased?: true;
 };
 
 export type RowCheckContext = {
@@ -50,6 +64,14 @@ export type RowCheckContext = {
   /** Normalized phone → the nmwcCodes of live master customers carrying it. */
   masterPhones: ReadonlyMap<string, string[]>;
   masterCrs: ReadonlyMap<string, string[]>;
+  /**
+   * Owner's answer 2026-11-11 (A5): customer code (capitals) -> the codes of
+   * that customer's shops in the CRM, archived ones too (lib/import-master-lookup.ts
+   * masterShopCodes). Absent: no shop is compared.
+   */
+  masterShops?: ReadonlyMap<string, readonly string[]>;
+  /** Customer code (capitals) -> every row of it in the file, with its branch_code as written. */
+  shopsInFile?: ReadonlyMap<string, readonly SiblingShop[]>;
 };
 
 export type RowCheckOptions = {
@@ -59,6 +81,12 @@ export type RowCheckOptions = {
    * is legitimate here — one owner often runs several shops on one number.
    */
   phoneReleased?: boolean;
+  /**
+   * Owner's answer 2026-11-11 (A5): the Steward released this row's shop code,
+   * which only looks like one of the customer's shops or rows, as a DIFFERENT
+   * shop (audited as FORCE_OVERRIDE).
+   */
+  shopCodeReleased?: boolean;
 };
 
 /**
@@ -106,7 +134,17 @@ export function heldBackBy(codes: string[]): string {
     : `customers ${shown}`;
 }
 
+/**
+ * The cust_code cell as every lane reads it: trimmed, and in capital letters
+ * (owner's answer 2026-11-11, A5: cct0005 is the customer CCT0005). Only a-z
+ * are changed (lib/import-shop-code.ts capitalCode).
+ */
 export function rowCustCode(row: SheetRow): string {
+  return capitalCode(rowCustCodeAsWritten(row));
+}
+
+/** The cust_code cell as the sheet wrote it (trimmed). */
+function rowCustCodeAsWritten(row: SheetRow): string {
   return stripHtml(readCell(row, 'cust_code')).trim();
 }
 
@@ -157,6 +195,26 @@ export function fileCollisions(rows: Array<{ row: SheetRow; rowNumber: number }>
     }
   }
   return { phonesInFile, crsInFile };
+}
+
+/**
+ * Owner's answer 2026-11-11 (A5): every row of each customer in the file with
+ * its branch_code as written, so a row whose shop code only looks like that of
+ * another row of the same customer is held back.
+ */
+export function fileShopCodes(
+  rows: Array<{ row: SheetRow; rowNumber: number }>
+): Map<string, SiblingShop[]> {
+  const out = new Map<string, SiblingShop[]>();
+  for (const { row, rowNumber } of rows) {
+    const code = rowCustCode(row);
+    const branch = rowBranchCode(row);
+    if (!code || !branch) continue;
+    const a = out.get(code) ?? [];
+    a.push({ row: rowNumber, code: branch });
+    out.set(code, a);
+  }
+  return out;
 }
 
 /** What one sheet row parses to, and every reason it is held back (none = CLEAN). */
@@ -268,8 +326,8 @@ export function checkCustomerRow(
   // temix_code is folded as the Accountant's typed code is (lib/temix-code.ts:
   // upper case, ASCII digits, no invisible characters), so the promote's
   // comparisons with recorded codes, and the F11 hold-back's, read one spelling.
-  const temixCode =
-    normalizeTemixCode(stripHtml(readCell(row, 'temix_code'))) || null;
+  const temixWritten = stripHtml(readCell(row, 'temix_code')).trim();
+  const temixCode = normalizeTemixCode(temixWritten) || null;
   let creditLimit: number | null = null;
   const creditRaw = String(readCell(row, 'credit_limit') ?? '').trim();
   if (creditRaw) {
@@ -328,13 +386,36 @@ export function checkCustomerRow(
       });
   }
 
+  // Owner's answer 2026-11-11 (A5), shop codes: held back, never matched,
+  // when the code only LOOKS like one of the customer's shops or rows.
+  const branchCode = rowBranchCode(row);
+  if (!opts.shopCodeReleased && custCode && branchCode) {
+    const hit = shopLookalike(
+      custCode,
+      branchCode,
+      ctx.masterShops?.get(custCode) ?? [],
+      ctx.shopsInFile?.get(custCode) ?? []
+    );
+    if (hit) issues.push({ field: 'branch_code', message: shopLookalikeMessage(hit) });
+  }
+
+  // Owner's answer 2026-11-11 (A5): which codes were read in capital letters.
+  const capitalised: Capitalised[] = [];
+  const custWritten = rowCustCodeAsWritten(row);
+  if (custWritten && custWritten !== custCode) {
+    capitalised.push({ cell: 'cust_code', from: custWritten, to: custCode });
+  }
+  if (temixCode && temixWritten.toUpperCase() !== temixWritten) {
+    capitalised.push({ cell: 'temix_code', from: temixWritten, to: temixCode });
+  }
+
   const parsed: ParsedCustomerRow = {
     custCode,
     custName,
     channelKey,
     dayOfVisit,
     customerStatus,
-    branchCode: rowBranchCode(row),
+    branchCode,
     branchName: stripHtml(readCell(row, 'branch_name')) || null,
     regionCode: stripHtml(readCell(row, 'sales_region')) || null,
     routeCode: stripHtml(readCell(row, 'route')) || null,
@@ -347,6 +428,8 @@ export function checkCustomerRow(
     temixCode,
     creditLimit,
     paymentTermDays,
+    ...(capitalised.length > 0 ? { capitalised } : {}),
+    ...(opts.shopCodeReleased ? { shopCodeReleased: true as const } : {}),
   };
   return { parsed, issues };
 }

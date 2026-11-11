@@ -45,6 +45,7 @@ import { composeBranchCode } from './import-row-fix';
 import { normalizeTemixCode } from './temix-code';
 import { ROUTE_NOT_APPLIED } from './import-shop-notice';
 import { existingShopWrite, holdShopRoute, type RouteById } from './import-shop-route';
+import { groupShopLookalike } from './import-shop-code';
 
 // ── What a row gives a shop ─────────────────────────────────────────────────
 
@@ -406,6 +407,8 @@ export type PlanRow = {
   dayOfVisit?: string | null;
   customerStatus?: string | null;
   fixedInApp?: boolean;
+  /** Owner's answer 2026-11-11 (A5): released as a different shop by the Steward. */
+  shopCodeReleased?: boolean;
 };
 
 /**
@@ -478,6 +481,8 @@ export const REJECT_REASONS = {
   ARCHIVED_SHOP: 'a row fixed in the app that names an archived shop',
   // Code review 2026-11-10, finding 7.
   HELD_CODE: "a new customer code that is already another live customer's Temix code",
+  // Owner's answer 2026-11-11 (A5).
+  LOOKALIKE_CODE: "a branch_code that only looks like one of the customer's shops or rows (01 / 1, Ab / AB)",
 } as const;
 export type RejectReason = (typeof REJECT_REASONS)[keyof typeof REJECT_REASONS];
 
@@ -563,6 +568,12 @@ export function planGroup(input: {
    * under one: the promote rejects it.
    */
   liveTemixCodes?: ReadonlySet<string>;
+  /**
+   * Owner's answer 2026-11-11 (A5): the codes of every shop the customer has
+   * (archived ones too). A row whose branch_code only looks like one of them,
+   * or like another of its rows, is rejected by the promote.
+   */
+  customerShops?: readonly string[];
 }): GroupPlan {
   const { custCode, overwrite, rows, existing, shopByCode, routeByCode, channelIdByKey } = input;
   const plan = emptyPlan(rows.length);
@@ -572,6 +583,16 @@ export function planGroup(input: {
   const shops = rows.map((p, i) => summaryBranchOf(custCode, p, i, routeByCode));
   if (new Set(shops.map((s) => s.branchCode)).size !== shops.length) return reject(REJECT_REASONS.REPEATED_CODE);
   if (existing?.deletedAt) return reject(REJECT_REASONS.ARCHIVED);
+  // As the promote, under the customer's lock (lib/import-shop-code.ts).
+  if (
+    groupShopLookalike(
+      custCode,
+      rows.map((p, i) => ({ branchCode: p.branchCode, shopCodeReleased: p.shopCodeReleased === true, rowNumber: i })),
+      existing ? (input.customerShops ?? []) : []
+    )
+  ) {
+    return reject(REJECT_REASONS.LOOKALIKE_CODE);
+  }
 
   const lane = decideLane({
     custCode,
@@ -820,6 +841,8 @@ export type PromoteSummary = {
   temix: { customersOnRefresh: number; customersChanged: number };
   /** Owner's answer 2026-11-11: rows naming another route for a shop that exists (GroupPlan.routeNotApplied). */
   routeNotApplied: number;
+  /** Owner's answer 2026-11-11 (A5): clean rows whose customer or Temix code was read in capital letters. */
+  codesCapitalised: number;
   crm: {
     customersFilled: number;
     shopsFilled: number;
@@ -847,6 +870,7 @@ export function emptySummary(): PromoteSummary {
     created: { customers: 0, shops: 0, shopsOnExisting: 0, closedCustomersReopened: 0 },
     temix: { customersOnRefresh: 0, customersChanged: 0 },
     routeNotApplied: 0,
+    codesCapitalised: 0,
     crm: {
       customersFilled: 0,
       shopsFilled: 0,
@@ -940,6 +964,12 @@ export function summaryLines(s: PromoteSummary, overwrite: boolean): SummaryLine
     lines.push({
       tone: 'warn',
       text: `Route NOT applied: ${n(s.routeNotApplied)} row(s) name a route other than the current route of their shop, which is already in the CRM. The rest of each row loads as the lines here say; the route does not. ${ROUTE_NOT_APPLIED}`,
+    });
+  }
+  if (s.codesCapitalised > 0) {
+    lines.push({
+      tone: 'plain',
+      text: `Codes in capitals: ${n(s.codesCapitalised)} row(s) have a customer code or Temix code typed in small letters. They are read in capital letters (cct0005 is CCT0005), so they load as that customer; each row says so.`,
     });
   }
   if (s.crm.customersFilled + s.crm.shopsFilled > 0) {

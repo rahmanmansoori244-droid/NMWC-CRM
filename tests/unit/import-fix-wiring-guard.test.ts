@@ -29,6 +29,9 @@ describe('one row check for the upload and the fix', () => {
     expect(upload).toContain('checkCustomerRow(');
     expect(upload).toContain('fileCollisions(');
     expect(upload).toContain('masterCollisionMaps(');
+    // Owner's answers 2026-11-11 (A5): the shops of each customer, in the CRM and in the sheet.
+    expect(upload).toContain('masterShopCodes(');
+    expect(upload).toContain('fileShopCodes(');
     expect(imports).not.toMatch(/field:\s*'cust_code',\s*message:\s*'required'/);
     expect(imports).not.toMatch(/expected SAT\/SUN\/MON/);
   });
@@ -38,6 +41,9 @@ describe('one row check for the upload and the fix', () => {
     expect(recheck).toContain('checkCustomerRow(');
     expect(recheck).toContain('masterCollisionMaps(');
     expect(recheck).toContain('correctedRow(');
+    // A5: a corrected branch_code is compared with the customer's shops and rows again.
+    expect(recheck).toContain('masterShopCodes(');
+    expect(recheck).toMatch(/shopCodeReleased:\s*!!c\.shopCodeReleased/);
   });
 });
 
@@ -48,6 +54,8 @@ describe('every fix action', () => {
     'recheckCore',
     'correctCore',
     'releaseCore',
+    // Owner's answers 2026-11-11 (A5): a lookalike shop code released as a different shop.
+    'releaseShopCodeCore',
     'withdrawCore',
     'excludeCore',
     'includeCore',

@@ -47,16 +47,19 @@ import {
   type FileDup,
   type SheetRow,
 } from '@/lib/import-row-check';
+import type { SiblingShop } from '@/lib/import-shop-code';
 import {
   batchLoadHistory,
   fixTarget,
   masterCollisionMaps,
+  masterShopCodes,
   newerUploadsCarrying,
   type FixTarget,
 } from '@/lib/import-master-lookup';
 import {
   acceptCells,
   canReleasePhone,
+  canReleaseShopCode,
   cellValue,
   changedCells,
   correctedRow,
@@ -313,9 +316,12 @@ async function recheck(
       code: string | null;
       phone: string | null;
       cr: string | null;
+      branch: string | null;
+      released: boolean | null;
     }>
   >`
-    SELECT "id", "rowNumber", "parsed"->>'custCode' AS "code", "parsed"->>'phone' AS "phone", "parsed"->>'crNumber' AS "cr"
+    SELECT "id", "rowNumber", "parsed"->>'custCode' AS "code", "parsed"->>'phone' AS "phone", "parsed"->>'crNumber' AS "cr",
+           "parsed"->>'branchCode' AS "branch", ("parsed"->>'shopCodeReleased') = 'true' AS "released"
       FROM "ImportRow"
      WHERE "batchId" = ${batch.id} AND "excludedAt" IS NULL AND "parsed" IS NOT NULL`;
   const phonesInFile = new Map<string, FileDup[]>();
@@ -326,14 +332,24 @@ async function recheck(
     a.push(d);
     m.set(k, a);
   };
+  // Owner's answer 2026-11-11 (A5): each customer's rows in the batch with their
+  // branch_code, so a corrected code is checked against its siblings as the
+  // upload checked it (a sibling released as a different shop is not compared).
+  const shopsInFile = new Map<string, SiblingShop[]>();
+  const addShop = (code: string | null, s: SiblingShop) => {
+    if (!code || !s.code) return;
+    shopsInFile.set(code, [...(shopsInFile.get(code) ?? []), s]);
+  };
   for (const o of others) {
     if (targetIds.has(o.id)) continue;
     add(phonesInFile, o.phone, { row: o.rowNumber, code: o.code ?? '' });
     add(crsInFile, normalizeCR(o.cr), { row: o.rowNumber, code: o.code ?? '' });
+    addShop(o.code, { row: o.rowNumber, code: o.branch ?? '', released: o.released === true });
   }
-  for (const { t, row } of corrected) {
+  for (const { t, c, row } of corrected) {
     add(phonesInFile, rowPhoneNorm(row), { row: t.rowNumber, code: rowCustCode(row) });
     add(crsInFile, rowCrNorm(row), { row: t.rowNumber, code: rowCustCode(row) });
+    addShop(rowCustCode(row), { row: t.rowNumber, code: rowBranchCode(row) ?? '', released: !!c.shopCodeReleased });
   }
   const { masterPhones, masterCrs } = await masterCollisionMaps(
     corrected.map((x) => rowPhoneNorm(x.row)).filter((v): v is string => !!v),
@@ -342,13 +358,19 @@ async function recheck(
   const channelKeys = new Set(
     (await tx.channel.findMany({ select: { key: true } })).map((c) => c.key.toUpperCase())
   );
-  const ctx = { channelKeys, phonesInFile, crsInFile, masterPhones, masterCrs };
+  // And the shops the CRM has for each customer the rows name, read now.
+  const masterShops = await masterShopCodes(
+    corrected.map((x) => rowCustCode(x.row)),
+    tx
+  );
+  const ctx = { channelKeys, phonesInFile, crsInFile, masterPhones, masterCrs, masterShops, shopsInFile };
 
   let clean = 0;
   let held = 0;
   for (const { t, c, row } of corrected) {
     const { parsed, issues } = checkCustomerRow(row as SheetRow, ctx, {
       phoneReleased: !!c.phoneReleased,
+      shopCodeReleased: !!c.shopCodeReleased,
     });
     const nextState = issues.length > 0 ? ImportRowState.QUARANTINED : ImportRowState.CLEAN;
     // fixedFrom: the state and reasons the row had before its FIRST fix, so a
@@ -570,6 +592,59 @@ async function releaseCore(formData: FormData): Promise<FixResult> {
       'FORCE_OVERRIDE',
       row.id,
       `Shared phone released by the Data Steward: ${reason}`,
+      r
+    );
+    return r;
+  });
+  done(batchId);
+  return result;
+}
+
+// ── Release a shop code as a different shop ─────────────────────────────────
+
+/**
+ * Owner's answer 2026-11-11 (A5): a row whose branch_code only LOOKS like one of
+ * its customer's shops or rows (01 / 1, Ab / AB) is held back, never matched.
+ * When the two really are different shops, the Steward lets the row through
+ * with a written reason, exactly as a shared phone is released: audited as
+ * FORCE_OVERRIDE, re-checked, and withdrawn like any other fix. Only a row whose
+ * problems are such codes (and, perhaps, a phone on another customer, which is
+ * then released on its own) can be.
+ */
+export async function releaseImportRowShopCodeAction(formData: FormData): SafeAction<FixResult> {
+  return runAction(() => releaseShopCodeCore(formData));
+}
+
+async function releaseShopCodeCore(formData: FormData): Promise<FixResult> {
+  const me = await requireSteward();
+  const rowId = String(formData.get('rowId') ?? '');
+  const reason = String(formData.get('reason') ?? '').trim();
+  if (!rowId) throw new ValidationError({ _form: 'Row required.' });
+  if (reason.length < MIN_REASON) {
+    throw new ValidationError({
+      reason: `Say why this is a different shop (${MIN_REASON}+ characters).`,
+    });
+  }
+  const env = await getAuditEnvelope(me.id);
+  const batchId = await batchIdOf(rowId);
+  const result = await withBatch(batchId, { actorId: me.id, row: rowId }, async (tx, batch) => {
+    const row = await loadRow(tx, rowId);
+    assertFixable(row);
+    if (row.state !== ImportRowState.QUARANTINED || !canReleaseShopCode(row.issues)) {
+      throw new ValidationError({
+        _form:
+          'Only a row held back because its shop code looks like another shop of the same customer can be released.',
+      });
+    }
+    const merged: Corrections = { ...readCorrections(row.corrections), shopCodeReleased: { reason } };
+    await refuseIfNewerUpload(tx, batch, [{ row, c: merged }], row.id);
+    const r = await recheck(tx, batch, [row], () => merged, row.id, me.id);
+    await audit(
+      tx,
+      env,
+      'FORCE_OVERRIDE',
+      row.id,
+      `Shop code released as a different shop by the Data Steward: ${reason}`,
       r
     );
     return r;

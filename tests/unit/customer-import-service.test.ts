@@ -92,14 +92,30 @@ import {
 // ── N05: upload ─────────────────────────────────────────────────────────────
 
 describe('uploadCustomerMasterAction — N05', () => {
-  let staged: Array<{ rowNumber: number; raw: Record<string, unknown>; parsed: Record<string, unknown>; state: string }>;
+  let staged: Array<{
+    rowNumber: number;
+    raw: Record<string, unknown>;
+    parsed: Record<string, unknown>;
+    state: string;
+    issues?: Array<{ field: string; message: string }>;
+  }>;
   /** Customers in the master, as the upload's "linked to Temix" lookup reads them. */
   let master: Array<{ nmwcCode: string; temixCode: string | null; deletedAt: Date | null }>;
+  /** Owner's answer 2026-11-11 (A5): shops in the master, as masterShopCodes reads them. */
+  let masterBranches: Array<{ nmwcCode: string; branchCode: string }>;
 
   beforeEach(() => {
     staged = [];
     master = [];
+    masterBranches = [];
     Object.assign(h.db, {
+      branch: {
+        findMany: vi.fn(async ({ where }: { where: { customer: { nmwcCode: { in: string[] } } } }) =>
+          masterBranches
+            .filter((b) => where.customer.nmwcCode.in.includes(b.nmwcCode))
+            .map((b) => ({ branchCode: b.branchCode, customer: { nmwcCode: b.nmwcCode } }))
+        ),
+      },
       importBatch: {
         create: vi.fn(async () => ({ id: 'batch-1' })),
         update: vi.fn(async () => ({})),
@@ -274,6 +290,75 @@ describe('uploadCustomerMasterAction — N05', () => {
     const res = await upload(['cust_code', 'cust_name', 'TEMIX_CODE'], ['C020', 'Twenty', null]);
     expect(res.ok).toBe(true);
     expect(staged).toHaveLength(1);
+  });
+
+  // ── Owner's answers 2026-11-11 (A5): codes in small letters, lookalike shop codes ──
+  it('reads a customer code typed in small letters in capitals, keeps the cell as uploaded in raw, and notes it', async () => {
+    master = [{ nmwcCode: 'CCT0005', temixCode: 'CCT0005', deletedAt: null }];
+    const res = await upload(
+      ['cust_code', 'cust_name', 'branch_code', 'temix_code'],
+      ['cct0005', 'Five', '01', 'cct0005'],
+      ['CCT0005', 'Five', '02', 'CCT0005']
+    );
+    expect(res).toMatchObject({ ok: true, data: { clean: 2, quarantined: 0 } });
+    expect(staged.map((r) => r.parsed.custCode)).toEqual(['CCT0005', 'CCT0005']);
+    expect(staged[0].raw).toMatchObject({ cust_code: 'cct0005', temix_code: 'cct0005' });
+    expect(staged[0].parsed.capitalised).toEqual([
+      { cell: 'cust_code', from: 'cct0005', to: 'CCT0005' },
+      { cell: 'temix_code', from: 'cct0005', to: 'CCT0005' },
+    ]);
+    expect(staged[1].parsed).not.toHaveProperty('capitalised');
+  });
+
+  it('a sheet with no temix_code column finds a linked customer by its code in capitals', async () => {
+    master = [{ nmwcCode: 'CCT0005', temixCode: 'CCT0005', deletedAt: null }];
+    const res = await upload(['cust_code', 'cust_name'], ['cct0005', 'Five']);
+    expect(res.ok).toBe(false);
+    const asked = (h.db.customer as { findMany: Fn }).findMany.mock.calls;
+    expect(asked[0]![0].where.nmwcCode.in).toEqual(['CCT0005']);
+  });
+
+  it('holds back a shop code that only looks like the customer’s existing shop (01 / 1, AB / ab); an identical one loads', async () => {
+    masterBranches = [
+      { nmwcCode: 'CCT0005', branchCode: 'CCT0005-01' },
+      { nmwcCode: 'CCT0005', branchCode: 'CCT0005-AB' },
+      { nmwcCode: 'CCT0006', branchCode: 'CCT0006-01' },
+    ];
+    const res = await upload(
+      ['cust_code', 'cust_name', 'branch_code'],
+      ['CCT0005', 'Five', '1'],
+      ['cct0005', 'Five', 'ab'],
+      ['CCT0005', 'Five', '01'],
+      ['CCT0005', 'Five', 'CCT0005-AB'],
+      ['CCT0006', 'Six', '02']
+    );
+    expect(res).toMatchObject({ ok: true, data: { clean: 3, quarantined: 2 } });
+    expect(staged.map((r) => r.state)).toEqual(['QUARANTINED', 'QUARANTINED', 'CLEAN', 'CLEAN', 'CLEAN']);
+    expect(staged[0].issues).toEqual([
+      {
+        field: 'branch_code',
+        message:
+          "Shop code \"1\" looks like this customer's existing shop \"CCT0005-01\" (Excel may have dropped a zero). Correct the code if it is the same shop; if it is a different shop, release the row with a reason.",
+      },
+    ]);
+    expect(staged[1].issues?.[0]?.message).toContain(
+      "\"ab\" looks like this customer's existing shop \"CCT0005-AB\" (only capital and small letters differ)"
+    );
+    // Asked once, for the customer codes in capitals.
+    const asked = (h.db.branch as { findMany: Fn }).findMany.mock.calls;
+    expect(asked).toHaveLength(1);
+    expect(asked[0]![0].where.customer.nmwcCode.in).toEqual(['CCT0005', 'CCT0006']);
+  });
+
+  it('holds back both rows of one customer whose shop codes only look alike', async () => {
+    const res = await upload(['cust_code', 'cust_name', 'branch_code'], ['NEW1', 'New', '01'], ['new1', 'New', '1']);
+    expect(res).toMatchObject({ ok: true, data: { clean: 0, quarantined: 2 } });
+    expect(staged[0].issues?.[0]?.message).toMatch(
+      /^Shop code "01" looks like shop code "1" on row 3 of the same customer in this sheet/
+    );
+    expect(staged[1].issues?.[0]?.message).toMatch(
+      /^Shop code "1" looks like shop code "01" on row 2 of the same customer in this sheet/
+    );
   });
 
   it('refuses one column under two spellings, which the repeated-heading check (same letters) does not see', async () => {
@@ -482,7 +567,16 @@ function setup(
       count: vi.fn(async () => 0),
       // Owner decision 7's before/after read of the live branch statuses
       // (lib/customer-status.ts): none here, so the customer's status is not moved.
-      findMany: vi.fn(async () => []),
+      // Owner's answer 2026-11-11 (A5): the customer's shop codes, read under its
+      // lock for the lookalike check (select: { branchCode } only).
+      findMany: vi.fn(
+        async (a?: { where?: { customerId?: string }; select?: Record<string, unknown> }) =>
+          a?.select && Object.keys(a.select).join() === 'branchCode'
+            ? Object.entries(opts.branches ?? {})
+                .filter(([, b]) => b.customerId === a.where?.customerId)
+                .map(([branchCode]) => ({ branchCode }))
+            : []
+      ),
       upsert: w('branch.upsert'),
       create: w('branch.create'),
       update: w('branch.update'),
@@ -2350,5 +2444,49 @@ describe('promoteCustomerBatchAction — a NEW customer is never created under a
       expect(out, JSON.stringify(holder)).toMatchObject({ promoted: 1, failed: 0 });
       expect(order).toContain('customer.upsert');
     }
+  });
+});
+
+describe('owner’s answers 2026-11-11 (A5) — codes in small letters and lookalike shop codes at Promote', () => {
+  it('a row whose codes were read in capitals says so on its row once it loads', async () => {
+    setup(null, [
+      parsed({ custCode: 'NEW5', branchCode: '01', capitalised: [{ cell: 'cust_code', from: 'new5', to: 'NEW5' }] }),
+      parsed({ custCode: 'NEW5', branchCode: '02' }),
+    ]);
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 2, failed: 0 });
+    expect(notesWritten()['row-0']).toContainEqual({
+      field: '_capitals',
+      message: 'Small letters changed to capitals: customer code "new5" was read as "NEW5". The sheet is not changed.',
+    });
+    expect(notesWritten()['row-1'] ?? []).not.toContainEqual(expect.objectContaining({ field: '_capitals' }));
+  });
+
+  it('a staged row whose shop code only looks like one of the customer’s shops is rejected with its customer, writing nothing', async () => {
+    setup(live(), [parsed({ branchCode: 'ARC1-2' })], [], { branches: { 'ARC1-02': storedBranch() } });
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 0, failed: 1 });
+    expect(rejected[0].data.issues[0].message).toBe(
+      "branch_code: Shop code \"ARC1-2\" looks like this customer's existing shop \"ARC1-02\" (Excel may have dropped a zero). Correct the code if it is the same shop; if it is a different shop, release the row with a reason."
+    );
+    for (const wr of WRITES) expect(order).not.toContain(wr);
+  });
+
+  it('two staged rows of a new customer whose codes only look alike are rejected too', async () => {
+    setup(null, [parsed({ custCode: 'NEW6', branchCode: '01' }), parsed({ custCode: 'NEW6', branchCode: '1' })]);
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 0, failed: 1 });
+    expect(rejected[0].data.issues[0].message).toMatch(/^branch_code: Shop code "01" looks like shop code "1" on row 3 /);
+    expect(order).not.toContain('customer.upsert');
+  });
+
+  it('an identical code loads as that shop, and a row the Steward released as a different shop is created', async () => {
+    setup(live(), [parsed({ branchCode: 'ARC1-02' })], [], { branches: { 'ARC1-02': storedBranch() } });
+    expect(await promote()).toMatchObject({ promoted: 1, failed: 0 });
+    setup(live(), [parsed({ branchCode: 'ARC1-2', shopCodeReleased: true })], [], {
+      branches: { 'ARC1-02': storedBranch() },
+    });
+    expect(await promote()).toMatchObject({ promoted: 1, failed: 0 });
+    expect(branchUpserts().map((u) => u.where.branchCode)).toEqual(['ARC1-2']);
   });
 });
