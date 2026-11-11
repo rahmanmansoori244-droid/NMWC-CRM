@@ -22,6 +22,8 @@ export { omanDate, omanDateTime } from '../../../../lib/tz';
 export { TEMIX_QUEUE_WHERE } from '../../../../lib/temix';
 /** One cap for the import form and the importer (81c37ce): 4,300 KB, and the words a bigger file is told. */
 export { MAX_IMPORT_BYTES, importFileTooLarge } from '../../../../lib/import-file-size';
+/** The import's words about a shop that keeps its route (owner's answer 2026-11-11, "A1 stop"). */
+export { ROUTE_NOT_APPLIED, ROUTE_ONLY_MEANING, SHOP_NOT_CHANGED_MEANING } from '../../../../lib/import-shop-notice';
 
 export const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
