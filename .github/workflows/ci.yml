@@ -674,6 +674,45 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # Workflow lint (2026-11-11). GitHub refused both clean-start workflow files on
+  # their first push (`${{ runner.temp }}` in a job's env:, where the runner
+  # context does not exist), and no local test knew the rule. Those two files
+  # delete production data and cannot be exercised before the owner's first dry
+  # run, so they are checked statically on every push: actionlint (expressions,
+  # contexts, needs/outputs, action inputs) and, through it, shellcheck on every
+  # run: block. Only these two files; the other workflows are not linted here.
+  # actionlint is the release tarball of one exact version, its sha256 copied
+  # from that release's own checksums file and checked before it is unpacked.
+  # tests/unit/workflow-contexts.test.ts holds the context rule locally as well.
+  workflow-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: actionlint 1.7.12, sha256-checked
+        env:
+          AL_VERSION: 1.7.12
+          AL_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/actionlint"
+          f="actionlint_${AL_VERSION}_linux_amd64.tar.gz"
+          mkdir -p "$d"
+          curl -fsSL --retry 3 -o "$d/$f" "https://github.com/rhysd/actionlint/releases/download/v${AL_VERSION}/$f"
+          (cd "$d" && printf '%s  %s\n' "$AL_SHA256" "$f" | sha256sum -c -)
+          tar -xzf "$d/$f" -C "$d" actionlint
+          echo "$d" >> "$GITHUB_PATH"
+      - name: Lint the clean-start workflows (actionlint, with shellcheck on every run block)
+        run: |
+          set -euo pipefail
+          # Without shellcheck on PATH actionlint silently skips the run: blocks.
+          command -v shellcheck > /dev/null || { echo "::error::shellcheck is missing, so the run blocks would not be checked"; exit 1; }
+          shellcheck --version
+          actionlint -version
+          actionlint .github/workflows/clean-start.yml .github/workflows/clean-start-photos.yml
+
   # GAP-08 (re-benchmark 2026-09-24): fourteen checks, no credentials, fifteen
   # seconds, every one of them something that has already been wrong on this
   # system — and it ran only when somebody remembered to type it. One of the

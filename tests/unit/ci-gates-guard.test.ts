@@ -113,6 +113,8 @@ const JOBS = [
   'db-tests',
   'restore-chain',
   'secrets-scan',
+  // The clean-start workflow files, linted (actionlint + shellcheck), 2026-11-11.
+  'workflow-lint',
   'e2e',
   'post-deploy-smoke',
 ];
