@@ -853,7 +853,7 @@ Routes never move to another region, are never renamed, split or merged. A route
 
 To serve an area from another region:
 1. Create the new route in the other region (`/routes`, or a `Routes` row with a new code).
-2. Move the customers' shops to it. Route moves are made in Temix (owner decision 2026-10-11). The edit flow has no route field (code review 2026-11-10, finding 28, second round). Two customer-import paths can still set a shop's route: a held-back row fixed on its batch page and then loaded, and a row with no `temix_code` (third round: whether they should is an open question for the owner; they are unchanged).
+2. Move the customers' shops to it. Route moves are made in Temix (owner decision 2026-10-11). The edit flow has no route field (code review 2026-11-10, finding 28, second round), and since the owner's answer of 2026-11-11 ("A1 stop") **no customer-import path changes the route of a shop that already exists** either: the two that still could (a held-back row fixed on its batch page and then loaded, and a row with no `temix_code`) now load the rest of the row and leave the route as it is, and the row says so (`lib/import-shop-route.ts`; § Import, below). A shop the import **creates** — a new customer's, or a new shop of a customer already in the CRM — is still created on the route its row names. **Nothing in the CRM can move an existing shop to another route until the daily Temix → CRM import is built** (planned, not built: it will carry route moves, with history and an alert to the Steward). Until then **a route move made in Temix does not show in the CRM**: the shop stays on its old route in the CRM, and with it its salesman, region, Manager and the regional figures. Handing a whole ROUTE to another salesman (`/users`, or the account import) is a different thing and is unchanged.
 3. Give the new route its salesman on `/users` (§ "Move a route to another salesman").
 4. Switch the old route off when no shop is left on it.
 
@@ -935,9 +935,10 @@ not built yet (item D).
      branch is missing or differs. Since code review 2026-11-10 (finding 28) the note reads
      "loaded, shop NOT changed" and, when the row's route differs, says the route was NOT applied and
      that route moves are made in Temix (`lib/import-shop-notice.ts` `ROUTE_NOT_APPLIED`,
-     second round; third round: the words "No screen in the CRM changes a shop's route" are
-     gone, because a held-back row fixed on the batch page and then loaded, and a row with no
-     `temix_code`, can still set one — an open owner question); name, address, visit
+     second round; third round: the words "No screen in the CRM changes a shop's route" were
+     taken out while a held-back row fixed on the batch page and then loaded, and a row with no
+     `temix_code`, could still set one; since the owner's answer of 2026-11-11 ("A1 stop")
+     neither can — see "a shop that exists keeps its route" below); name, address, visit
      day and status can be changed by an edit on the customer page — a route cannot. "Before you
      promote" counts these rows and Promote waits for the Steward to tick that he understands. The
      rows counted are those that carry the customer's Temix code and name a shop of that customer whose
@@ -959,8 +960,8 @@ not built yet (item D).
      customer that has one.** It creates a customer or shop the CRM does not have, from every
      value the row gives. **On a customer or shop that exists (the option off, the default):** it
      fills a blank phone, contact person, CR number or channel, a blank visit day, and a shop
-     address that is blank or still the importer's own "Address pending"; it moves the shop to the
-     sheet's route; and it **keeps every CRM value on record and writes no status**, so an older
+     address that is blank or still the importer's own "Address pending"; it leaves the shop on its
+     route (below); and it **keeps every CRM value on record and writes no status**, so an older
      sheet no longer undoes an approved correction or reopens a shop that an approved request
      closed. A row whose value was kept is listed under **Loaded with a warning**, labelled
      "CRM value kept" — the fields are named, never the values — and nothing is written or audited
@@ -989,6 +990,29 @@ not built yet (item D).
      UNASSIGNED route); and once a customer has branches, a row with no `branch_code` is rejected
      — it would be numbered by its position in the file and could overwrite a sibling. **Always
      include `branch_code`.**
+   - **A shop that exists keeps its route — on every lane, with the overwrite option on or off**
+     (owner's answer 2026-11-11, "A1 stop": route moves are made in Temix, never in the CRM;
+     `lib/import-shop-route.ts`, the one place both the full lane and a row fixed in the app build
+     what they write on a shop that exists — it has no route in it). A row that names a different
+     route for a shop already in the CRM is **not refused for that**: the rest of the row loads as
+     its lane says, and only the route (and the region that would follow it) is not applied. The
+     Steward is told four times: on the batch page, a held-back row or a fix waiting to load that
+     names a different route says so before it is corrected or loaded; **Before you promote** has
+     a line "Route NOT applied: N row(s) …" and the tick Promote waits for covers these rows too;
+     the row itself, under **Loaded with a warning**, is labelled "Route not applied" and reads
+     "shop C-01: the sheet names route R2; the shop is on route R1. The route was NOT applied; the
+     shop stays on its current route. Route moves are made in Temix."; and the end-of-load notice
+     the Steward acknowledges counts these rows with the "shop NOT changed" ones, each row once
+     (`ImportBatch.shopNotChangedRows`; its heading now reads "N row(s) were loaded, but not
+     everything they say about their shop was applied", because the other cells of a route row may
+     have been applied). Nothing about the route is written to the audit log or BranchHistory: the
+     row's note is the record. Still done: a shop the import **creates** (a new customer's, or a new
+     shop of a customer in the CRM) is created on the route its row names — that is how the owner's
+     file lands on an emptied database; and a shop whose stored region is not its own route's region
+     (left by a route moved between regions before routes were fixed to their region) is put back
+     into its own route's region when its row names a route — that is not a route move. A test
+     (`tests/unit/import-shop-route-guard.test.ts`) reads every import source file and fails if any
+     write on an existing shop names a route.
    - **A full-lane row that moves a customer to another channel clears its sub-channel when the
      stored one belongs to the old channel** (owner decision 2026-09-29, auditor recheck F16) —
      **only with the overwrite option on**; by default the channel on record is kept, so nothing
@@ -1015,8 +1039,8 @@ not built yet (item D).
      branch still in the old region of a route that an account import has since moved to another
      region counts as changed even when every cell matches, and the write puts it in its route's
      region: the account import moves the route alone, not its branches. The refresh lane does
-     not compare the region, so there such a branch keeps the old region until something writes
-     its route again. A status the row only restates is no status change: `lastStatusChangeAt`
+     not compare the region, so there such a branch keeps the old region until a full-lane row
+     that names a route (any route: the shop keeps its own) repairs it. A status the row only restates is no status change: `lastStatusChangeAt`
      (reactivation evidence is dated against it) moves only when the status does.
    - The export's **Updated since** filter is per customer: it reads the *customer's* `updatedAt`,
      and a customer it matches comes out with all its live branches. A full-lane or refresh-lane
@@ -1037,9 +1061,9 @@ not built yet (item D).
    - **A row fixed in the app for a customer linked to Temix is always "branch only"** (owner
      decision 2026-09-25), whatever its `temix_code` cell says and whatever rows are beside it in
      the promote — decided per row: it creates its branch, or updates it from the cells it gave
-     (a shop that exists: its blank name, address or visit day and its route by default, and
-     every cell it gave only with the batch's overwrite option on — the row says "CRM value
-     kept" otherwise),
+     (a shop that exists: its blank name, address or visit day by default, and every cell it
+     gave only with the batch's overwrite option on — the row says "CRM value kept" otherwise;
+     never its route: see "a shop that exists keeps its route", above),
      changes nothing else about the customer (not the name, phone, CR, contact or channel, and
      not the credit figures) — except that its phone fills the customer's phone when the customer
      has none (owner decision 2026-09-27; never over an existing phone) — and queues the customer
@@ -1287,7 +1311,7 @@ What users report in their first days, and the control in the app that answers e
 | "Too many attempts from your network. Try again in …s" | About thirty FAILED sign-ins (a wrong password or username) from that network in a short time, by anyone on it; one more is allowed every 12 seconds after that (`LOGIN_NETWORK_CAPACITY` and `LOGIN_NETWORK_REFILL_PER_MIN` in `lib/rate-limit.ts`). Successful sign-ins do not count, so there is no need to stagger people who type correctly, and attempts that are refused do not count either, so a room retrying does not keep itself locked. Wait the seconds shown, and have whoever is failing check the username and the password, or switch to mobile data. |
 | A customer's visit day is wrong | A Manager (customers in his regions) or the Steward opens the customer → **Enrich** → **Day of visit** → submit. From those two roles it is a direct write, with no approval step, and it is audited. A day can be changed but not cleared — pick the right one. While a request is waiting on the customer the form will not submit; decide that one first (two rows down). |
 | A salesman needs another route, or has left | Collect the route and the right owner and hand them to the Steward, who moves it on `/users` (**Disable** the leaver, then **Create user** or **Edit**: §7, "Move a route to another salesman"). That moves the whole route; it never moves a single customer. |
-| One customer is on the wrong route | Collect the customer and branch codes and the right route and hand them to the Steward. Route moves are made in Temix (owner decision 2026-10-11) — the Steward records those for the owner. A row that carries the customer's Temix code never changes an existing shop, and says so ("loaded, shop NOT changed … The route was NOT applied; the shop stays on its current route. Route moves are made in Temix."). |
+| One customer is on the wrong route | Collect the customer and branch codes and the right route and hand them to the Steward. Route moves are made in Temix (owner decision 2026-10-11) — the Steward records those for the owner. A row that carries the customer's Temix code never changes an existing shop, and says so ("loaded, shop NOT changed … The route was NOT applied; the shop stays on its current route. Route moves are made in Temix."). Since 2026-11-11 no import row changes the route of a shop that exists (§ Import), so until the daily Temix → CRM import is built, the move made in Temix does not show in the CRM. |
 | "A submitted edit is already pending review for this customer.", "This customer already has a pending change awaiting review", or on the edit page "A submission is already pending review (by …)". When the waiting request is the user's own, the message starts "Your changes sent…" or "Your … sent …" instead. | Only one request can be open on a customer. The Manager decides the waiting one — **Approvals**, or **Reactivations** for a reopen request — and the salesman then submits again. |
 | An error page showing a **Reference** | Ask for the Reference exactly as shown and the time it happened, then look it up as §5g describes. |
 | Who can reset or disable whom | **Manager**: Salesman and Supervisor accounts in his own regions. **Steward**: every account except his own, and only the Steward has **Edit** (role, route, supervisor, regions, phone, e-mail). Nobody can disable the only active Manager until another Manager account is active. Nobody changes their own password from `/users`; that is `/profile`. |
