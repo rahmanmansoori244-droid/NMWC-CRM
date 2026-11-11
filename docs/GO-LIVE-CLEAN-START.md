@@ -27,15 +27,19 @@ The technical description is `docs/OPERATIONS.md`, section 5m. You do not need i
 3. **Never press Approve on a run you did not start yourself, just now.**
 4. **Never start `apply` again after a red `apply`.** Send Claude the link first.
 5. **Never cancel a run while its Apply job is running.**
-6. **Nobody signs in to the CRM** from the moment you start DB Backup until the run is
-   green. Not even you. One sign-in changes the database, and the run then stops itself.
+6. **Nobody uses the CRM** from the moment you start DB Backup until the run is green.
+   Not even you, and not someone who is still signed in on a phone. One sign-in or one
+   save changes the database, and the run then stops itself. Before reset day every
+   tester signs out on every phone and browser (Step 1 M).
 7. **No other merges to main** in the week of the clean start.
 8. **No test walk on the live CRM after the reset** until the first real customer exists.
    Otherwise the test customer takes the number NMWC-2026-000001.
 9. **Never use Neon's Restore after the photo step.** The records would point at photos
    that no longer exist.
 10. **In Neon, never delete the production branch.** Delete only a branch whose name
-    starts with `cleanstart-rehearsal-`, and only when this guide says so.
+    starts with `cleanstart-rehearsal-`, and only when this guide says so. After a
+    confirmed going back, Claude tells you which other branch may go (see the end of
+    "If you must go back").
 
 ---
 
@@ -145,7 +149,15 @@ it, the photo step still works.
 
 **K. Your operations log.** In your private handover pack, start the entry: the date,
 "go-live clean start", your decisions, "I authorise it". Leave space for the run link,
-the plan id, the results and the figures from the Audit page.
+the plan id and the results. The Audit page shows that the clean start happened and why,
+but **not** how many records of each kind were removed: those figures are only in the
+run's encrypted report. If you want them in your log, Claude reads the report with you
+after the reset.
+
+**M. Everyone signs out.** Before reset day, every person who tested the CRM presses
+**Sign out** on every phone and computer they used. Signing out also deletes the unsent
+copies of forms that a phone keeps for 7 days; otherwise a test request saved during
+testing could be sent after the reset and become a real-looking request.
 
 **L. The merge.** When Claude says the pull request is green, reply "merge it". After the
 merge, wait about 15 minutes for the live site to update before the first dry run.
@@ -154,7 +166,9 @@ merge, wait about 15 minutes for the live site to update before the first dry ru
 
 ## Step 2. Dry run 1 (an evening; it changes nothing)
 
-Do it in the evening, after 19:30 Oman time, when nobody uses the CRM.
+Do it in the evening, between 19:30 and 23:00 Oman time, when nobody uses the CRM. A run
+started in the evening refuses a backup taken earlier that day (before 19:00 Oman), so
+always start with a fresh DB Backup.
 
 1. Actions → **DB Backup** → **Run workflow** → **Run workflow**. Wait for the green tick
    (about 5 minutes).
@@ -184,7 +198,10 @@ at the end of this guide, under "Lines that may say no".
 MIN_DUMP_BYTES to …`, you will need that number on reset day. If it says
 `yes; even 20000 bytes is too high, ask before the reset`, tell Claude before reset day.
 
-Send Claude the run link.
+Send Claude the run link. After dry run 1, Claude reads the run's encrypted plan file
+with you. It answers two of your questions that the public summary must not show:
+whether any Temix upload was marked as loaded (test NMWC codes may then be in the real
+Temix), and whether an UNASSIGNED region or route exists.
 
 **If it is red:** see "When something is red" below. If the red line is
 `backup equals production: no`, someone used the CRM after the backup. Make sure nobody
@@ -234,9 +251,11 @@ Repeat Step 2 exactly. It must be green again.
 
 ## Step 5. Reset day
 
-Choose a weekday evening. Start between **19:30 and 22:30 Oman time**. The run takes
-about 75-90 minutes and must reach the reset before midnight Oman time, because the
-phrase holds today's date.
+Choose a weekday evening. Start between **19:30 and 22:00 Oman time**, and press
+Approve within 10 minutes of **Waiting for review**. The reset itself comes about 35-45
+minutes after you start (it must come before midnight Oman time, because the phrase holds
+today's date); the whole run, to the last green tick, takes about 75-90 minutes. A late
+start is refused safely (`the target guard refused`), but the evening is lost.
 
 1. **Write the entry in your private operations log first:** the date, "go-live clean
    start", that you authorise it, and why.
@@ -261,7 +280,8 @@ phrase holds today's date.
 - `production unchanged since the plan: yes`
 - `Neon branch created and confirmed: yes`
 - `old seals archived, re-read and chained: yes`
-- `reset started at (UTC): …` (write this time in your log)
+- `reset started at (UTC): …` and `reset started at (Oman time): …` (write both in your
+  log)
 - `reset: ok`
 - `reset committed: yes`
 - `kept accounts, routes and regions verified after the reset: yes`
@@ -281,6 +301,10 @@ integrity alert tonight** because of it. Note it in your log; do nothing about i
 **If it is red:** do not press anything again. Send Claude the link. The summary says
 whether the reset happened: `reset committed: yes`, or `reset committed: no (nothing
 changed)`, or `reset committed: unknown`. For `unknown`, see "When something is red".
+When Claude says to run **finish**, run it **the same evening, before 06:00 Oman time**
+(the nightly integrity check runs at 06:30). If that time has passed, tell Claude before
+you press anything: the night's check will then have reported the old seal files as one
+unexplained critical alert.
 
 **The size of tomorrow's backup.** If your dry run said
 `first nightly backup would be below the size floor: yes; set MIN_DUMP_BYTES to …`, do
@@ -296,8 +320,9 @@ from that line. Save. (The automatic backup runs at about 06:00 Oman.)
 4. **Service status** → **Integrity**: every line is pass or information. The one
    exception allowed is "The off-site copies of the seals are there" when the summary
    showed `seal-offsite-copies: fail`.
-5. **Audit**: the clean-start entry is the oldest row. Copy its figures into your private
-   operations log, with the run link. Never put those figures anywhere else.
+5. **Audit**: the clean-start entry is the only row before your sign-ins, with its reason.
+   Write in your private operations log that you saw it, with the run link. (The page
+   does not show how many records were removed; see Step 1 K.)
 6. Tell staff the CRM is open again, but no new customers yet.
 
 ---
@@ -307,15 +332,24 @@ from that line. Save. (The automatic backup runs at about 06:00 Oman.)
 1. **Service status** → **Integrity**: "Tonight's seal was written" is pass. Nothing is
    failing.
 2. Actions → **DB Backup**: last night's run has a green tick.
-3. Only now load the real customer file through the **Import** screen. Check the preview
+3. **Requests** is empty. If a request is there, it was sent from a phone that kept a
+   test form: tell Claude before the import.
+4. Only now load the real customer file through the **Import** screen. Check the preview
    first: the codes should be in capital letters, like CCT0005.
+
+Until Claude's small follow-up change lands (planned for the day after the reset), the
+dashboards' "up/down" comparisons that reach back before the reset day compare with
+empty days. Read the comparisons from the reset day on.
 
 **From this import on there is no way back** for the database. Mistakes are then fixed
 forward.
 
-After the real import and one more green nightly backup: GitHub → **Settings** →
-**Secrets and variables** → **Actions** → **Variables** → delete `MIN_DUMP_BYTES` (only if
-you set it). The normal size check then returns.
+After the real import, look at the next nightly **DB Backup** run (only if you set
+`MIN_DUMP_BYTES`): open its log and find the line with `compressed size`. When that size
+is at least 80000 bytes, delete the variable: GitHub → **Settings** → **Secrets and
+variables** → **Actions** → **Variables** → delete `MIN_DUMP_BYTES`. The normal size check
+then returns. A green backup alone does not prove it (it passed the lowered floor); if
+you are unsure, send Claude the link and Claude confirms.
 
 ---
 
@@ -337,7 +371,12 @@ Find the bold **refused:** line in the summary.
 | `a newer dump exists than the one the rehearsal restored; start again` | a backup ran during the run | start again |
 | `backup equals production: no` or `production unchanged since the plan: no` | someone used the CRM | make sure nobody does; DB Backup again; start again |
 | `no green neon-rehearsal of these exact scripts in the last 14 days` | the dress rehearsal is missing or too old | do Step 3 again |
-| `reset committed: unknown (no connection); run mode finish with this run id` | the answer was lost | run **finish** (below) |
+| `the newest dump was taken before 19:00 Oman; run DB Backup again now, then start again` | the backup is from earlier today | run DB Backup, then start again |
+| `DB Backup heartbeat ok within 4 h: no` (or `6 h`) | the CRM has not seen the last backup | send Claude the link |
+| `runtime role privileges not failing on production (latest watch): no` | the nightly check found a wrong database permission | send Claude the link; it must be fixed before the reset |
+| `reset committed: unknown (no connection); run mode finish with this run id` or `reset committed: unknown (the check did not finish); run mode finish with this run id` | the answer was lost | run **finish** (below), the same evening |
+| `the real customer file is loaded (customers exist): no` (photos) | the real file is not loaded yet | load it first (Step 6) |
+| `the new seal chain's id of that run was not recorded, so no seal file is moved; tell Claude` (seal-restore) | | send Claude the link |
 | anything else | | send Claude the link; do not press anything |
 
 Every refusal before the line `reset started at (UTC)` means nothing changed.
@@ -345,7 +384,8 @@ Every refusal before the line `reset started at (UTC)` means nothing changed.
 **Mode finish** (only when Claude or the summary says so): Actions → **Clean start** →
 **Run workflow**. Mode `finish`. Host box `ep-sweet-haze`. Phrase empty. Run id box: the
 id of the apply run. **Run workflow**, then **Review deployments** → **Approve and deploy**.
-It first finds out whether the reset happened. If it did, it completes the remaining
+Run it the same evening, before 06:00 Oman time; if that has passed, tell Claude before
+pressing anything. It first finds out whether the reset happened. If it did, it completes the remaining
 steps and its summary says `reset committed: yes` and the same lines as a green apply. If
 it did not, it says `reset committed: no (nothing changed)` and stops in red with
 `the reset of that run did not commit; nothing changed on production`. That red is the
@@ -405,22 +445,35 @@ Note it in your operations log. If it is red, send Claude the link. A refusal be
 
 Do this only with Claude, and only before Step 6's import.
 
+Do it in one evening, before 06:00 Oman time: the nightly integrity check at 06:30 must
+not run between the restore (step 2) and seal-restore (step 3), or it raises a critical
+alert about the new seal files.
+
 1. Tell staff not to use the CRM.
 2. Neon console → your project → **Branches** → the production branch → **Restore**.
-   Choose the time from the apply summary's `reset started at (UTC)`, minus one minute.
-   That time is UTC. Oman time is UTC plus 4 hours; check which one the Neon screen asks
-   for. Confirm the restore.
+   Your log has the start of the reset in both zones: `reset started at (UTC)` and
+   `reset started at (Oman time)`. Look at the time zone the Neon screen shows next to
+   the time box, take the line in that zone, and choose one minute **before** it. With
+   the wrong zone you restore 4 hours too early (test changes of that afternoon are lost)
+   or 4 hours too late (the reset is still there, and seal-restore then refuses). If
+   unsure, send Claude a screenshot first. Confirm the restore.
    (If that is not possible, Claude helps you restore from the branch named
    `pre-clean-start-<date>-<run id>` instead.)
-3. Actions → **Clean start** → **Run workflow**. Mode `seal-restore`. Host box
-   `ep-sweet-haze`. Phrase empty. Run id box: the apply run's id. **Run workflow**, then
-   **Review deployments** → **Approve and deploy**. Green shows
+3. Straight after: Actions → **Clean start** → **Run workflow**. Mode `seal-restore`.
+   Host box `ep-sweet-haze`. Phrase empty. Run id box: the apply run's id. **Run
+   workflow**, then **Review deployments** → **Approve and deploy**. Green shows
    `production is back to before the reset (old chain, no reset row): yes`,
    `old seal files back in the live folder, hash-checked: yes`,
    `the abandoned new chain moved out of the live folder: yes` and
-   `a check failing or in error: no`.
+   `a check failing or in error: no`. If a check is failing, the job is red: send Claude
+   the link before anyone uses the CRM.
 4. If you set `MIN_DUMP_BYTES`, delete it.
-5. Tell Claude.
+5. Tell Claude. When Claude confirms the going back is complete, staff may use the CRM
+   again (as during testing).
+6. Afterwards, with Claude: Neon console → **Branches**. Two copies of production are
+   left: `pre-clean-start-<date>-<run id>` (the safety copy) and the copy Neon kept of the
+   branch before your restore (Neon shows its name after the restore). Claude tells you
+   when, and which ones, to delete. Never delete the production branch itself.
 
 ---
 
@@ -442,7 +495,15 @@ These lines report a fact. They can say `no` (or `yes`) while the job is green:
 | `test environment checked for shared photos` (photos) | the same |
 | `keys skipped because they do not have the photo shape` | recorded only |
 | `keys kept because the test environment uses them` | recorded only |
-| `a check failing or in error` (seal-restore) | `no` is the good answer |
+| `a check failing or in error` (seal-restore) | `no` is the good answer; `yes` makes the job red |
+| `old seals to archive` and `old seal files to remove` | `no` when the test period wrote no seals |
+| `Neon branches to delete` | `no` when there was nothing to delete |
+| `job runs recorded for yesterday in Oman`, `job runs recorded for today in Oman` | recorded for Claude |
+| `a windowed job ran outside 03:00-15:00 UTC in the last 3 days` | `yes` means the old outside scheduler may still be on; tell Claude |
+| `green Neon rehearsal of these scripts within 14 days` (dry run) | `no` before Step 3 is normal; apply needs `yes` |
+| `the first watch after the reset already ran` (finish) | recorded; finish runs it when `no` |
+| `new seal chain id recorded` | `no` only if the first check did not run; tell Claude |
+| `other objects under seals/ left where they are` (seal-restore) | recorded only |
 
 Every other `<something>: no` line, and every bold **refused:** line, means stop and send
 Claude the link.
