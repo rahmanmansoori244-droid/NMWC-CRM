@@ -223,7 +223,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     else spawnSync('ln', ['-s', nm, join(tree, 'node_modules')]);
     const git = (...a: string[]) => spawnSync('git', ['-c', 'user.name=flow', '-c', 'user.email=flow@test.invalid', ...a], { cwd: tree, encoding: 'utf8' });
     git('init', '-q', '.');
-    git('add', 'scripts/ops/clean-start');
+    git('add', 'scripts/ops/clean-start', '.github/workflows/clean-start.yml');
     git('commit', '-qm', 'flow');
 
     // age key of the test.
@@ -448,8 +448,11 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expectPublic(neonRun);
     // GitHub now knows a green rehearsal of these scripts (what apply's neon-green reads).
     const tree_ = spawnSync('git', ['rev-parse', 'HEAD:scripts/ops/clean-start'], { cwd: tree, encoding: 'utf8' }).stdout.trim();
+    const yml_ = spawnSync('git', ['rev-parse', 'HEAD:.github/workflows/clean-start.yml'], { cwd: tree, encoding: 'utf8' }).stdout.trim();
     const gh = JSON.parse(readFileSync(join(state, 'github.json'), 'utf8'));
-    gh.cleanStartRuns = [{ id: Number(neonRun.runId), head_sha: SHA, display_title: 'Clean start neon-rehearsal' }];
+    // a run ON THE DEFAULT BRANCH, whose workflow file is this checkout's too (neon-green, review 2026-11-11)
+    gh.cleanStartRuns = [{ id: Number(neonRun.runId), head_sha: SHA, head_branch: 'main', display_title: 'Clean start neon-rehearsal' }];
+    gh.workflowBlobs = { [SHA]: yml_ };
     gh.jobs = { [neonRun.runId]: [{ name: 'Neon rehearsal', conclusion: 'success' }] };
     gh.trees = { [SHA]: tree_ };
     writeFileSync(join(state, 'github.json'), JSON.stringify(gh));
@@ -588,6 +591,16 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     // Eight days later (the owner's window, on the test database only), and UAT uses one photo.
     sql(PROD_LOCAL, `BEGIN; SET LOCAL nmwc.audit_maintenance = 'on'; UPDATE "AuditLog" SET "at" = now() - interval '8 days' WHERE id = 'cleanstart-${applyB.runId}'; COMMIT;`);
     sql(url('localhost', UAT), `INSERT INTO "Attachment" VALUES ('${photoKeys[0]}')`);
+    // Not before the real customer file is in (design section 6): refused, nothing deleted.
+    const noFile = run('clean-start-photos.yml', inputs);
+    expect(noFile.jobs.photos!.result).toBe('failure');
+    expect(noFile.lines).toContain('the real customer file is loaded (customers exist): no');
+    for (const k of photoKeys) expect(has('nmwc-photos', k), k).toBe(true);
+    // The owner loads the real file (one customer stands for it).
+    const chan = await db.channel.findFirstOrThrow({ select: { id: true } });
+    await contextClient(db, { actorId: null, source: src.test('clean-start-flow') }).customer.create({
+      data: { nmwcCode: formatCustomerCode(year, 1), legalName: `ZZ Flow Real ${sfx}`, paymentTerms: 'CASH', channelId: chan.id },
+    });
     const wrongPhrase = run('clean-start-photos.yml', { ...inputs, confirm_phrase: 'delete test photos' });
     expect(wrongPhrase.jobs.photos!.result).toBe('failure');
     const r = run('clean-start-photos.yml', inputs);

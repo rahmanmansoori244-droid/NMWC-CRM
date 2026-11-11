@@ -129,12 +129,12 @@ jobs:
           psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
             -v fact=attachment-keys > "$CS_DIR/prod-keys.txt" 2>&1 || rc=$?
           bash scripts/ops/clean-start/run.sh sql "production photo keys read" "$rc" "$CS_DIR/prod-keys.txt"
-          # The photos go only once the real customer file is in (design section 6, owner question 9).
+          # The photos go only once the real customer file is in (design section 6, owner question 9);
+          # checked after the 7-day refusal below, before anything is deleted.
           rc=0
           psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
-            -v fact=customers-exist > "$CS_DIR/fact.out" 2>&1 || rc=$?
-          bash scripts/ops/clean-start/run.sh sql "customers read" "$rc" "$CS_DIR/fact.out"
-          bash scripts/ops/clean-start/run.sh bool "the real customer file is loaded (customers exist)" "$CS_DIR/fact.out"
+            -v fact=customers-exist > "$CS_DIR/customers.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "customers read" "$rc" "$CS_DIR/customers.out"
 
       - name: What the test environment uses (read-only, when its secret is set)
         env:
@@ -151,8 +151,11 @@ jobs:
             -v fact=attachment-keys > "$CS_DIR/uat-keys.txt" 2>&1 || rc=$?
           bash scripts/ops/clean-start/run.sh sql "test environment photo keys read" "$rc" "$CS_DIR/uat-keys.txt"
 
-      - name: The refusals (7 days, the list's sha256, no production reference)
-        run: bash scripts/ops/clean-start/photo-delete.sh check "$CS_DIR/photo-keys.txt" "$CS_DIR/reset-row.txt" "$CS_DIR/prod-keys.txt"
+      - name: The refusals (7 days, the list's sha256, no production reference, the real file loaded)
+        run: |
+          set -euo pipefail
+          bash scripts/ops/clean-start/photo-delete.sh check "$CS_DIR/photo-keys.txt" "$CS_DIR/reset-row.txt" "$CS_DIR/prod-keys.txt"
+          bash scripts/ops/clean-start/run.sh bool "the real customer file is loaded (customers exist)" "$CS_DIR/customers.out"
 
       - name: Delete the reset's Neon safety branch first
         run: bash scripts/ops/clean-start/run.sh neon-delete-safety "$TARGET_RUN"

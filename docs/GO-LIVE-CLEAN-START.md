@@ -466,7 +466,11 @@ alert about the new seal files.
    `old seal files back in the live folder, hash-checked: yes`,
    `the abandoned new chain moved out of the live folder: yes` and
    `a check failing or in error: no`. If a check is failing, the job is red: send Claude
-   the link before anyone uses the CRM.
+   the link before anyone uses the CRM. One exception keeps it green: when the test
+   environment's files sit in the seal folder, the summary shows
+   `seal-offsite-copies: fail` and
+   `seal-offsite-copies failing only for objects outside the old chain (checked above): yes`.
+   Tell Claude; it is expected.
 4. If you set `MIN_DUMP_BYTES`, delete it.
 5. Tell Claude. When Claude confirms the going back is complete, staff may use the CRM
    again (as during testing).
@@ -495,7 +499,7 @@ These lines report a fact. They can say `no` (or `yes`) while the job is green:
 | `test environment checked for shared photos` (photos) | the same |
 | `keys skipped because they do not have the photo shape` | recorded only |
 | `keys kept because the test environment uses them` | recorded only |
-| `a check failing or in error` (seal-restore) | `no` is the good answer; `yes` makes the job red |
+| `a check failing or in error` (seal-restore) | `no` is the good answer; `yes` makes the job red, unless the only failing line is `seal-offsite-copies` (see "If you must go back") |
 | `old seals to archive` and `old seal files to remove` | `no` when the test period wrote no seals |
 | `Neon branches to delete` | `no` when there was nothing to delete |
 | `job runs recorded for yesterday in Oman`, `job runs recorded for today in Oman` | recorded for Claude |

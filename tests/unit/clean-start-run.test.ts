@@ -311,6 +311,18 @@ describe('run.sh bool, status-lines, owner-facts: a "no" that matters is a refus
     expect(r.lines).toContain('a check failing or in error: yes');
     writeFileSync(join(sb.csDir, 'none.tsv'), '');
     expect(run('status-lines "$CS_DIR/none.tsv" refuse').code).toBe(1);
+    // seal-offsite-copies alone (other environments' objects under seals/; the restore
+    // step hash-checked the old chain itself) is shown and recorded, not a refusal...
+    writeFileSync(join(sb.csDir, 'off.tsv'), 'seal-written\tpass\t\nseal-offsite-copies\tfail\t\n');
+    const off = run('status-lines "$CS_DIR/off.tsv" refuse');
+    expect(off.code).toBe(0);
+    expect(off.lines).toContain('seal-offsite-copies: fail');
+    expect(off.lines).toContain('seal-offsite-copies failing only for objects outside the old chain (checked above): yes');
+    // ...but in error it is, and so is any other check failing beside it.
+    writeFileSync(join(sb.csDir, 'offe.tsv'), 'seal-offsite-copies\terror\t\n');
+    expect(run('status-lines "$CS_DIR/offe.tsv" refuse').code).toBe(1);
+    writeFileSync(join(sb.csDir, 'off2.tsv'), 'seal-offsite-copies\tfail\t\nseal-chain-intact\tfail\t\n');
+    expect(run('status-lines "$CS_DIR/off2.tsv" refuse').code).toBe(1);
   });
   it('owner-facts: three recorded yes/no lines, never a refusal', () => {
     const r = run(`owner-facts ${f('t\r\nf\nt\n')}`);
@@ -415,6 +427,10 @@ describe('run.sh chain-id / chain-id-fetch / finish-may: production\'s new chain
 
 describe('run.sh backup-pick: an evening run needs an evening dump', () => {
   const today = new Date().toISOString().slice(0, 10);
+  /** "now" for run.sh, as the date stand-in answers it: today at hh:mm UTC. */
+  const at = (hhmm: string) => ({
+    FAKE_UTC_EPOCH: String(Date.parse(`${today}T${hhmm.slice(0, 2)}:${hhmm.slice(2)}:00Z`) / 1000),
+  });
   const put = (hhmm: string) => {
     rmSync(join(sb.s3, 'backups', 'db'), { recursive: true, force: true });
     const stamp = `${today}T${hhmm.slice(0, 2)}-${hhmm.slice(2)}-00Z`;
@@ -423,16 +439,26 @@ describe('run.sh backup-pick: an evening run needs an evening dump', () => {
   };
   it('from 15:00 UTC, a dump taken earlier that day is refused (the rehearsal would see a gap production does not have)', () => {
     put('1330');
-    const r = run('backup-pick 4', { FAKE_UTC_HHMM: '1700', MODE: 'apply' });
+    const r = run('backup-pick 4', { ...at('1700'), MODE: 'apply' });
     expect(r.code).toBe(1);
     expect(r.lines).toContain('newest backup taken after 15:00 UTC (19:00 Oman): no');
     expect(r.out).toMatch(/run DB Backup again now/);
     // Not for the Neon rehearsal, which reads a branch of production, not the dump.
-    expect(run('backup-pick 4', { FAKE_UTC_HHMM: '1700', MODE: 'neon-rehearsal' }).lines).not.toContain('newest backup taken after 15:00 UTC (19:00 Oman): no');
+    const n = run('backup-pick 4', { ...at('1700'), MODE: 'neon-rehearsal' });
+    expect(n.code).toBe(0);
+    expect(n.out).not.toMatch(/taken after 15:00 UTC/);
     // Before 15:00 UTC the rule does not apply (the rehearsal then reports, not asserts, the jobs check).
-    expect(run('backup-pick 4', { FAKE_UTC_HHMM: '1400', MODE: 'dry-run' }).out).not.toMatch(/taken after 15:00 UTC/);
+    const early = run('backup-pick 4', { ...at('1400'), MODE: 'dry-run' });
+    expect(early.code).toBe(0);
+    expect(early.out).not.toMatch(/taken after 15:00 UTC/);
     put('1530');
-    expect(run('backup-pick 4', { FAKE_UTC_HHMM: '1700', MODE: 'dry-run' }).lines).toContain('newest backup taken after 15:00 UTC (19:00 Oman): yes');
+    const ok = run('backup-pick 4', { ...at('1700'), MODE: 'dry-run' });
+    expect(ok.code, ok.out).toBe(0);
+    expect(ok.lines).toContain('newest backup taken after 15:00 UTC (19:00 Oman): yes');
+    // The rule reads the same clock as the age check, never the window's HHMM answer alone.
+    expect(run('backup-pick 4', { ...at('1700'), FAKE_UTC_HHMM: '1000', MODE: 'dry-run' }).lines).toContain(
+      'newest backup taken after 15:00 UTC (19:00 Oman): yes'
+    );
   });
 });
 

@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # The real date, except that the evening-window question (date -u +%H%M) can be
 # answered with FAKE_UTC_HHMM, so the apply path can be tested at any hour. It
-# changes nothing else: every other date call is the real clock.
+# changes nothing else: every other date call is the real clock, except that
+# "now" as seconds (date -u +%s) can be answered with FAKE_UTC_EPOCH, for the
+# unit test of backup-pick's evening-dump rule.
+if [ -n "${FAKE_UTC_EPOCH:-}" ] && [ "$#" -eq 2 ] && [ "$1" = -u ] && [ "$2" = +%s ]; then
+  printf '%s\n' "$FAKE_UTC_EPOCH"
+  exit 0
+fi
 if [ -n "${FAKE_UTC_HHMM:-}" ] && [ "$#" -eq 2 ] && [ "$1" = -u ] && [ "$2" = +%H%M ]; then
   printf '%s\n' "$FAKE_UTC_HHMM"
   exit 0
