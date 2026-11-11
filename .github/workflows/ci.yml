@@ -711,6 +711,17 @@ jobs:
           command -v shellcheck > /dev/null || { echo "::error::shellcheck is missing, so the run blocks would not be checked"; exit 1; }
           shellcheck --version
           actionlint -version
+          # A silent pass proves nothing by itself: first show that this actionlint
+          # refuses the very line GitHub refused, and that shellcheck reads run blocks.
+          # (The dollar sign is split off so GitHub does not evaluate the expression here.)
+          t="$RUNNER_TEMP/lint-proof.yml"
+          o='$'
+          printf '%s\n' 'on: workflow_dispatch' 'jobs:' '  a:' '    runs-on: ubuntu-latest' '    env:' \
+            "      CS_DIR: ${o}{{ runner.temp }}/clean-start" '    steps:' '      - run: echo $UNQUOTED' > "$t"
+          if proof="$(actionlint "$t" 2>&1)"; then echo "::error::actionlint passed a file GitHub refuses"; exit 1; fi
+          printf '%s\n' "$proof"
+          grep -q '"runner"' <<< "$proof" || { echo "::error::actionlint did not refuse the runner context in a job env"; exit 1; }
+          grep -q 'SC2086' <<< "$proof" || { echo "::error::shellcheck did not check the run block"; exit 1; }
           actionlint .github/workflows/clean-start.yml .github/workflows/clean-start-photos.yml
 
   # GAP-08 (re-benchmark 2026-09-24): fourteen checks, no credentials, fifteen
