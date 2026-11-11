@@ -482,6 +482,10 @@ const SALESMAN_EN: Guide = {
         headers: ['Situation', 'What to do'],
         rows: [
           [
+            'Asked to sign in again in the middle of the day',
+            'A sign-in lasts at most 8 hours from the moment you signed in, even if you use the app all day. If you were in the middle of a form, keep that page open: sign in again in another tab, come back and tap Try again (or Retry upload for a photo). What you typed is still on the form.',
+          ],
+          [
             'Photo upload keeps failing',
             'Move outside or near a window. Wait a few seconds. The app retries automatically. If still stuck, tap "Retry upload" — your photo is saved.',
           ],
@@ -741,6 +745,10 @@ const SUPERVISOR_EN: Guide = {
         headers: ['Message you see', 'What it means'],
         rows: [
           [
+            '"You were signed out because a sign-in lasts at most 8 hours"',
+            'A sign-in ends 8 hours after you signed in, however busy you were. Sign in again. A reason you were typing, or a decision you pressed after the 8 hours ("Not signed in."), is kept only while that page stays open: sign in in another tab, come back and press the button again.',
+          ],
+          [
             '"Edit was just decided by another reviewer"',
             'Another supervisor or manager approved/rejected before you. Refresh the queue.',
           ],
@@ -996,6 +1004,10 @@ const MANAGER_EN: Guide = {
       table: {
         headers: ['Situation', 'What to do'],
         rows: [
+          [
+            'Asked to sign in again after 8 hours',
+            'A sign-in lasts at most 8 hours from the moment you signed in, however busy you were. Sign in again. A reason you were typing, or a decision you pressed after the 8 hours ("Not signed in."), is kept only while that page stays open: sign in in another tab, come back and press the button again.',
+          ],
           [
             'A salesman says "Submit is greyed out"',
             'The form lists what is still missing (photos, GPS, phone …). They can save a draft and finish at the shop. Nothing reaches you until it is submitted.',
@@ -1447,6 +1459,10 @@ const STEWARD_EN: Guide = {
       table: {
         headers: ['Situation', 'What to do'],
         rows: [
+          [
+            'Asked to sign in again after 8 hours',
+            'A sign-in lasts at most 8 hours from the moment you signed in, however busy you were. Sign in again. A promote stopped by it ("Not signed in.") keeps every slice it loaded: sign in again, open the batch, and Resume promote once the page offers it (within about a minute and a half). A reason you were typing is kept only while that page stays open: sign in in another tab, then come back and press the button again.',
+          ],
           [
             '"Branch not updated" on a row that loaded',
             'The customer is linked to Temix, so a file row carrying its temix_code refreshes its Temix fields only and leaves its branches alone. Change the branch values on the customer’s page. A branch that was held back is added by fixing its held-back row on the batch page, not by uploading it again.',

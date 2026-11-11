@@ -136,7 +136,7 @@ flowchart LR
 | Web app | Next.js 15.5 App Router, React 19, TypeScript, Tailwind 3.4. Server components and server actions. `typedRoutes` is on. | `app/`, `components/nmwc/`, `next.config.ts` |
 | Server logic | `'use server'` modules export the server actions. Shared domain and infrastructure code lives in `lib/`. | `services/*.ts`, `lib/*.ts` |
 | HTTP routes | 17 route handlers: auth, field-form submits, photos, exports, health, crons, ops, a perf probe. | `app/api/**/route.ts` |
-| Auth | next-auth 5 (beta.32), Credentials provider, JWT sessions of 8 hours, `__Host-` cookie. | `auth.config.ts`, `lib/auth.ts`, `lib/session.ts`, `middleware.ts` |
+| Auth | next-auth 5 (beta.32), Credentials provider, JWT sessions; a sign-in lasts at most 8 hours from signing in, however active (`lib/sign-in-limit.ts`, since 2026-11-11), `__Host-` cookie. | `auth.config.ts`, `lib/auth.ts`, `lib/session.ts`, `middleware.ts` |
 | Database | Prisma 6 on PostgreSQL hosted by Neon. 24 models, 23 migrations. | `prisma/schema.prisma`, `prisma/migrations/`, `lib/db.ts` |
 | Files | Cloudflare R2, two buckets: `nmwc-photos` (photos and documents) and `nmwc-backups` (encrypted nightly database dumps). Separate credentials per bucket. | `lib/r2.ts`, `.github/workflows/db-backup.yml` |
 | Hosting | Vercel Pro, functions in region `iad1`, `maxDuration` 60 s. | `vercel.json` |
