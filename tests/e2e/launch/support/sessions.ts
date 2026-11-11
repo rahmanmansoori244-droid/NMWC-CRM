@@ -40,11 +40,12 @@ import { BASE_URL, db, SESSION_COOKIE } from './env';
 import { cspListenerScript, watchPage } from './checks';
 import { assertOmanDayUnchanged } from './oman';
 import { HOME_BY_ROLE } from '../../../../lib/role-home';
+import { SIGN_IN_LIMIT_MS, SIGN_IN_LIMIT_SECONDS } from '../../../../lib/sign-in-limit';
 import type { DeviceKind, FixtureUser } from './types';
 
 export { HOME_BY_ROLE };
 export const MUSCAT_GEO = { latitude: 23.5881, longitude: 58.3829, accuracy: 9 };
-const SESSION_MAX_AGE_S = 8 * 60 * 60; // auth.config.ts session.maxAge
+const SESSION_MAX_AGE_S = SIGN_IN_LIMIT_SECONDS; // auth.config.ts session.maxAge
 
 /** Context options per device. Every context: Asia/Muscat, en-GB. */
 export function deviceOptions(kind: DeviceKind): BrowserContextOptions {
@@ -100,10 +101,13 @@ export function mintingProven(): boolean {
  * A session cookie for `u`, encoded exactly as Auth.js encodes its own.
  * `lastCheck: 0` forces the server's freshness re-read on the next request
  * (revocation tests; they then wait out the 30 s per-instance cache).
+ * A6: it carries the sign-in stamp `signedInAt` (default: now) that lib/auth.ts
+ * writes at sign-in — the server refuses a token without one — and, like a real
+ * sign-in's cookie, it expires no later than that stamp plus the 8-hour limit.
  */
 export async function mintSessionCookie(
   u: Pick<FixtureUser, 'id' | 'role' | 'username' | 'fullName' | 'mustChangePassword'>,
-  o: { iatMs?: number; lastCheck?: number; mustChangePassword?: boolean } = {}
+  o: { iatMs?: number; lastCheck?: number; mustChangePassword?: boolean; signedInAt?: number } = {}
 ): Promise<Cookie> {
   const secret = process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET;
   if (!secret) throw new Error('AUTH_SECRET / NEXTAUTH_SECRET is not set (run through scripts/qa/run-with-env.mjs)');
@@ -119,6 +123,7 @@ export async function mintSessionCookie(
       role: u.role,
       username: u.username,
       iatMs: o.iatMs ?? now,
+      signedInAt: o.signedInAt ?? now,
       lastCheck: o.lastCheck ?? now,
       mustChangePassword: o.mustChangePassword ?? u.mustChangePassword,
     },
@@ -128,7 +133,7 @@ export async function mintSessionCookie(
     value,
     domain: 'localhost',
     path: '/',
-    expires: Math.floor(now / 1000) + SESSION_MAX_AGE_S,
+    expires: Math.floor(Math.min(now + SESSION_MAX_AGE_S * 1000, (o.signedInAt ?? now) + SIGN_IN_LIMIT_MS) / 1000),
     httpOnly: true,
     secure: SESSION_COOKIE.startsWith('__Host-'),
     sameSite: 'Lax',

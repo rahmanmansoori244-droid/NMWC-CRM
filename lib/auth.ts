@@ -18,6 +18,7 @@ import {
   recordUnknownNameFailure,
   type SignInSeen,
 } from '@/lib/auth-events';
+import { signInExpired } from '@/lib/sign-in-limit';
 
 // QA-023 / AUTH-17: assert AUTH_SECRET is present, of sufficient length, AND
 // not trivially low-entropy. Length alone (≥32) is a poor proxy — `aaaa…`
@@ -75,6 +76,8 @@ declare module 'next-auth' {
       role: Role;
       username: string;
       mustChangePassword?: boolean;
+      // A6: when this sign-in happened (epoch ms); lib/sign-in-limit.ts.
+      signedInAt?: number;
     } & DefaultSession['user'];
   }
   interface User {
@@ -97,6 +100,10 @@ declare module '@auth/core/jwt' {
     // AUTH-09: cleared by the change-password flow. Middleware uses this to
     // force every authenticated route to /profile/change-password until set.
     mustChangePassword?: boolean;
+    // A6: epoch ms of the sign-in itself. Set ONLY when a person signs in and
+    // never moved; a sign-in ends SIGN_IN_LIMIT_MS (8 hours) after it, however
+    // active the person is (lib/sign-in-limit.ts). A token without it is refused.
+    signedInAt?: number;
   }
 }
 
@@ -206,13 +213,27 @@ const {
       // Fresh login: copy claims from the authorize() result and stamp the
       // freshness clock so we don't immediately re-query the DB.
       if (user) {
+        const now = Date.now();
         token.userId = user.id!;
         token.role = (user as { role: Role }).role;
         token.username = (user as { username: string }).username;
-        token.lastCheck = Date.now();
-        token.iatMs = Date.now();
+        token.lastCheck = now;
+        token.iatMs = now;
+        token.signedInAt = now;
         token.mustChangePassword = (user as { mustChangePassword?: boolean }).mustChangePassword === true;
         return token;
+      }
+      // A6: the absolute limit, before anything else and on every request: a
+      // sign-in ends 8 hours after it was made, however active the person has
+      // been. Refused like any ended session (the cookie is cleared, auth() is
+      // null). Not recorded in AuthEvent: its kinds are fixed by a CHECK
+      // constraint, and a new kind needs a migration (an open owner question).
+      if (signInExpired(token)) {
+        logger.info(
+          { userId: token.userId, signedInAt: token.signedInAt ?? null },
+          'session.sign_in_limit'
+        );
+        return null;
       }
       // PROD-002/003 + AUTH-12: periodically reconcile the in-flight JWT with
       // the User row so disable / role-change / password-reset / explicit
@@ -297,6 +318,8 @@ const {
       // gate every protected route on it.
       (session.user as { mustChangePassword?: boolean }).mustChangePassword =
         token.mustChangePassword === true;
+      // A6: auth() below checks the limit again from this.
+      session.user.signedInAt = token.signedInAt;
       return session;
     },
   },
@@ -464,7 +487,14 @@ const {
  * memoizes correctly; route handlers use the separate `handlers` export and
  * middleware uses its own NextAuth(authConfig) instance.
  */
-export const auth = cache(uncachedAuth);
+export const auth = cache(async () => {
+  const session = await uncachedAuth();
+  // A6: the jwt callback above already refuses a sign-in past its limit; this is
+  // the same rule once more on the session every page, server action and route
+  // handler reads (lib/session.ts included), so no path can see one.
+  if (!session?.user || signInExpired(session.user)) return null;
+  return session;
+});
 export { handlers, signIn, signOut };
 /** @deprecated `auth` is now memoized itself — kept for any stray import. */
 export const cachedAuth = auth;
