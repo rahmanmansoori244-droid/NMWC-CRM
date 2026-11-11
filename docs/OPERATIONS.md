@@ -909,9 +909,32 @@ not built yet (item D).
      code on record.** Nothing is staged. Add a column headed `temix_code` holding each customer's
      Temix code (it is on the customer page), blank for a customer not yet in Temix. The `/export`
      workbook has no such column, so it is refused the same way once it names such a customer.
+   - **Codes in small letters are read in capitals** (owner's answer 2026-11-11). A `cust_code`
+     of `cct0005` is the customer `CCT0005`: every lane, every check, the fix on the batch page
+     and the stored code use the capital form, and a new customer is stored in capitals. Only the
+     letters a-z are changed; any other letter is left exactly as typed. A `temix_code` has always
+     been read in capitals. The sheet's cell is kept as uploaded (the batch page's "uploaded"
+     values); the loaded row says "Code in capitals" with both spellings, and "Before you promote"
+     counts such rows. Two rows whose codes differ only in capitals are rows of ONE customer: as
+     for any customer with several rows, the first row is the customer's, and their branch codes
+     must differ.
+   - **A shop code that only looks like another shop of the same customer is held back**
+     (owner's answer 2026-11-11). The row's `branch_code` is compared with the codes of the shops
+     the same customer has in the CRM (archived ones too) and with the other rows of that customer
+     in the sheet, ignoring capital letters and the leading zeros of each number: `1` looks like
+     `01` (Excel drops the zero), `ab` looks like `AB`. When they look alike but are not the same
+     code, the row is held back on its `branch_code` cell, naming both codes; nothing is matched
+     or renamed, and no second shop is created. Two rows of the sheet that look alike are both
+     held back. A code that IS one of the customer's shop codes is never held back. Correct the
+     cell if it is the same shop; if `1` and `01` really are two different shops, use
+     **Different shop: release…** (below). Codes that differ ONLY in capital letters cannot be two
+     shops — the CRM keeps shop codes in capitals, so `ab` would load as the shop `AB` — so such a
+     row can only be corrected or excluded. Promote checks the same rule again under the
+     customer's lock, for a shop added after the upload, and rejects the customer with the same
+     reason; "Before you promote" expects it.
    - **Promote opens "Before you promote".** It counts, against the CRM as it is at that moment:
-     customers and shops that will be created; Temix-owned fields refreshed and shops moved to
-     the sheet's route; blank CRM fields filled; customers and shops where the sheet differs
+     customers and shops that will be created; Temix-owned fields refreshed; rows naming a route
+     that will NOT be applied; rows whose codes were read in capitals; blank CRM fields filled; customers and shops where the sheet differs
      from the record (kept); rows whose credit cells will not be applied, and why; and rows
      expected to be rejected. It is a check, not a lock. Resume and Finish skip it.
    - **"Overwrite CRM fields from this sheet"** is in that dialog. Steward only, off by default,
@@ -1056,7 +1079,9 @@ not built yet (item D).
 4. Problem rows are fixed on the batch page, not with scripts: **Correct…** (only the cells the
    problem names; never payment terms, credit or the Temix code; only changed cells are
    recorded), **Release shared phone…** (with a reason; audited as FORCE_OVERRIDE),
-   **Re-check**, **Exclude…** (with a reason). A fixed row waits under **Fixed, waiting to
+   **Different shop: release…** (a shop code that looks like another shop of the customer only by
+   its zeros, when the two really are different shops; with a reason; audited as FORCE_OVERRIDE;
+   never for codes that differ only in capitals), **Re-check**, **Exclude…** (with a reason). A fixed row waits under **Fixed, waiting to
    promote** and can be taken back with **Withdraw fix** until the batch is promoted.
    - **A row fixed in the app for a customer linked to Temix is always "branch only"** (owner
      decision 2026-09-25), whatever its `temix_code` cell says and whatever rows are beside it in
