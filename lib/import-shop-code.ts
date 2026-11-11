@@ -24,9 +24,12 @@
  *    Ab and AB too). When the keys are equal but the codes are not the same,
  *    the row is held back with a reason that names both codes. The Steward
  *    corrects the branch_code cell (the existing fix flow), or, when the two
- *    really are different shops, releases the row with a typed reason (as a
- *    shared phone is released; audited as FORCE_OVERRIDE). A row whose code is
- *    exactly the code of one of the customer's shops is never held back.
+ *    really are different shops and their codes differ in their zeros,
+ *    releases the row with a typed reason (as a shared phone is released;
+ *    audited as FORCE_OVERRIDE). Codes that differ only in capital and small
+ *    letters are never released: the CRM keeps shop codes in capitals, so
+ *    they would load as the same shop. A row whose code is exactly the code of
+ *    one of the customer's shops is never held back.
  */
 
 /** The cells whose small letters the import changes to capitals. */
@@ -103,58 +106,69 @@ export type ShopLookalike =
  * Whether a row's branch_code looks like, but is not, one of its customer's
  * shops (`shops`: the codes stored in the CRM) or another of its rows in the
  * sheet (`siblings`). A blank code, or one that IS one of the customer's shops,
- * is never a lookalike. A sibling the Steward released as a different shop is
- * not compared.
+ * is never a lookalike. Codes that differ in their zeros are not compared with
+ * a row the Steward released as a different shop, nor, with `released`, for
+ * the row itself; codes that differ ONLY in capital and small letters always
+ * are, because the CRM keeps shop codes in capitals and they would load as one
+ * shop (SHOP_LOOKALIKE_RELEASABLE).
  */
 export function shopLookalike(
   custCode: string,
   sheetCode: string | null | undefined,
   shops: readonly string[],
-  siblings: readonly SiblingShop[]
+  siblings: readonly SiblingShop[],
+  released = false
 ): ShopLookalike | null {
   const written = (sheetCode ?? '').trim();
   if (!written || !custCode) return null;
   const mine = rowShopCode(custCode, written);
   if (shops.includes(mine)) return null;
   const key = shopCodeKey(mine);
-  const shop = shops.find((s) => shopCodeKey(s) === key);
-  if (shop) return { kind: 'shop', sheetCode: written, other: shop, caseOnly: shop.toUpperCase() === mine.toUpperCase() };
+  const caseOnly = (code: string) => code.toUpperCase() === mine.toUpperCase();
+  for (const shop of shops) {
+    if (shopCodeKey(shop) !== key) continue;
+    if (released && !caseOnly(shop)) continue;
+    return { kind: 'shop', sheetCode: written, other: shop, caseOnly: caseOnly(shop) };
+  }
   for (const s of siblings) {
-    if (s.released) continue;
     const theirs = (s.code ?? '').trim();
     if (!theirs) continue;
     const composed = rowShopCode(custCode, theirs);
-    if (composed !== mine && shopCodeKey(composed) === key) {
-      return {
-        kind: 'row',
-        sheetCode: written,
-        other: theirs,
-        row: s.row,
-        caseOnly: composed.toUpperCase() === mine.toUpperCase(),
-      };
-    }
+    if (composed === mine || shopCodeKey(composed) !== key) continue;
+    if ((released || s.released) && !caseOnly(composed)) continue;
+    return { kind: 'row', sheetCode: written, other: theirs, row: s.row, caseOnly: caseOnly(composed) };
   }
   return null;
 }
 
-/** The start of every lookalike reason: lib/import-row-fix.ts canReleaseShopCode reads it. */
+/** The start of every lookalike reason. */
 export const SHOP_LOOKALIKE = /^Shop code ".*" looks like /;
+
+/**
+ * A lookalike the Steward may release as a different shop: the codes differ in
+ * their zeros. Two codes that differ ONLY in capital and small letters cannot be
+ * two shops: the promote stores and finds a shop code in capital letters, so
+ * "ab" loads as the shop "AB". Such a row is corrected, never released.
+ */
+export const SHOP_LOOKALIKE_RELEASABLE = /^Shop code ".*" looks like .*\(Excel may have dropped a zero\)/;
 
 /** Why the row is held back, in the app's words; the field is 'branch_code'. */
 export function shopLookalikeMessage(hit: ShopLookalike): string {
-  const why = hit.caseOnly ? 'only capital and small letters differ' : 'Excel may have dropped a zero';
   const like =
     hit.kind === 'shop'
       ? `this customer's existing shop "${hit.other}"`
       : `shop code "${hit.other}" on row ${hit.row} of the same customer in this sheet`;
-  return `Shop code "${hit.sheetCode}" looks like ${like} (${why}). Correct the code if it is the same shop; if it is a different shop, release the row with a reason.`;
+  return hit.caseOnly
+    ? `Shop code "${hit.sheetCode}" looks like ${like} (only capital and small letters differ). Correct the code: shop codes are kept in capital letters, so if it is the same shop write it as that shop's code, and if it is a different shop give it a different code.`
+    : `Shop code "${hit.sheetCode}" looks like ${like} (Excel may have dropped a zero). Correct the code if it is the same shop; if it is a different shop, release the row with a reason.`;
 }
 
 /**
  * The first row of a customer's rows whose branch_code looks like one of its
  * shops or of its other rows, for the promote and the "Before you promote"
  * summary (a batch staged before this check, or a shop added since the upload).
- * Rows the Steward released as a different shop are skipped.
+ * A row the Steward released as a different shop is compared only for codes
+ * that differ in capital letters alone (shopLookalike).
  */
 export function groupShopLookalike(
   custCode: string,
@@ -162,11 +176,10 @@ export function groupShopLookalike(
   shops: readonly string[]
 ): ShopLookalike | null {
   for (const [i, r] of rows.entries()) {
-    if (r.shopCodeReleased === true) continue;
     const siblings: SiblingShop[] = rows
       .filter((_, j) => j !== i)
       .map((o) => ({ row: o.rowNumber, code: o.branchCode ?? '', released: o.shopCodeReleased === true }));
-    const hit = shopLookalike(custCode, r.branchCode, shops, siblings);
+    const hit = shopLookalike(custCode, r.branchCode, shops, siblings, r.shopCodeReleased === true);
     if (hit) return hit;
   }
   return null;

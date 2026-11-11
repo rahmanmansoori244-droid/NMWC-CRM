@@ -389,12 +389,15 @@ export function checkCustomerRow(
   // Owner's answer 2026-11-11 (A5), shop codes: held back, never matched,
   // when the code only LOOKS like one of the customer's shops or rows.
   const branchCode = rowBranchCode(row);
-  if (!opts.shopCodeReleased && custCode && branchCode) {
+  // A row the Steward released as a different shop is still held back for a
+  // code that differs ONLY in capital letters: that one would load as the same shop.
+  if (custCode && branchCode) {
     const hit = shopLookalike(
       custCode,
       branchCode,
       ctx.masterShops?.get(custCode) ?? [],
-      ctx.shopsInFile?.get(custCode) ?? []
+      ctx.shopsInFile?.get(custCode) ?? [],
+      !!opts.shopCodeReleased
     );
     if (hit) issues.push({ field: 'branch_code', message: shopLookalikeMessage(hit) });
   }

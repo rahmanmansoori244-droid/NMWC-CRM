@@ -15,7 +15,7 @@
 import type { SheetRow } from '@/lib/import-row-check';
 import { normalizeCR } from '@/lib/cr';
 import { CUSTOMER_COLUMNS, readCell, readLooseCell, type CustomerColumn } from '@/lib/import-headings';
-import { SHOP_LOOKALIKE } from '@/lib/import-shop-code';
+import { SHOP_LOOKALIKE_RELEASABLE } from '@/lib/import-shop-code';
 
 export type Corrections = {
   /** Sheet column → the value the Steward entered. */
@@ -118,14 +118,15 @@ export function canReleasePhone(issues: unknown): boolean {
 /**
  * Owner's answer 2026-11-11 (A5): a row may have its shop code released as a
  * different shop when at least one of its problems is a shop code that only
- * looks like one of the customer's (lib/import-shop-code.ts), and every other
- * one is a phone on another customer, which can then be released on its own
- * (canReleasePhone). Anything else is corrected, not released.
+ * looks like one of the customer's by its zeros (lib/import-shop-code.ts
+ * SHOP_LOOKALIKE_RELEASABLE), and every other one is a phone on another
+ * customer, which can then be released on its own (canReleasePhone). A code
+ * that differs only in capital letters, and anything else, is corrected.
  */
 export function canReleaseShopCode(issues: unknown): boolean {
   const list = issuesOf(issues);
   const lookalike = (i: Issue) =>
-    i.field === 'branch_code' && typeof i.message === 'string' && SHOP_LOOKALIKE.test(i.message);
+    i.field === 'branch_code' && typeof i.message === 'string' && SHOP_LOOKALIKE_RELEASABLE.test(i.message);
   const phone = (i: Issue) =>
     i.field === 'phone' && typeof i.message === 'string' && MASTER_PHONE.test(i.message);
   return list.some(lookalike) && list.every((i) => lookalike(i) || phone(i));

@@ -172,7 +172,7 @@ describe('shopLookalike — a shop code that only looks like another', () => {
       'Shop code "1" looks like this customer\'s existing shop "CCT0005-01" (Excel may have dropped a zero). Correct the code if it is the same shop; if it is a different shop, release the row with a reason.'
     );
     expect(shopLookalikeMessage({ kind: 'row', sheetCode: 'ab', other: 'AB', row: 4, caseOnly: true })).toBe(
-      'Shop code "ab" looks like shop code "AB" on row 4 of the same customer in this sheet (only capital and small letters differ). Correct the code if it is the same shop; if it is a different shop, release the row with a reason.'
+      'Shop code "ab" looks like shop code "AB" on row 4 of the same customer in this sheet (only capital and small letters differ). Correct the code: shop codes are kept in capital letters, so if it is the same shop write it as that shop\'s code, and if it is a different shop give it a different code.'
     );
     expect(SHOP_LOOKALIKE.test(shopLookalikeMessage({ kind: 'shop', sheetCode: '1', other: 'X', caseOnly: false }))).toBe(true);
   });
@@ -191,6 +191,10 @@ describe('shopLookalike — a shop code that only looks like another', () => {
         []
       )
     ).toBeNull();
+    // A released row is still compared for capital letters alone: that would load as one shop.
+    expect(
+      groupShopLookalike('CCT0005', [{ branchCode: 'ab', rowNumber: 2, shopCodeReleased: true }], ['CCT0005-AB'])
+    ).toMatchObject({ kind: 'shop', caseOnly: true });
     expect(groupShopLookalike('CCT0005', [{ branchCode: '01', rowNumber: 2 }], ['CCT0005-01'])).toBeNull();
   });
 });
@@ -245,6 +249,21 @@ describe('checkCustomerRow — a lookalike shop code is held back on the branch_
     expect(parsed.shopCodeReleased).toBe(true);
   });
 
+  it('a code that differs ONLY in capital letters cannot be released: it would load as the same shop', () => {
+    const shops = new Map([['CCT0005', ['CCT0005-AB']]]);
+    const held = checkCustomerRow({ cust_code: 'CCT0005', cust_name: 'A', branch_code: 'ab' }, ctx({ masterShops: shops }));
+    expect(held.issues).toHaveLength(1);
+    expect(editableColumns(held.issues)).toEqual(['branch_code']);
+    expect(canReleaseShopCode(held.issues)).toBe(false);
+    // Even a row released earlier for its zeros is held back for this.
+    const still = checkCustomerRow(
+      { cust_code: 'CCT0005', cust_name: 'A', branch_code: 'ab' },
+      ctx({ masterShops: shops }),
+      { shopCodeReleased: true }
+    );
+    expect(still.issues[0]?.message).toContain('(only capital and small letters differ)');
+  });
+
   it('the release is kept in the corrections', () => {
     expect(readCorrections({ shopCodeReleased: { reason: 'two shops in one mall' } })).toEqual({
       shopCodeReleased: { reason: 'two shops in one mall' },
@@ -254,7 +273,7 @@ describe('checkCustomerRow — a lookalike shop code is held back on the branch_
   it('a row held back for a lookalike code AND a shared phone can be released for the code first', () => {
     const issues = [
       { field: 'phone', message: 'phone already exists in master on customer X1' },
-      { field: 'branch_code', message: 'Shop code "1" looks like this customer\'s existing shop "C-01" (x).' },
+      { field: 'branch_code', message: 'Shop code "1" looks like this customer\'s existing shop "C-01" (Excel may have dropped a zero).' },
     ];
     expect(canReleaseShopCode(issues)).toBe(true);
     expect(canReleasePhone(issues)).toBe(false);
