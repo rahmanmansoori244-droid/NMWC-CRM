@@ -89,6 +89,11 @@ if (u.host === 'api.github.com') {
     if (!tree) reply(404, { message: 'No commit found' });
     reply(200, [{ name: 'clean-start', type: 'dir', sha: tree }]);
   }
+  if (p === 'contents/.github/workflows') {
+    const blob = (gh.workflowBlobs || {})[u.searchParams.get('ref')];
+    if (!blob) reply(404, { message: 'No commit found' });
+    reply(200, [{ name: 'clean-start.yml', type: 'file', sha: blob }]);
+  }
   reply(404, { message: 'Not Found' });
 }
 
@@ -129,6 +134,12 @@ if (u.host === 'console.neon.tech') {
     }
     st.branches.push(b);
     save();
+    // FAKE_NEON_CREATE_TIMEOUT=1: Neon made the branch, but the answer never arrives (curl exit 28).
+    if (process.env.FAKE_NEON_CREATE_TIMEOUT === '1') {
+      logCall({ code: 0 });
+      process.stderr.write('curl: (28) Operation timed out\n');
+      process.exit(28);
+    }
     reply(201, {
       branch: view(b),
       endpoints: compute ? [{ id: `ep-fake-${st.seq}`, host: 'localhost', type: 'read_write' }] : [],

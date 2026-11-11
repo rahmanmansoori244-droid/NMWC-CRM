@@ -44,8 +44,12 @@ const PROGRAMS = {
   ],
   '.[]? | select(.name == "clean-start" and .type == "dir") | .sha': (j) =>
     arr(j).filter((x) => x?.name === 'clean-start' && x?.type === 'dir').map((x) => x.sha),
-  '.workflow_runs[]? | select(.display_title == "Clean start neon-rehearsal") | "\\(.id) \\(.head_sha)"': (j) =>
-    arr(j?.workflow_runs).filter((x) => x?.display_title === 'Clean start neon-rehearsal').map((x) => `${x.id} ${x.head_sha}`),
+  '.[]? | select(.name == "clean-start.yml" and .type == "file") | .sha': (j) =>
+    arr(j).filter((x) => x?.name === 'clean-start.yml' && x?.type === 'file').map((x) => x.sha),
+  '.workflow_runs[]? | select(.display_title == "Clean start neon-rehearsal") | "\\(.id) \\(.head_sha) \\(.head_branch)"': (j) =>
+    arr(j?.workflow_runs)
+      .filter((x) => x?.display_title === 'Clean start neon-rehearsal')
+      .map((x) => `${x.id} ${x.head_sha} ${x.head_branch ?? 'null'}`),
   '.project.history_retention_seconds // 0': (j) => [alt(j?.project?.history_retention_seconds, 0)],
   '.branches[]? | select(.default == true) | .id': (j) => arr(j?.branches).filter((b) => b?.default === true).map((b) => b.id),
   '.branch.id // empty': (j) => [alt(j?.branch?.id, empty)],
@@ -55,10 +59,14 @@ const PROGRAMS = {
   '.branches[]? | select(.name == $n) | .id': (j) => arr(j?.branches).filter((b) => b?.name === named.n).map((b) => b.id),
   '.branches[]? | .name': (j) => arr(j?.branches).map((b) => b?.name),
   '.uri // empty': (j) => [alt(j?.uri, empty)],
-  '[.operations[]? | select(.status != "finished" and .status != "skipped" and .status != "cancelled")] | length': (j) => [
-    arr(j?.operations).filter((o) => !['finished', 'skipped', 'cancelled'].includes(o?.status)).length,
+  '[.operations[]? | select($b == "" or .branch_id == $b) | select(.status != "finished" and .status != "skipped" and .status != "cancelled" and .status != "failed")] | length': (j) => [
+    arr(j?.operations)
+      .filter((o) => named.b === '' || o?.branch_id === named.b)
+      .filter((o) => !['finished', 'skipped', 'cancelled', 'failed'].includes(o?.status)).length,
   ],
-  '[.operations[]? | select(.status == "failed")] | length': (j) => [arr(j?.operations).filter((o) => o?.status === 'failed').length],
+  '[.operations[]? | select($b != "" and .branch_id == $b and .status == "failed")] | length': (j) => [
+    arr(j?.operations).filter((o) => named.b !== '' && o?.branch_id === named.b && o?.status === 'failed').length,
+  ],
   '.seq': (j) => [j?.seq],
   '.hash': (j) => [j?.hash],
   '.r2Key': (j) => [j?.r2Key],

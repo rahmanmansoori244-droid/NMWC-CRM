@@ -13,7 +13,7 @@
 #   bash scripts/ops/clean-start/seal-archive.sh verify  <seals.jsonl> <old16|none>
 #   bash scripts/ops/clean-start/seal-archive.sh archive <seals.jsonl> <old16|none> <run id>
 #   bash scripts/ops/clean-start/seal-archive.sh retire  <seals.jsonl> <old16|none> <run id>
-#   bash scripts/ops/clean-start/seal-archive.sh restore <seals.jsonl> <old16|none> <run id> <foreign-at-plan file>
+#   bash scripts/ops/clean-start/seal-archive.sh restore <seals.jsonl> <old16|none> <run id> <new16>
 #
 # seals.jsonl is the PLAN export (one SealRecord per line: seq, day, hash,
 # r2Key, bodyText), bound to the plan id. Every seal's hash is the SHA-256 of
@@ -38,9 +38,14 @@
 #   restore  mode seal-restore, after the database was put back: copies every
 #            archived seal back to its live key (hash-checked; an existing live
 #            copy with other bytes refuses), then moves the NEW chain's objects
-#            (under seals/, neither the old chain's keys nor foreign at plan
-#            time) to <backups>/cleanstart/<run>/abandoned-chain/, checked
-#            byte for byte before each live copy is deleted.
+#            (only seals/v1/<new16>/, the id the apply or finish run recorded;
+#            every other object under seals/ is left alone, since the bucket is
+#            shared with other environments) to
+#            <backups>/cleanstart/<run>/abandoned-chain/, checked byte for byte
+#            before each live copy is deleted.
+#
+# "Gone" is decided only by a definite not-found answer of the store; any other
+# failed HEAD (403, network, throttling) counts as "still there".
 #
 # It opens no database. It prints only yes/no lines (run.sh say); keys and
 # counts go to $CS_DIR/seal-archive.report (encrypted with the run's report).
@@ -87,14 +92,36 @@ list_keys() {
 }
 # get <ro|rw|bk> <bucket> <key> <file>: 0 = downloaded, 1 = not there / unreadable.
 get() { "aws_$1" s3 cp "s3://$2/$3" "$4" > /dev/null; }
-exists() { "aws_$1" s3api head-object --bucket "$2" --key "$3" > /dev/null 2>&1; }
+# present <ro|rw|bk> <bucket> <key>: 0 = the object is there, 1 = it is NOT
+# (the store answered 404 / NoSuchKey / Not Found), 2 = unknown (403, a network
+# error, throttling...). Only a definite "not found" counts as gone: an unknown
+# answer is never taken as "deleted".
+present() {
+  local err="$CS_DIR/head.err" rc=0
+  : > "$err"
+  case "$1" in
+    ro) AWS_ACCESS_KEY_ID="${CLEANSTART_R2_RO_ACCESS_KEY_ID:?}" AWS_SECRET_ACCESS_KEY="${CLEANSTART_R2_RO_SECRET_ACCESS_KEY:?}" \
+          aws s3api head-object --bucket "$2" --key "$3" --endpoint-url "$(photos_endpoint)" > /dev/null 2> "$err" || rc=$? ;;
+    rw) AWS_ACCESS_KEY_ID="${CLEANSTART_R2_RW_ACCESS_KEY_ID:?}" AWS_SECRET_ACCESS_KEY="${CLEANSTART_R2_RW_SECRET_ACCESS_KEY:?}" \
+          aws s3api head-object --bucket "$2" --key "$3" --endpoint-url "$(photos_endpoint)" > /dev/null 2> "$err" || rc=$? ;;
+    bk) AWS_ACCESS_KEY_ID="${BACKUP_R2_ACCESS_KEY_ID:?}" AWS_SECRET_ACCESS_KEY="${BACKUP_R2_SECRET_ACCESS_KEY:?}" \
+          aws s3api head-object --bucket "$2" --key "$3" --endpoint-url "$(backups_endpoint)" > /dev/null 2> "$err" || rc=$? ;;
+  esac
+  cat "$err" >> "$CS_DIR/aws.log" 2>/dev/null || true
+  if [ "$rc" -eq 0 ]; then rm -f "$err"; return 0; fi
+  if grep -qE '\((404|NoSuchKey|NotFound)\)|Not Found' "$err"; then rm -f "$err"; return 1; fi
+  rm -f "$err"
+  return 2
+}
+# gone <who> <bucket> <key>: 0 only when the store says the object is not there.
+gone() { local s=0; present "$@" || s=$?; [ "$s" -eq 1 ]; }
 
 mode="${1:-}"
 seals="${2:-}"
 old="${3:-}"
 run="${4:-}"
 case "$mode" in verify | archive | retire | restore) ;; *)
-  echo "usage: seal-archive.sh verify|archive|retire|restore <seals.jsonl> <old16|none> [run id] [foreign file]" >&2
+  echo "usage: seal-archive.sh verify|archive|retire|restore <seals.jsonl> <old16|none> [run id] [new16]" >&2
   exit 2 ;;
 esac
 [ -f "$seals" ] || refuse "the seal export is missing"
@@ -176,12 +203,16 @@ archive)
       src="$WORK/copy"
     fi
     dest="$ARCHIVE_PREFIX$k"
-    if exists bk "$BACKUP_R2_BUCKET" "$dest"; then
+    st=0
+    present bk "$BACKUP_R2_BUCKET" "$dest" || st=$?
+    if [ "$st" -eq 0 ]; then
       get bk "$BACKUP_R2_BUCKET" "$dest" "$WORK/back/$s.json" || refuse "an archive copy could not be read"
       [ "$(sha_file "$WORK/back/$s.json")" = "$h" ] || refuse "an archive copy already there has other bytes"
-    else
+    elif [ "$st" -eq 1 ]; then
       aws_bk s3 cp "$src" "s3://$BACKUP_R2_BUCKET/$dest" --content-type application/json \
         --metadata "nmwc-seal-hash=$h" --checksum-algorithm CRC32 > /dev/null || refuse "an old seal could not be archived"
+    else
+      refuse "the backups bucket did not say whether an archive copy is there"
     fi
     rm -f "$WORK/copy"
   done < "$WORK/index"
@@ -209,10 +240,12 @@ retire)
     get bk "$BACKUP_R2_BUCKET" "$ARCHIVE_PREFIX$k" "$WORK/arch" || { ok=1; note "no archive $k"; continue; }
     if [ "$(sha_file "$WORK/arch")" != "$h" ]; then ok=1; note "archive differs $k"; continue; fi
     rm -f "$WORK/arch"
-    if exists ro "$PHOTOS" "$k"; then
+    # Deleted unless the store says it is already gone (an unknown answer deletes too: harmless).
+    if ! gone ro "$PHOTOS" "$k"; then
       aws_rw s3api delete-object --bucket "$PHOTOS" --key "$k" > /dev/null || { ok=1; continue; }
     fi
-    if exists ro "$PHOTOS" "$k"; then ok=1; note "still there $k"; else removed=$((removed + 1)); fi
+    # Counted as removed only on a definite "not found".
+    if gone ro "$PHOTOS" "$k"; then removed=$((removed + 1)); else ok=1; note "still there or unknown $k"; fi
   done < "$WORK/index"
   note "retired=$removed"
   yes_no "old seal files removed from the live folder, each with a verified archive copy" "$ok"
@@ -220,17 +253,27 @@ retire)
   ;;
 
 restore)
-  foreign="${5:-}"
-  [ -f "$foreign" ] || refuse "the list of foreign objects at plan time is missing"
+  # The NEW chain is named, never inferred: production's new chain id (the
+  # first 16 hex of the post-reset seq-0 seal's hash), recorded encrypted by
+  # the apply or finish run. The photo bucket is shared with other
+  # environments, whose own chains keep growing under seals/v1/<their id>/:
+  # anything outside seals/v1/<new>/ is left exactly where it is.
+  new="${5:-}"
+  [[ $new =~ ^[0-9a-f]{16}$ ]] || refuse "the new seal chain's id is missing or malformed"
+  [ "$new" != "$old" ] || refuse "the new seal chain's id is the old chain's"
   : "${BACKUP_R2_BUCKET:?}"
   ok=0
   while read -r s h k; do
     get bk "$BACKUP_R2_BUCKET" "$ARCHIVE_PREFIX$k" "$WORK/arch" || { ok=1; note "no archive $k"; continue; }
     [ "$(sha_file "$WORK/arch")" = "$h" ] || { ok=1; note "archive differs $k"; continue; }
-    if exists ro "$PHOTOS" "$k"; then
+    st=0
+    present ro "$PHOTOS" "$k" || st=$?
+    if [ "$st" -eq 0 ]; then
       get ro "$PHOTOS" "$k" "$WORK/live" || { ok=1; continue; }
       [ "$(sha_file "$WORK/live")" = "$h" ] || { ok=1; note "live differs $k"; }
       continue
+    elif [ "$st" -ne 1 ]; then
+      ok=1; note "unknown whether live $k"; continue
     fi
     aws_rw s3 cp "$WORK/arch" "s3://$PHOTOS/$k" --content-type application/json \
       --metadata "nmwc-seal-hash=$h" > /dev/null || { ok=1; continue; }
@@ -238,26 +281,25 @@ restore)
   done < "$WORK/index"
   yes_no "old seal files back in the live folder, hash-checked" "$ok"
   [ "$ok" -eq 0 ] || refuse "an old seal file could not be put back"
-  # The new chain: under seals/, not the old chain's keys, not foreign at plan time.
+  # The new chain: exactly the seal keys under seals/v1/<new>/.
   list_keys ro "$PHOTOS" seals/ > "$CS_DIR/seal-keys-now.txt" || refuse "seals/ could not be listed"
-  cut -d' ' -f3 "$WORK/index" | LC_ALL=C sort > "$CS_DIR/seal-keys-expected.txt"
-  LC_ALL=C sort "$foreign" | grep -v '^$' > "$CS_DIR/seal-keys-keep.txt" || true
-  LC_ALL=C comm -23 "$CS_DIR/seal-keys-now.txt" "$CS_DIR/seal-keys-expected.txt" \
-    | LC_ALL=C comm -23 - "$CS_DIR/seal-keys-keep.txt" > "$CS_DIR/seal-keys-new.txt"
+  grep -F "seals/v1/$new/" "$CS_DIR/seal-keys-now.txt" > "$CS_DIR/seal-keys-new.txt" || true
+  others="$(grep -v -F -e "seals/v1/$new/" -e "seals/v1/$old/" "$CS_DIR/seal-keys-now.txt" | grep -c . || true)"
+  note "left_alone=$others"
   moved=0
   while IFS= read -r k; do
     [ -n "$k" ] || continue
-    [[ $k =~ ^seals/v1/[0-9a-f]{16}/[0-9]{8}\.json$ ]] || { ok=1; note "not a seal key, left $k"; continue; }
-    [ "${k#seals/v1/$old/}" = "$k" ] || { ok=1; note "in the old folder, left $k"; continue; }
+    [[ $k =~ ^seals/v1/$new/[0-9]{8}\.json$ ]] || { ok=1; note "not a seal key, left $k"; continue; }
     get ro "$PHOTOS" "$k" "$WORK/new" || { ok=1; continue; }
     dest="cleanstart/$run/abandoned-chain/$k"
     aws_bk s3 cp "$WORK/new" "s3://$BACKUP_R2_BUCKET/$dest" --content-type application/json > /dev/null || { ok=1; continue; }
     get bk "$BACKUP_R2_BUCKET" "$dest" "$WORK/moved" && [ "$(sha_file "$WORK/moved")" = "$(sha_file "$WORK/new")" ] \
       || { ok=1; note "move not verified $k"; continue; }
     aws_rw s3api delete-object --bucket "$PHOTOS" --key "$k" > /dev/null || { ok=1; continue; }
-    if exists ro "$PHOTOS" "$k"; then ok=1; else moved=$((moved + 1)); fi
+    if gone ro "$PHOTOS" "$k"; then moved=$((moved + 1)); else ok=1; note "still there or unknown $k"; fi
   done < "$CS_DIR/seal-keys-new.txt"
   note "restored=$n abandoned_moved=$moved"
+  yes_no "other objects under seals/ left where they are" "$([ "${others:-0}" -gt 0 ]; echo $?)"
   yes_no "the abandoned new chain moved out of the live folder" "$ok"
   [ "$ok" -eq 0 ] || refuse "the abandoned chain could not be moved completely"
   ;;

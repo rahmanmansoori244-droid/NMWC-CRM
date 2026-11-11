@@ -82,6 +82,13 @@ if (svc === 's3api') {
   if (cmd === 'head-object') {
     const k = opt('--key');
     log({ op: 'head', bucket, key: k });
+    // FAKE_S3_HEAD_FORBIDDEN=<substring>: a HEAD of a key containing it answers 403 (a
+    // failure that is NOT "not found"), for the tests of the fail-closed "is it gone" checks.
+    const forbid = process.env.FAKE_S3_HEAD_FORBIDDEN;
+    if (forbid && k && k.includes(forbid)) {
+      process.stderr.write('An error occurred (403) when calling the HeadObject operation: Forbidden\n');
+      process.exit(254);
+    }
     const p = objPath(bucket, k);
     if (!fs.existsSync(p)) notFound();
     let meta = {};

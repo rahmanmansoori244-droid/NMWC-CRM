@@ -131,12 +131,18 @@ export function memoryStore(
   };
 }
 
-/** 02:30 UTC of the calendar day after `now`'s Oman date: the scheduled run of Oman day D+1. */
+/**
+ * The next scheduled integrity watch strictly after `now`: 02:30 UTC (06:30 Oman,
+ * vercel.json). For a reset run in the evening (15:30-20:00 UTC) this is 02:30 UTC
+ * the next calendar day, the run of Oman day D+1. It is computed from the UTC
+ * clock, not from `now`'s Oman date: a rehearsal whose night 1 falls after 20:00
+ * UTC (already the next day in Oman) must not simulate a night 2 one day too far,
+ * which would expect job runs a copy taken that evening cannot hold (review
+ * 2026-11-11).
+ */
 export function nextOmanMorning(now: Date): Date {
-  const oman = new Date(now.getTime() + 4 * 3600_000);
-  return new Date(
-    Date.UTC(oman.getUTCFullYear(), oman.getUTCMonth(), oman.getUTCDate() + 1, 2, 30, 0, 0)
-  );
+  const sameDay = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 2, 30, 0, 0);
+  return new Date(sameDay > now.getTime() ? sameDay : sameDay + 86_400_000);
 }
 
 /** The signature run.ts records for a listed object that is not this chain's (lib/seal/chain.ts). */

@@ -41,20 +41,38 @@ export function parseReadBack(text: string): ReadBack[] {
     });
 }
 
-/** Night 1 of the expected table, with the foreign-seal exception when PLAN found foreign keys. */
+/**
+ * Night 1 of the expected table, with the foreign-seal exception.
+ *
+ *   foreignKeys  objects under seals/ that MUST be reported (APPLY: PLAN's list,
+ *                made minutes before the first run): seal-offsite-copies must
+ *                fail and its open findings must be exactly these.
+ *   mayKeys      objects that MAY be reported (mode FINISH: everything under
+ *                seals/ that is not production's new chain, listed now; the first
+ *                run may have been a scheduled one made before the old seal files
+ *                were removed, or one made just now after it). Every open finding
+ *                must then be one of foreignKeys + mayKeys; with none open the
+ *                check must pass; with some it must fail.
+ * A finding outside both lists is a mismatch either way.
+ */
 export function compareFirstRun(
   rows: ReadonlyArray<ReadBack>,
   foreignKeys: readonly string[],
-  expected: ExpectedWatch = loadExpected()
+  expected: ExpectedWatch = loadExpected(),
+  mayKeys: readonly string[] = []
 ): RehearsalResult {
   const table = { ...expected.night1 };
-  const sigs = new Set(foreignKeys.filter((k) => k.startsWith('seals/')).map(foreignSignature));
-  if (sigs.size > 0) Object.assign(table, expected.withForeignSeals.night1);
+  const sigsOf = (keys: readonly string[]) => new Set(keys.filter((k) => k.startsWith('seals/')).map(foreignSignature));
+  const sigs = sigsOf(foreignKeys);
+  const may = sigsOf(mayKeys);
+  const copies = rows.find((r) => r.checkId === 'seal-offsite-copies');
+  const open = new Set(copies?.sigs ?? []);
+  if (sigs.size > 0 || (may.size > 0 && open.size > 0)) Object.assign(table, expected.withForeignSeals.night1);
   const mismatches: Mismatch[] = compareNight(1, rows, table);
-  if (sigs.size > 0) {
-    const copies = rows.find((r) => r.checkId === 'seal-offsite-copies');
-    const open = new Set(copies?.sigs ?? []);
-    const same = open.size === sigs.size && [...sigs].every((s) => open.has(s));
+  if (sigs.size > 0 || may.size > 0) {
+    const mustAll = [...sigs].every((s) => open.has(s));
+    const onlyKnown = [...open].every((s) => sigs.has(s) || may.has(s));
+    const same = mustAll && onlyKnown;
     if (!same)
       mismatches.push({
         night: 1,
@@ -78,20 +96,23 @@ export function compareFirstRun(
 }
 
 function main(argv: string[]): number {
-  const [tsv, foreignFile] = argv;
+  const [tsv, foreignFile, mayFile] = argv;
   if (!tsv) {
-    console.error('usage: compare-watch.ts <results.tsv> [<foreign keys file>]');
+    console.error('usage: compare-watch.ts <results.tsv> [<foreign keys file> [<may keys file>]]');
     return 2;
   }
   let rows: ReadBack[];
   let foreign: string[] = [];
+  let may: string[] = [];
+  const keys = (f: string) =>
+    readFileSync(f, 'utf8')
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
   try {
     rows = parseReadBack(readFileSync(tsv, 'utf8'));
-    if (foreignFile)
-      foreign = readFileSync(foreignFile, 'utf8')
-        .split(/\r?\n/)
-        .map((s) => s.trim())
-        .filter(Boolean);
+    if (foreignFile) foreign = keys(foreignFile);
+    if (mayFile) may = keys(mayFile);
   } catch {
     console.error('compare-watch: the input could not be read');
     return 2;
@@ -100,7 +121,7 @@ function main(argv: string[]): number {
     console.log('first integrity checks as expected: no');
     return 1;
   }
-  const r = compareFirstRun(rows, foreign);
+  const r = compareFirstRun(rows, foreign, loadExpected(), may);
   for (const line of reportLines(r)) console.log(line);
   return r.ok ? 0 : 1;
 }

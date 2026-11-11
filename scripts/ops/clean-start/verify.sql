@@ -21,6 +21,18 @@
 \else
 \set run_id ''
 \endif
+-- -v scope=finish (mode finish, which may run after the CRM is used again):
+-- CS302 (customer data empty), CS303 (baseline count = kept records now) and
+-- CS306 (no counter) describe the state right after the reset and stop being
+-- true as soon as anyone creates a request, a saved view, a customer or
+-- removes a route; they are skipped there. CS301 (did it commit) and the
+-- checks that stay true while the CRM is used (CS304, CS305, CS307) always run.
+\if :{?scope}
+\else
+\set scope apply
+\endif
+SELECT :'scope' = 'finish' AS cs_finish_scope
+\gset
 
 BEGIN READ ONLY;
 SET LOCAL TimeZone = 'UTC';
@@ -39,6 +51,8 @@ BEGIN
 END
 $cs$;
 
+\if :cs_finish_scope
+\else
 -- CS302: the customer data is still empty.
 DO $cs$
 BEGIN
@@ -54,7 +68,10 @@ BEGIN
   END IF;
 END
 $cs$;
+\endif
 
+\if :cs_finish_scope
+\else
 -- CS303: this run's baselines are whole (one per kept region, route, account; the holder rows).
 DO $cs$
 DECLARE
@@ -72,6 +89,7 @@ BEGIN
   END IF;
 END
 $cs$;
+\endif
 
 -- CS304: every kept account, route and region has an open history interval that matches it (lib/integrity/checks.ts).
 DO $cs$
@@ -126,6 +144,8 @@ BEGIN
 END
 $cs$;
 
+\if :cs_finish_scope
+\else
 -- CS306: no customer-code counter (none can have been used while Customer is empty).
 DO $cs$
 BEGIN
@@ -134,6 +154,7 @@ BEGIN
   END IF;
 END
 $cs$;
+\endif
 
 -- CS307: no history row without a cause since the reset.
 DO $cs$

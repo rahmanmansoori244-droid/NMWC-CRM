@@ -47,6 +47,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: clean-start
@@ -69,6 +70,7 @@ jobs:
       CONFIRM_HOST: ${{ inputs.confirm_host }}
       CONFIRM_PHRASE: ${{ inputs.confirm_phrase }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      GH_TOKEN: ${{ github.token }}
       PROD_URL_RAW: ${{ secrets.DIRECT_URL }}
       UAT_URL: ${{ secrets.UAT_DATABASE_URL_RO }}
       CLEANSTART_ACTOR_USERNAME: ${{ secrets.CLEANSTART_ACTOR_USERNAME }}
@@ -108,6 +110,8 @@ jobs:
           set -euo pipefail
           bash scripts/ops/clean-start/run.sh step "photos: preflight"
           bash scripts/ops/clean-start/run.sh preflight photos
+          # The Approve this job waited for is a gate only while the environment has a reviewer.
+          bash scripts/ops/clean-start/run.sh github-env
           bash scripts/ops/clean-start/run.sh check-run-id "$TARGET_RUN"
           bash scripts/ops/clean-start/run.sh prod-target photos
           bash scripts/ops/clean-start/run.sh fetch-decrypt "cleanstart/$TARGET_RUN/apply/photo-keys.txt.age" "$CS_DIR/photo-keys.txt"
@@ -125,6 +129,12 @@ jobs:
           psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
             -v fact=attachment-keys > "$CS_DIR/prod-keys.txt" 2>&1 || rc=$?
           bash scripts/ops/clean-start/run.sh sql "production photo keys read" "$rc" "$CS_DIR/prod-keys.txt"
+          # The photos go only once the real customer file is in (design section 6, owner question 9).
+          rc=0
+          psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+            -v fact=customers-exist > "$CS_DIR/fact.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "customers read" "$rc" "$CS_DIR/fact.out"
+          bash scripts/ops/clean-start/run.sh bool "the real customer file is loaded (customers exist)" "$CS_DIR/fact.out"
 
       - name: What the test environment uses (read-only, when its secret is set)
         env:

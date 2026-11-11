@@ -63,7 +63,8 @@ describe('shape', () => {
 
   it('least permissions, one concurrency group that never cancels', () => {
     expect(MAIN.permissions).toEqual({ contents: 'read', actions: 'read' });
-    expect(PHOTOS.permissions).toEqual({ contents: 'read' });
+    // actions: read lets the photo job read its own environment's protection rules (run.sh github-env).
+    expect(PHOTOS.permissions).toEqual({ contents: 'read', actions: 'read' });
     for (const [, w] of BOTH) expect(w.concurrency).toEqual({ group: 'clean-start', 'cancel-in-progress': false });
   });
 
@@ -197,11 +198,59 @@ describe('targets', () => {
       expect(last.run, `${f} ${id}`).toMatch(/run\.sh shred/);
       expect(last.if, `${f} ${id}`).toBe('always()');
     }
-    const cleanup = (job: string) => MAIN.jobs[job]!.steps.find((s) => /neon-cleanup/.test(s.run ?? ''));
+    const cleanup = (job: string) => MAIN.jobs[job]!.steps.find((s) => /neon-cleanup|safety-cleanup/.test(s.run ?? ''));
     expect(cleanup('neon_rehearsal')?.if).toBe('always()');
     expect(cleanup('apply')?.if).toBe('always()');
-    // The safety branch is deleted ONLY when it is certain the reset did not commit.
-    expect(cleanup('apply')?.run).toMatch(/CS_COMMITTED:-\}" = no \] \|\| \[ -z "\$\{CS_RESET_RC:-\}" \] \|\| \[ "\$\{CS_RESET_RC:-\}" = 3 \]/);
+    // The safety branch is deleted ONLY when it is certain the reset did not commit
+    // (run.sh safety-cleanup, which also reads the marker and exit code on disk).
+    expect(cleanup('apply')?.run).toBe('bash scripts/ops/clean-start/run.sh safety-cleanup');
+    const reset = MAIN.jobs.apply!.steps.find((s) => /reset\.sql/.test(s.run ?? ''))!.run!;
+    expect(reset.indexOf('run.sh started')).toBeLessThan(reset.indexOf('psql "$DIRECT_URL"'));
+    expect(reset).toMatch(/printf '%s\\n' "\$rc" > "\$CS_DIR\/reset-rc"/);
+  });
+
+  it('every job that relies on the approval gate first checks the gate is real (github-env)', () => {
+    const jobs: Array<[Workflow, string]> = [
+      [MAIN, 'apply'],
+      [MAIN, 'finish'],
+      [MAIN, 'seal_restore'],
+      [PHOTOS, 'photos'],
+    ];
+    for (const [w, id] of jobs) {
+      const runs = w.jobs[id]!.steps.filter((s) => s.run).map((s) => s.run!);
+      const all = runs.join('\n');
+      const gate = all.indexOf('run.sh github-env');
+      expect(gate, id).toBeGreaterThan(-1);
+      // Before any storage, Neon or database step.
+      for (const later of ['fetch-decrypt', 'seal-archive.sh', 'photo-delete.sh', 'neon-', 'psql '])
+        if (all.includes(later)) expect(all.indexOf(later), `${id}: ${later}`).toBeGreaterThan(gate);
+      expect(w.jobs[id]!.env?.GH_TOKEN, id).toBe('${{ github.token }}');
+    }
+  });
+
+  it('no secret is in scope while dependencies install (their lifecycle scripts run then)', () => {
+    let seen = 0;
+    for (const [f, id, j] of allJobs())
+      for (const s of j.steps) {
+        if (!/\bnpm ci\b/.test(s.run ?? '')) continue;
+        seen++;
+        for (const [k, v] of Object.entries(j.env ?? {}))
+          if (/secrets\.|github\.token/.test(String(v))) expect(s.env?.[k], `${f} ${id}: ${k}`).toBe('');
+      }
+    expect(seen).toBe(4);
+  });
+
+  it('mode finish verifies in finish scope and compares with what the first run MAY have seen; seal-restore moves the recorded new chain only', () => {
+    const run = (job: string) => MAIN.jobs[job]!.steps.map((s) => s.run ?? '').join('\n');
+    expect(run('finish')).toMatch(/-v scope=finish -f scripts\/ops\/clean-start\/verify\.sql/);
+    expect(run('apply')).not.toMatch(/scope=finish/);
+    expect(run('finish')).toMatch(/run\.sh finish-may "\$CS_DIR\/may-keys\.txt"\n\s*bash scripts\/ops\/clean-start\/run\.sh compare-watch "\$CS_DIR\/watch-results\.tsv" "" "\$CS_DIR\/may-keys\.txt"/);
+    for (const job of ['apply', 'finish']) expect(run(job), job).toMatch(/run\.sh chain-id "\$CS_DIR\/chain-id\.out"/);
+    const sr = run('seal_restore');
+    expect(sr.indexOf('run.sh chain-id-fetch')).toBeGreaterThan(-1);
+    expect(sr.indexOf('run.sh chain-id-fetch')).toBeLessThan(sr.indexOf('seal-archive.sh restore'));
+    expect(sr).toMatch(/seal-archive\.sh restore "\$CS_DIR\/exports\/seals\.jsonl" "\$OLD_CHAIN" "\$TARGET_RUN" "\$NEW_CHAIN"/);
+    expect(sr).toMatch(/run\.sh status-lines "\$CS_DIR\/watch-latest\.tsv" refuse/);
   });
 
   it('the shell scripts name no database client (the workflow holds those lines)', () => {

@@ -13,6 +13,11 @@
 --   no-reset-row                t when no clean-start reset row exists (the Neon restore proof)
 --   seal-state     -v run_id=R  t when the seal chain's genesis is the old chain -v old_chain=X and the reset row of R is gone
 --   attachment-keys             every Attachment.r2Key, sorted COLLATE "C" — for the photo step's files only
+--   chain-id                    the first 16 hex of the seq-0 seal's hash (the chain folder), or none
+--   owner-facts                 three t/f lines: job runs for yesterday (Oman), for today (Oman), a windowed
+--                               job (sla-escalate, keep-warm, email-drain) outside 03:00-15:00 UTC in 3 days
+--   runtime-role-ok             t unless the LATEST runtime-role-privileges result is fail or error
+--   customers-exist             t when at least one customer exists (the real file was loaded)
 --
 -- Exit 0 = answered; 3 = an error (SQLSTATE only, VERBOSITY sqlstate).
 
@@ -54,6 +59,10 @@ SELECT :'fact' = 'heartbeat' AS f_heartbeat,
        :'fact' = 'no-reset-row' AS f_no_reset_row,
        :'fact' = 'seal-state' AS f_seal_state,
        :'fact' = 'attachment-keys' AS f_attachment_keys,
+       :'fact' = 'chain-id' AS f_chain_id,
+       :'fact' = 'owner-facts' AS f_owner_facts,
+       :'fact' = 'runtime-role-ok' AS f_runtime_role_ok,
+       :'fact' = 'customers-exist' AS f_customers_exist,
        :'run_id' ~ '^[0-9]{1,20}$' AS f_run_ok,
        :'hours' ~ '^[0-9]{1,2}$' AS f_hours_ok
 \gset
@@ -97,6 +106,26 @@ SELECT COALESCE((SELECT left(s."hash", 16) FROM public."SealRecord" s WHERE s."s
   \endif
 \elif :f_attachment_keys
 SELECT a."r2Key" FROM public."Attachment" a ORDER BY a."r2Key" COLLATE "C";
+\elif :f_chain_id
+SELECT COALESCE((SELECT left(s."hash", 16) FROM public."SealRecord" s WHERE s."seq" = 0), 'none');
+\elif :f_owner_facts
+SELECT x.v FROM (VALUES
+  (1, EXISTS (SELECT 1 FROM public."CronRun" r
+               WHERE (r."at" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Muscat')::date = (now() AT TIME ZONE 'Asia/Muscat')::date - 1)),
+  (2, EXISTS (SELECT 1 FROM public."CronRun" r
+               WHERE (r."at" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Muscat')::date = (now() AT TIME ZONE 'Asia/Muscat')::date)),
+  (3, EXISTS (SELECT 1 FROM public."CronRun" r
+               WHERE r."key" IN ('sla-escalate', 'keep-warm', 'email-drain')
+                 AND r."at" >= (now() AT TIME ZONE 'UTC') - interval '3 days'
+                 AND extract(hour FROM r."at") NOT BETWEEN 3 AND 14))
+) AS x(o, v) ORDER BY x.o;
+\elif :f_runtime_role_ok
+SELECT NOT EXISTS (SELECT 1 FROM (SELECT i."status" FROM public."IntegrityCheckResult" i
+                                   WHERE i."checkId" = 'runtime-role-privileges'
+                                   ORDER BY i."runAt" DESC LIMIT 1) l
+                    WHERE l."status" IN ('fail', 'error'));
+\elif :f_customers_exist
+SELECT EXISTS (SELECT 1 FROM public."Customer");
 \endif
 
 COMMIT;

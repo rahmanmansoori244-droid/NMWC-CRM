@@ -172,9 +172,9 @@ cmd_preflight() {
     plan) names=("${common[@]}" CLEANSTART_ACTOR_USERNAME HEALTH_BEARER BACKUP_AGE_RECIPIENTS BACKUP_R2_ACCOUNT_ID BACKUP_R2_BUCKET BACKUP_R2_ACCESS_KEY_ID BACKUP_R2_SECRET_ACCESS_KEY CLEANSTART_R2_RO_ACCESS_KEY_ID CLEANSTART_R2_RO_SECRET_ACCESS_KEY GH_TOKEN) ;;
     neon-rehearsal) names=(CLEANSTART_ACTOR_USERNAME NEON_API_KEY NEON_PROJECT_ID CLEANSTART_R2_RO_ACCESS_KEY_ID CLEANSTART_R2_RO_SECRET_ACCESS_KEY) ;;
     apply) names=("${common[@]}" CONFIRM_PHRASE CLEANSTART_ACTOR_USERNAME HEALTH_BEARER PROD_CRON_SECRET BACKUP_AGE_RECIPIENTS BACKUP_R2_ACCOUNT_ID BACKUP_R2_BUCKET BACKUP_R2_ACCESS_KEY_ID BACKUP_R2_SECRET_ACCESS_KEY CLEANSTART_R2_RO_ACCESS_KEY_ID CLEANSTART_R2_RO_SECRET_ACCESS_KEY CLEANSTART_R2_RW_ACCESS_KEY_ID CLEANSTART_R2_RW_SECRET_ACCESS_KEY NEON_API_KEY NEON_PROJECT_ID GH_TOKEN) ;;
-    finish) names=("${common[@]}" HEALTH_BEARER PROD_CRON_SECRET BACKUP_AGE_RECIPIENTS BACKUP_AGE_IDENTITY BACKUP_R2_ACCOUNT_ID BACKUP_R2_BUCKET BACKUP_R2_ACCESS_KEY_ID BACKUP_R2_SECRET_ACCESS_KEY CLEANSTART_R2_RO_ACCESS_KEY_ID CLEANSTART_R2_RO_SECRET_ACCESS_KEY CLEANSTART_R2_RW_ACCESS_KEY_ID CLEANSTART_R2_RW_SECRET_ACCESS_KEY NEON_API_KEY NEON_PROJECT_ID) ;;
-    seal-restore) names=("${common[@]}" PROD_CRON_SECRET BACKUP_AGE_RECIPIENTS BACKUP_AGE_IDENTITY BACKUP_R2_ACCOUNT_ID BACKUP_R2_BUCKET BACKUP_R2_ACCESS_KEY_ID BACKUP_R2_SECRET_ACCESS_KEY CLEANSTART_R2_RO_ACCESS_KEY_ID CLEANSTART_R2_RO_SECRET_ACCESS_KEY CLEANSTART_R2_RW_ACCESS_KEY_ID CLEANSTART_R2_RW_SECRET_ACCESS_KEY) ;;
-    photos) names=("${common[@]}" CONFIRM_PHRASE CLEANSTART_ACTOR_USERNAME BACKUP_AGE_RECIPIENTS BACKUP_AGE_IDENTITY BACKUP_R2_ACCOUNT_ID BACKUP_R2_BUCKET BACKUP_R2_ACCESS_KEY_ID BACKUP_R2_SECRET_ACCESS_KEY CLEANSTART_R2_RW_ACCESS_KEY_ID CLEANSTART_R2_RW_SECRET_ACCESS_KEY NEON_API_KEY NEON_PROJECT_ID) ;;
+    finish) names=("${common[@]}" HEALTH_BEARER PROD_CRON_SECRET BACKUP_AGE_RECIPIENTS BACKUP_AGE_IDENTITY BACKUP_R2_ACCOUNT_ID BACKUP_R2_BUCKET BACKUP_R2_ACCESS_KEY_ID BACKUP_R2_SECRET_ACCESS_KEY CLEANSTART_R2_RO_ACCESS_KEY_ID CLEANSTART_R2_RO_SECRET_ACCESS_KEY CLEANSTART_R2_RW_ACCESS_KEY_ID CLEANSTART_R2_RW_SECRET_ACCESS_KEY NEON_API_KEY NEON_PROJECT_ID GH_TOKEN) ;;
+    seal-restore) names=("${common[@]}" PROD_CRON_SECRET BACKUP_AGE_RECIPIENTS BACKUP_AGE_IDENTITY BACKUP_R2_ACCOUNT_ID BACKUP_R2_BUCKET BACKUP_R2_ACCESS_KEY_ID BACKUP_R2_SECRET_ACCESS_KEY CLEANSTART_R2_RO_ACCESS_KEY_ID CLEANSTART_R2_RO_SECRET_ACCESS_KEY CLEANSTART_R2_RW_ACCESS_KEY_ID CLEANSTART_R2_RW_SECRET_ACCESS_KEY GH_TOKEN) ;;
+    photos) names=("${common[@]}" CONFIRM_PHRASE CLEANSTART_ACTOR_USERNAME BACKUP_AGE_RECIPIENTS BACKUP_AGE_IDENTITY BACKUP_R2_ACCOUNT_ID BACKUP_R2_BUCKET BACKUP_R2_ACCESS_KEY_ID BACKUP_R2_SECRET_ACCESS_KEY CLEANSTART_R2_RW_ACCESS_KEY_ID CLEANSTART_R2_RW_SECRET_ACCESS_KEY NEON_API_KEY NEON_PROJECT_ID GH_TOKEN) ;;
     *) refuse "the job is not one of plan, neon-rehearsal, apply, finish, seal-restore, photos" ;;
   esac
   local missing=0 v
@@ -239,6 +239,9 @@ cmd_prod_target() {
   elif [ "$how" = photos ]; then
     [ "${CONFIRM_PHRASE:-}" = "DELETE TEST PHOTOS" ] || refuse "confirm_phrase is not exactly DELETE TEST PHOTOS"
   fi
+  # The cleaned string can differ from the secret GitHub masks (a pasted space or
+  # line end), and GITHUB_ENV values show in every later step's env header.
+  echo "::add-mask::$clean"
   set_env DIRECT_URL "$clean"
   say "connection is production, named by the owner: yes"
 }
@@ -273,11 +276,28 @@ cmd_sql() {
   exit "$rc"
 }
 
-# bool <label> <file>: a one-line t/f answer of a read-only query.
+# bool <label> <file> [ask]: a one-line t/f answer of a read-only query. A "no"
+# refuses (the bold "refused: <label>: no" line the owner's guide points to),
+# unless the third argument is "ask": then it only returns 1 (a question the
+# workflow branches on).
 cmd_bool() {
-  local label="$1" file="$2" v
-  v="$(tr -d '\r[:space:]' < "$file" 2>/dev/null || true)"
-  if [ "$v" = t ]; then say "$label: yes"; else say "$label: no"; return 1; fi
+  local label="$1" file="$2" how="${3:-}" v
+  v="$(tr -d '\r[:space:]' 2>/dev/null < "$file" || true)"
+  if [ "$v" = t ]; then say "$label: yes"; return 0; fi
+  say "$label: no"
+  [ "$how" = ask ] && return 1
+  refuse "$label: no"
+}
+
+# owner-facts <file>: the PLAN facts the owner's questions need (design
+# facts_to_check_in_production, "CronRun ... PLAN, yes/no"), recorded, never
+# refusing. The file holds three t/f lines from facts.sql owner-facts.
+cmd_owner_facts() {
+  local f="$1" a b c
+  { read -r a; read -r b; read -r c; } < <(tr -d '\r' < "$f") || true
+  yes_no "job runs recorded for yesterday in Oman" "$([ "${a:-}" = t ]; echo $?)"
+  yes_no "job runs recorded for today in Oman" "$([ "${b:-}" = t ]; echo $?)"
+  yes_no "a windowed job ran outside 03:00-15:00 UTC in the last 3 days" "$([ "${c:-}" = t ]; echo $?)"
 }
 
 # exports <dir> [expected plan id] [label] [record]: the PLAN files bound to
@@ -317,17 +337,24 @@ cmd_exports() {
 
 # settle <exit code of verify.sql> <its output>: did the reset commit? (APPLY
 # step e, and mode finish.) CS301 alone = the reset row is not there: nothing
-# changed. Writes CS_COMMITTED (yes|no|unknown) to $CS_DIR/committed and the
-# job environment. Exit 0 only when committed AND verified.
+# changed. A later check failing (CS302-CS307, which verify.sql reaches only
+# after CS301 passed) = committed, not verified. Anything else (an error before
+# CS301 was decided, a lost connection) = unknown. Writes CS_COMMITTED
+# (yes|no|unknown) to $CS_DIR/committed and the job environment. Exit 0 only
+# when committed AND verified.
 cmd_settle() {
-  local rc="$1" out="$2" codes state
+  local rc="$1" out="$2" codes state c later=1
   codes="$(grep -oE '(ERROR|FATAL):  [0-9A-Z]{5}' "$out" 2>/dev/null | awk '{print $2}' | LC_ALL=C sort -u | tr '\n' ' ' || true)"
   codes="${codes% }"
+  if [ -n "$codes" ]; then
+    later=0
+    for c in $codes; do [[ $c =~ ^CS30[2-7]$ ]] || later=1; done
+  fi
   if [ "$rc" -eq 0 ]; then
     state=yes
   elif [ "$rc" -eq 3 ] && [ "$codes" = CS301 ]; then
     state=no
-  elif [ "$rc" -eq 3 ]; then
+  elif [ "$rc" -eq 3 ] && [ "$later" -eq 0 ]; then
     state=yes
   else
     state=unknown
@@ -337,7 +364,10 @@ cmd_settle() {
   case "$state" in
     yes) say "reset committed: yes" ;;
     no) say "reset committed: no (nothing changed)" ;;
-    unknown) say "reset committed: unknown (no connection); run mode finish with this run id" ;;
+    unknown)
+      if [ "$rc" -eq 2 ]; then say "reset committed: unknown (no connection); run mode finish with this run id"
+      else say "reset committed: unknown (the check did not finish); run mode finish with this run id"; fi
+      ;;
   esac
   if [ "$state" = yes ] && [ "$rc" -eq 0 ]; then
     say "kept accounts, routes and regions verified after the reset: yes"
@@ -354,15 +384,22 @@ cmd_settle() {
 # record <label> <exit code>: yes/no, never failing (a recorded fact).
 cmd_record() { yes_no "$1" "$2"; }
 
-# status-lines <tsv>: "checkId: status" for each line of a watch read-back.
+# status-lines <tsv> [refuse]: "checkId: status" for each line of a watch
+# read-back. With "refuse" (mode seal-restore), a check failing or in error
+# fails the step: the owner's guide treats every red job as "tell Claude".
 cmd_status_lines() {
-  local id st rest bad=1
+  local id st rest bad=1 seen=1
   while IFS=$'\t' read -r id st rest; do
     [[ $id =~ ^[a-z0-9-]{2,60}$ ]] || continue
     case "$st" in pass | info) ;; fail | error) bad=0 ;; *) continue ;; esac
+    seen=0
     say "$id: $st"
   done < <(tr -d '\r' < "$1")
   yes_no "a check failing or in error" "$bad"
+  if [ "${2:-}" = refuse ]; then
+    [ "$seen" -eq 0 ] || refuse "the integrity watch returned no results"
+    [ "$bad" -ne 0 ] || refuse "a check is failing or in error after the restore; tell Claude before anyone uses the CRM"
+  fi
 }
 
 # check-run-id <typed>: a run id the owner typed is a number.
@@ -380,15 +417,100 @@ cmd_for_the_owner() {
   [[ $r =~ ^[0-9]{1,20}$ ]] || return 0
   say "run_id for the photo step: $r"
   say "list_sha256 for the photo step: $sum"
-  if [ -n "${CS_RESET_STARTED:-}" ]; then say "reset started at (UTC): $CS_RESET_STARTED"; fi
+  if [[ ${CS_RESET_STARTED:-} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+    say "reset started at (UTC): $CS_RESET_STARTED"
+    local s
+    s="$(date -u -d "$CS_RESET_STARTED" +%s 2>/dev/null || true)"
+    [[ $s =~ ^[0-9]+$ ]] && say "reset started at (Oman time): $(date -u -d "@$(( s + 4 * 3600 ))" '+%Y-%m-%d %H:%M')"
+  fi
+  return 0
 }
 
 # started: the moment the reset statement is sent, for the owner's rollback.
+# Also leaves $CS_DIR/reset-started on disk BEFORE the statement is sent: if the step is
+# cancelled or the runner lost, GITHUB_ENV may never be applied, and the
+# cleanup must still know the reset may have reached the server (safety-cleanup).
 cmd_started() {
-  local t
-  t="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local t s
+  s="$(date -u +%s)"
+  t="$(date -u -d "@$s" +%Y-%m-%dT%H:%M:%SZ)"
+  printf '%s\n' "$t" > "$CS_DIR/reset-started"
   set_env CS_RESET_STARTED "$t"
   say "reset started at (UTC): $t"
+  say "reset started at (Oman time): $(date -u -d "@$(( s + 4 * 3600 ))" '+%Y-%m-%d %H:%M')"
+}
+
+# safety-cleanup: the apply job's always() decision about the Neon safety branch.
+# Deleted ONLY when it is certain the reset did not commit: it never started
+# (no marker on disk AND no CS_RESET_RC), Postgres refused it (exit 3, rolled
+# back), or settle read CS301 ("no"). Everything else keeps it: it is the
+# rollback. Reads the files as well as the job environment, since a cancelled
+# step's GITHUB_ENV may be lost.
+cmd_safety_cleanup() {
+  local committed rc started=1
+  # (stderr is silenced BEFORE the input redirect: a missing file must print nothing)
+  committed="${CS_COMMITTED:-$(tr -d '\r[:space:]' 2>/dev/null < "$CS_DIR/committed" || true)}"
+  rc="${CS_RESET_RC:-$(tr -d '\r[:space:]' 2>/dev/null < "$CS_DIR/reset-rc" || true)}"
+  [ -f "$CS_DIR/reset-started" ] && started=0
+  if [ "$committed" = no ] || [ "$rc" = 3 ] || { [ "$started" -ne 0 ] && [ -z "$rc" ]; }; then
+    cmd_neon_cleanup
+  else
+    cmd_neon_forget
+  fi
+}
+
+# chain-id <facts file> <run id>: production's NEW seal chain (the first 16 hex
+# of the seq-0 seal's hash, facts.sql chain-id), stored encrypted under
+# cleanstart/<run>/chain/ for mode seal-restore, which moves ONLY that chain's
+# folder. Recorded, never refusing (the watch comparison decides the step).
+cmd_chain_id() {
+  local f="$1" r v
+  r="$(typed_run_id "${2:-}")"
+  v="$(tr -d '\r[:space:]' 2>/dev/null < "$f" || true)"
+  if ! [[ $v =~ ^[0-9a-f]{16}$ ]]; then
+    say "new seal chain id recorded: no"
+    return 0
+  fi
+  printf 'new_chain=%s\n' "$v" > "$CS_DIR/new-chain.txt"
+  printf '%s' "$v" > "$CS_DIR/new-chain"
+  set_env NEW_CHAIN "$v"
+  cmd_encrypt_upload "cleanstart/$r/chain" "$CS_DIR/new-chain.txt"
+  say "new seal chain id recorded: yes"
+}
+
+# chain-id-fetch <run id>: the new chain id the apply (or finish) of that run
+# recorded. Refuses without it: seal-restore never guesses which objects under
+# seals/ are production's new chain (the bucket is shared with other
+# environments, whose own chains must never be touched).
+cmd_chain_id_fetch() {
+  local r v out="$CS_DIR/new-chain.txt"
+  r="$(typed_run_id "${1:-}")"
+  aws_backups s3 cp "s3://$BACKUP_R2_BUCKET/cleanstart/$r/chain/new-chain.txt.age" "$out.age" > /dev/null \
+    || refuse "the new seal chain's id of that run was not recorded, so no seal file is moved; tell Claude"
+  with_identity _decrypt "$out.age" "$out" || refuse "an encrypted export could not be decrypted"
+  rm -f "$out.age"
+  v="$(sed -n 's/^new_chain=//p' "$out" | tr -d '\r')"
+  [[ $v =~ ^[0-9a-f]{16}$ ]] || refuse "the recorded new seal chain id is malformed"
+  printf '%s' "$v" > "$CS_DIR/new-chain"
+  set_env NEW_CHAIN "$v"
+  say "new seal chain id of that run found: yes"
+}
+
+# finish-may <out file>: the objects under seals/ the FIRST watch run may have
+# reported in mode finish, where that run may be a scheduled one made before
+# this job removed the old seal files: everything seal-archive.sh verify listed
+# now (other environments' objects and the old chain's files still there),
+# except production's new chain ($CS_DIR/new-chain, when known).
+cmd_finish_may() {
+  local out="$1" new
+  new="$(cat "$CS_DIR/new-chain" 2>/dev/null || true)"
+  [ -f "$CS_DIR/seal-keys-foreign.txt" ] && [ -f "$CS_DIR/seal-keys-own.txt" ] || refuse "run seal-archive.sh verify first"
+  if [[ $new =~ ^[0-9a-f]{16}$ ]]; then
+    grep -v -F "seals/v1/$new/" "$CS_DIR/seal-keys-foreign.txt" > "$out" || true
+  else
+    cp "$CS_DIR/seal-keys-foreign.txt" "$out"
+  fi
+  cat "$CS_DIR/seal-keys-own.txt" >> "$out"
 }
 
 # health: production serves the commit this run checked out (/api/health,
@@ -440,28 +562,35 @@ cmd_backup_idle() {
   say "no DB Backup run in progress: yes"
 }
 
-# neon-green: a successful neon-rehearsal run of this workflow, within 14 days,
-# whose scripts/ops/clean-start tree is this checkout's (apply only).
+# neon-green [record]: a successful neon-rehearsal run of this workflow, within
+# 14 days, ON THE DEFAULT BRANCH, whose scripts/ops/clean-start tree AND whose
+# clean-start.yml are this checkout's (apply; "record" in a dry run only says
+# yes or no, so a problem shows before reset day).
 cmd_neon_green() {
-  local mine since f="$CS_DIR/gh-cs.json" code line id sha jobs okjobs tree found=1
+  local how="${1:-}" mine mineyml since f="$CS_DIR/gh-cs.json" code id sha branch jobs okjobs tree yml found=1
+  need DEFAULT_BRANCH
   mine="$(git -C "$CS_ROOT" rev-parse HEAD:scripts/ops/clean-start 2>/dev/null || true)"
-  [[ $mine =~ ^[0-9a-f]{40}$ ]] || refuse "the checkout's clean-start tree could not be read"
+  mineyml="$(git -C "$CS_ROOT" rev-parse HEAD:.github/workflows/clean-start.yml 2>/dev/null || true)"
+  [[ $mine =~ ^[0-9a-f]{40}$ ]] && [[ $mineyml =~ ^[0-9a-f]{40}$ ]] || refuse "the checkout's clean-start tree could not be read"
   since="$(date -u -d "@$(( $(date -u +%s) - 14 * 86400 ))" +%Y-%m-%d)"
   code="$(gh_get "$f" "actions/workflows/clean-start.yml/runs?status=success&per_page=50&created=%3E%3D$since")"
   [ "$code" = 200 ] || refuse "the clean-start runs could not be read"
-  while IFS=' ' read -r id sha; do
+  while IFS=' ' read -r id sha branch; do
     [[ $id =~ ^[0-9]+$ ]] && [[ $sha =~ ^[0-9a-f]{40}$ ]] || continue
+    [ "$branch" = "$DEFAULT_BRANCH" ] || continue
     jobs="$CS_DIR/gh-jobs.json"
     [ "$(gh_get "$jobs" "actions/runs/$id/jobs")" = 200 ] || continue
     okjobs="$(jq -r '[.jobs[]? | select(.name == "Neon rehearsal" and .conclusion == "success")] | length' "$jobs")"
     [ "$okjobs" = 1 ] || continue
     [ "$(gh_get "$jobs" "contents/scripts/ops?ref=$sha")" = 200 ] || continue
     tree="$(jq -r '.[]? | select(.name == "clean-start" and .type == "dir") | .sha' "$jobs")"
-    if [ "$tree" = "$mine" ]; then found=0; break; fi
-  done < <(jq -r '.workflow_runs[]? | select(.display_title == "Clean start neon-rehearsal") | "\(.id) \(.head_sha)"' "$f")
+    [ "$(gh_get "$jobs" "contents/.github/workflows?ref=$sha")" = 200 ] || continue
+    yml="$(jq -r '.[]? | select(.name == "clean-start.yml" and .type == "file") | .sha' "$jobs")"
+    if [ "$tree" = "$mine" ] && [ "$yml" = "$mineyml" ]; then found=0; break; fi
+  done < <(jq -r '.workflow_runs[]? | select(.display_title == "Clean start neon-rehearsal") | "\(.id) \(.head_sha) \(.head_branch)"' "$f")
   rm -f "$f" "$CS_DIR/gh-jobs.json"
   yes_no "green Neon rehearsal of these scripts within 14 days" "$found"
-  [ "$found" -eq 0 ] || refuse "no green neon-rehearsal of these exact scripts in the last 14 days"
+  [ "$found" -eq 0 ] || [ "$how" = record ] || refuse "no green neon-rehearsal of these exact scripts in the last 14 days"
 }
 
 # backup-pick <max hours> [must equal key]: the newest db/*.sql.gz.age in the
@@ -480,6 +609,22 @@ cmd_backup_pick() {
   else
     say "newest backup has a manifest: no"
     refuse "the newest dump has no manifest"
+  fi
+  # An evening run (from 15:00 UTC) needs an evening dump. The rehearsal's
+  # second night reads the reset day's windowed job runs (03:00-15:00 UTC); a
+  # dump taken earlier that day lacks the last of them, and the copy would
+  # then show a gap production does not have (scheduled-jobs-on-time fails on
+  # the copy, the apply is refused for nothing). The Neon rehearsal reads a
+  # branch of production itself, not the dump, so it is not held to this.
+  local hm
+  hm="$(date -u +%H%M)"
+  hm=$((10#$hm))
+  if [ "${MODE:-}" != neon-rehearsal ] && [ "$hm" -ge 1500 ]; then
+    if [ "${stamp:0:10}" = "$(date -u +%Y-%m-%d)" ] && [ "$((10#${stamp:11:2}${stamp:14:2}))" -lt 1500 ]; then
+      say "newest backup taken after 15:00 UTC (19:00 Oman): no"
+      refuse "the newest dump was taken before 19:00 Oman; run DB Backup again now, then start again"
+    fi
+    say "newest backup taken after 15:00 UTC (19:00 Oman): yes"
   fi
   if [ "$age" -le $(( max * 3600 )) ] && [ "$age" -ge -300 ]; then
     say "newest backup at most $max h old: yes"
@@ -616,11 +761,13 @@ cmd_app_watch() {
   fi
 }
 
-# compare-watch <results tsv> [foreign keys file]: the first run's statuses
-# against expected-watch.json night 1 (compare-watch.ts prints the table).
+# compare-watch <results tsv> [foreign keys file] [may keys file]: the first
+# run's statuses against expected-watch.json night 1 (compare-watch.ts prints
+# the table; it explains the two key lists).
 cmd_compare_watch() {
-  local tsv="$1" foreign="${2:-}" rc=0
-  (cd "$CS_ROOT" && node --import tsx scripts/ops/clean-start/compare-watch.ts "$tsv" ${foreign:+"$foreign"}) > "$CS_DIR/compare.out" 2>&1 || rc=$?
+  local tsv="$1" foreign="${2:-}" may="${3:-}" rc=0
+  if [ -n "$may" ] && [ -z "$foreign" ]; then foreign="$CS_DIR/no-keys.txt"; : > "$foreign"; fi
+  (cd "$CS_ROOT" && node --import tsx scripts/ops/clean-start/compare-watch.ts "$tsv" ${foreign:+"$foreign"} ${may:+"$may"}) > "$CS_DIR/compare.out" 2>&1 || rc=$?
   cmd_watch_lines "$CS_DIR/compare.out" "$rc"
 }
 
@@ -660,16 +807,19 @@ cmd_neon_create() {
   else
     body="{\"branch\":{\"name\":\"$name\",\"parent_id\":\"$parent\"}}"
   fi
+  # The NAME is recorded before the request: a timeout ("000") after Neon has
+  # already made the branch still leaves the cleanup something to find (it
+  # searches by name).
+  printf -- '- %s\n' "$name" >> "$CS_DIR/neon-branches"
   code="$(neon POST "$f" /branches -d "$body")"
   case "$code" in 200 | 201) ;; *) refuse "Neon did not create the branch" ;; esac
   id="$(jq -r '.branch.id // empty' "$f")"
   [[ $id =~ ^br-[a-z0-9-]+$ ]] || refuse "Neon's answer has no branch id"
-  printf '%s %s\n' "$id" "$name" >> "$CS_DIR/neon-branches"
   [ "$id" != "$parent" ] || refuse "Neon answered with the default branch"
   jq -r '.databases[0].name // empty' "$f" > "$CS_DIR/neon-db"
   jq -r '.databases[0].owner_name // empty' "$f" > "$CS_DIR/neon-role"
   rm -f "$f"
-  cmd_neon_wait
+  cmd_neon_wait "$id"
   # Confirm it exists, by name.
   f="$CS_DIR/neon.json"
   [ "$(neon GET "$f" "/branches?search=$name")" = 200 ] || refuse "the new branch could not be read back"
@@ -709,18 +859,34 @@ cmd_neon_uri() {
   say "Neon branch host is not production: yes"
 }
 
-# neon-wait: every operation of the project has finished (180 s at most).
-cmd_neon_wait() {
-  local i f="$CS_DIR/neon-ops.json" st
+# neon_wait_status [branch id]: waits (180 s at most) until no operation is
+# still running — of that branch when one is named, else of the project — and
+# RETURNS 0 all finished, 1 one of that branch's failed, 2 timed out. It never
+# exits: the always() cleanup must reach its final check. An old failed
+# operation of another branch does not block (only the named branch's count).
+neon_wait_status() {
+  local b="${1:-}" i f="$CS_DIR/neon-ops.json" running failed
   for i in $(seq 1 90); do
     [ "$(neon GET "$f" '/operations?limit=20')" = 200 ] || { sleep 2; continue; }
-    st="$(jq -r '[.operations[]? | select(.status != "finished" and .status != "skipped" and .status != "cancelled")] | length' "$f")"
-    if [ "$st" = 0 ]; then rm -f "$f"; return 0; fi
-    if [ "$(jq -r '[.operations[]? | select(.status == "failed")] | length' "$f")" != 0 ]; then rm -f "$f"; refuse "a Neon operation failed"; fi
+    running="$(jq -r --arg b "$b" '[.operations[]? | select($b == "" or .branch_id == $b) | select(.status != "finished" and .status != "skipped" and .status != "cancelled" and .status != "failed")] | length' "$f")"
+    failed="$(jq -r --arg b "$b" '[.operations[]? | select($b != "" and .branch_id == $b and .status == "failed")] | length' "$f")"
+    if [ "$failed" != 0 ]; then rm -f "$f"; return 1; fi
+    if [ "$running" = 0 ]; then rm -f "$f"; return 0; fi
     sleep 2
   done
   rm -f "$f"
-  refuse "Neon operations did not finish in time"
+  return 2
+}
+
+# neon-wait [branch id]: the same, refusing on a failure or a timeout.
+cmd_neon_wait() {
+  local st=0
+  neon_wait_status "${1:-}" || st=$?
+  case "$st" in
+    0) return 0 ;;
+    1) refuse "a Neon operation failed" ;;
+    *) refuse "Neon operations did not finish in time" ;;
+  esac
 }
 
 # neon-restore <RFC 3339 time> <preserve name>: the rehearsal branch back to
@@ -735,7 +901,7 @@ cmd_neon_restore() {
   code="$(neon POST "$f" "/branches/$id/restore" -d "{\"source_branch_id\":\"$id\",\"source_timestamp\":\"$at\",\"preserve_under_name\":\"$keep\"}")"
   rm -f "$f"
   case "$code" in 200 | 201) ;; *) refuse "Neon did not restore the branch" ;; esac
-  cmd_neon_wait
+  cmd_neon_wait "$id"
   say "Neon restored the branch to the noted time: yes"
 }
 
@@ -756,7 +922,8 @@ cmd_neon_cleanup() {
         case "$(neon DELETE "$CS_DIR/neon-del.json" "/branches/$id")" in 200 | 202 | 204 | 404) ;; *) left=1 ;; esac
       done
     done
-    cmd_neon_wait || true
+    # A status, never an exit: the check below must always run.
+    neon_wait_status || true
     [ "$left" -eq 0 ] && break
   done
   left=0
@@ -813,7 +980,7 @@ case "$sub" in
   health) cmd_health ;;
   github-env) cmd_github_env ;;
   backup-idle) cmd_backup_idle ;;
-  neon-green) cmd_neon_green ;;
+  neon-green) cmd_neon_green "$@" ;;
   backup-pick) cmd_backup_pick "$@" ;;
   backup-fetch) cmd_backup_fetch "$@" ;;
   encrypt-upload) cmd_encrypt_upload "$@" ;;
@@ -828,7 +995,12 @@ case "$sub" in
   neon-retention) cmd_neon_retention ;;
   neon-create) cmd_neon_create "$@" ;;
   neon-uri) cmd_neon_uri ;;
-  neon-wait) cmd_neon_wait ;;
+  neon-wait) cmd_neon_wait "$@" ;;
+  safety-cleanup) cmd_safety_cleanup ;;
+  chain-id) cmd_chain_id "$@" ;;
+  chain-id-fetch) cmd_chain_id_fetch "$@" ;;
+  finish-may) cmd_finish_may "$@" ;;
+  owner-facts) cmd_owner_facts "$@" ;;
   neon-restore) cmd_neon_restore "$@" ;;
   neon-cleanup) cmd_neon_cleanup ;;
   neon-forget) cmd_neon_forget ;;

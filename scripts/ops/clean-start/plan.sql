@@ -107,7 +107,13 @@ SELECT jsonb_pretty(jsonb_build_object(
                                                  AND r."at" >= (now() AT TIME ZONE 'UTC') - interval '3 days'
                                                  AND extract(hour FROM r."at") NOT BETWEEN 3 AND 14),
   'runtimeRoleExists', EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'nmwc_app'),
-  'loginIsRuntimeRole', session_user = 'nmwc_app'
+  -- Whether the APP connects as the runtime role: this session is always the
+  -- owner (CS002), so the answer is the app's own latest watch result
+  -- (app-login-is-runtime-role detail.login: 'runtime-role' or 'other'; null if never run).
+  'appLoginLatestWatch', (SELECT i."detail" ->> 'login' FROM public."IntegrityCheckResult" i
+                           WHERE i."checkId" = 'app-login-is-runtime-role' ORDER BY i."runAt" DESC LIMIT 1),
+  'runtimeRolePrivilegesLatestWatch', (SELECT i."status" FROM public."IntegrityCheckResult" i
+                                        WHERE i."checkId" = 'runtime-role-privileges' ORDER BY i."runAt" DESC LIMIT 1)
 ));
 \o
 

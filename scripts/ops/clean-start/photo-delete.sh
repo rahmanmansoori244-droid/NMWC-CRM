@@ -124,10 +124,18 @@ for b in "$CS_DIR"/pd-batch-*; do
 done
 gone=0
 left=0
+# Gone only on a definite "not found" (404 / NoSuchKey); a 403, a network error
+# or throttling counts as still there, never as deleted.
 while IFS= read -r k; do
   [ -n "$k" ] || continue
-  if aws_rw s3api head-object --bucket "$PHOTOS_BUCKET" --key "$k" > /dev/null 2>&1; then left=$((left + 1)); else gone=$((gone + 1)); fi
+  rc=0
+  AWS_ACCESS_KEY_ID="${CLEANSTART_R2_RW_ACCESS_KEY_ID:?}" AWS_SECRET_ACCESS_KEY="${CLEANSTART_R2_RW_SECRET_ACCESS_KEY:?}" \
+    aws s3api head-object --bucket "$PHOTOS_BUCKET" --key "$k" --endpoint-url "https://${PHOTOS_R2_ACCOUNT_ID:?}.r2.cloudflarestorage.com" \
+    > /dev/null 2> "$CS_DIR/pd-head.err" || rc=$?
+  cat "$CS_DIR/pd-head.err" >> "$CS_DIR/aws.log" 2>/dev/null || true
+  if [ "$rc" -ne 0 ] && grep -qE '\((404|NoSuchKey|NotFound)\)|Not Found' "$CS_DIR/pd-head.err"; then gone=$((gone + 1)); else left=$((left + 1)); fi
 done < "$CS_DIR/pd-go"
+rm -f "$CS_DIR/pd-head.err"
 listed="$(wc -l < "$CS_DIR/pd-list" | tr -d ' ')"
 note "listed=$listed skipped_shape=$skipped_shape skipped_uat=$skipped_uat deleted_confirmed=$gone still_there=$left"
 # For the in-app record only (photos-record.sql), never the log.

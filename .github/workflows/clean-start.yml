@@ -139,6 +139,8 @@ jobs:
           bash scripts/ops/clean-start/run.sh github-env
           bash scripts/ops/clean-start/run.sh backup-idle
           if [ "$MODE" = apply ]; then bash scripts/ops/clean-start/run.sh neon-green; fi
+          # A dry run only RECORDS it, so a missing or unreadable rehearsal shows before reset day.
+          if [ "$MODE" = dry-run ]; then bash scripts/ops/clean-start/run.sh neon-green record; fi
 
       - name: Newest backup
         id: backup
@@ -174,6 +176,24 @@ jobs:
             -v fact=heartbeat -v hours=4 > "$CS_DIR/fact.out" 2>&1 || rc=$?
           bash scripts/ops/clean-start/run.sh sql "heartbeat read" "$rc" "$CS_DIR/fact.out"
           bash scripts/ops/clean-start/run.sh bool "DB Backup heartbeat ok within 4 h" "$CS_DIR/fact.out"
+
+      - name: Facts for the owner, and the runtime role's privileges (read-only)
+        env:
+          PGOPTIONS: -c default_transaction_read_only=on
+        run: |
+          set -euo pipefail
+          rc=0
+          psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+            -v fact=owner-facts > "$CS_DIR/fact.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "job-run facts read" "$rc" "$CS_DIR/fact.out"
+          bash scripts/ops/clean-start/run.sh owner-facts "$CS_DIR/fact.out"
+          # The rehearsal cannot see production's grants (the dump has none), so the
+          # night-1 runtime-role-privileges status is checked here, before any reset.
+          rc=0
+          psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+            -v fact=runtime-role-ok > "$CS_DIR/fact.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "runtime role read" "$rc" "$CS_DIR/fact.out"
+          bash scripts/ops/clean-start/run.sh bool "runtime role privileges not failing on production (latest watch)" "$CS_DIR/fact.out"
 
       - name: Old seal copies (read-only storage)
         env:
@@ -258,14 +278,27 @@ jobs:
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
+        env:
+          CLEANSTART_ACTOR_USERNAME: ''
+          BACKUP_R2_ACCOUNT_ID: ''
+          BACKUP_R2_BUCKET: ''
+          BACKUP_R2_ACCESS_KEY_ID: ''
+          BACKUP_R2_SECRET_ACCESS_KEY: ''
+          BACKUP_AGE_IDENTITY: ''
+          PHOTOS_R2_ACCOUNT_ID: ''
+          CLEANSTART_R2_RO_ACCESS_KEY_ID: ''
+          CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ''
         run: |
           npm ci --no-audit --no-fund --loglevel=error > /dev/null
           npx prisma generate > /dev/null
 
       - name: Throw-away environment for the watch
         run: |
-          echo "AUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
-          echo "NEXTAUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+          # Random and throw-away, but masked: GITHUB_ENV values are shown in every later step's env header.
+          a="$(openssl rand -base64 32)"; b="$(openssl rand -base64 32)"
+          echo "::add-mask::$a"; echo "::add-mask::$b"
+          echo "AUTH_SECRET=$a" >> "$GITHUB_ENV"
+          echo "NEXTAUTH_SECRET=$b" >> "$GITHUB_ENV"
 
       - name: The rehearsal database is not production
         run: |
@@ -336,6 +369,9 @@ jobs:
         run: bash scripts/ops/clean-start/seal-archive.sh verify "$CS_DIR/rplan/seals.jsonl" "$OLD_CHAIN"
 
       - name: The first two nights of the integrity watch
+        env:
+          BACKUP_AGE_IDENTITY: ''
+          BACKUP_R2_SECRET_ACCESS_KEY: ''
         run: |
           rc=0
           RUN_CLEAN_START_WATCH=1 DATABASE_URL="$REHEARSE_URL" DIRECT_URL="$REHEARSE_URL" \
@@ -406,14 +442,24 @@ jobs:
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
+        env:
+          CLEANSTART_ACTOR_USERNAME: ''
+          NEON_API_KEY: ''
+          NEON_PROJECT_ID: ''
+          PHOTOS_R2_ACCOUNT_ID: ''
+          CLEANSTART_R2_RO_ACCESS_KEY_ID: ''
+          CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ''
         run: |
           npm ci --no-audit --no-fund --loglevel=error > /dev/null
           npx prisma generate > /dev/null
 
       - name: Throw-away environment for the watch
         run: |
-          echo "AUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
-          echo "NEXTAUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+          # Random and throw-away, but masked: GITHUB_ENV values are shown in every later step's env header.
+          a="$(openssl rand -base64 32)"; b="$(openssl rand -base64 32)"
+          echo "::add-mask::$a"; echo "::add-mask::$b"
+          echo "AUTH_SECRET=$a" >> "$GITHUB_ENV"
+          echo "NEXTAUTH_SECRET=$b" >> "$GITHUB_ENV"
 
       - name: Preflight
         run: |
@@ -470,6 +516,7 @@ jobs:
       - name: The first two nights of the integrity watch on the branch
         env:
           OLD_CHAIN: ${{ steps.fp0.outputs.old_chain }}
+          NEON_API_KEY: ''
         run: |
           set -euo pipefail
           bash scripts/ops/clean-start/seal-archive.sh verify "$CS_DIR/nplan0/seals.jsonl" "$OLD_CHAIN"
@@ -566,6 +613,23 @@ jobs:
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
+        env:
+          PROD_URL_RAW: ''
+          CLEANSTART_ACTOR_USERNAME: ''
+          HEALTH_BEARER: ''
+          PROD_CRON_SECRET: ''
+          GH_TOKEN: ''
+          NEON_API_KEY: ''
+          NEON_PROJECT_ID: ''
+          BACKUP_R2_ACCOUNT_ID: ''
+          BACKUP_R2_BUCKET: ''
+          BACKUP_R2_ACCESS_KEY_ID: ''
+          BACKUP_R2_SECRET_ACCESS_KEY: ''
+          PHOTOS_R2_ACCOUNT_ID: ''
+          CLEANSTART_R2_RO_ACCESS_KEY_ID: ''
+          CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ''
+          CLEANSTART_R2_RW_ACCESS_KEY_ID: ''
+          CLEANSTART_R2_RW_SECRET_ACCESS_KEY: ''
         run: npm ci --no-audit --no-fund --loglevel=error > /dev/null
 
       - name: a. The plan checks again (window, phrase, release, approval rule, rehearsal, backup)
@@ -636,6 +700,7 @@ jobs:
             -v backup_sha256="$BACKUP_SHA256" -v safety_branch="$CS_SAFETY_BRANCH" \
             -v archive_prefix="cleanstart/$GITHUB_RUN_ID/seal-archive/" > "$CS_DIR/reset.out" 2>&1 || rc=$?
           echo "CS_RESET_RC=$rc" >> "$GITHUB_ENV"
+          printf '%s\n' "$rc" > "$CS_DIR/reset-rc"
           bash scripts/ops/clean-start/run.sh took "reset on production" "$t0"
           if [ "$rc" -eq 2 ]; then
             bash scripts/ops/clean-start/run.sh sql "reset" "$rc" "$CS_DIR/reset.out" || true
@@ -659,6 +724,12 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/ops/clean-start/run.sh app-watch
+          # The new chain's id, for mode seal-restore (it moves that chain's folder only).
+          rc=0
+          PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+            -v fact=chain-id > "$CS_DIR/chain-id.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "new seal chain read" "$rc" "$CS_DIR/chain-id.out"
+          bash scripts/ops/clean-start/run.sh chain-id "$CS_DIR/chain-id.out" "$GITHUB_RUN_ID"
           rc=0
           PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
             -v fact=watch-results > "$CS_DIR/watch-results.tsv" 2>&1 || rc=$?
@@ -694,16 +765,12 @@ jobs:
 
       - name: Safety branch kept only when the reset committed (or may have)
         if: always()
-        run: |
-          set -uo pipefail
-          # Deleted only when it is CERTAIN the reset did not commit: it never
-          # started, Postgres refused it (exit 3, rolled back), or the settle
-          # step read that its row is not there. Otherwise it is the rollback.
-          if [ "${CS_COMMITTED:-}" = no ] || [ -z "${CS_RESET_RC:-}" ] || [ "${CS_RESET_RC:-}" = 3 ]; then
-            bash scripts/ops/clean-start/run.sh neon-cleanup
-          else
-            bash scripts/ops/clean-start/run.sh neon-forget
-          fi
+        # Deleted only when it is CERTAIN the reset did not commit: it never
+        # started (no marker on disk and no exit code), Postgres refused it (exit
+        # 3, rolled back), or the settle step read that its row is not there.
+        # Otherwise it is the rollback. run.sh safety-cleanup reads the files on
+        # disk as well as GITHUB_ENV, which a cancelled step may never apply.
+        run: bash scripts/ops/clean-start/run.sh safety-cleanup
 
       - name: Remove the plaintext
         if: always()
@@ -721,6 +788,7 @@ jobs:
       TARGET_RUN: ${{ inputs.run_id }}
       CONFIRM_HOST: ${{ inputs.confirm_host }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      GH_TOKEN: ${{ github.token }}
       PROD_URL_RAW: ${{ secrets.DIRECT_URL }}
       HEALTH_BEARER: ${{ secrets.HEALTH_BEARER }}
       PROD_CRON_SECRET: ${{ secrets.PROD_CRON_SECRET }}
@@ -763,13 +831,32 @@ jobs:
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
+        env:
+          GH_TOKEN: ''
+          PROD_URL_RAW: ''
+          HEALTH_BEARER: ''
+          PROD_CRON_SECRET: ''
+          NEON_API_KEY: ''
+          NEON_PROJECT_ID: ''
+          BACKUP_R2_ACCOUNT_ID: ''
+          BACKUP_R2_BUCKET: ''
+          BACKUP_R2_ACCESS_KEY_ID: ''
+          BACKUP_R2_SECRET_ACCESS_KEY: ''
+          BACKUP_AGE_IDENTITY: ''
+          PHOTOS_R2_ACCOUNT_ID: ''
+          CLEANSTART_R2_RO_ACCESS_KEY_ID: ''
+          CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ''
+          CLEANSTART_R2_RW_ACCESS_KEY_ID: ''
+          CLEANSTART_R2_RW_SECRET_ACCESS_KEY: ''
         run: npm ci --no-audit --no-fund --loglevel=error > /dev/null
 
-      - name: Preflight, production named, the apply run's exports
+      - name: Preflight, the approval rule, production named, the apply run's exports
         run: |
           set -euo pipefail
           bash scripts/ops/clean-start/run.sh step "finish: preflight"
           bash scripts/ops/clean-start/run.sh preflight finish
+          # The Approve this job waited for is a gate only while the environment has a reviewer.
+          bash scripts/ops/clean-start/run.sh github-env
           bash scripts/ops/clean-start/run.sh check-run-id "$TARGET_RUN"
           bash scripts/ops/clean-start/run.sh prod-target read
           mkdir -p "$CS_DIR/exports"
@@ -784,7 +871,7 @@ jobs:
         run: |
           set -euo pipefail
           rc=0
-          psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -v run_id="$TARGET_RUN" -f scripts/ops/clean-start/verify.sql > "$CS_DIR/verify.out" 2>&1 || rc=$?
+          psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -v run_id="$TARGET_RUN" -v scope=finish -f scripts/ops/clean-start/verify.sql > "$CS_DIR/verify.out" 2>&1 || rc=$?
           bash scripts/ops/clean-start/run.sh settle "$rc" "$CS_DIR/verify.out"
 
       - name: The reset did not commit — delete its unused safety branch
@@ -807,14 +894,23 @@ jobs:
           PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
             -v fact=watch-since-reset > "$CS_DIR/fact.out" 2>&1 || rc=$?
           bash scripts/ops/clean-start/run.sh sql "watch results read" "$rc" "$CS_DIR/fact.out"
-          if ! bash scripts/ops/clean-start/run.sh bool "the first watch after the reset already ran" "$CS_DIR/fact.out"; then
+          if ! bash scripts/ops/clean-start/run.sh bool "the first watch after the reset already ran" "$CS_DIR/fact.out" ask; then
             bash scripts/ops/clean-start/run.sh app-watch
           fi
           rc=0
           PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
+            -v fact=chain-id > "$CS_DIR/chain-id.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "new seal chain read" "$rc" "$CS_DIR/chain-id.out"
+          bash scripts/ops/clean-start/run.sh chain-id "$CS_DIR/chain-id.out" "$TARGET_RUN"
+          rc=0
+          PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
             -v fact=watch-results > "$CS_DIR/watch-results.tsv" 2>&1 || rc=$?
           bash scripts/ops/clean-start/run.sh sql "first watch results read" "$rc" "$CS_DIR/watch-results.tsv"
-          bash scripts/ops/clean-start/run.sh compare-watch "$CS_DIR/watch-results.tsv" "$CS_DIR/exports/seal-keys-foreign.txt"
+          # The first run may be a SCHEDULED one made before step g removed the old
+          # seal files (finish run late): what it may have reported is everything
+          # under seals/ that step g listed, except production's new chain.
+          bash scripts/ops/clean-start/run.sh finish-may "$CS_DIR/may-keys.txt"
+          bash scripts/ops/clean-start/run.sh compare-watch "$CS_DIR/watch-results.tsv" "" "$CS_DIR/may-keys.txt"
 
       - name: i. Smoke
         run: |
@@ -855,6 +951,7 @@ jobs:
       TARGET_RUN: ${{ inputs.run_id }}
       CONFIRM_HOST: ${{ inputs.confirm_host }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      GH_TOKEN: ${{ github.token }}
       PROD_URL_RAW: ${{ secrets.DIRECT_URL }}
       PROD_CRON_SECRET: ${{ secrets.PROD_CRON_SECRET }}
       APP_BASE_URL: ${{ vars.APP_BASE_URL || 'https://nmwc-cm.vercel.app' }}
@@ -894,6 +991,8 @@ jobs:
           set -euo pipefail
           bash scripts/ops/clean-start/run.sh step "seal restore: preflight"
           bash scripts/ops/clean-start/run.sh preflight seal-restore
+          # The Approve this job waited for is a gate only while the environment has a reviewer.
+          bash scripts/ops/clean-start/run.sh github-env
           bash scripts/ops/clean-start/run.sh check-run-id "$TARGET_RUN"
           bash scripts/ops/clean-start/run.sh prod-target read
           mkdir -p "$CS_DIR/exports"
@@ -901,6 +1000,9 @@ jobs:
             bash scripts/ops/clean-start/run.sh fetch-decrypt "cleanstart/$TARGET_RUN/apply/$f.age" "$CS_DIR/exports/$f"
           done
           echo "OLD_CHAIN=$(sed -n 's/^old_chain=//p' "$CS_DIR/exports/plan-id.txt" | tr -d '\r')" >> "$GITHUB_ENV"
+
+          # Which folder under seals/ is production's NEW chain (recorded by apply step h or finish).
+          bash scripts/ops/clean-start/run.sh chain-id-fetch "$TARGET_RUN"
 
       - name: Production is back to before the reset (read-only)
         env:
@@ -915,8 +1017,7 @@ jobs:
 
       - name: The old seal files back, the abandoned chain moved aside
         run: |
-          bash scripts/ops/clean-start/seal-archive.sh restore "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN" "$TARGET_RUN" \
-            "$CS_DIR/exports/seal-keys-foreign.txt"
+          bash scripts/ops/clean-start/seal-archive.sh restore "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN" "$TARGET_RUN" "$NEW_CHAIN"
 
       - name: The integrity watch, once
         run: |
@@ -926,7 +1027,7 @@ jobs:
           PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
             -v fact=watch-latest > "$CS_DIR/watch-latest.tsv" 2>&1 || rc=$?
           bash scripts/ops/clean-start/run.sh sql "watch results read" "$rc" "$CS_DIR/watch-latest.tsv"
-          bash scripts/ops/clean-start/run.sh status-lines "$CS_DIR/watch-latest.tsv"
+          bash scripts/ops/clean-start/run.sh status-lines "$CS_DIR/watch-latest.tsv" refuse
 
       - name: The encrypted report
         if: always()
