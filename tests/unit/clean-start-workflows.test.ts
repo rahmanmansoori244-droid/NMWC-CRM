@@ -253,6 +253,16 @@ describe('targets', () => {
     expect(sr).toMatch(/run\.sh status-lines "\$CS_DIR\/watch-latest\.tsv" refuse/);
   });
 
+  it('every verify-seals call names its host (it refuses with exit 2 without --expect-host, so the recorded line could never say yes)', () => {
+    const calls = allJobs().flatMap(([f, id, j]) =>
+      j.steps.flatMap((s) => commands(s.run ?? '').filter((l) => /scripts\/ops\/verify-seals\.ts/.test(l)).map((l) => [`${f} ${id}`, l] as const))
+    );
+    expect(calls.length).toBeGreaterThan(0);
+    for (const [where, l] of calls) expect(l, where).toMatch(/ --expect-host [a-z0-9.-]+\b/);
+    // The rehearsal's copy is the runner's own service container.
+    expect(MAIN.jobs.rehearse!.env!.REHEARSE_URL).toMatch(/@localhost:/);
+  });
+
   it('the shell scripts name no database client (the workflow holds those lines)', () => {
     for (const f of ['run.sh', 'seal-archive.sh', 'photo-delete.sh'])
       expect(read(`scripts/ops/clean-start/${f}`), f).not.toMatch(/\b(psql|pg_dump|pg_dumpall|pg_restore|prisma)\b/);
