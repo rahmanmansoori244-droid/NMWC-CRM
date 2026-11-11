@@ -112,6 +112,12 @@ export type ShopLookalike =
       caseOnly: boolean;
       numbered?: boolean;
       otherNumbered?: boolean;
+      /**
+       * The row whose code was compared (groupShopLookalike). The promote writes
+       * one reason to every row of the customer, so a reason about a blank
+       * (numbered) code names its rows by number, never "this row".
+       */
+      selfRow?: number | string;
     };
 
 /**
@@ -176,14 +182,20 @@ export function shopLookalikeMessage(hit: ShopLookalike): string {
   // Review of A5 (2026-11-11): a NEW customer's blank branch_code, numbered by its
   // place. There is no code in the sheet to release, only one to give, so these
   // words never match SHOP_LOOKALIKE_RELEASABLE.
+  // Final check of the review (2026-11-11): the promote writes this reason to
+  // EVERY row of the customer, so it names the rows by number: on the coded
+  // row, "this row's branch_code is blank" was false.
   if (hit.kind === 'row' && hit.numbered) {
+    const self = hit.selfRow !== undefined ? `row ${hit.selfRow}` : 'this row';
     const other = hit.otherNumbered
       ? `the number "${hit.other}" given to the blank branch_code on row ${hit.row}`
       : `shop code "${hit.other}" on row ${hit.row}`;
-    return `This row's branch_code is blank, so it would be numbered "${hit.sheetCode}", which looks like ${other} of the same customer in this sheet (only the zeros differ). Give this row a branch_code: the same code if it is the same shop, a different one if it is a different shop.`;
+    return `The branch_code on ${self} is blank, so it would be numbered "${hit.sheetCode}", which looks like ${other} of the same customer in this sheet (only the zeros differ). Give ${self} a branch_code: the same code if it is the same shop, a different one if it is a different shop.`;
   }
   if (hit.kind === 'row' && hit.otherNumbered) {
-    return `Shop code "${hit.sheetCode}" looks like "${hit.other}", the number the blank branch_code on row ${hit.row} of the same customer in this sheet would be given (only the zeros differ). Give that row a branch_code, or correct this one: the same code if it is the same shop, a different one if it is a different shop.`;
+    const fix =
+      hit.selfRow !== undefined ? `correct the code "${hit.sheetCode}" on row ${hit.selfRow}` : 'correct this one';
+    return `Shop code "${hit.sheetCode}" looks like "${hit.other}", the number the blank branch_code on row ${hit.row} of the same customer in this sheet would be given (only the zeros differ). Give row ${hit.row} a branch_code, or ${fix}: the same code if it is the same shop, a different one if it is a different shop.`;
   }
   const like =
     hit.kind === 'shop'
@@ -230,7 +242,10 @@ export function groupShopLookalike(
       });
     const mine = codeOf(r);
     const hit = shopLookalike(custCode, mine.code, shops, siblings, r.shopCodeReleased === true);
-    if (hit) return mine.numbered ? { ...hit, numbered: true } : hit;
+    if (!hit) continue;
+    const withRow =
+      hit.kind === 'row' && (mine.numbered || hit.otherNumbered) ? { ...hit, selfRow: r.rowNumber } : hit;
+    return mine.numbered ? { ...withRow, numbered: true } : withRow;
   }
   return null;
 }

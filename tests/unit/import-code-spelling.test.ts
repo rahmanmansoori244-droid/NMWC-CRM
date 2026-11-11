@@ -295,11 +295,15 @@ describe('groupShopLookalike — a blank branch_code numbered by its place', () 
       ],
       []
     );
-    expect(hit).toMatchObject({ kind: 'row', sheetCode: 'C1-01', other: '1', row: 3, numbered: true });
+    expect(hit).toMatchObject({ kind: 'row', sheetCode: 'C1-01', other: '1', row: 3, numbered: true, selfRow: 2 });
     const msg = shopLookalikeMessage(hit!);
+    // Final check of the review (2026-11-11): the promote writes this one reason
+    // to every row of the customer, so it names both rows by number, never
+    // "this row" (on row 3, which has a code, "this row's branch_code is blank" was false).
     expect(msg).toBe(
-      `This row's branch_code is blank, so it would be numbered "C1-01", which looks like shop code "1" on row 3 of the same customer in this sheet (only the zeros differ). Give this row a branch_code: the same code if it is the same shop, a different one if it is a different shop.`
+      `The branch_code on row 2 is blank, so it would be numbered "C1-01", which looks like shop code "1" on row 3 of the same customer in this sheet (only the zeros differ). Give row 2 a branch_code: the same code if it is the same shop, a different one if it is a different shop.`
     );
+    expect(msg).not.toMatch(/this row|this one/i);
     // Nothing to release: there is no code to keep.
     expect(canReleaseShopCode([{ field: 'branch_code', message: msg }])).toBe(false);
   });
@@ -313,10 +317,13 @@ describe('groupShopLookalike — a blank branch_code numbered by its place', () 
       ],
       []
     );
+    expect(hit).toMatchObject({ kind: 'row', sheetCode: '2', other: 'C1-02', row: 3, otherNumbered: true, selfRow: 2 });
     const msg = shopLookalikeMessage(hit!);
     expect(msg).toBe(
-      'Shop code "2" looks like "C1-02", the number the blank branch_code on row 3 of the same customer in this sheet would be given (only the zeros differ). Give that row a branch_code, or correct this one: the same code if it is the same shop, a different one if it is a different shop.'
+      'Shop code "2" looks like "C1-02", the number the blank branch_code on row 3 of the same customer in this sheet would be given (only the zeros differ). Give row 3 a branch_code, or correct the code "2" on row 2: the same code if it is the same shop, a different one if it is a different shop.'
     );
+    expect(msg).not.toMatch(/this row|this one|that row/i);
+    expect(SHOP_LOOKALIKE.test(msg)).toBe(true);
     expect(canReleaseShopCode([{ field: 'branch_code', message: msg }])).toBe(false);
     // The promote's rejection names the cell, so the batch page offers it to correct.
     expect(editableColumns([{ field: '_promote', message: `branch_code: ${msg}` }])).toEqual(['branch_code']);

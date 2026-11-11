@@ -260,3 +260,20 @@ describe('what the Steward is told about a promote the limit stops', () => {
     }
   });
 });
+
+// Final check of the review (2026-11-11): the 8-hour limit, and how to keep a
+// form that is half done, was in the English guides only. The Arabic Salesman,
+// Supervisor and Manager guides carry their own "Common situations" tables and
+// say it too, in the source and in the regenerated HTML.
+describe('the Arabic guides tell people about the 8-hour sign-in', () => {
+  it('each Arabic guide that has an English row about it has one too', async () => {
+    const { readFileSync } = await import('node:fs');
+    for (const role of ['Salesman', 'Supervisor', 'Manager']) {
+      const en = readFileSync(`docs/guide/NMWC-${role}-Guide-EN.html`, 'utf8');
+      const ar = readFileSync(`docs/guide/NMWC-${role}-Guide-AR.html`, 'utf8');
+      expect(en, role).toMatch(/at most 8 hours/);
+      expect(ar, role).toMatch(/تسجيل الدخول[^<]*8 ساعات/);
+      expect(ar, role).toMatch(/سجّل الدخول (مرة أخرى )?في علامة تبويب أخرى/);
+    }
+  });
+});

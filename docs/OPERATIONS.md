@@ -931,12 +931,15 @@ not built yet (item D).
      shops — the CRM keeps shop codes in capitals, so `ab` would load as the shop `AB` — so such a
      row can only be corrected or excluded. A release belongs to the code it was given for:
      correcting that row's `branch_code` (or `cust_code`) afterwards ends it, and the new code is
-     checked again. Promote checks the same rule again under the
+     checked again; that correction's audit row says so ("…; its shop code changed, so the
+     'Different shop' release ends", with `shopCodeReleaseEnded` in its record). Promote checks the same rule again under the
      customer's lock, for a shop added after the upload, and rejects the customer with the same
      reason; "Before you promote" expects it. For a NEW customer it also compares the number a
      row with a blank `branch_code` is given by its place (`-01`, `-02`, …) with the codes of the
      customer's other rows: a blank row numbered `-01` beside a row coded `1` is rejected, naming
-     the `branch_code` cell, and loads once the Steward gives one of them a code.
+     the `branch_code` cell, and loads once the Steward gives one of them a code. The reason is
+     written to every row of the customer, so it names the rows by number ("The branch_code on
+     row 2 is blank, … looks like shop code "1" on row 3 … Give row 2 a branch_code").
    - **Promote opens "Before you promote".** It counts, against the CRM as it is at that moment:
      customers and shops that will be created; Temix-owned fields refreshed; rows naming a route
      that will NOT be applied; rows whose codes were read in capitals; blank CRM fields filled; customers and shops where the sheet differs

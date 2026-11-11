@@ -531,6 +531,9 @@ async function correctCore(formData: FormData): Promise<FixResult> {
     // another shop is held back again instead of loading as a second shop.
     const merged: Corrections = { ...mine, cells: { ...(mine.cells ?? {}), ...changed } };
     if ('branch_code' in changed || 'cust_code' in changed) delete merged.shopCodeReleased;
+    // Final check of the review (2026-11-11): the ledger says so, or it would show
+    // the release followed by a plain correction, as if the release still applied.
+    const releaseEnded = !!mine.shopCodeReleased && !merged.shopCodeReleased;
     const targets = await targetsFor(tx, row);
     const correctionsFor = (t: RowForFix) => (t.id === row.id ? merged : readCorrections(t.corrections));
     // A corrected customer or branch code is the identity the newest-upload
@@ -546,7 +549,11 @@ async function correctCore(formData: FormData): Promise<FixResult> {
     // 90-day sweep empties the row. Non-personal cells (codes, channel, visit day,
     // status) keep their values; a personal one (name, address, phone, CR number,
     // contact, note) only its fingerprints: this ledger keeps everything for ever.
-    await audit(tx, env, 'UPDATE', row.id, 'Import row corrected by the Data Steward', {
+    const why = releaseEnded
+      ? "Import row corrected by the Data Steward; its shop code changed, so the 'Different shop' release ends"
+      : 'Import row corrected by the Data Steward';
+    await audit(tx, env, 'UPDATE', row.id, why, {
+      ...(releaseEnded ? { shopCodeReleaseEnded: true } : {}),
       columns: Object.keys(changed).sort(),
       cells: correctionAudit(
         changed,

@@ -297,6 +297,29 @@ describe.skipIf(!ENABLED)('A5: code spellings on the customer import', () => {
     expect(after!.state).toBe('QUARANTINED');
     expect(issuesOf(after!)[0]!.message).toContain(`existing shop "${K}-02" (Excel may have dropped a zero)`);
     expect((after!.corrections as Record<string, unknown>).shopCodeReleased).toBeUndefined();
+    // Final check of the review (2026-11-11): the ledger records that the
+    // correction ended the release, after the release's own FORCE_OVERRIDE row.
+    const ledger = await prisma.auditLog.findMany({
+      where: { entityId: x!.id, action: { in: ['UPDATE', 'FORCE_OVERRIDE'] } },
+      orderBy: { at: 'asc' },
+    });
+    expect(ledger.map((a) => [a.action, a.reason])).toEqual([
+      ['FORCE_OVERRIDE', 'Shop code released as a different shop by the Data Steward: a different shop'],
+      [
+        'UPDATE',
+        "Import row corrected by the Data Steward; its shop code changed, so the 'Different shop' release ends",
+      ],
+    ]);
+    expect(ledger[1]!.after).toMatchObject({ shopCodeReleaseEnded: true, columns: ['branch_code'] });
+    // A correction made with no release in place says nothing of one.
+    const again = await fixes.correctImportRowAction(fd({ rowId: x!.id, cells: JSON.stringify({ branch_code: '3' }) }));
+    expect(again, JSON.stringify(again)).toMatchObject({ ok: true });
+    const last = await prisma.auditLog.findFirstOrThrow({
+      where: { entityId: x!.id, action: 'UPDATE' },
+      orderBy: { at: 'desc' },
+    });
+    expect(last.reason).toBe('Import row corrected by the Data Steward');
+    expect(last.after).not.toHaveProperty('shopCodeReleaseEnded');
     expect(await shopsOf(K)).toEqual([`${K}-02`, `${K}-A01`]);
   });
 
@@ -317,9 +340,11 @@ describe.skipIf(!ENABLED)('A5: code spellings on the customer import', () => {
     expect(await customersCalled(B)).toEqual([]);
     const [blank, one] = await rowsOf(batchId);
     expect([blank!.state, one!.state]).toEqual(['REJECTED', 'REJECTED']);
-    expect(issuesOf(blank!)[0]!.message).toBe(
-      `branch_code: This row's branch_code is blank, so it would be numbered "${B}-01", which looks like shop code "1" on row 3 of the same customer in this sheet (only the zeros differ). Give this row a branch_code: the same code if it is the same shop, a different one if it is a different shop.`
-    );
+    // One reason for the whole customer, written to BOTH rows: it names the rows
+    // by number, so it is true on the coded row 3 as well as on the blank row 2.
+    const reason = `branch_code: The branch_code on row 2 is blank, so it would be numbered "${B}-01", which looks like shop code "1" on row 3 of the same customer in this sheet (only the zeros differ). Give row 2 a branch_code: the same code if it is the same shop, a different one if it is a different shop.`;
+    expect(issuesOf(blank!)[0]!.message).toBe(reason);
+    expect(issuesOf(one!)[0]!.message).toBe(reason);
     const given = await fixes.correctImportRowAction(fd({ rowId: blank!.id, cells: JSON.stringify({ branch_code: '02' }) }));
     expect(given, JSON.stringify(given)).toMatchObject({ ok: true, data: { clean: 2, held: 0 } });
     expect(await promoteFully(imports, batchId)).toMatchObject({ promoted: 2, failed: 0 });
