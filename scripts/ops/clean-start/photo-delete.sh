@@ -50,9 +50,15 @@ refuse() {
 # CS_DIR: the private work folder, set by the workflow's first step from
 # RUNNER_TEMP. No default: an unset, empty or relative value would put the
 # plaintext (and shred's removal) somewhere else, so it is refused. A drive path
-# (C:...) is accepted only for the local tests on Windows.
+# (C:/... or C:\...) is accepted only when bash itself runs on Windows (the local
+# tests); on Linux, as on the hosted runner, "C:x" or "C:/x" is relative.
 case "${CS_DIR:-}" in
-  /?* | [A-Za-z]:?*) ;;
+  /?*) ;;
+  [A-Za-z]:/?* | [A-Za-z]:\\?*)
+    case "$(uname -s 2>/dev/null)" in
+      MINGW* | MSYS* | CYGWIN*) ;;
+      *) refuse "the private work folder is not set, or not an absolute path" ;;
+    esac ;;
   *) refuse "the private work folder is not set, or not an absolute path" ;;
 esac
 mkdir -p "$CS_DIR"

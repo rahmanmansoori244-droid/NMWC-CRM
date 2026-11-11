@@ -914,7 +914,7 @@ describe('the work folder: no default, refused when missing (it was a job env: v
     ['photo-delete.sh check', 'bash scripts/ops/clean-start/photo-delete.sh check a b c', 'photo deletion refused'],
   ] as const;
   it.each(calls)('%s refuses an unset, empty, relative or root CS_DIR, before anything else', (_n, cmd, who) => {
-    for (const v of ['', 'relative/work', '/']) {
+    for (const v of ['', 'relative/work', '/', 'C:x', 'a:b']) {
       const before = readdirSync(sb.root).sort();
       const r = sh(`${v === '' ? 'unset CS_DIR; ' : ''}${cmd}`, { CS_DIR: v, RUNNER_TEMP: sb.root });
       expect(r.code, `CS_DIR=${JSON.stringify(v)}`).toBe(1);
@@ -922,6 +922,19 @@ describe('the work folder: no default, refused when missing (it was a job env: v
       expect(readdirSync(sb.root).sort(), 'nothing created or removed').toEqual(before);
     }
     expect(existsSync(sb.csDir)).toBe(true);
+  });
+
+  // A drive path is for the local tests on Windows only: on Linux (the hosted
+  // runner) "C:/x" is a relative folder. uname is replaced by an exported
+  // function, so this holds on any host.
+  it.each(calls)('%s refuses a drive path when bash does not run on Windows', (_n, cmd, who) => {
+    for (const v of ['C:/work', 'C:' + String.fromCharCode(92) + 'work']) {
+      const before = readdirSync(sb.root).sort();
+      const r = sh(`uname() { echo Linux; }; export -f uname; ${cmd}`, { CS_DIR: v, RUNNER_TEMP: sb.root });
+      expect(r.code, `CS_DIR=${JSON.stringify(v)}`).toBe(1);
+      expect(r.lines).toEqual([`::error::${who}: the private work folder is not set, or not an absolute path`]);
+      expect(readdirSync(sb.root).sort(), 'nothing created or removed').toEqual(before);
+    }
   });
 });
 

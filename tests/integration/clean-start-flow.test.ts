@@ -34,6 +34,10 @@
  *     CS_FLOW_PG_BIN=<folder with psql and pg_dump> npx vitest run tests/integration/clean-start-flow.test.ts
  *
  * It creates and drops databases, so it runs only against a cluster on this machine.
+ * That cluster must accept connections on loopback without a password (trust
+ * auth for 127.0.0.1 and localhost in pg_hba.conf): the scripts and the copies,
+ * branches and roles they create connect without one, so a password-only
+ * cluster fails at setup with P1000.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
