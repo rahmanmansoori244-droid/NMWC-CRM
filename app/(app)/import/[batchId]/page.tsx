@@ -23,6 +23,7 @@ import { ExcludeRemaining, RowActions } from './RowActions';
 import {
   canReleasePhone,
   cellValue,
+  composeBranchCode,
   correctedRow,
   CUSTOMER_LEVEL_CELLS,
   editableColumns,
@@ -155,6 +156,39 @@ export default async function ImportBatchPage({
           })
         ).map((c) => c.nmwcCode)
       : []
+  );
+  // Owner's answer 2026-11-11 ("A1 stop"): an import never moves a shop already
+  // in the CRM to another route (lib/import-shop-route.ts). A held-back row, or
+  // a fix waiting to load, that names a different route for such a shop says so
+  // before the Steward corrects it and before it loads — as the row already
+  // warns before a release or a customer-level correction (linkedToTemix).
+  const askShop = (fixable ? displayRows.filter((r) => !r.excludedAt && (isProblem(r) || isFixedWaiting(r) || isReleased(r))) : []).flatMap((r) => {
+    if (uploadedValues(r.raw).length === 0) return [];
+    const now = correctedRow(r.raw, readCorrections(r.corrections));
+    const code = codeOf(r.parsed) ?? (cellValue(now, 'cust_code').trim().toUpperCase() || null);
+    const sheetCode = cellValue(now, 'branch_code').trim();
+    const route = cellValue(now, 'route').trim();
+    return code && sheetCode && route
+      ? [{ id: r.id, code, branchCode: composeBranchCode(code, sheetCode), route }]
+      : [];
+  });
+  const shopsOnRecord = new Map(
+    askShop.length > 0
+      ? (
+          await prisma.branch.findMany({
+            where: { branchCode: { in: [...new Set(askShop.map((a) => a.branchCode))] }, deletedAt: null },
+            select: { branchCode: true, customer: { select: { nmwcCode: true } }, route: { select: { code: true } } },
+          })
+        ).map((b) => [b.branchCode, { custCode: b.customer.nmwcCode, route: b.route.code }] as const)
+      : []
+  );
+  const routeKeptOf = new Map(
+    askShop.flatMap((a) => {
+      const shop = shopsOnRecord.get(a.branchCode);
+      return shop && shop.custCode === a.code && shop.route.toUpperCase() !== a.route.toUpperCase()
+        ? [[a.id, { shop: a.branchCode, sheet: a.route, kept: shop.route }] as const]
+        : [];
+    })
   );
   const href = (v: RowView, p = 1): Route => (p > 1 ? `?show=${v}&page=${p}` : `?show=${v}`);
 
@@ -479,6 +513,7 @@ export default async function ImportBatchPage({
                             releasedWith={released ? (fb.releasedWith.get(r.id) ?? null) : null}
                             releasedAlone={fb.releasedAlone.has(r.id)}
                             canWithdraw={fb.withdrawable.has(r.id)}
+                            routeKept={routeKeptOf.get(r.id) ?? null}
                             linkedToTemix={
                               linked &&
                               ((uploaded.length > 0 &&

@@ -11,6 +11,7 @@ import {
   withdrawImportRowFixAction,
 } from '@/services/import-fixes';
 import { CELL_LABEL } from '@/lib/import-row-fix';
+import { ROUTE_NOT_APPLIED } from '@/lib/import-shop-notice';
 import type { ActionResult } from '@/lib/errors';
 
 /**
@@ -37,6 +38,7 @@ export function RowActions({
   releasedWith = null,
   releasedAlone = false,
   canWithdraw = false,
+  routeKept = null,
 }: {
   rowId: string;
   batchId: string;
@@ -67,6 +69,12 @@ export function RowActions({
   releasedAlone?: boolean;
   /** A held-back row whose fix can still be withdrawn (rows it released wait CLEAN). */
   canWithdraw?: boolean;
+  /**
+   * Owner's answer 2026-11-11 ("A1 stop"): the row names a route other than the
+   * current route of its shop, which is already in the CRM. That route is NOT
+   * applied when the row loads; the row says so before it is corrected or loaded.
+   */
+  routeKept?: { shop: string; sheet: string; kept: string } | null;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -133,12 +141,22 @@ export function RowActions({
     });
   };
 
+  // Owner's answer 2026-11-11: said before a correction and before the load.
+  const routeWarning = routeKept ? (
+    <p data-testid="route-not-applied" className="text-amber-800">
+      Shop {routeKept.shop} is already in the CRM, on route {routeKept.kept}. This row names route{' '}
+      {routeKept.sheet}: when it loads, that route is NOT applied and the shop stays on route {routeKept.kept}. The
+      rest of the row loads as usual. {ROUTE_NOT_APPLIED}
+    </p>
+  ) : null;
+
   if (state === 'CLEAN') {
     // A fix already made, waiting to be promoted: it can be taken back — before
     // this, a mistyped correction had to be loaded or the batch never promoted.
     // A row that only came back with another row's fix takes it back too.
     return (
       <div className="grid gap-1 text-xs">
+        {routeWarning}
         {releasedWith != null && (
           <p className="text-slate-600">
             {releasedAlone
@@ -186,6 +204,7 @@ export function RowActions({
   return (
     <div className="grid gap-2 text-xs">
       {superseded && <p className="text-slate-600">{superseded}</p>}
+      {!superseded && routeWarning}
       {linkedToTemix && !superseded && (
         <p className="text-amber-800">
           This customer is linked to Temix, so a fix here loads only this row&rsquo;s branch. A

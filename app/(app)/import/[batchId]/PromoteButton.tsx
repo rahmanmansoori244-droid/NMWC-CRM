@@ -84,6 +84,8 @@ export function PromoteButton({
       let kept = 0;
       let creditNotApplied = 0;
       let shopNotChanged = 0;
+      // Owner's answer 2026-11-11: rows whose different route was NOT applied.
+      let routeNotApplied = 0;
       // Proves to the server that this run still owns the batch, so it can continue
       // straight into its next slice instead of waiting out its own lease.
       let token = '';
@@ -111,6 +113,7 @@ export function PromoteButton({
           kept += res.data.notes?.kept ?? 0;
           creditNotApplied += res.data.notes?.creditNotApplied ?? 0;
           shopNotChanged += res.data.notes?.shopNotChanged ?? 0;
+          routeNotApplied += res.data.notes?.routeNotApplied ?? 0;
           token = res.data.leaseToken ?? '';
           setLive({ promoted, failed, left: res.data.remaining });
 
@@ -125,6 +128,9 @@ export function PromoteButton({
                 : []),
               ...(shopNotChanged
                 ? [`${shopNotChanged.toLocaleString('en-US')} row(s) were loaded with their shop NOT changed`]
+                : []),
+              ...(routeNotApplied
+                ? [`${routeNotApplied.toLocaleString('en-US')} row(s) named a different route that was NOT applied`]
                 : []),
             ];
             const doneText =

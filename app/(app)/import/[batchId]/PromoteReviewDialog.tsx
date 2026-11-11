@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useDialogFocus } from '@/components/nmwc/useDialogFocus';
 import { summariseCustomerBatchAction, type PromoteReview } from '@/services/import-review';
 import { setImportOverwriteAction } from '@/services/import-fixes';
-import { SHOP_NOT_CHANGED_MEANING } from '@/lib/import-shop-notice';
+import { ROUTE_ONLY_MEANING, SHOP_NOT_CHANGED_MEANING } from '@/lib/import-shop-notice';
 
 /**
  * "Before you promote" (code review 2026-11-10, finding 1).
@@ -115,6 +115,10 @@ export function PromoteReviewDialog({
   const crm = review?.summary?.crm;
   const notChanged = crm ? crm.linkedShops + crm.linkedNotAdded : 0;
   const routeNotChanged = crm ? crm.linkedRouteNotMoved : 0;
+  // Owner's answer 2026-11-11 ("A1 stop"): rows that load, but whose different
+  // route for a shop already in the CRM is NOT applied. Ticked too.
+  const routeNotApplied = review?.summary?.routeNotApplied ?? 0;
+  const mustTick = notChanged + routeNotApplied > 0;
   // Finding 6: too old to promote — the server refuses it, so the button is not offered.
   const expired = review?.staged?.expired === true;
   const newerCount = review?.newer?.customers ?? 0;
@@ -122,7 +126,7 @@ export function PromoteReviewDialog({
     !checking &&
     !switching &&
     (review !== null || failed !== null) &&
-    (notChanged === 0 || ackShops) &&
+    (!mustTick || ackShops) &&
     !expired &&
     (newerCount === 0 || skipNewer);
 
@@ -192,7 +196,7 @@ export function PromoteReviewDialog({
           </div>
         )}
 
-        {review && notChanged > 0 && (
+        {review && mustTick && (
           <div className="mt-4 rounded-md bg-amber-50 p-3 text-sm text-amber-900 ring-1 ring-inset ring-amber-200">
             <label htmlFor={ackId} className="flex items-start gap-2">
               <input
@@ -203,11 +207,23 @@ export function PromoteReviewDialog({
                 className="mt-0.5"
               />
               <span>
-                I understand that {notChanged.toLocaleString('en-US')} row(s) will be loaded with their shop NOT changed
-                {routeNotChanged > 0
-                  ? ` — ${routeNotChanged.toLocaleString('en-US')} of them carry a different route, and that route will NOT be applied`
-                  : ''}
-                . {SHOP_NOT_CHANGED_MEANING} Each such row is listed under &ldquo;Loaded with a warning&rdquo;.
+                {notChanged > 0 && (
+                  <>
+                    I understand that {notChanged.toLocaleString('en-US')} row(s) will be loaded with their shop NOT
+                    changed
+                    {routeNotChanged > 0
+                      ? ` — ${routeNotChanged.toLocaleString('en-US')} of them carry a different route, and that route will NOT be applied`
+                      : ''}
+                    . {SHOP_NOT_CHANGED_MEANING}{' '}
+                  </>
+                )}
+                {routeNotApplied > 0 && (
+                  <>
+                    {notChanged > 0 ? 'And that' : 'I understand that'} {routeNotApplied.toLocaleString('en-US')}{' '}
+                    row(s) name a different route for a shop already in the CRM: {ROUTE_ONLY_MEANING}{' '}
+                  </>
+                )}
+                Each such row is listed under &ldquo;Loaded with a warning&rdquo;.
               </span>
             </label>
           </div>

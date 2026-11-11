@@ -28,7 +28,7 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: h.refresh, push
 
 import { PromoteButton } from '@/app/(app)/import/[batchId]/PromoteButton';
 import { ShopsNotChangedNotice } from '@/app/(app)/import/[batchId]/ShopsNotChangedNotice';
-import { ROUTE_NOT_APPLIED, SHOP_NOT_CHANGED_MEANING } from '@/lib/import-shop-notice';
+import { ROUTE_NOT_APPLIED, ROUTE_ONLY_MEANING, SHOP_NOT_CHANGED_MEANING } from '@/lib/import-shop-notice';
 
 const KEPT =
   'CRM fields kept: on 2 customer(s) and 1 shop(s) the sheet differs from the record. Their values stay as they are on record (name 2, address 1).';
@@ -334,6 +334,53 @@ describe('rows loaded with their shop NOT changed are acknowledged', () => {
     expect(go.disabled).toBe(false);
   });
 
+  // Owner's answer 2026-11-11 ("A1 stop").
+  it('rows naming a different route for a shop already in the CRM: the same tick, in words true for them', async () => {
+    const r = review(false);
+    h.summarise.mockResolvedValue({
+      ...r,
+      data: { ...r.data, summary: { crm: { linkedShops: 0, linkedNotAdded: 0, linkedRouteNotMoved: 0 }, routeNotApplied: 2 } },
+    });
+    const dialog = await openReview();
+    await within(dialog).findByText(KEPT);
+    const go = within(dialog).getByRole('button', { name: 'Promote 3 clean rows now' }) as HTMLButtonElement;
+    expect(go.disabled).toBe(true);
+    const tick = within(dialog).getByRole('checkbox', {
+      name: /I understand that 2 row\(s\) name a different route for a shop already in the CRM/,
+    });
+    const words = tick.closest('label')!.textContent!;
+    expect(words).toContain(ROUTE_ONLY_MEANING);
+    expect(words).not.toContain('shop NOT changed');
+    fireEvent.click(tick);
+    expect(go.disabled).toBe(false);
+  });
+
+  it('both kinds: one tick names both counts', async () => {
+    const r = withUnchanged();
+    h.summarise.mockResolvedValue({ ...r, data: { ...r.data, summary: { ...r.data.summary, routeNotApplied: 4 } } });
+    const dialog = await openReview();
+    await within(dialog).findByText(KEPT);
+    const tick = within(dialog).getByRole('checkbox', { name: /3 row\(s\) will be loaded with their shop NOT changed/ });
+    expect(tick.closest('label')!.textContent).toContain(
+      'And that 4 row(s) name a different route for a shop already in the CRM'
+    );
+    expect(within(dialog).getAllByRole('checkbox')).toHaveLength(1);
+  });
+
+  it('after: the result counts the rows whose route was not applied', async () => {
+    h.promote.mockResolvedValue(
+      done({ kept: 0, replaced: 0, creditNotApplied: 0, shopNotChanged: 0, routeNotApplied: 2 } as never)
+    );
+    const dialog = await openReview();
+    await within(dialog).findByText(KEPT);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Promote 3 clean rows now' }));
+    expect(
+      await screen.findByText(
+        '✓ Done — 3 rows promoted in this run. 2 row(s) named a different route that was NOT applied — see "Loaded with a warning".'
+      )
+    ).toBeTruthy();
+  });
+
   it('none such: no tick is asked for', async () => {
     const dialog = await openReview();
     await within(dialog).findByText(KEPT);
@@ -368,9 +415,16 @@ describe('the notice on the batch page, until the Data Steward acknowledges it',
     render(<ShopsNotChangedNotice batchId="b1" rows={3} total={5} />);
     const note = screen.getByTestId('shops-not-changed');
     expect(note.getAttribute('role')).toBe('alert');
-    expect(note.textContent).toContain('3 row(s) were loaded, but their shop was NOT changed.');
+    // Owner's answer 2026-11-11 ("A1 stop"): the notice also counts rows whose
+    // route was not applied while their other cells may have been, so its first
+    // line no longer says "their shop was NOT changed" of every row it counts.
+    expect(note.textContent).toContain('3 row(s) were loaded, but not everything they say about their shop was applied.');
+    expect(note.textContent).not.toContain('their shop was NOT changed.');
     expect(note.textContent).toContain(SHOP_NOT_CHANGED_MEANING);
     expect(note.textContent).toContain(ROUTE_NOT_APPLIED);
+    expect(note.textContent).toContain(
+      'Rows that name a different route for a shop already in the CRM: the rest of such a row is loaded as usual, but its route is not: the shop stays on its current route. Route moves are made in Temix.'
+    );
     fireEvent.click(within(note).getByRole('button', { name: 'I have read this' }));
     await waitFor(() => expect(h.ack).toHaveBeenCalledTimes(1));
     expect(fields(h.ack.mock.calls[0]![0])).toEqual({ batchId: 'b1', rows: '5' });
