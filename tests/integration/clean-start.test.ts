@@ -33,7 +33,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Prisma, PrismaClient } from '@prisma/client';
@@ -109,6 +109,8 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
   let scratchUrl = '';
   let appUrl = '';
   let tmp = '';
+  /** TEMPLATE copies made by the refusal cases (dropped in afterAll too). */
+  const copies: string[] = [];
   const now = new Date();
   const year = omanYear(now);
   const D = omanDateISO(now);
@@ -252,7 +254,7 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
   afterAll(async () => {
     await db?.$disconnect();
     if (admin) {
-      for (const name of [scratchDb, foreignDb]) {
+      for (const name of [scratchDb, foreignDb, ...copies]) {
         await admin
           .$executeRawUnsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`)
           .catch(() => undefined);
@@ -882,6 +884,156 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     expect(await counts()).toEqual(n0);
   });
 
+  // ── refusals, each on a fresh TEMPLATE copy of the planned database ─────
+  // (review 2026-11-11: no guard, self-check or verify check may silently become a no-op)
+
+  /** A fresh copy of the scratch database as it is now; `db` is reconnected afterwards. */
+  const copyOf = async (tag: string) => {
+    const name = `${scratchDb}_${tag}`;
+    await db.$disconnect();
+    try {
+      await admin.$executeRawUnsafe(`CREATE DATABASE "${name}" TEMPLATE "${scratchDb}"`);
+    } finally {
+      db = new PrismaClient({ datasourceUrl: assertNotProduction(scratchUrl, []) });
+    }
+    copies.push(name);
+    const u = new URL(scratchUrl);
+    u.pathname = `/${name}`;
+    return assertNotProduction(u.toString(), []);
+  };
+  const dropCopy = async (url: string) => {
+    const name = new URL(url).pathname.slice(1);
+    await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+  };
+  /** SQL as the suite's owner login on a copy (never production: assertNotProduction above). */
+  const sqlOn = (url: string, sql: string): Run =>
+    run(`psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -c "$CS_SQL"`, { DIRECT_URL: url, CS_SQL: sql });
+  const planOn = (url: string, extra: Record<string, string> = {}): Run => {
+    const out = mkdtempSync(join(tmp, 'p-'));
+    const v = { actor_username: w.actorName, expected_migrations: expectedMigrations(), ...extra };
+    return run(
+      `PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f ${DIR}/plan.sql -v out_dir='${out}' ${Object.entries(
+        v
+      )
+        .map(([k, x]) => `-v ${k}='${x}'`)
+        .join(' ')}`,
+      { DIRECT_URL: url }
+    );
+  };
+  const tableCounts = (url: string) =>
+    run(
+      `psql "$DIRECT_URL" -X -q -At -c "SELECT string_agg(c.relname || '=' || (xpath('/table/row/n/text()', query_to_xml(format('SELECT count(*) AS n FROM public.%I', c.relname), false, false, '')))[1]::text, ',' ORDER BY c.relname) FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r'"`,
+      { DIRECT_URL: url }
+    ).out.trim();
+
+  it('an unchanged copy plans to the same plan id (the control for the cases below)', async () => {
+    const url = await copyOf('ctl');
+    const out = mkdtempSync(join(tmp, 'ctl-'));
+    const r = run(
+      `PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f ${DIR}/plan.sql -v out_dir='${out}' -v actor_username='${w.actorName}' -v expected_migrations='${expectedMigrations()}'`,
+      { DIRECT_URL: url }
+    );
+    expect(r, r.out).toMatchObject({ code: 0 });
+    expect(planIds(out).plan_id).toBe(planId);
+    await dropCopy(url);
+  });
+
+  it.each([
+    [
+      'a new photo record',
+      `INSERT INTO "Attachment" SELECT (jsonb_populate_record(NULL::"Attachment", to_jsonb(a) || jsonb_build_object('id', 'zz-cs-new', 'r2Key', a."r2Key" || '.x'))).* FROM "Attachment" a ORDER BY a."id" LIMIT 1`,
+    ],
+    ['a customer-code counter moved on', `UPDATE "CodeSequence" SET "next" = "next" + 1`],
+    ['a request record touched', `UPDATE "CustomerEdit" SET "updatedAt" = "updatedAt" + interval '1 second' WHERE "id" = (SELECT max("id") FROM "CustomerEdit")`],
+  ])('between plan and apply, %s: CS013, and the copy is unchanged afterwards', async (_label, change) => {
+    const url = await copyOf(`c13${copies.length}`);
+    const ch = sqlOn(url, change);
+    expect(ch, ch.out).toMatchObject({ code: 0 });
+    const n0 = tableCounts(url);
+    const r = reset(vars(), url);
+    expect(r.code, r.out).toBe(3);
+    expect(r.out).toMatch(/ERROR:\s+CS013/);
+    expect(r.out).not.toMatch(/reset committed/);
+    expect(tableCounts(url)).toBe(n0);
+    await dropCopy(url);
+  });
+
+  it('a new customer between plan and apply: CS013', async () => {
+    const url = await copyOf('c13cust');
+    const ch = sqlOn(
+      url,
+      `INSERT INTO "Customer" SELECT (jsonb_populate_record(NULL::"Customer", to_jsonb(c) || jsonb_build_object('id', 'zz-cs-cust', 'nmwcCode', 'NMWC-1999-999999', 'temixCode', NULL, 'importRowId', NULL, 'crPhotoId', NULL))).* FROM "Customer" c WHERE c."isTest" = false ORDER BY c."id" LIMIT 1`
+    );
+    expect(ch, ch.out).toMatchObject({ code: 0 });
+    const r = reset(vars(), url);
+    expect([r.code, /ERROR:\s+CS013/.test(r.out)], r.out).toEqual([3, true]);
+    await dropCopy(url);
+  });
+
+  it.each([
+    ['CS001', 'an extra table in public', `CREATE TABLE public.zz_extra (x int)`, {}],
+    [
+      'CS004',
+      'a trigger disabled',
+      `DO $$ DECLARE t record; BEGIN SELECT c.relname, g.tgname INTO t FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid WHERE NOT g.tgisinternal AND c.relnamespace = 'public'::regnamespace ORDER BY 1, 2 LIMIT 1; EXECUTE format('ALTER TABLE public.%I DISABLE TRIGGER %I', t.relname, t.tgname); END $$`,
+      {},
+    ],
+    ['CS007', 'migrations that are not the checkout', null, { expected_migrations: '0'.repeat(64) }],
+    ['CS009', 'an export file key set', `BEGIN; SET LOCAL nmwc.audit_maintenance = 'on'; UPDATE "ExportJob" SET "r2Key" = 'exports/zz.csv' WHERE "id" = (SELECT min("id") FROM "ExportJob"); COMMIT`, {}],
+    ['CS011', 'an unknown actor', null, { actor_username: 'zz.nobody.at.all' }],
+  ] as const)('PLAN refuses %s: %s', async (code, _label, change, extra) => {
+    const url = await copyOf(code.toLowerCase());
+    if (change) {
+      const ch = sqlOn(url, change);
+      expect(ch, ch.out).toMatchObject({ code: 0 });
+    }
+    const r = planOn(url, extra as Record<string, string>);
+    expect(r.code, r.out).toBe(3);
+    expect(r.out).toMatch(new RegExp(`ERROR:\\s+${code}`));
+    await dropCopy(url);
+  });
+
+  it('PLAN refuses a test-flagged actor (CS011)', async () => {
+    const [u] = await db.$queryRaw<Array<{ username: string }>>`SELECT "username" FROM "User" WHERE "id" = ${w.testUser}`;
+    const url = await copyOf('cs011t');
+    const r = planOn(url, { actor_username: u!.username });
+    expect([r.code, /ERROR:\s+CS011/.test(r.out)], r.out).toEqual([3, true]);
+    await dropCopy(url);
+  });
+
+  it('the self-check catches a kept table changed inside the reset (CS106), and a kept account changed (a history row, CS102); both roll back', async () => {
+    // A copy of the scripts with ONE extra statement just before the self-check.
+    const cs = join(tmp, 'cs-mutated');
+    for (const [tag, stmt, code] of [
+      ['ch', `UPDATE public."Channel" SET "label" = "label" || ' x' WHERE "id" = (SELECT min("id") FROM public."Channel");`, 'CS106'],
+      ['us', `UPDATE public."User" SET "fullName" = "fullName" || ' x' WHERE "id" = '${w.manager}';`, 'CS102'],
+    ] as const) {
+      rmSync(cs, { recursive: true, force: true });
+      mkdirSync(cs);
+      for (const f of readdirSync(DIR)) if (f.endsWith('.sql') || f.endsWith('.json')) {
+        writeFileSync(join(cs, f), readFileSync(join(DIR, f)));
+      }
+      const resetSql = readFileSync(join(DIR, 'reset.sql'), 'utf8');
+      const at = resetSql.indexOf('\\ir selfcheck.sql');
+      expect(at).toBeGreaterThan(0);
+      writeFileSync(join(cs, 'reset.sql'), `${resetSql.slice(0, at)}${stmt}\n${resetSql.slice(at)}`);
+      const url = await copyOf(`sc${tag}`);
+      const n0 = tableCounts(url);
+      const v = Object.entries(vars())
+        .map(([k, x]) => `-v ${k}='${x}'`)
+        .join(' ');
+      const r = run(
+        `bash ${DIR}/target-guard.sh rehearse && psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f '${join(cs, 'reset.sql')}' ${v}`,
+        { DIRECT_URL: url }
+      );
+      expect(r.code, r.out).toBe(3);
+      expect(r.out).toMatch(new RegExp(`ERROR:\\s+${code}`));
+      expect(r.out).not.toMatch(/reset committed/);
+      expect(tableCounts(url)).toBe(n0);
+      await dropCopy(url);
+    }
+  });
+
   it('RESET: one transaction, committed, and nothing but the reset line in the log', async () => {
     before = await counts();
     kept = await keptRows();
@@ -1040,5 +1192,28 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     } finally {
       await other.$disconnect();
     }
+  });
+
+  it('VERIFY after the CRM was used: the full check refuses (CS306), mode finish (scope=finish) still settles "committed" and passes', async () => {
+    const url = await copyOf('used');
+    const ch = sqlOn(url, `INSERT INTO "CodeSequence" ("scope", "next") VALUES ('CUSTOMER-${year}', 2)`);
+    expect(ch, ch.out).toMatchObject({ code: 0 });
+    const full = run(`psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -v run_id=${RUN} -f ${DIR}/verify.sql`, {
+      DIRECT_URL: url,
+    });
+    expect([full.code, /ERROR:\s+CS306/.test(full.out)], full.out).toEqual([3, true]);
+    const fin = run(
+      `psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -v run_id=${RUN} -v scope=finish -f ${DIR}/verify.sql`,
+      { DIRECT_URL: url }
+    );
+    expect(fin, fin.out).toMatchObject({ code: 0 });
+    expect(fin.out.trim()).toBe('clean-start: verify ok');
+    // and finish still answers "not committed" for another run's id
+    const other = run(
+      `psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -v run_id=999 -v scope=finish -f ${DIR}/verify.sql`,
+      { DIRECT_URL: url }
+    );
+    expect([other.code, /CS301/.test(other.out)]).toEqual([3, true]);
+    await dropCopy(url);
   });
 });
