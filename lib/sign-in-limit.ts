@@ -137,7 +137,19 @@ export function capSessionCookies(headers: Headers, name: string, endsAt: number
   return capped;
 }
 
-/** One Set-Cookie line with Expires = min(its own, endsAt) and no Max-Age (which would win over Expires). */
+/**
+ * One Set-Cookie line with Expires = min(its own, endsAt), and a Max-Age that
+ * ends at that same moment counted from now. Review of A6 (2026-11-11): a
+ * browser compares Expires with the DEVICE's clock, so a tablet whose clock runs
+ * fast dropped the cookie early, and the sign-in page (on the server's clock)
+ * did not say why. Max-Age is counted from when the browser receives the cookie
+ * and wins over Expires, so the device's clock no longer matters; Expires stays
+ * for a browser that knows no Max-Age.
+ */
+export function sessionCookieMaxAge(at: number, now: number = Date.now()): number {
+  return Math.max(0, Math.floor((at - now) / 1000));
+}
+
 function capLine(line: string, endsAt: number): string {
   const parts = line.split(';').map((p) => p.trim());
   let expires = endsAt;
@@ -158,7 +170,7 @@ function capLine(line: string, endsAt: number): string {
   }
   // Expires is whole seconds: round DOWN, so the cookie never outlives endsAt.
   const at = new Date(Math.floor(expires / 1000) * 1000);
-  return [parts[0], ...rest, `Expires=${at.toUTCString()}`].join('; ');
+  return [parts[0], ...rest, `Expires=${at.toUTCString()}`, `Max-Age=${sessionCookieMaxAge(at.getTime())}`].join('; ');
 }
 
 /** The sign-in page's hint cookie as a Set-Cookie line (see SIGN_IN_ENDS_COOKIE). */
@@ -176,10 +188,14 @@ export function signInEndsCookieLine(endsAt: number, secure: boolean): string {
 
 /**
  * Whether the sign-in page should say the 8-hour limit signed this person out:
- * the hint cookie names a moment that has passed. A hint that is not a number,
- * or still in the future (a sign-in that is still good), says nothing.
+ * the hint cookie names a moment that has passed, or that is at most
+ * SIGN_IN_CLOCK_SKEW_MS away. Review of A6 (2026-11-11): the session cookie's
+ * Max-Age is counted from when the browser received it, and in whole seconds, so
+ * the browser drops it a moment BEFORE the limit; someone who lands here in that
+ * moment was still signed out by the limit. A hint that is not a number, or
+ * further in the future (a sign-in that is still good), says nothing.
  */
 export function signedOutByLimit(hint: string | undefined | null, now: number = Date.now()): boolean {
   if (!hint || !/^\d{1,16}$/.test(hint)) return false;
-  return now >= Number(hint);
+  return now >= Number(hint) - SIGN_IN_CLOCK_SKEW_MS;
 }

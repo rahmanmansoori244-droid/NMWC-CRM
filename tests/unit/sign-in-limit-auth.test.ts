@@ -279,6 +279,10 @@ describe('the sign-in form: the cookie ends no later than the limit', () => {
     // The stamp is taken during signIn(), so after T0: T0 + 8 h is no later than stamp + 8 h.
     expect(exp).toBeLessThanOrEqual(T0 + SIGN_IN_LIMIT_MS);
     expect(T0 + SIGN_IN_LIMIT_MS - exp).toBeLessThan(1000);
+    // Review of A6: and a Max-Age that ends at the same moment, counted from now,
+    // so a phone whose clock runs fast keeps the cookie to the limit.
+    expect(c.maxAge).toBe(Math.floor((exp - Date.now()) / 1000));
+    expect(Date.now() + (c.maxAge as number) * 1000).toBeLessThanOrEqual(T0 + SIGN_IN_LIMIT_MS);
     expect(c.httpOnly).toBe(true);
     expect(h.jar.get(SIGN_IN_ENDS_COOKIE)?.value).toBe(String(T0 + SIGN_IN_LIMIT_MS));
   });

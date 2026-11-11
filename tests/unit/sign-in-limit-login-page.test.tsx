@@ -56,8 +56,17 @@ describe('the sign-in page after the 8-hour limit', () => {
     await show();
     expect(screen.queryByRole('status')).toBeNull();
     document.body.innerHTML = '';
-    h.hint = String(T0 + 60_000);
+    // Review of A6 (2026-11-11): the page explains the limit from a minute before
+    // it (the cookie's Max-Age, in whole seconds, ends a moment early), so a
+    // sign-in still good for longer than that says nothing (was 1 minute ahead).
+    h.hint = String(T0 + 5 * 60_000);
     await show();
     expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('explains the limit to someone the cookie dropped a moment before it', async () => {
+    h.hint = String(T0 + 2_000);
+    await show();
+    expect(screen.getByRole('status')).toHaveTextContent(SIGN_IN_LIMIT_MESSAGE);
   });
 });

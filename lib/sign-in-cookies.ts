@@ -16,7 +16,12 @@
  */
 import { cookies } from 'next/headers';
 import { authConfig } from '../auth.config';
-import { SIGN_IN_ENDS_COOKIE, SIGN_IN_ENDS_COOKIE_EXTRA_MS, SIGN_IN_LIMIT_MS } from './sign-in-limit';
+import {
+  SIGN_IN_ENDS_COOKIE,
+  SIGN_IN_ENDS_COOKIE_EXTRA_MS,
+  SIGN_IN_LIMIT_MS,
+  sessionCookieMaxAge,
+} from './sign-in-limit';
 
 /** The session cookie's name, and the chunk names Auth.js uses for a large token. */
 function sessionCookieNames(): string[] {
@@ -38,9 +43,9 @@ export async function limitSignInCookie(startedAt: number): Promise<void> {
       const own = c.expires === undefined ? Number.POSITIVE_INFINITY : new Date(c.expires).getTime();
       // Whole seconds, rounded down: Set-Cookie's Expires has no milliseconds.
       const at = Math.floor(Math.min(own, endsAt) / 1000) * 1000;
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { maxAge: _drop, ...rest } = c;
-      jar.set({ ...rest, name: c.name, value: c.value, expires: new Date(at) });
+      // Review of A6: Max-Age as well, counted from now, so a phone whose clock
+      // runs fast does not drop the cookie early (lib/sign-in-limit.ts capLine).
+      jar.set({ ...c, name: c.name, value: c.value, expires: new Date(at), maxAge: sessionCookieMaxAge(at) });
     }
     if (!signedIn) return;
     jar.set({

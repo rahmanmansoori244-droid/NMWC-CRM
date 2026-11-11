@@ -1461,7 +1461,7 @@ const STEWARD_EN: Guide = {
         rows: [
           [
             'Asked to sign in again after 8 hours',
-            'A sign-in lasts at most 8 hours from the moment you signed in, however busy you were. Sign in again. A promote stopped by it ("Not signed in.") keeps every slice it loaded: sign in again, open the batch, and Resume promote once the page offers it (within about a minute and a half). A reason you were typing is kept only while that page stays open: sign in in another tab, then come back and press the button again.',
+            'A sign-in lasts at most 8 hours from the moment you signed in, however busy you were. Sign in again. A promote the limit stops sends you to the sign-in page, and keeps every slice it loaded: sign in again, open the batch, and Resume promote once the page offers it (within about a minute and a half). A reason you were typing is kept only while that page stays open: sign in in another tab, then come back and press the button again.',
           ],
           [
             '"Branch not updated" on a row that loaded',

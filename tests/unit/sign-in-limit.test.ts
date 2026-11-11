@@ -20,6 +20,7 @@ import {
   signInEndsCookieLine,
   signInExpired,
   signedOutByLimit,
+  sessionCookieMaxAge,
 } from '@/lib/sign-in-limit';
 import { authConfig } from '@/auth.config';
 
@@ -172,7 +173,10 @@ describe("dropSessionRefreshes: Auth.js's sliding refresh never reaches the brow
 });
 
 describe('capSessionCookies: a sign-in cookie never outlives the stamp plus 8 hours', () => {
-  it('cuts Expires to the limit (whole seconds, rounded down) and removes Max-Age', () => {
+  // Review of A6 (2026-11-11): Expires alone is read on the DEVICE's clock, so a
+  // tablet whose clock ran fast dropped the cookie before the limit. The Max-Age
+  // Auth.js gave (8 hours from now) is replaced by one that ends at the limit.
+  it('cuts Expires to the limit (whole seconds, rounded down) and gives a Max-Age that ends there too', () => {
     const ends = T0 + 8 * HOUR - 250; // the stamp came a little after the request started
     const h = headersWith([
       `${NAME}=tok; Path=/; Expires=${new Date(T0 + 8 * HOUR + 40).toUTCString()}; Max-Age=28800; HttpOnly; SameSite=Lax`,
@@ -181,11 +185,26 @@ describe('capSessionCookies: a sign-in cookie never outlives the stamp plus 8 ho
     expect(capSessionCookies(h, NAME, ends)).toBe(1);
     const [line, other] = h.getSetCookie();
     expect(other).toBe('other=1; Path=/');
-    expect(line).not.toMatch(/max-age/i);
+    expect(line).not.toMatch(/max-age=28800/i);
+    expect(line.match(/max-age=/gi)).toHaveLength(1);
     expect(line).toMatch(/HttpOnly/);
     const exp = Date.parse(/Expires=([^;]+)/.exec(line)![1]);
     expect(exp).toBeLessThanOrEqual(ends);
     expect(ends - exp).toBeLessThan(1000);
+    const maxAge = Number(/Max-Age=(\d+)/.exec(line)![1]);
+    expect(maxAge).toBe(Math.floor((exp - Date.now()) / 1000));
+    expect(Date.now() + maxAge * 1000).toBeLessThanOrEqual(ends);
+  });
+
+  it('a device clock that runs ahead does not shorten the sign-in: Max-Age counts from receipt', () => {
+    // The browser keeps a cookie with Max-Age for that many seconds from when it
+    // got it, whatever its own clock says; Expires is only the fallback.
+    vi.setSystemTime(T0 + 2 * HOUR);
+    const h = headersWith([`${NAME}=tok; Path=/; Expires=${new Date(T0 + 10 * HOUR).toUTCString()}`]);
+    capSessionCookies(h, NAME, T0 + 8 * HOUR);
+    expect(h.getSetCookie()[0]).toMatch(/; Max-Age=21600$/);
+    expect(sessionCookieMaxAge(T0 + 8 * HOUR)).toBe(6 * 3600);
+    expect(sessionCookieMaxAge(T0)).toBe(0);
   });
 
   it('keeps an earlier expiry, and leaves a clearing cookie alone', () => {
@@ -207,14 +226,37 @@ describe('the sign-in page hint', () => {
     expect(signInEndsCookieLine(T0, false)).not.toMatch(/Secure/);
   });
 
-  it('says "signed out by the limit" only once its moment has passed', () => {
+  it('says "signed out by the limit" only once its moment has passed (or is under a minute away)', () => {
     const ends = String(T0 + 8 * HOUR);
     expect(signedOutByLimit(ends)).toBe(false);
+    // Review of A6: Max-Age is whole seconds from receipt, so the browser drops
+    // the cookie a moment before the limit; that person is told why too.
+    vi.setSystemTime(T0 + 8 * HOUR - 2 * 60_000);
+    expect(signedOutByLimit(ends)).toBe(false);
+    vi.setSystemTime(T0 + 8 * HOUR - 2_000);
+    expect(signedOutByLimit(ends)).toBe(true);
     vi.setSystemTime(T0 + 8 * HOUR);
     expect(signedOutByLimit(ends)).toBe(true);
     expect(signedOutByLimit(undefined)).toBe(false);
     expect(signedOutByLimit('')).toBe(false);
     expect(signedOutByLimit('soon')).toBe(false);
     expect(signedOutByLimit('-5')).toBe(false);
+  });
+});
+
+// Review of A6 (2026-11-11): a promote slice refused at the limit is followed by
+// router.refresh(), and the refreshed batch page sends a signed-out Steward to the
+// sign-in page, so he never reads "Not signed in." on the Promote button. The
+// Steward guide and the support table must say what he actually sees.
+describe('what the Steward is told about a promote the limit stops', () => {
+  it('matches the Promote button: a failed slice refreshes the page, which goes to the sign-in page', async () => {
+    const { readFileSync } = await import('node:fs');
+    const button = readFileSync('app/(app)/import/[batchId]/PromoteButton.tsx', 'utf8');
+    expect(button).toMatch(/if \(!res\.ok\) \{\s*say\([^;]*\);\s*router\.refresh\(\);\s*return;/);
+    for (const f of ['scripts/build-role-guides.ts', 'docs/OPERATIONS.md']) {
+      const text = readFileSync(f, 'utf8');
+      expect(text, f).not.toMatch(/promote stopped by (it )?\(?"Not signed in\."/i);
+      expect(text, f).toMatch(/promote the limit stops (sends you|takes the Steward) to the sign-in page/i);
+    }
   });
 });
