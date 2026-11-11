@@ -22,6 +22,7 @@ import { batchLoadHistory } from '@/lib/import-master-lookup';
 import { ExcludeRemaining, RowActions } from './RowActions';
 import {
   canReleasePhone,
+  canReleaseShopCode,
   cellValue,
   composeBranchCode,
   correctedRow,
@@ -524,6 +525,9 @@ export default async function ImportBatchPage({
                             editable={uploaded.length > 0 ? editable : []}
                             current={Object.fromEntries(editable.map((c) => [c, cellValue(now, c)]))}
                             canRelease={uploaded.length > 0 && r.state === 'QUARANTINED' && canReleasePhone(r.issues)}
+                            canReleaseShop={
+                              uploaded.length > 0 && r.state === 'QUARANTINED' && canReleaseShopCode(r.issues)
+                            }
                             canRecheck={uploaded.length > 0}
                             excluded={
                               r.excludedAt

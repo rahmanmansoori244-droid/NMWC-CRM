@@ -67,6 +67,7 @@ vi.mock('@/services/import-fixes', () => ({
   recheckImportRowAction: vi.fn(),
   correctImportRowAction: vi.fn(),
   releaseImportRowPhoneAction: vi.fn(),
+  releaseImportRowShopCodeAction: vi.fn(),
   excludeImportRowsAction: vi.fn(),
   includeImportRowAction: vi.fn(),
   withdrawImportRowFixAction: vi.fn(),
@@ -302,6 +303,8 @@ describe('/import/[batchId]', () => {
       { id: 'q2', rowNumber: 3, state: 'QUARANTINED', raw: { cust_code: 'B', phone: '99758980' }, parsed: {}, issues: [{ field: 'phone', message: 'phone already exists in master on customer H' }] },
       { id: 'r1', rowNumber: 4, state: 'REJECTED', raw: { cust_code: 'C' }, parsed: {}, issues: [{ field: '_promote', message: 'payment_terms disagrees with the terms already recorded for this customer' }] },
       { id: 'p1', rowNumber: 5, state: 'PROMOTED', raw: { cust_code: 'D' }, parsed: {}, issues: null },
+      // Owner's answers 2026-11-11 (A5): a shop code that only looks like one of the customer's.
+      { id: 'q3', rowNumber: 6, state: 'QUARANTINED', raw: { cust_code: 'E', branch_code: '1' }, parsed: {}, issues: [{ field: 'branch_code', message: 'Shop code "1" looks like this customer’s existing shop "E-01" (Excel may have dropped a zero).' }] },
     ];
     await open({ show: 'all' });
     const rowOf = (code: string) => screen.getAllByText(code)[0].closest('tr')!;
@@ -311,6 +314,8 @@ describe('/import/[batchId]', () => {
     // A payment-terms rejection names no cell: re-check or exclude, nothing to edit.
     expect(buttons('C')).toEqual(['Re-check', 'Exclude…']);
     expect(buttons('D')).toEqual([]);
+    // A5: its branch_code can be corrected, or the row released as a different shop.
+    expect(buttons('E')).toEqual(['Re-check', 'Correct…', 'Different shop: release…', 'Exclude…']);
   });
 
   it('an excluded row says who excluded it and why; a swept row can only be excluded', async () => {

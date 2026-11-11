@@ -8,6 +8,7 @@ import {
   includeImportRowAction,
   recheckImportRowAction,
   releaseImportRowPhoneAction,
+  releaseImportRowShopCodeAction,
   withdrawImportRowFixAction,
 } from '@/services/import-fixes';
 import { CELL_LABEL } from '@/lib/import-row-fix';
@@ -31,6 +32,7 @@ export function RowActions({
   editable,
   current,
   canRelease,
+  canReleaseShop = false,
   canRecheck,
   excluded,
   superseded,
@@ -49,6 +51,12 @@ export function RowActions({
   /** Each editable cell's value now: corrected if corrected, else as uploaded. */
   current: Record<string, string>;
   canRelease: boolean;
+  /**
+   * Owner's answer 2026-11-11 (A5): the row is held back because its shop code
+   * only looks like another shop of the same customer; if it really is a
+   * different shop, it can be released with a reason.
+   */
+  canReleaseShop?: boolean;
   /** False once the 90-day retention sweep has cleared the row's data. */
   canRecheck: boolean;
   excluded: { by: string; reason: string } | null;
@@ -78,7 +86,7 @@ export function RowActions({
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
-  const [open, setOpen] = useState<'correct' | 'release' | 'exclude' | null>(null);
+  const [open, setOpen] = useState<'correct' | 'release' | 'releaseShop' | 'exclude' | null>(null);
   const [cells, setCells] = useState<Record<string, string>>(current);
   // The cells the Correct form was opened for. A fix of a sibling row can
   // re-check this one under the open form and change which cells its problem
@@ -266,6 +274,17 @@ export function RowActions({
             Release shared phone…
           </button>
         )}
+        {canReleaseShop && !superseded && (
+          <button
+            type="button"
+            disabled={pending}
+            aria-expanded={open === 'releaseShop'}
+            onClick={() => setOpen(open === 'releaseShop' ? null : 'releaseShop')}
+            className="min-h-9 rounded-md border border-amber-300 bg-amber-50 px-3 font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+          >
+            Different shop: release…
+          </button>
+        )}
         {canWithdraw && (
           <button
             type="button"
@@ -336,13 +355,15 @@ export function RowActions({
         </form>
       )}
 
-      {(open === 'release' || open === 'exclude') && (
+      {(open === 'release' || open === 'releaseShop' || open === 'exclude') && (
         <form
           className="grid gap-2 rounded-md bg-slate-50 p-2 ring-1 ring-slate-200"
           onSubmit={(e) => {
             e.preventDefault();
             if (open === 'release') {
               run(releaseImportRowPhoneAction, withRow({ reason }), fixed);
+            } else if (open === 'releaseShop') {
+              run(releaseImportRowShopCodeAction, withRow({ reason }), fixed);
             } else {
               const fd = new FormData();
               fd.set('batchId', batchId);
@@ -356,7 +377,9 @@ export function RowActions({
             <span className="font-medium text-slate-700">
               {open === 'release'
                 ? 'Why may this phone be shared? (for example: same owner, different shop)'
-                : 'Why does this row stay out?'}
+                : open === 'releaseShop'
+                  ? 'Why is this a different shop and not the one its code looks like?'
+                  : 'Why does this row stay out?'}
             </span>
             <input
               id={`${open}-${rowId}`}
@@ -370,7 +393,7 @@ export function RowActions({
             disabled={pending || reason.trim().length < 5}
             className="min-h-9 justify-self-start rounded-md bg-slate-900 px-3 font-semibold text-white disabled:bg-slate-300"
           >
-            {open === 'release' ? 'Release and re-check' : 'Exclude this row'}
+            {open === 'release' || open === 'releaseShop' ? 'Release and re-check' : 'Exclude this row'}
           </button>
         </form>
       )}
