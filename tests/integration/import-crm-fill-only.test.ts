@@ -515,7 +515,8 @@ describe.skipIf(!ENABLED)('finding 1: an import fills blank CRM fields only, unl
     const [audit] = await auditOf(l.id, batchId);
     expect(audit).toMatchObject({ action: 'UPDATE', before: { creditLimit: '500', paymentTermDays: 30 }, after: { lane: 'refresh' } });
     const [row] = await notesOf(batchId);
-    expect(row!.issues.map((i) => i.field)).toEqual(['_lane']);
+    // Owner's answer 2026-11-11 (A5): the Temix code typed in small letters is noted too.
+    expect(row!.issues.map((i) => i.field)).toEqual(['_lane', '_capitals']);
   });
 
   it('a go-live-shaped row over a seeded customer, the option off: the shop is created, the name on record kept, and the row says so', async () => {
