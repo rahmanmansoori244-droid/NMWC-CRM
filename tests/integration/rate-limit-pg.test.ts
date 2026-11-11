@@ -200,9 +200,14 @@ describe.skipIf(!ENABLED)('checkLimitPg — durable Postgres token bucket', () =
     const cfg = { capacity: 5, refillPerSec: 1 };
     expect((await checkLimit(key, cfg)).ok).toBe(true);
     // Empty, last refilled two seconds ago by the DATABASE's clock, so the
-    // client's clock (and any skew) plays no part.
+    // client's clock (and any skew) plays no part. The column keeps whole
+    // milliseconds and Postgres ROUNDS on store, so a plain NOW() could land up
+    // to half a millisecond in the future of "two seconds ago" and the refill
+    // below would come out a hair under 3 (seen in CI: 2.999942). Cutting NOW()
+    // down to its millisecond first keeps the stored moment at or before it.
     await prisma.$executeRaw`
-      UPDATE "RateLimit" SET "tokens" = 0, "lastRefill" = NOW() - INTERVAL '2 seconds'
+      UPDATE "RateLimit" SET "tokens" = 0,
+        "lastRefill" = date_trunc('milliseconds', NOW()) - INTERVAL '2 seconds'
       WHERE "key" = ${key}`;
     await refundLimit(key, cfg);
     const row = await prisma.rateLimit.findUnique({ where: { key } });
