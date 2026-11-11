@@ -581,7 +581,12 @@ function setup(
       create: w('branch.create'),
       update: w('branch.update'),
     },
-    importRow: { updateMany: w('importRow.promoted', { count: rows.length }) },
+    importRow: {
+      updateMany: w('importRow.promoted', { count: rows.length }),
+      // Review of A1 (2026-11-11): the row notes are written inside the customer's
+      // transaction, with the PROMOTED state and the notice's count.
+      update: vi.fn(async () => ({})),
+    },
     // Finding 28, second round: the rows loaded with their shop NOT changed,
     // counted on the batch inside the customer's transaction.
     importBatch: {
@@ -784,7 +789,7 @@ const upsertArgs = () =>
 /** The row notes writeLaneNotes put on each row, by row id. */
 const notesWritten = () =>
   Object.fromEntries(
-    ((h.db.importRow as Record<string, Fn>).update.mock.calls as Array<
+    ((tx.importRow as Record<string, Fn>).update.mock.calls as Array<
       [{ where: { id: string }; data: { issues: Array<{ field: string; message: string }> } }]
     >).map(([a]) => [a.where.id, a.data.issues])
   );
@@ -1030,6 +1035,29 @@ describe('promoteCustomerBatchAction — F21: an import writes a branch only whe
         field: '_route',
         message: `shop ARC1-02: the sheet names route R2; the shop is on route R1. ${ROUTE_NOT_APPLIED}`,
       });
+    });
+
+    // Review of A1 (2026-11-11): the notice counts this row inside the customer's
+    // transaction, so its "Route not applied" note must be written there too — a
+    // load cut off right after the commit left a counted row with no note.
+    it('the route note is written inside the customer transaction, with the count; a note that cannot be written fails the customer', async () => {
+      const two = [...routes, { id: 'rt2', code: 'R2', regionId: 'rgC' }];
+      setup(live(), [parsed({ routeCode: 'R2' })], [], { routes: two, branches: onR1('rgB') });
+      await promote();
+      const inTx = (tx.importRow as Record<string, Fn>).update;
+      expect(inTx).toHaveBeenCalledTimes(1);
+      expect((h.db.importRow as Record<string, Fn>).update).not.toHaveBeenCalled();
+      const counted = (tx.importBatch as Record<string, Fn>).update;
+      expect(counted).toHaveBeenCalledTimes(1);
+      expect(inTx.mock.invocationCallOrder[0]).toBeGreaterThan(counted.mock.invocationCallOrder[0]!);
+
+      setup(live(), [parsed({ routeCode: 'R2' })], [], { routes: two, branches: onR1('rgB') });
+      (tx.importRow as Record<string, Fn>).update = vi.fn(async () => {
+        throw new Error('connection lost');
+      });
+      const out = await promote();
+      expect(out).toMatchObject({ promoted: 0, failed: 1 });
+      expect((h.db.importRow as Record<string, Fn>).update).not.toHaveBeenCalled();
     });
 
     it('full lane: a branch already in its route’s region is not written', async () => {

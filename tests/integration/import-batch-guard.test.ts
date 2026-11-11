@@ -329,7 +329,7 @@ describe.skipIf(!ENABLED)('finding 6: an old staged customer batch is not loaded
     };
     const ackAudits = () =>
       prisma.auditLog.findMany({
-        where: { entityType: 'ImportBatch', entityId: refresh, action: 'UPDATE', reason: { startsWith: 'Rows loaded with their shop NOT changed' } },
+        where: { entityType: 'ImportBatch', entityId: refresh, action: 'UPDATE', reason: { startsWith: 'Rows loaded with something about their shop not applied' } },
       });
     current = { id: 'someone', role: 'MANAGER', username: 'someone' };
     expect((await ack('2')).ok, 'nobody but the Data Steward').toBe(false);
@@ -352,7 +352,7 @@ describe.skipIf(!ENABLED)('finding 6: an old staged customer batch is not loaded
       actorId: steward,
       before: { shopNotChangedAckRows: 0 },
       after: { shopNotChangedAckRows: 2, shopNotChangedRows: 2, acknowledged: 2 },
-      reason: 'Rows loaded with their shop NOT changed acknowledged by the Data Steward: 2',
+      reason: 'Rows loaded with something about their shop not applied (shop NOT changed, or route not applied), acknowledged by the Data Steward: 2',
     });
     // A second tap: nothing more stored or logged.
     expect(await ack('2')).toEqual({ ok: true, data: { acknowledged: 0, total: 2 } });

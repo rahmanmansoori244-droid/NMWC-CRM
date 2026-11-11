@@ -747,6 +747,20 @@ describe('planGroup — a shop code that only looks like one of the customer’s
     );
   });
 
+  // Review of A5 (2026-11-11): a NEW customer's row with a blank branch_code is
+  // numbered C1-01 by its place; beside a row coded "1" that was two shops.
+  it('a new customer: a blank branch_code numbered like a sibling row’s code is expected to be rejected', () => {
+    expect(withShops([prow({ branchCode: null }), prow({ branchCode: '1' })], null, []).rejected).toBe(
+      REJECT_REASONS.LOOKALIKE_CODE
+    );
+    expect(withShops([prow({ branchCode: '2' }), prow({ branchCode: null })], null, []).rejected).toBe(
+      REJECT_REASONS.LOOKALIKE_CODE
+    );
+    // Numbers that look like nothing else: loaded as before.
+    expect(withShops([prow({ branchCode: null }), prow({ branchCode: '03' })], null, []).rejected).toBeNull();
+    expect(withShops([prow({ branchCode: null }), prow({ branchCode: null })], null, []).rejected).toBeNull();
+  });
+
   it('an identical code, another code, or a row released as a different shop is not', () => {
     expect(withShops([prow({ branchCode: '01' })], customer(), ['C1-01']).rejected).not.toBe(REJECT_REASONS.LOOKALIKE_CODE);
     expect(withShops([prow({ branchCode: '02' })], customer(), ['C1-01']).rejected).toBeNull();

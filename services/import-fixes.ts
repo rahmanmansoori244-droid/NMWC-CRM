@@ -525,7 +525,12 @@ async function correctCore(formData: FormData): Promise<FixResult> {
     if (Object.keys(changed).length === 0) {
       throw new ValidationError({ _form: 'Nothing changed. Use Re-check to check the row as it stands.' });
     }
+    // Review of A5 (2026-11-11): a "Different shop" release was given for the
+    // shop code the row had then. A correction of that code (or of the customer
+    // code it is composed under) ends it, so a new code that only looks like
+    // another shop is held back again instead of loading as a second shop.
     const merged: Corrections = { ...mine, cells: { ...(mine.cells ?? {}), ...changed } };
+    if ('branch_code' in changed || 'cust_code' in changed) delete merged.shopCodeReleased;
     const targets = await targetsFor(tx, row);
     const correctionsFor = (t: RowForFix) => (t.id === row.id ? merged : readCorrections(t.corrections));
     // A corrected customer or branch code is the identity the newest-upload
@@ -1082,7 +1087,7 @@ async function acknowledgeShopsNotChangedCore(formData: FormData): Promise<{ ack
           shopNotChangedRows: batch.rows,
           acknowledged: seen - batch.acked,
         } as Prisma.InputJsonValue,
-        reason: `Rows loaded with their shop NOT changed acknowledged by the Data Steward: ${seen - batch.acked}`,
+        reason: `Rows loaded with something about their shop not applied (shop NOT changed, or route not applied), acknowledged by the Data Steward: ${seen - batch.acked}`,
       });
       return { acknowledged: seen - batch.acked, total: batch.rows };
     },

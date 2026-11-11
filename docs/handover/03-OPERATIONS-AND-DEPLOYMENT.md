@@ -1077,9 +1077,12 @@ Things to hold on to:
   them, after a leak review, is still open ([§15](#15-operational-items-that-are-not-done)).
 - **Keep at least two active Steward accounts** ([§2.2](#22-accounts-and-access)). The current state is in `PRIVATE-HANDOVER.md`.
 
-Route and customer moves go through the Steward's imports
-([OPERATIONS §7](../OPERATIONS.md#7-common-operations)). Password resets and disabling a
-leaver are done on `/users`.
+Customers and their shops are loaded through the Steward's imports, and handing a whole
+route to another salesman goes through `/users` or the account import
+([OPERATIONS §7](../OPERATIONS.md#7-common-operations)). Moving a shop to another route
+is done in Temix: no import moves a shop that is already in the CRM to another route, so
+such a move is not shown in the CRM until the daily Temix → CRM import exists. Password
+resets and disabling a leaver are done on `/users`.
 
 ---
 

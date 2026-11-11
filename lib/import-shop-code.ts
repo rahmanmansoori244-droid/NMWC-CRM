@@ -95,12 +95,24 @@ export function rowShopCode(custCode: string, sheetCode: string): string {
 }
 
 /** Another row of the same customer in the same sheet, with its branch_code as written. */
-export type SiblingShop = { row: number | string; code: string; released?: boolean };
+export type SiblingShop = { row: number | string; code: string; released?: boolean; numbered?: boolean };
 
-/** `caseOnly`: the two codes differ only in capital and small letters, not in zeros. */
+/**
+ * `caseOnly`: the two codes differ only in capital and small letters, not in zeros.
+ * `numbered` / `otherNumbered`: that code is not in the sheet — it is the number
+ * the promote gives a NEW customer's row whose branch_code is blank.
+ */
 export type ShopLookalike =
-  | { kind: 'shop'; sheetCode: string; other: string; caseOnly: boolean }
-  | { kind: 'row'; sheetCode: string; other: string; row: number | string; caseOnly: boolean };
+  | { kind: 'shop'; sheetCode: string; other: string; caseOnly: boolean; numbered?: boolean }
+  | {
+      kind: 'row';
+      sheetCode: string;
+      other: string;
+      row: number | string;
+      caseOnly: boolean;
+      numbered?: boolean;
+      otherNumbered?: boolean;
+    };
 
 /**
  * Whether a row's branch_code looks like, but is not, one of its customer's
@@ -136,7 +148,14 @@ export function shopLookalike(
     const composed = rowShopCode(custCode, theirs);
     if (composed === mine || shopCodeKey(composed) !== key) continue;
     if ((released || s.released) && !caseOnly(composed)) continue;
-    return { kind: 'row', sheetCode: written, other: theirs, row: s.row, caseOnly: caseOnly(composed) };
+    return {
+      kind: 'row',
+      sheetCode: written,
+      other: theirs,
+      row: s.row,
+      caseOnly: caseOnly(composed),
+      ...(s.numbered ? { otherNumbered: true } : {}),
+    };
   }
   return null;
 }
@@ -154,6 +173,18 @@ export const SHOP_LOOKALIKE_RELEASABLE = /^Shop code ".*" looks like .*\(Excel m
 
 /** Why the row is held back, in the app's words; the field is 'branch_code'. */
 export function shopLookalikeMessage(hit: ShopLookalike): string {
+  // Review of A5 (2026-11-11): a NEW customer's blank branch_code, numbered by its
+  // place. There is no code in the sheet to release, only one to give, so these
+  // words never match SHOP_LOOKALIKE_RELEASABLE.
+  if (hit.kind === 'row' && hit.numbered) {
+    const other = hit.otherNumbered
+      ? `the number "${hit.other}" given to the blank branch_code on row ${hit.row}`
+      : `shop code "${hit.other}" on row ${hit.row}`;
+    return `This row's branch_code is blank, so it would be numbered "${hit.sheetCode}", which looks like ${other} of the same customer in this sheet (only the zeros differ). Give this row a branch_code: the same code if it is the same shop, a different one if it is a different shop.`;
+  }
+  if (hit.kind === 'row' && hit.otherNumbered) {
+    return `Shop code "${hit.sheetCode}" looks like "${hit.other}", the number the blank branch_code on row ${hit.row} of the same customer in this sheet would be given (only the zeros differ). Give that row a branch_code, or correct this one: the same code if it is the same shop, a different one if it is a different shop.`;
+  }
   const like =
     hit.kind === 'shop'
       ? `this customer's existing shop "${hit.other}"`
@@ -172,15 +203,34 @@ export function shopLookalikeMessage(hit: ShopLookalike): string {
  */
 export function groupShopLookalike(
   custCode: string,
-  rows: ReadonlyArray<{ branchCode: string | null; shopCodeReleased?: boolean; rowNumber: number | string }>,
+  rows: ReadonlyArray<{
+    branchCode: string | null;
+    shopCodeReleased?: boolean;
+    rowNumber: number | string;
+    /**
+     * Review of A5 (2026-11-11): for a NEW customer, the code the promote gives
+     * this row when its branch_code is blank (formatBranchCode by position), so
+     * a blank row numbered "X-01" beside a row coded "1" is held, not loaded as
+     * two shops X-01 and X-1.
+     */
+    numberedAs?: string | null;
+  }>,
   shops: readonly string[]
 ): ShopLookalike | null {
+  const codeOf = (r: (typeof rows)[number]) => {
+    const given = (r.branchCode ?? '').trim();
+    return given ? { code: given, numbered: false } : { code: r.numberedAs ?? '', numbered: !!r.numberedAs };
+  };
   for (const [i, r] of rows.entries()) {
     const siblings: SiblingShop[] = rows
       .filter((_, j) => j !== i)
-      .map((o) => ({ row: o.rowNumber, code: o.branchCode ?? '', released: o.shopCodeReleased === true }));
-    const hit = shopLookalike(custCode, r.branchCode, shops, siblings, r.shopCodeReleased === true);
-    if (hit) return hit;
+      .map((o) => {
+        const c = codeOf(o);
+        return { row: o.rowNumber, code: c.code, released: o.shopCodeReleased === true, numbered: c.numbered };
+      });
+    const mine = codeOf(r);
+    const hit = shopLookalike(custCode, mine.code, shops, siblings, r.shopCodeReleased === true);
+    if (hit) return mine.numbered ? { ...hit, numbered: true } : hit;
   }
   return null;
 }

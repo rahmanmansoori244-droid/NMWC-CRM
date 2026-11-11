@@ -587,7 +587,13 @@ export function planGroup(input: {
   if (
     groupShopLookalike(
       custCode,
-      rows.map((p, i) => ({ branchCode: p.branchCode, shopCodeReleased: p.shopCodeReleased === true, rowNumber: i })),
+      rows.map((p, i) => ({
+        branchCode: p.branchCode,
+        shopCodeReleased: p.shopCodeReleased === true,
+        rowNumber: i,
+        // A NEW customer's blank branch_code is numbered by its place, as the promote does.
+        numberedAs: existing ? null : shops[i]!.branchCode,
+      })),
       existing ? (input.customerShops ?? []) : []
     )
   ) {

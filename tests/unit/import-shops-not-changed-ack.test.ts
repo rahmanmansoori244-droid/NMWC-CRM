@@ -97,7 +97,7 @@ describe('acknowledging the rows loaded with their shop NOT changed', () => {
       entityId: 'batch-9',
       before: { shopNotChangedAckRows: 0 },
       after: { shopNotChangedAckRows: 2, shopNotChangedRows: 2, acknowledged: 2 },
-      reason: 'Rows loaded with their shop NOT changed acknowledged by the Data Steward: 2',
+      reason: 'Rows loaded with something about their shop not applied (shop NOT changed, or route not applied), acknowledged by the Data Steward: 2',
     });
     expect(h.revalidated).toContain('/import/batch-9');
   });

@@ -1971,6 +1971,7 @@ type RowNote = {
 const inShopNotice = (n: RowNote | undefined): boolean => n?.shopNotChanged === true || !!n?.route;
 
 async function writeLaneNotes(
+  tx: Prisma.TransactionClient,
   rowIds: string[],
   notes: RowNote[],
   resolveErrors: string[]
@@ -1988,7 +1989,7 @@ async function writeLaneNotes(
       ...(n?.capitals ? [{ field: '_capitals', message: n.capitals }] : []),
     ];
     if (issues.length === 0) continue;
-    await prisma.importRow.update({
+    await tx.importRow.update({
       where: { id: rowId },
       data: { issues: issues as Prisma.InputJsonValue },
     });
@@ -2632,8 +2633,11 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
       let temixWrite = null as { code: string; customerId: string | null } | null;
       try {
         let refreshedRow = false;
+        // Whether any row of this group carries a note (set inside the transaction,
+        // where the notes are written).
+        let noted = false;
         // Per row: what happened to its branch, when that is worth telling the
-        // Steward. Written after the transaction commits.
+        // Steward. Written inside the group's transaction.
         let rowNotes: RowNote[] = [];
         // Finding 1: the rows of this group that replaced a CRM value on record
         // (only with the batch's overwrite option on). Counted, not noted.
@@ -2747,6 +2751,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 branchCode: p.branchCode,
                 shopCodeReleased: p.shopCodeReleased === true,
                 rowNumber: rowNo(i),
+                // A NEW customer's row with a blank branch_code is numbered by its
+                // place (resolvedBranches above): compare that number too.
+                numberedAs: existing ? null : resolvedBranches[i]?.branchCode,
               })),
               existing
                 ? (
@@ -3860,6 +3867,36 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 data: { shopNotChangedRows: { increment: notChangedHere } },
               });
             }
+            // Owner's answer 2026-11-11 (A5): a row whose customer or Temix code was
+            // read in capital letters says so.
+            g.parsed.forEach((p, i) => {
+              const capitals = capitalisedNote(capitalisedOf(p));
+              if (capitals) rowNotes[i] = { ...(rowNotes[i] ?? { note: null, written: false }), capitals };
+            });
+            // A full-lane row carries a note only when its customer's sub-channel
+            // was cleared (F16, on the lead row).
+            // Finding 1: or a CRM value kept or replaced, or a credit cell not applied.
+            noted =
+              refreshedRow ||
+              rowNotes.some(
+                (n) =>
+                  !!n?.extra ||
+                  !!n?.subChannel ||
+                  (n?.kept?.length ?? 0) > 0 ||
+                  !!n?.credit ||
+                  !!n?.route ||
+                  !!n?.capitals
+              );
+            if (noted) {
+              // The branch outcome of each row: a branch left as it was, and why, or
+              // what a fixed row did not write. It used to be invisible — the row
+              // read PROMOTED and the counts balanced while the branch it described
+              // was never written. Review of A1 (2026-11-11): written in this same
+              // transaction as the PROMOTED state and the notice's count above, so a
+              // row the notice counts always carries the note that says what was not
+              // applied — a load cut off after the commit can no longer leave it bare.
+              await writeLaneNotes(tx, g.rowIds, rowNotes, groupResolveErrors);
+            }
             // Compute completenessScore for the promoted customer. Without this,
             // every imported customer/branch stayed at 0, hiding them from
             // completeness-filtered worklists and skewing dashboard averages.
@@ -3883,26 +3920,6 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         if (firstTemixCodeOf) {
           logger.info({ ...firstTemixCodeOf, batchId }, 'import.promote.first_temix_code');
         }
-        // Owner's answer 2026-11-11 (A5): a row whose customer or Temix code was
-        // read in capital letters says so.
-        g.parsed.forEach((p, i) => {
-          const capitals = capitalisedNote(capitalisedOf(p));
-          if (capitals) rowNotes[i] = { ...(rowNotes[i] ?? { note: null, written: false }), capitals };
-        });
-        // A full-lane row carries a note only when its customer's sub-channel
-        // was cleared (F16, on the lead row).
-        // Finding 1: or a CRM value kept or replaced, or a credit cell not applied.
-        const noted =
-          refreshedRow ||
-          rowNotes.some(
-            (n) =>
-              !!n?.extra ||
-              !!n?.subChannel ||
-              (n?.kept?.length ?? 0) > 0 ||
-              !!n?.credit ||
-              !!n?.route ||
-              !!n?.capitals
-          );
         sliceNotes.kept += rowNotes.filter((n) => (n?.kept?.length ?? 0) > 0).length;
         sliceNotes.replaced += replacedRows.size;
         sliceNotes.creditNotApplied += rowNotes.filter((n) => !!n?.credit).length;
@@ -3914,13 +3931,6 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         sliceNotes.shopNotChanged += rowNotes.filter((n) => n?.shopNotChanged === true).length;
         // Owner's answer 2026-11-11: rows whose route was NOT applied.
         sliceNotes.routeNotApplied += rowNotes.filter((n) => !!n?.route).length;
-        if (noted) {
-          // The branch outcome of each row: a branch left as it was, and why, or
-          // what a fixed row did not write. It used to be invisible — the row
-          // read PROMOTED and the counts balanced while the branch it described
-          // was never written.
-          await writeLaneNotes(g.rowIds, rowNotes, groupResolveErrors).catch(() => undefined);
-        }
         // Not when the notes were written: writeLaneNotes puts these same
         // warnings on every row whose branch was written, which on the full
         // lane is every row, and this would overwrite the note.

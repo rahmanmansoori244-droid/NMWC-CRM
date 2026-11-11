@@ -159,3 +159,24 @@ describe('no import code writes a route on a shop that exists', () => {
     }
   });
 });
+
+// Review of A1 (2026-11-11): the handover pack still said route moves go through
+// the Steward's imports, which the owner's "A1 stop" made untrue. No written
+// guide may say an import (or the Steward) moves a shop to another route.
+describe('the docs never say an import moves a shop to another route', () => {
+  /** Every Markdown file under docs/, plus the auditor brief. */
+  function docs(dir = 'docs'): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) return docs(p);
+      return p.endsWith('.md') ? [p] : [];
+    });
+  }
+
+  it('no doc says route moves go through the Steward’s imports', () => {
+    const claim = /route (?:and customer )?moves?\s+go(?:es)?\s+through\s+the\s+Steward/i;
+    const offending = [...docs(), 'AUDITOR-BRIEF.md'].filter((f) => claim.test(readFileSync(f, 'utf8')));
+    expect(offending).toEqual([]);
+    expect(claim.test("Route and customer moves go through the Steward's imports")).toBe(true);
+  });
+});

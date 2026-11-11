@@ -281,3 +281,60 @@ describe('checkCustomerRow — a lookalike shop code is held back on the branch_
     expect(canReleaseShopCode([issues[1], { field: 'cust_name', message: 'required' }])).toBe(false);
   });
 });
+
+// Review of A5 (2026-11-11): a NEW customer's row with a blank branch_code is
+// numbered by its place only at promote (formatBranchCode); the promote and the
+// summary compare that number with the codes of its sibling rows.
+describe('groupShopLookalike — a blank branch_code numbered by its place', () => {
+  it('holds a blank row numbered C1-01 beside a row coded "1", naming the blank cell', () => {
+    const hit = groupShopLookalike(
+      'C1',
+      [
+        { branchCode: null, rowNumber: 2, numberedAs: 'C1-01' },
+        { branchCode: '1', rowNumber: 3, numberedAs: 'C1-02' },
+      ],
+      []
+    );
+    expect(hit).toMatchObject({ kind: 'row', sheetCode: 'C1-01', other: '1', row: 3, numbered: true });
+    const msg = shopLookalikeMessage(hit!);
+    expect(msg).toBe(
+      `This row's branch_code is blank, so it would be numbered "C1-01", which looks like shop code "1" on row 3 of the same customer in this sheet (only the zeros differ). Give this row a branch_code: the same code if it is the same shop, a different one if it is a different shop.`
+    );
+    // Nothing to release: there is no code to keep.
+    expect(canReleaseShopCode([{ field: 'branch_code', message: msg }])).toBe(false);
+  });
+
+  it('a coded row first names the blank row it looks like', () => {
+    const hit = groupShopLookalike(
+      'C1',
+      [
+        { branchCode: '2', rowNumber: 2, numberedAs: 'C1-01' },
+        { branchCode: '', rowNumber: 3, numberedAs: 'C1-02' },
+      ],
+      []
+    );
+    const msg = shopLookalikeMessage(hit!);
+    expect(msg).toBe(
+      'Shop code "2" looks like "C1-02", the number the blank branch_code on row 3 of the same customer in this sheet would be given (only the zeros differ). Give that row a branch_code, or correct this one: the same code if it is the same shop, a different one if it is a different shop.'
+    );
+    expect(canReleaseShopCode([{ field: 'branch_code', message: msg }])).toBe(false);
+    // The promote's rejection names the cell, so the batch page offers it to correct.
+    expect(editableColumns([{ field: '_promote', message: `branch_code: ${msg}` }])).toEqual(['branch_code']);
+  });
+
+  it('without a number (a customer the CRM already has) a blank code is compared with nothing, as before', () => {
+    expect(
+      groupShopLookalike('C1', [{ branchCode: null, rowNumber: 2 }, { branchCode: '1', rowNumber: 3 }], [])
+    ).toBeNull();
+    expect(
+      groupShopLookalike(
+        'C1',
+        [
+          { branchCode: null, rowNumber: 2, numberedAs: 'C1-01' },
+          { branchCode: '02', rowNumber: 3, numberedAs: 'C1-02' },
+        ],
+        []
+      )
+    ).toBeNull();
+  });
+});

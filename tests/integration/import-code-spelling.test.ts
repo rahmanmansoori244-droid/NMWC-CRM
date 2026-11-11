@@ -266,6 +266,66 @@ describe.skipIf(!ENABLED)('A5: code spellings on the customer import', () => {
     expect(await shopsOf(M)).toEqual([`${M}-01`, `${M}-1`]);
   });
 
+  // Review of A5 (2026-11-11): a "Different shop" release belongs to the code it
+  // was given for. A correction of that code ends it: a new code that only looks
+  // like another shop is held back again, not loaded as a second shop.
+  it('a release does not outlive a correction of the shop code: a new lookalike is held back again', async () => {
+    const K = `${P}-K`;
+    const k = await prisma.customer.create({
+      data: { nmwcCode: K, legalName: 'ZZ Code Spelling', paymentTerms: 'CASH', primaryPhone: phone(6), primaryPhoneNorm: phone(6) },
+    });
+    for (const s of [`${K}-A01`, `${K}-02`]) {
+      await prisma.branch.create({
+        data: { customerId: k.id, branchCode: s, branchName: 'Main', address: 'Way 31, Muscat', regionId: regionA, routeId: route1 },
+      });
+    }
+    const batchId = await upload([
+      row({ cust_code: K, branch_code: 'A1', phone: phone(6) }),
+      row({ cust_code: K, branch_code: 'a1', phone: phone(6) }),
+    ]);
+    const [x] = await rowsOf(batchId);
+    expect(x!.state).toBe('QUARANTINED');
+    expect(issuesOf(x!)[0]!.message).toContain(`existing shop "${K}-A01" (Excel may have dropped a zero)`);
+    // Released as a different shop: still held, now on the sibling row that differs in letters alone.
+    const released = await fixes.releaseImportRowShopCodeAction(fd({ rowId: x!.id, reason: 'a different shop' }));
+    expect(released, JSON.stringify(released)).toMatchObject({ ok: true, data: { clean: 0, held: 1 } });
+    expect(issuesOf((await rowsOf(batchId))[0]!)[0]!.message).toContain('(only capital and small letters differ)');
+    // Corrected to "2", which only looks like the shop K-02: held back again.
+    const corrected = await fixes.correctImportRowAction(fd({ rowId: x!.id, cells: JSON.stringify({ branch_code: '2' }) }));
+    expect(corrected, JSON.stringify(corrected)).toMatchObject({ ok: true, data: { clean: 0, held: 1 } });
+    const [after] = await rowsOf(batchId);
+    expect(after!.state).toBe('QUARANTINED');
+    expect(issuesOf(after!)[0]!.message).toContain(`existing shop "${K}-02" (Excel may have dropped a zero)`);
+    expect((after!.corrections as Record<string, unknown>).shopCodeReleased).toBeUndefined();
+    expect(await shopsOf(K)).toEqual([`${K}-02`, `${K}-A01`]);
+  });
+
+  // Review of A5 (2026-11-11): a NEW customer's blank branch_code is numbered by
+  // its place (N-01) only at promote; beside a row coded "1" that made two shops.
+  it('a new customer: a blank branch_code numbered like a sibling row is rejected, and loads once given a code', async () => {
+    const B = `${P}-B`;
+    const batchId = await upload([
+      row({ cust_code: B, branch_code: '', phone: phone(7) }),
+      row({ cust_code: B, branch_code: '1', phone: phone(7) }),
+    ]);
+    expect((await rowsOf(batchId)).map((r) => r.state)).toEqual(['CLEAN', 'CLEAN']);
+    const told = await check(batchId);
+    expect(told.summary.expectRejected.reasons.map((r) => r.reason)).toEqual([
+      "a branch_code that only looks like one of the customer's shops or rows (01 / 1, Ab / AB)",
+    ]);
+    expect(await promoteFully(imports, batchId)).toMatchObject({ promoted: 0, failed: 1 });
+    expect(await customersCalled(B)).toEqual([]);
+    const [blank, one] = await rowsOf(batchId);
+    expect([blank!.state, one!.state]).toEqual(['REJECTED', 'REJECTED']);
+    expect(issuesOf(blank!)[0]!.message).toBe(
+      `branch_code: This row's branch_code is blank, so it would be numbered "${B}-01", which looks like shop code "1" on row 3 of the same customer in this sheet (only the zeros differ). Give this row a branch_code: the same code if it is the same shop, a different one if it is a different shop.`
+    );
+    const given = await fixes.correctImportRowAction(fd({ rowId: blank!.id, cells: JSON.stringify({ branch_code: '02' }) }));
+    expect(given, JSON.stringify(given)).toMatchObject({ ok: true, data: { clean: 2, held: 0 } });
+    expect(await promoteFully(imports, batchId)).toMatchObject({ promoted: 2, failed: 0 });
+    expect(await shopsOf(B)).toEqual([`${B}-02`, `${B}-1`]);
+  });
+
   it('the promote applies the rule to a staged row (a shop added since the upload), and a re-check holds it back', async () => {
     const batchId = await upload([row({ cust_code: G, branch_code: '02', phone: phone(3) })]);
     expect((await rowsOf(batchId)).map((r) => r.state)).toEqual(['CLEAN']);
