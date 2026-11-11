@@ -12,6 +12,15 @@
  * GITHUB_STEP_SUMMARY files, `defaults.run.shell: bash` (bash -eo pipefail),
  * and a fresh RUNNER_TEMP per job.
  *
+ * Context availability is GitHub's (docs: "Contexts", "Context availability"):
+ * a job's if: sees github, needs, vars and inputs only; a job's env: also
+ * secrets (strategy and matrix are not used here) but NOT runner, env, steps or
+ * job; a step's if: everything but secrets. An expression that names a context
+ * its place does not offer throws, as GitHub refuses the file (it refused
+ * `${{ runner.temp }}` in a job's env: on 2026-11-11, which this emulator had
+ * resolved). tests/unit/workflow-contexts.test.ts checks every workflow file
+ * against the whole table without running anything.
+ *
  * What it does not: `uses:` steps (checkout, setup-node: the test runs in a
  * checkout already) and the steps the caller names to skip (installing
  * packages, the smoke test against the live site) — each skip is reported, so
@@ -81,6 +90,9 @@ function evaluate(src: string, ctx: Ctx): unknown {
   const next = () => t[p++];
   const truthy = (v: unknown) => !(v === '' || v === null || v === undefined || v === false || v === 0);
   const lookup = (path: string): unknown => {
+    const head = path.split('.')[0]!;
+    if (!Object.prototype.hasOwnProperty.call(ctx, head) || head === '__status')
+      throw new Error(`context '${head}' is not available here (GitHub refuses the workflow file): ${src}`);
     let v: unknown = ctx;
     for (const part of path.split('.')) {
       if (v === null || v === undefined || typeof v !== 'object') return undefined;
@@ -151,6 +163,16 @@ function evaluate(src: string, ctx: Ctx): unknown {
   return v;
 }
 
+/** Only the named contexts, as GitHub offers them at one place in the file. */
+function only(ctx: Ctx, names: readonly string[]): Ctx {
+  const out: Ctx = { __status: ctx.__status };
+  for (const n of names) if (n in ctx) out[n] = ctx[n];
+  return out;
+}
+const JOB_IF = ['github', 'needs', 'vars', 'inputs'] as const;
+const JOB_ENV = ['github', 'needs', 'strategy', 'matrix', 'vars', 'secrets', 'inputs'] as const;
+const STEP_IF = ['github', 'needs', 'strategy', 'matrix', 'job', 'runner', 'env', 'vars', 'steps', 'inputs'] as const;
+
 const usesStatusFn = (e: string) => /\b(always|success|failure|cancelled)\s*\(/.test(e);
 const truthy = (v: unknown) => !(v === '' || v === null || v === undefined || v === false || v === 0);
 const stripBraces = (e: string) => e.trim().replace(/^\$\{\{\s*/, '').replace(/\s*\}\}$/, '');
@@ -216,14 +238,21 @@ export function runWorkflow(o: RunOptions): RunResult {
       __status: { success: needsOk },
     };
     const jobIf = job.if ? stripBraces(job.if) : '';
-    const runs = jobIf ? (usesStatusFn(jobIf) ? truthy(evaluate(jobIf, base)) : needsOk && truthy(evaluate(jobIf, base))) : needsOk;
+    const ifCtx = only(base, JOB_IF);
+    let runs: boolean;
+    const jobEnv: Record<string, string> = {};
+    try {
+      runs = jobIf ? (usesStatusFn(jobIf) ? truthy(evaluate(jobIf, ifCtx)) : needsOk && truthy(evaluate(jobIf, ifCtx))) : needsOk;
+      for (const [k, v] of Object.entries(job.env ?? {})) jobEnv[k] = subst(String(v), only(base, JOB_ENV));
+    } catch (e) {
+      rmSync(runnerTemp, { recursive: true, force: true });
+      throw e;
+    }
     if (!runs) {
       results[id] = { result: 'skipped', outputs: {}, summary: '' };
       if (process.env.CS_FLOW_KEEP_WORK !== '1') rmSync(runnerTemp, { recursive: true, force: true });
       continue;
     }
-    const jobEnv: Record<string, string> = {};
-    for (const [k, v] of Object.entries(job.env ?? {})) jobEnv[k] = subst(String(v), base);
     Object.assign(jobEnv, o.jobEnvOverride?.[id] ?? {});
     const files = {
       env: join(runnerTemp, '_github_env'),
@@ -238,7 +267,8 @@ export function runWorkflow(o: RunOptions): RunResult {
       const fromFile = parseKv(files.env);
       const ctx: Ctx = { ...base, env: { ...jobEnv, ...fromFile }, steps: stepCtx, job: { status: ok ? 'success' : 'failure' }, __status: { success: ok } };
       const cond = s.if ? stripBraces(s.if) : '';
-      const go = cond ? (usesStatusFn(cond) ? truthy(evaluate(cond, ctx)) : ok && truthy(evaluate(cond, ctx))) : ok;
+      const condCtx = only(ctx, STEP_IF);
+      const go = cond ? (usesStatusFn(cond) ? truthy(evaluate(cond, condCtx)) : ok && truthy(evaluate(cond, condCtx))) : ok;
       if (!go) {
         steps.push({ job: id, step: label, outcome: 'skipped', lines: [] });
         if (s.id) stepCtx[s.id] = { outputs: {}, outcome: 'skipped', conclusion: 'skipped' };
