@@ -268,7 +268,14 @@ export function runWorkflow(o: RunOptions): RunResult {
       const ctx: Ctx = { ...base, env: { ...jobEnv, ...fromFile }, steps: stepCtx, job: { status: ok ? 'success' : 'failure' }, __status: { success: ok } };
       const cond = s.if ? stripBraces(s.if) : '';
       const condCtx = only(ctx, STEP_IF);
-      const go = cond ? (usesStatusFn(cond) ? truthy(evaluate(cond, condCtx)) : ok && truthy(evaluate(cond, condCtx))) : ok;
+      let go: boolean;
+      try {
+        go = cond ? (usesStatusFn(cond) ? truthy(evaluate(cond, condCtx)) : ok && truthy(evaluate(cond, condCtx))) : ok;
+      } catch (e) {
+        // A context GitHub would refuse here throws: leave no runner folder behind.
+        rmSync(runnerTemp, { recursive: true, force: true });
+        throw e;
+      }
       if (!go) {
         steps.push({ job: id, step: label, outcome: 'skipped', lines: [] });
         if (s.id) stepCtx[s.id] = { outputs: {}, outcome: 'skipped', conclusion: 'skipped' };

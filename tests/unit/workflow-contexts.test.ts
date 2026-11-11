@@ -314,16 +314,23 @@ describe('the workflow emulator refuses what GitHub refuses', () => {
     }
   };
   const job = (jobEnv: string, stepEnv: string) =>
-    `on: workflow_dispatch\njobs:\n  a:\n    runs-on: ubuntu-latest\n${jobEnv}    steps:\n      - name: one\n${stepEnv}        run: test -n "$X"\n`;
+    `on: workflow_dispatch\njobs:\n  wfctx:\n    runs-on: ubuntu-latest\n${jobEnv}    steps:\n      - name: one\n${stepEnv}        run: test -n "$X"\n`;
 
   it('runner.temp in a job\'s env: throws; in a step\'s env: it runs', () => {
     expect(() => tryRun(job('    env:\n      X: ${{ runner.temp }}/clean-start\n', ''))).toThrow(/context 'runner' is not available here/);
-    expect(tryRun(job('', '        env:\n          X: ${{ runner.temp }}/clean-start\n')).jobs.a!.result).toBe('success');
+    expect(tryRun(job('', '        env:\n          X: ${{ runner.temp }}/clean-start\n')).jobs.wfctx!.result).toBe('success');
   });
 
   it('a secret in a job\'s if: or a step\'s if: throws', () => {
     expect(() => tryRun(job('    if: secrets.S == \'x\'\n    env:\n      X: y\n', ''))).toThrow(/context 'secrets' is not available here/);
-    const stepIf = `on: workflow_dispatch\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - name: one\n        if: secrets.S == 'x'\n        run: 'true'\n`;
+    const stepIf = `on: workflow_dispatch\njobs:\n  wfctx:\n    runs-on: ubuntu-latest\n    steps:\n      - name: one\n        if: secrets.S == 'x'\n        run: 'true'\n`;
     expect(() => tryRun(stepIf)).toThrow(/context 'secrets' is not available here/);
+  });
+
+  it('a refused run leaves no runner folder behind', () => {
+    const left = () => readdirSync(tmpdir()).filter((d) => d.startsWith('nmwc-runner-wfctx-'));
+    expect(() => tryRun(job('    env:\n      X: ${{ runner.temp }}\n', ''))).toThrow();
+    expect(() => tryRun(job('', '        if: secrets.S == \'x\'\n'))).toThrow();
+    expect(left()).toEqual([]);
   });
 });
