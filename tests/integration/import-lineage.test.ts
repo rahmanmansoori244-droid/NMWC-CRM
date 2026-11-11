@@ -10,10 +10,11 @@
  *     import:<batch>:<row>:full;
  *   - re-importing the same row writes nothing: no new history row, no version,
  *     editor or updatedAt bump, no audit row;
- *   - a row that moves the shop to another route and visit day writes one
- *     history row naming both fields, under its own batch and row, and one
- *     UPDATE audit row with the before and after; the customer's own row is not
- *     written (its updatedAt moves, for the export's "updated since").
+ *   - a row that changes the shop's visit day (and names another route, which
+ *     is NOT applied: owner's answer 2026-11-11) writes one history row naming
+ *     the visit day, under its own batch and row, and one UPDATE audit row with
+ *     the before and after; the customer's own row is not written (its updatedAt
+ *     moves, for the export's "updated since").
  *
  *   RUN_LOSSLESS=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/import-lineage.test.ts
  */
@@ -163,27 +164,35 @@ describe.skipIf(!ENABLED)('the import says which file and row set a value (gaps 
     expect({ version: s2.version, updatedAt: s2.updatedAt }).toEqual({ version: shop.version, updatedAt: shop.updatedAt });
   });
 
-  it('a row that moves the shop is said once, with its file row, and the customer is not written', async () => {
+  it('a row that changes the shop is said once, with its file row, its route is not applied, and the customer is not written', async () => {
     const customer = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: code } });
-    // The route is Temix's and moves with any load. The visit day is the CRM's:
-    // a sheet replaces the one on record only with the option on, and every audit
-    // row of such a load is marked (asserted below).
+    // The visit day is the CRM's: a sheet replaces the one on record only with the
+    // option on, and every audit row of such a load is marked (asserted below).
+    // Owner's answer 2026-11-11 ("A1 stop"): the route the row names is NOT
+    // applied to a shop that exists, even with the option on. This used to pin a
+    // move to route 2, with routeId in the history row and the audit row.
     const { batchId } = await load([line({ route: `${tag}R2`, day_of_visit: 'TUE' })], `${tag}-3.xlsx`, {
       overwrite: true,
     });
     const row = await prisma.importRow.findFirstOrThrow({ where: { batchId } });
     const shop = await prisma.branch.findUniqueOrThrow({ where: { branchCode } });
-    expect(shop).toMatchObject({ routeId: ids.route2, dayOfVisit: 'TUE' });
+    expect(shop).toMatchObject({ routeId: ids.route1, dayOfVisit: 'TUE' });
 
     const moved = await prisma.branchHistory.findMany({ where: { branchId: shop.id, changeKind: 'UPDATE' } });
     expect(moved).toHaveLength(1);
-    expect([...moved[0]!.changedFields].sort()).toEqual(['dayOfVisit', 'routeId']);
-    expect(moved[0]).toMatchObject({ source: `import:${batchId}:${row.rowNumber}:full`, routeId: ids.route2 });
+    expect([...moved[0]!.changedFields].sort()).toEqual(['dayOfVisit']);
+    expect(moved[0]).toMatchObject({ source: `import:${batchId}:${row.rowNumber}:full`, routeId: ids.route1 });
 
     const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: 'UPDATE', entityType: 'Branch', entityId: shop.id } });
-    expect(audit.before).toEqual({ routeId: ids.route1, dayOfVisit: 'MON' });
-    expect(audit.after).toMatchObject({ routeId: ids.route2, dayOfVisit: 'TUE', batchId, importRowId: row.id, lane: 'full' });
+    expect(audit.before).toEqual({ dayOfVisit: 'MON' });
+    expect(audit.after).toMatchObject({ dayOfVisit: 'TUE', batchId, importRowId: row.id, lane: 'full' });
+    expect(audit.after).not.toHaveProperty('routeId');
     expect(audit.after).toMatchObject({ overwriteCrmFields: true });
+    // The row says the route was not applied, naming both routes.
+    expect(row.issues).toContainEqual({
+      field: '_route',
+      message: `shop ${branchCode}: the sheet names route ${tag}R2; the shop is on route ${tag}R1. The route was NOT applied; the shop stays on its current route. Route moves are made in Temix.`,
+    });
 
     const after = await prisma.customer.findUniqueOrThrow({ where: { id: customer.id } });
     expect(after.version).toBe(customer.version);
