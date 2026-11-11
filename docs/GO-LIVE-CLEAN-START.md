@@ -30,7 +30,7 @@ The technical description is `docs/OPERATIONS.md`, section 5m. You do not need i
 6. **Nobody uses the CRM** from the moment you start DB Backup until the run is green.
    Not even you, and not someone who is still signed in on a phone. One sign-in or one
    save changes the database, and the run then stops itself. Before reset day every
-   tester signs out on every phone and browser (Step 1 M).
+   tester signs out on every phone and browser (Step 1 L).
 7. **No other merges to main** in the week of the clean start.
 8. **No test walk on the live CRM after the reset** until the first real customer exists.
    Otherwise the test customer takes the number NMWC-2026-000001.
@@ -123,7 +123,8 @@ active account, not a zz.test one.
 **F. Check that these already exist** (names only; do not open them).
 Repository secrets: `DIRECT_URL`, `BACKUP_AGE_IDENTITY`, `BACKUP_R2_ACCOUNT_ID`,
 `BACKUP_R2_BUCKET`, `BACKUP_R2_ACCESS_KEY_ID`, `BACKUP_R2_SECRET_ACCESS_KEY`,
-`PROD_CRON_SECRET`, `HEALTH_BEARER`. Repository variable: `BACKUP_AGE_RECIPIENTS`.
+`PROD_CRON_SECRET`, `HEALTH_BEARER`. Repository variables: `BACKUP_AGE_RECIPIENTS` and
+`APP_BASE_URL` (the live site's address, which the runs call).
 If `BACKUP_AGE_IDENTITY` is missing, add it yourself from your handover pack. Never show
 it to anyone. You do **not** need `PROD_DB_HOST_MARKER`: nothing reads it any more.
 The first dry run also names any missing setting, in a line like
@@ -154,12 +155,12 @@ but **not** how many records of each kind were removed: those figures are only i
 run's encrypted report. If you want them in your log, Claude reads the report with you
 after the reset.
 
-**M. Everyone signs out.** Before reset day, every person who tested the CRM presses
+**L. Everyone signs out.** Before reset day, every person who tested the CRM presses
 **Sign out** on every phone and computer they used. Signing out also deletes the unsent
 copies of forms that a phone keeps for 7 days; otherwise a test request saved during
 testing could be sent after the reset and become a real-looking request.
 
-**L. The merge.** When Claude says the pull request is green, reply "merge it". After the
+**M. The merge.** When Claude says the pull request is green, reply "merge it". After the
 merge, wait about 15 minutes for the live site to update before the first dry run.
 
 ---
@@ -361,7 +362,7 @@ Find the bold **refused:** line in the summary.
 |---|---|---|
 | `a setting this mode needs is missing (named above)` or `the setting … is missing` | a secret is missing; the line names it | add it (Step 1), then start again |
 | `the run is not on the default branch` | the form was not on main | start again with **Branch: main** |
-| `apply runs only between 15:30 and 23:30 UTC` | too early or too late | start between 19:30 and 22:30 Oman |
+| `apply runs only between 15:30 and 23:30 UTC` | too early or too late | start between 19:30 and 22:00 Oman (Step 5): the check allows 19:30 to 03:30 Oman, but the reset must also come before midnight Oman, because the phrase holds today's date |
 | `confirm_host does not name the production host` | the host box is wrong | type `ep-sweet-haze` exactly |
 | `the target guard refused (production, confirm_host and the phrase are checked together)` | the phrase is wrong, or it is past midnight in Oman | check the phrase and the date; start again (from DB Backup) |
 | `production does not serve the commit this run checked out` | the live site has not finished updating | wait 15 minutes and start again; if it stays, send Claude the link |

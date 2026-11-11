@@ -64,7 +64,8 @@ The test photos are deleted from the photo bucket at least 7 days later, in a se
 approved run.
 
 Where the evidence is: in the CRM, the AuditLog row `cleanstart-<run>` (the first row of
-the new log: what was removed and kept, by count, and the hashes of what was exported)
+the new log: what was removed and kept, by count, and the hashes of what was exported,
+stored in the row (not shown on the Audit page))
 and the photo run's row `cleanstart-photos-<run>`; the GitHub Actions runs of the
 `Clean start` and `Clean start photos` workflows and their approvals; the age-encrypted
 exports, reports and the archived old seals under `cleanstart/<run>/` in the backups
