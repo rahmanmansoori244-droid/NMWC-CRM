@@ -336,7 +336,15 @@ from that line. Save. (The automatic backup runs at about 06:00 Oman.)
 3. **Requests** is empty. If a request is there, it was sent from a phone that kept a
    test form: tell Claude before the import.
 4. Only now load the real customer file through the **Import** screen. Check the preview
-   first: the codes should be in capital letters, like CCT0005.
+   first: the codes should be in capital letters, like CCT0005. Two things on the batch
+   page are expected and are not faults:
+   - A customer code or Temix code typed in small letters is read in capitals. The row
+     says "Code in capitals", and "Before you promote" counts such rows.
+   - A row whose shop code only looks like another shop of the same customer (for
+     example 1 and 01, which Excel can cause) is held back. Correct the code on the
+     batch page, or leave the row out. If they really are two different shops,
+     "Different shop: release…" lets the row through with a typed reason. If you are
+     unsure, ask Claude first.
 
 Until Claude's small follow-up change lands (planned for the day after the reset), the
 dashboards' "up/down" comparisons that reach back before the reset day compare with
