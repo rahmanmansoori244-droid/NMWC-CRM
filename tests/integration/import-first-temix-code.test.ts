@@ -280,7 +280,11 @@ describe.skipIf(!ENABLED)('owner decision 2026-10-08: the first Temix code of a 
       branches: [{ branchCode: `${A.nmwcCode}-01`, address: 'Way 1, Stored' }],
     });
     // The row says its branch was left as it was.
-    expect((rows[0]!.issues as Array<{ field: string; message: string }>).map((i) => i.field)).toEqual(['_lane']);
+    // Owner's answer 2026-11-11 (A5): and that its Temix code, typed in small letters, was read in capitals.
+    expect((rows[0]!.issues as Array<{ field: string; message: string }>).map((i) => i.field)).toEqual([
+      '_lane',
+      '_capitals',
+    ]);
     const told = await acks();
     expect(told.map((n) => [n.title, n.body, n.customerId])).toEqual([
       ['Customer landed in Temix', `ZZ Stored ${A.nmwcCode} (${A.nmwcCode}) is now in Temix as ${TEMIX_A}.`, A.id],

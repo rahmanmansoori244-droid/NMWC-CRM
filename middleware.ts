@@ -8,6 +8,7 @@ import {
 import { maintenanceResponse } from './lib/maintenance';
 import { authConfig } from './auth.config';
 import { buildCsp } from './lib/csp';
+import { dropSessionRefreshes } from './lib/sign-in-limit';
 
 /**
  * Auth.js v5 middleware (Edge runtime). Two responsibilities:
@@ -76,13 +77,21 @@ const withAuth = auth((req) => {
  * sign is the one thing that needs the thing that is down. This check is an
  * environment-variable read and nothing else.
  */
-export default function middleware(req: NextRequest, event: NextFetchEvent) {
+export default async function middleware(req: NextRequest, event: NextFetchEvent) {
   const closed = maintenanceResponse(req);
   if (closed) return closed;
   // The auth() wrapper is overloaded for route handlers as well as middleware,
   // and TypeScript picks the route-handler overload for a (request, event)
   // call. The runtime shape is the middleware one.
-  return (withAuth as unknown as NextMiddleware)(req, event);
+  const res = await (withAuth as unknown as NextMiddleware)(req, event);
+  // A6: Auth.js re-issues the session cookie on every request with a fresh
+  // 8 hours, which made a sign-in last as long as the person kept using it. The
+  // re-issue carries nothing new (this Edge instance's jwt callback changes no
+  // claim), so it is dropped: the cookie the browser keeps is the sign-in's
+  // own, which ends at the 8-hour limit. A Set-Cookie that CLEARS the session
+  // (refused at the limit, or broken) still goes out.
+  if (res instanceof Response) dropSessionRefreshes(res.headers, authConfig.cookies.sessionToken.name);
+  return res;
 }
 
 export const config = {

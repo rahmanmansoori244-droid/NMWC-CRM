@@ -21,6 +21,7 @@ vi.mock('@/services/import-fixes', () => ({
   includeImportRowAction: vi.fn(),
   recheckImportRowAction: vi.fn(),
   releaseImportRowPhoneAction: vi.fn(),
+  releaseImportRowShopCodeAction: vi.fn(),
   withdrawImportRowFixAction: h.withdraw,
 }));
 

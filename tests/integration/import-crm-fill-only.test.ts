@@ -12,8 +12,9 @@
  *
  * Proven here:
  *   - an "old" sheet over a customer with two shops, one CLOSED: nothing on record
- *     is replaced, blanks are filled, the route still moves, the CLOSED shop stays
- *     CLOSED, each row says what was kept and which credit cells were not applied,
+ *     is replaced, blanks are filled, the route the sheet names for a shop that
+ *     exists is NOT applied (owner's answer 2026-11-11, "A1 stop"; until then it
+ *     moved the shop), the CLOSED shop stays CLOSED, each row says what was kept and which credit cells were not applied,
  *     no audit row is written for a kept field, and the check's counts are what
  *     Promote then did;
  *   - the same sheet with "Overwrite CRM fields from this sheet" switched on:
@@ -235,7 +236,7 @@ describe.skipIf(!ENABLED)('finding 1: an import fills blank CRM fields only, unl
     await prisma.$disconnect();
   });
 
-  it('an old sheet, the option off: nothing on record is replaced, blanks are filled, the route moves, the closed shop stays closed', async () => {
+  it('an old sheet, the option off: nothing on record is replaced, blanks are filled, the route is NOT applied, the closed shop stays closed', async () => {
     const before = await customerOf(X);
     const { batchId, notRead } = await upload(oldSheet());
     expect(notRead).toEqual([]);
@@ -247,7 +248,9 @@ describe.skipIf(!ENABLED)('finding 1: an import fills blank CRM fields only, unl
       rows: 2,
       customers: 1,
       created: { customers: 0, shops: 0, closedCustomersReopened: 0 },
-      temix: { customersOnRefresh: 0, shopsRouteMoved: 1 },
+      // Owner's answer 2026-11-11 ("A1 stop"): this pinned temix.shopsRouteMoved: 1.
+      temix: { customersOnRefresh: 0 },
+      routeNotApplied: 1,
       crm: { customersFilled: 1, shopsFilled: 1, customersDiffer: 1, shopsDiffer: 2, shopsWouldReopen: 1, shopsWouldClose: 0 },
       credit: { rows: 1, reasons: [{ reason: 'NO_CODE_ON_RECORD', rows: 1 }] },
       expectRejected: { customers: 0 },
@@ -260,9 +263,17 @@ describe.skipIf(!ENABLED)('finding 1: an import fills blank CRM fields only, unl
       'The sheet would have reopened 1 closed shop(s) and closed 0 open shop(s); they stay as they are.'
     );
     expect(said.some((t) => t.startsWith('Credit cells not applied: 1 row(s)'))).toBe(true);
+    expect(said).toContain(
+      'Route NOT applied: 1 row(s) name a route other than the current route of their shop, which is already in the CRM. The rest of each row loads as the lines here say; the route does not. The route was NOT applied; the shop stays on its current route. Route moves are made in Temix.'
+    );
 
     const out = await promoteOnce(batchId);
-    expect(out).toMatchObject({ promoted: 2, failed: 0, done: true, notes: { kept: 2, replaced: 0, creditNotApplied: 1 } });
+    expect(out).toMatchObject({
+      promoted: 2,
+      failed: 0,
+      done: true,
+      notes: { kept: 2, replaced: 0, creditNotApplied: 1, routeNotApplied: 1 },
+    });
 
     const after = await customerOf(X);
     // The customer: what the field collected is still there; the blank CR number was filled.
@@ -279,9 +290,11 @@ describe.skipIf(!ENABLED)('finding 1: an import fills blank CRM fields only, unl
     });
     const [b1, b2] = after.branches;
     const [was1, was2] = before.branches;
-    // Shop 1: moved to the sheet's route (Temix's); its name, address and visit day are the CRM's.
-    expect(b1).toMatchObject({ routeId: route2, branchName: 'ZZ Field Shop', address: 'Approved address 1', dayOfVisit: 'SUN', status: 'ACTIVE' });
-    expect(b1!.version).toBe(was1!.version + 1);
+    // Shop 1: still on its route (route 2 in the sheet is NOT applied: owner's answer
+    // 2026-11-11; this pinned the move to route 2). Its name, address and visit day
+    // are the CRM's, so nothing of it changed and it was not written at all.
+    expect(b1).toMatchObject({ routeId: route1, branchName: 'ZZ Field Shop', address: 'Approved address 1', dayOfVisit: 'SUN', status: 'ACTIVE' });
+    expect(b1!.version).toBe(was1!.version);
     // Shop 2: its placeholder address and missing visit day were filled; it is still CLOSED,
     // and the day it was closed (reactivation evidence is dated against it) has not moved.
     expect(b2).toMatchObject({ address: 'Old address 2', dayOfVisit: 'TUE', status: 'CLOSED', branchName: 'Main' });
@@ -293,6 +306,10 @@ describe.skipIf(!ENABLED)('finding 1: an import fills blank CRM fields only, unl
       {
         state: 'PROMOTED',
         issues: [
+          {
+            field: '_route',
+            message: `shop ${X}-01: the sheet names route ${ROUTE2}; the shop is on route ${ROUTE1}. The route was NOT applied; the shop stays on its current route. Route moves are made in Temix.`,
+          },
           {
             field: '_kept',
             message:
@@ -324,7 +341,8 @@ describe.skipIf(!ENABLED)('finding 1: an import fills blank CRM fields only, unl
     const customerAudit = await auditOf(after.id, batchId);
     expect(customerAudit.map((a) => [a.action, Object.keys(a.before ?? {}).sort()])).toEqual([['UPDATE', ['crNumber', 'crNumberNorm']]]);
     expect(customerAudit[0]!.after).not.toHaveProperty('overwriteCrmFields');
-    expect((await auditOf(b1!.id, batchId)).map((a) => [a.action, Object.keys(a.before ?? {}).sort()])).toEqual([['UPDATE', ['routeId']]]);
+    // No route change is recorded for shop 1: the row's note is the record.
+    expect(await auditOf(b1!.id, batchId)).toEqual([]);
     expect((await auditOf(b2!.id, batchId)).map((a) => [a.action, Object.keys(a.before ?? {}).sort()])).toEqual([
       ['UPDATE', ['address', 'dayOfVisit']],
     ]);
@@ -334,7 +352,8 @@ describe.skipIf(!ENABLED)('finding 1: an import fills blank CRM fields only, unl
     ).toBe(0);
 
     const batch = await prisma.importBatch.findUniqueOrThrow({ where: { id: batchId } });
-    expect(batch).toMatchObject({ status: 'PROMOTED', overwriteCrmFields: false, overwriteCrmFieldsAt: null });
+    // The end-of-load notice counts the row whose route was not applied.
+    expect(batch).toMatchObject({ status: 'PROMOTED', overwriteCrmFields: false, overwriteCrmFieldsAt: null, shopNotChangedRows: 1 });
     const slice = await prisma.auditLog.findFirstOrThrow({ where: { action: 'IMPORT', entityType: 'ImportBatch', entityId: batchId } });
     expect(slice.after).toMatchObject({ overwriteCrmFields: false, rowsKept: 2, rowsReplaced: 0, rowsCreditNotApplied: 1 });
   });
@@ -402,7 +421,8 @@ describe.skipIf(!ENABLED)('finding 1: an import fills blank CRM fields only, unl
     const after = await customerOf(X);
     expect(after).toMatchObject({ legalName: 'ZZ Old Name', primaryPhoneNorm: phone(2), contactPerson: 'ZZ Old Contact', status: 'ACTIVE' });
     const [b1, b2] = after.branches;
-    expect(b1).toMatchObject({ branchName: 'ZZ Old Shop Name', address: 'Old address 1', dayOfVisit: 'MON', routeId: route2 });
+    // Owner's answer 2026-11-11: the option replaces CRM fields, never the route (this pinned routeId: route2).
+    expect(b1).toMatchObject({ branchName: 'ZZ Old Shop Name', address: 'Old address 1', dayOfVisit: 'MON', routeId: route1 });
     // The sheet reopened the closed shop, and the day of that change moved.
     expect(b2!.status).toBe('ACTIVE');
     expect(b2!.lastStatusChangeAt!.getTime()).toBeGreaterThan(closedAt.getTime());
@@ -419,11 +439,14 @@ describe.skipIf(!ENABLED)('finding 1: an import fills blank CRM fields only, unl
       before: { branchName: 'ZZ Field Shop', address: 'Approved address 1', dayOfVisit: 'SUN' },
       after: { address: 'Old address 1', dayOfVisit: 'MON', overwriteCrmFields: true },
     });
+    expect(shopAudit!.before).not.toHaveProperty('routeId');
+    expect(shopAudit!.after).not.toHaveProperty('routeId');
     expect((await auditOf(b2!.id, batchId))[0]).toMatchObject({ before: { status: 'CLOSED' }, after: { status: 'ACTIVE', overwriteCrmFields: true } });
     expect(before.branches[1]!.status).toBe('CLOSED');
 
     // A row loads as it did before the change: no "kept" note; the credit cells still say why.
-    expect((await notesOf(batchId)).map((r) => r.issues.map((i) => i.field))).toEqual([['_credit'], []]);
+    // ... and, since 2026-11-11, the route it named that was not applied.
+    expect((await notesOf(batchId)).map((r) => r.issues.map((i) => i.field))).toEqual([['_route', '_credit'], []]);
 
     // One deliberate load: off again, with the date it was switched on kept as the record.
     const batch = await prisma.importBatch.findUniqueOrThrow({ where: { id: batchId } });
@@ -492,7 +515,8 @@ describe.skipIf(!ENABLED)('finding 1: an import fills blank CRM fields only, unl
     const [audit] = await auditOf(l.id, batchId);
     expect(audit).toMatchObject({ action: 'UPDATE', before: { creditLimit: '500', paymentTermDays: 30 }, after: { lane: 'refresh' } });
     const [row] = await notesOf(batchId);
-    expect(row!.issues.map((i) => i.field)).toEqual(['_lane']);
+    // Owner's answer 2026-11-11 (A5): the Temix code typed in small letters is noted too.
+    expect(row!.issues.map((i) => i.field)).toEqual(['_lane', '_capitals']);
   });
 
   it('a go-live-shaped row over a seeded customer, the option off: the shop is created, the name on record kept, and the row says so', async () => {

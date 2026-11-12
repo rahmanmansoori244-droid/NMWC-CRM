@@ -8,6 +8,7 @@
  * See: https://authjs.dev/guides/edge-compatibility
  */
 import type { NextAuthConfig } from 'next-auth';
+import { SIGN_IN_LIMIT_SECONDS, signInExpired } from './lib/sign-in-limit';
 
 // F-UAT-3: the Edge middleware builds its own Auth.js instance from this config, so
 // the production AUTH_URL has to be dropped here too — otherwise a Preview
@@ -21,7 +22,12 @@ if (process.env.VERCEL_ENV && process.env.VERCEL_ENV !== 'production') {
 
 export const authConfig = {
   pages: { signIn: '/login' },
-  session: { strategy: 'jwt', maxAge: 8 * 60 * 60 },
+  // A6: maxAge is the 8-hour limit, but it is no longer what ends a sign-in.
+  // Auth.js would re-issue the cookie with a fresh maxAge on every request, so
+  // the 8 hours slid; now the token carries the moment of sign-in and the jwt
+  // callbacks refuse it 8 hours later (lib/sign-in-limit.ts), and the sliding
+  // refresh is dropped (middleware.ts, lib/auth-handlers.ts).
+  session: { strategy: 'jwt', maxAge: SIGN_IN_LIMIT_SECONDS },
   // F-UAT-3 / perf follow-up: derive the base URL from the REQUEST host when no
   // AUTH_URL env is set, so a Preview deployment's post-login redirect stays on
   // the preview domain instead of bouncing to production (where the session
@@ -81,6 +87,16 @@ export const authConfig = {
   },
   callbacks: {
     /**
+     * A6: the Edge middleware's jwt callback (lib/auth.ts replaces it with its
+     * own, which applies the same rule first). A sign-in older than the limit,
+     * or a token with no believable sign-in stamp, is refused: Auth.js then
+     * clears the cookie and the middleware sees no session.
+     */
+    jwt({ token }) {
+      if (signInExpired(token as { signedInAt?: unknown })) return null;
+      return token;
+    },
+    /**
      * Edge-safe session callback. Bubbles simple JWT fields (id, role,
      * username, mustChangePassword) into `session.user` so the Edge
      * middleware can read them via `auth.user.*`. Heavy DB-touching
@@ -97,6 +113,7 @@ export const authConfig = {
         role?: string;
         username?: string;
         mustChangePassword?: boolean;
+        signedInAt?: number;
       };
       if (session?.user) {
         const u = session.user as unknown as Record<string, unknown>;
@@ -104,6 +121,7 @@ export const authConfig = {
         if (t.role) u.role = t.role;
         if (t.username) u.username = t.username;
         u.mustChangePassword = t.mustChangePassword === true;
+        if (typeof t.signedInAt === 'number') u.signedInAt = t.signedInAt;
       }
       return session;
     },

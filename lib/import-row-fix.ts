@@ -15,12 +15,19 @@
 import type { SheetRow } from '@/lib/import-row-check';
 import { normalizeCR } from '@/lib/cr';
 import { CUSTOMER_COLUMNS, readCell, readLooseCell, type CustomerColumn } from '@/lib/import-headings';
+import { SHOP_LOOKALIKE_RELEASABLE } from '@/lib/import-shop-code';
 
 export type Corrections = {
   /** Sheet column → the value the Steward entered. */
   cells?: Record<string, string>;
   /** The Steward let a shared phone through, with this reason. */
   phoneReleased?: { reason: string };
+  /**
+   * Owner's answer 2026-11-11 (A5): the Steward let a shop code that only looks
+   * like one of the customer's shops (or rows) through as a DIFFERENT shop,
+   * with this reason.
+   */
+  shopCodeReleased?: { reason: string };
 };
 
 export const NEVER_EDITABLE: ReadonlySet<string> = new Set([
@@ -108,6 +115,23 @@ export function canReleasePhone(issues: unknown): boolean {
   );
 }
 
+/**
+ * Owner's answer 2026-11-11 (A5): a row may have its shop code released as a
+ * different shop when at least one of its problems is a shop code that only
+ * looks like one of the customer's by its zeros (lib/import-shop-code.ts
+ * SHOP_LOOKALIKE_RELEASABLE), and every other one is a phone on another
+ * customer, which can then be released on its own (canReleasePhone). A code
+ * that differs only in capital letters, and anything else, is corrected.
+ */
+export function canReleaseShopCode(issues: unknown): boolean {
+  const list = issuesOf(issues);
+  const lookalike = (i: Issue) =>
+    i.field === 'branch_code' && typeof i.message === 'string' && SHOP_LOOKALIKE_RELEASABLE.test(i.message);
+  const phone = (i: Issue) =>
+    i.field === 'phone' && typeof i.message === 'string' && MASTER_PHONE.test(i.message);
+  return list.some(lookalike) && list.every((i) => lookalike(i) || phone(i));
+}
+
 export function readCorrections(value: unknown): Corrections {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   const v = value as Record<string, unknown>;
@@ -121,6 +145,8 @@ export function readCorrections(value: unknown): Corrections {
   }
   const pr = v.phoneReleased as { reason?: unknown } | undefined;
   if (pr && typeof pr.reason === 'string') out.phoneReleased = { reason: pr.reason };
+  const sr = v.shopCodeReleased as { reason?: unknown } | undefined;
+  if (sr && typeof sr.reason === 'string') out.shopCodeReleased = { reason: sr.reason };
   return out;
 }
 

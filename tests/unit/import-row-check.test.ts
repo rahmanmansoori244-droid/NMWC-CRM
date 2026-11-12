@@ -168,6 +168,8 @@ describe('checkCustomerRow — why a row is held back', () => {
       temixCode: 'C7',
       creditLimit: 750,
       paymentTermDays: 30,
+      // Owner's answer 2026-11-11 (A5): the Temix code typed in small letters is noted.
+      capitalised: [{ cell: 'temix_code', from: 'c7', to: 'C7' }],
     });
   });
 

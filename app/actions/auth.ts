@@ -9,6 +9,7 @@ import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/db';
 import { src, withChangeContext } from '@/lib/change-context';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { forgetSignInEnds, limitSignInCookie } from '@/lib/sign-in-cookies';
 
 // Go-live (2026-09-10): usernames are ROUTE CODES, and several are two
 // characters (C1–C9, W). lib/auth.ts and services/users.ts were relaxed to
@@ -49,6 +50,9 @@ export async function loginAction(formData: FormData): Promise<LoginResult | voi
   // comes back as a CredentialsSignin whose code names the bucket, and
   // loginFailureMessage turns it into the "locked" / "too many attempts" text
   // (AUTH-19) instead of "Invalid username or password".
+  // A6: read before the sign-in, so before its stamp: the cookie is cut to end
+  // no later than 8 hours after this (lib/sign-in-cookies.ts).
+  const startedAt = Date.now();
   try {
     await signIn('credentials', {
       username,
@@ -61,6 +65,7 @@ export async function loginAction(formData: FormData): Promise<LoginResult | voi
     }
     throw error;
   }
+  await limitSignInCookie(startedAt);
 
   // Go-live browser walk (2026-09-10): land a forced-change user DIRECTLY on
   // /profile/change-password instead of on /home and letting the middleware
@@ -109,5 +114,7 @@ export async function logoutAction() {
   } catch (err) {
     logger.warn({ err: String(err) }, 'logout.revoke_failed');
   }
+  // A6: a person who signs out is not told, next time, that the 8-hour limit did it.
+  await forgetSignInEnds();
   await signOut({ redirectTo: '/login' });
 }

@@ -82,14 +82,17 @@ import { earlierAccountUploadsOfFile, resetByEarlierUpload } from '@/lib/account
 import {
   checkCustomerRow,
   fileCollisions,
+  fileShopCodes,
   rowCustCode,
   type SheetRow,
 } from '@/lib/import-row-check';
+import { capitalisedNote, capitalisedOf, groupShopLookalike, shopLookalikeMessage } from '@/lib/import-shop-code';
 import {
   batchLoadHistory,
   fixTarget,
   linkedCustomerCodes,
   masterCollisionMaps,
+  masterShopCodes,
   newerLoadsOfBatch,
   newerUploadsCarrying,
 } from '@/lib/import-master-lookup';
@@ -112,6 +115,13 @@ import {
   shopNotChangedNote,
   type LaneBranch,
 } from '@/lib/import-plan';
+import {
+  existingShopWrite,
+  holdShopRoute,
+  routeNotAppliedNote,
+  type RouteById,
+  type RouteNotApplied,
+} from '@/lib/import-shop-route';
 import { lockCustomerRowByCode } from '@/lib/locks';
 import { branchStatusEvents, followBranchStatus, liveBranchStatuses } from '@/lib/customer-status';
 import { archivedUncodedDeactivationWhere } from '@/lib/temix';
@@ -1530,7 +1540,12 @@ async function uploadCustomerMasterCore(formData: FormData): Promise<CustomerUpl
 
   // The per-row rules live in lib/import-row-check.ts, shared with the Steward's
   // in-app fix of a held-back row (item 20), so the two can never disagree.
-  const ctx = { channelKeys, phonesInFile, crsInFile, masterPhones, masterCrs };
+  // Owner's answer 2026-11-11 (A5): each customer's shops in the CRM and its
+  // rows in this sheet, so a shop code that only LOOKS like one of them (01 / 1,
+  // Ab / AB) is held back on its branch_code cell instead of becoming a second shop.
+  const shopsInFile = fileShopCodes(sheetRows);
+  const masterShops = await masterShopCodes([...new Set(sheetRows.map((r) => rowCustCode(r.row)))]);
+  const ctx = { channelKeys, phonesInFile, crsInFile, masterPhones, masterCrs, masterShops, shopsInFile };
   for (const [i, row] of sheet.rows.entries()) {
     const { parsed, issues } = checkCustomerRow(row as SheetRow, ctx);
 
@@ -1581,8 +1596,16 @@ export type PromoteSliceResult = {
    * kept a CRM value where the sheet differed (each carries a note), replaced
    * one (the batch's overwrite option was on; each is in the audit log), or
    * carried a credit cell that was not applied (each carries a note).
+   * routeNotApplied (owner's answer 2026-11-11): rows that named a route other
+   * than their existing shop's; the route was NOT applied (each carries a note).
    */
-  notes?: { kept: number; replaced: number; creditNotApplied: number; shopNotChanged?: number };
+  notes?: {
+    kept: number;
+    replaced: number;
+    creditNotApplied: number;
+    shopNotChanged?: number;
+    routeNotApplied?: number;
+  };
 };
 
 /**
@@ -1667,6 +1690,13 @@ type LaneOutcome = {
    * of this customer that the import declined to change.
    */
   shopNotChanged: boolean[];
+  /**
+   * Owner's answer 2026-11-11 ("A1 stop"): a row fixed in the app named a route
+   * other than its existing shop's; the route was NOT applied (the rest of the
+   * row was, as the lane's rules say). Null otherwise. A refresh-lane plain row
+   * that names another route is a `shopNotChanged` row instead: its note says so.
+   */
+  route: Array<RouteNotApplied | null>;
 };
 /** What the branch-only lane did to a branch, for its audit row (gap 4). */
 type LaneBranchChange =
@@ -1682,24 +1712,31 @@ async function refreshLaneBranches(
     me: string;
     // The batch's "Overwrite CRM fields from this sheet" option.
     overwriteCrm: boolean;
+    // Every route by its id: a shop that exists keeps its own (lib/import-shop-route.ts).
+    routeById: RouteById;
     // Gap 24: names the row (resolved[k]) as the cause just before its branch is written.
     beforeWrite: (k: number) => Promise<void>;
     // Gap 4: the audit row of a branch it created or changed, under row k's name.
     afterWrite: (k: number, branchId: string, change: LaneBranchChange) => Promise<void>;
   }
 ): Promise<LaneOutcome> {
-  const { customerId, resolved, me, overwriteCrm, beforeWrite, afterWrite } = args;
+  const { customerId, resolved, me, overwriteCrm, routeById, beforeWrite, afterWrite } = args;
   const notes: Array<string | null> = [];
   const written: boolean[] = [];
   const crm: Array<CrmOutcome | null> = [];
   const shopNotChanged: boolean[] = [];
+  const route: Array<RouteNotApplied | null> = [];
+  // Owner's answer 2026-11-11: the route this row named and did not get, if any.
+  let routeNote: RouteNotApplied | null = null;
   const skip = (note: string | null, outcome: CrmOutcome | null = null, notChanged = false) => {
     notes.push(note);
     written.push(false);
     crm.push(outcome);
     shopNotChanged.push(notChanged);
+    route.push(routeNote);
   };
   for (const [k, r] of resolved.entries()) {
+    routeNote = null;
     if (!r.sheetCode) {
       if (r.fixedInApp) {
         throw new Error(
@@ -1780,6 +1817,7 @@ async function refreshLaneBranches(
       written.push(true);
       crm.push(null);
       shopNotChanged.push(false);
+      route.push(null);
       continue;
     }
     if (found.customerId !== customerId) {
@@ -1800,23 +1838,35 @@ async function refreshLaneBranches(
       skip(`branch ${r.branchCode} was archived and was not revived`);
       continue;
     }
-    // The region is not compared on this lane (differingBranchCells, above).
-    const differs = differingBranchCells(r, { ...found, regionId: undefined });
-    if (differs.length === 0) {
-      skip(null);
-      continue;
-    }
     if (!r.fixedInApp) {
+      // The region is not compared on this lane (differingBranchCells, above).
+      const differs = differingBranchCells(r, { ...found, regionId: undefined });
+      if (differs.length === 0) {
+        skip(null);
+        continue;
+      }
       // Code review 2026-11-10, finding 28: the note said "change it on the
       // customer page", and no screen can change a route. It now says the route
       // was NOT changed and what can change one today (lib/import-plan.ts).
       skip(shopNotChangedNote(r.branchCode, differs), null, true);
       continue;
     }
+    // Owner's answer 2026-11-11 ("A1 stop"): a fixed row never moves a shop that
+    // exists to another route (lib/import-shop-route.ts). `h` is the row with the
+    // shop's own route; a route the row names that differs is noted, not applied,
+    // and everything else the row gives is written as before.
+    const held = holdShopRoute(r, found, routeById);
+    const h = held.row;
+    routeNote = held.notApplied;
+    // The region is not compared on this lane (differingBranchCells, above).
+    if (differingBranchCells(h, { ...found, regionId: undefined }).length === 0) {
+      skip(null);
+      continue;
+    }
     // Code review 2026-11-10, finding 1: what the row may write on a shop that
     // exists (lib/import-crm-rule.ts). `w` is the row without the CRM-owned
     // values it must not replace; with the batch's option on it is the row.
-    const rule = branchCrmRule(overwriteCrm, r, found);
+    const rule = branchCrmRule(overwriteCrm, h, found);
     const w = rule.row;
     const outcome: CrmOutcome = { kept: rule.kept, filled: rule.filled, replaced: rule.replaced };
     if (differingBranchCells(w, { ...found, regionId: undefined }).length === 0) {
@@ -1825,22 +1875,13 @@ async function refreshLaneBranches(
       continue;
     }
     await beforeWrite(k);
-    const laneWrite: Record<string, unknown> = {
-      branchName: w.nameGiven ? w.branchName : undefined,
-      regionId: w.routeResolved ? w.regionId : undefined,
-      routeId: w.routeResolved ? w.routeId : undefined,
-      address: w.sheetAddress ?? undefined,
-      dayOfVisit: (w.dayOfVisit as DayOfWeek | null) ?? undefined,
-      status: (w.status as CustomerStatus | null) ?? undefined,
-    };
+    // No route in it (lib/import-shop-route.ts existingShopWrite).
+    const laneWrite: Record<string, unknown> = existingShopWrite(w);
     const laneFields = differingCells(laneWrite, found);
     await tx.branch.update({
       where: { id: found.id },
       data: {
-        branchName: w.nameGiven ? w.branchName : undefined,
-        regionId: w.routeResolved ? w.regionId : undefined,
-        routeId: w.routeResolved ? w.routeId : undefined,
-        address: w.sheetAddress ?? undefined,
+        ...existingShopWrite(w),
         dayOfVisit: (w.dayOfVisit as DayOfWeek | null) ?? undefined,
         status: (w.status as CustomerStatus | null) ?? undefined,
         lastStatusChangeAt: w.status && w.status !== found.status ? new Date() : undefined,
@@ -1857,6 +1898,7 @@ async function refreshLaneBranches(
     written.push(true);
     crm.push(outcome);
     shopNotChanged.push(false);
+    route.push(routeNote);
   }
   if (written.some(Boolean)) {
     await tx.customer.updateMany({
@@ -1872,7 +1914,7 @@ async function refreshLaneBranches(
     // customer reads as last edited by.
     await tx.customer.update({ where: { id: customerId }, data: { updatedAt: new Date() } });
   }
-  return { notes, written, crm, shopNotChanged };
+  return { notes, written, crm, shopNotChanged, route };
 }
 
 /**
@@ -1894,19 +1936,42 @@ async function refreshLaneBranches(
  * overwrite option was on) gets no note: with the option on a row loads exactly
  * as it did before this change, and each replaced value is in that customer's or
  * shop's audit row, before and after, marked overwriteCrmFields.
+ *
+ * Owner's answer 2026-11-11 ("A1 stop") — one more:
+ *   '_route'  the row named a route other than its existing shop's; the route
+ *             was NOT applied (lib/import-shop-route.ts routeNotAppliedNote:
+ *             both routes, and the ROUTE_NOT_APPLIED sentence exactly).
+ *
+ * Owner's answer 2026-11-11 (A5) — one more:
+ *   '_capitals' the row's customer code or Temix code was typed in small
+ *             letters and was read in capitals (lib/import-shop-code.ts).
  */
 type RowNote = {
   note: string | null;
   written: boolean;
   /** Finding 28 (second round): LaneOutcome.shopNotChanged for this row. */
   shopNotChanged?: boolean;
+  /** Owner's answer 2026-11-11: the row's route was NOT applied (its note). */
+  route?: string | null;
   extra?: string | null;
   subChannel?: string | null;
   kept?: string[];
   credit?: string | null;
+  /** Owner's answer 2026-11-11 (A5): the codes read in capital letters (lib/import-shop-code.ts). */
+  capitals?: string | null;
 };
 
+/**
+ * Whether a row is counted by the end-of-load notice the Data Steward must
+ * acknowledge (ImportBatch.shopNotChangedRows, ShopsNotChangedNotice.tsx): a
+ * row loaded with its shop NOT changed (finding 28), or — since the owner's
+ * answer of 2026-11-11 — a row whose route was NOT applied while its other
+ * cells may have been. A row that is both counts once.
+ */
+const inShopNotice = (n: RowNote | undefined): boolean => n?.shopNotChanged === true || !!n?.route;
+
 async function writeLaneNotes(
+  tx: Prisma.TransactionClient,
   rowIds: string[],
   notes: RowNote[],
   resolveErrors: string[]
@@ -1915,14 +1980,16 @@ async function writeLaneNotes(
     const n = notes[i];
     const issues = [
       ...(n?.note ? [{ field: '_lane', message: n.note }] : []),
+      ...(n?.route ? [{ field: '_route', message: n.route }] : []),
       ...(n?.extra ? [{ field: '_lane', message: n.extra }] : []),
       ...(n?.subChannel ? [{ field: '_subchannel', message: n.subChannel }] : []),
       ...(n?.written && !n.note ? resolveErrors.map((m) => ({ field: '_resolve', message: m })) : []),
       ...(n?.kept ?? []).map((m) => ({ field: '_kept', message: m })),
       ...(n?.credit ? [{ field: '_credit', message: n.credit }] : []),
+      ...(n?.capitals ? [{ field: '_capitals', message: n.capitals }] : []),
     ];
     if (issues.length === 0) continue;
-    await prisma.importRow.update({
+    await tx.importRow.update({
       where: { id: rowId },
       data: { issues: issues as Prisma.InputJsonValue },
     });
@@ -2228,6 +2295,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
       // recheck): the state before the first fix, and the acted row's id.
       fixedFrom?: unknown;
       fixGroup?: string;
+      // Owner's answer 2026-11-11 (A5): released as a different shop by the Steward.
+      shopCodeReleased?: boolean;
     };
     const groups = new Map<
       string,
@@ -2352,6 +2421,12 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
       revalidateTag('ref:regions');
       revalidateTag('ref:routes');
     }
+    // Owner's answer 2026-11-11 ("A1 stop"): every route by its id, so a shop
+    // that exists keeps its own route and is put back in that route's region
+    // (lib/import-shop-route.ts), with both route codes in the row's note.
+    const routeById: RouteById = new Map(
+      [...routeByCode.values()].map((r) => [r.id, { regionId: r.regionId, code: r.code }] as const)
+    );
 
     // QA-019: each customer's promotion (parent + branches + row state) runs
     // in its own transaction so a partial failure leaves no half-state.
@@ -2360,7 +2435,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     // tuple that the UI surfaces in the toast — no more silent swallow.
     let promoted = 0;
     // Code review 2026-11-10, finding 1: promoted rows of this slice carrying a note.
-    const sliceNotes = { kept: 0, replaced: 0, creditNotApplied: 0, shopNotChanged: 0 };
+    const sliceNotes = { kept: 0, replaced: 0, creditNotApplied: 0, shopNotChanged: 0, routeNotApplied: 0 };
     // Rows left CLEAN because the DATABASE failed, not the data — retried next slice.
     let deferred = 0;
     // RK-3: yield the slice once the budget is spent. The check is at the TOP of the
@@ -2558,8 +2633,11 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
       let temixWrite = null as { code: string; customerId: string | null } | null;
       try {
         let refreshedRow = false;
+        // Whether any row of this group carries a note (set inside the transaction,
+        // where the notes are written).
+        let noted = false;
         // Per row: what happened to its branch, when that is worth telling the
-        // Steward. Written after the transaction commits.
+        // Steward. Written inside the group's transaction.
         let rowNotes: RowNote[] = [];
         // Finding 1: the rows of this group that replaced a CRM value on record
         // (only with the batch's overwrite option on). Counted, not noted.
@@ -2660,6 +2738,30 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   : 'CROSSWALK:customer is archived in the CRM, and an import does not bring an archived customer back — exclude the row; steward review'
               );
             }
+            // Owner's answer 2026-11-11 (A5): a shop code that only LOOKS like one
+            // of this customer's shops (01 / 1, Ab / AB), or like another of its
+            // rows, never becomes a second shop. The upload holds such a row back;
+            // this catches a batch staged before that check, or a shop added since
+            // the upload, under the customer's lock. A row the Steward released as
+            // a different shop is not compared. The reason names branch_code, so the
+            // batch page offers that cell to correct (lib/import-row-fix.ts).
+            const lookalike = groupShopLookalike(
+              custCode,
+              g.parsed.map((p, i) => ({
+                branchCode: p.branchCode,
+                shopCodeReleased: p.shopCodeReleased === true,
+                rowNumber: rowNo(i),
+                // A NEW customer's row with a blank branch_code is numbered by its
+                // place (resolvedBranches above): compare that number too.
+                numberedAs: existing ? null : resolvedBranches[i]?.branchCode,
+              })),
+              existing
+                ? (
+                    await tx.branch.findMany({ where: { customerId: existing.id }, select: { branchCode: true } })
+                  ).map((b) => b.branchCode)
+                : []
+            );
+            if (lookalike) throw new Error(`CROSSWALK:branch_code: ${shopLookalikeMessage(lookalike)}`);
             // Owner decision 2026-09-25, "branch only" — decided PER ROW. For a
             // customer linked to Temix, a row the Steward fixed in the app writes
             // its own branch and nothing else about the customer, whatever its
@@ -2981,6 +3083,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // fields (full lane) and with each full-lane row's shop.
             let customerCrm: CrmOutcome | null = null;
             const fullCrm: Array<CrmOutcome | undefined> = [];
+            // Owner's answer 2026-11-11: the route each full-lane row named and did not get.
+            const fullRoute: Array<RouteNotApplied | null> = [];
             let laneCrm: Array<CrmOutcome | null> = [];
             const addCrmNotes = (
               i: number,
@@ -3401,12 +3505,21 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 // what the import may write on it. For a shop that exists, `r`
                 // has lost every CRM-owned value that differs from one on record
                 // — shop name, address, visit day — and always its status, so
-                // the import fills blanks, moves the shop to the sheet's route
-                // (Temix's) and neither closes an open shop nor reopens one an
-                // approved request closed. With the batch's overwrite option on,
-                // and for a shop that does not exist yet, `r` is `sheetRow`.
+                // the import fills blanks and neither closes an open shop nor
+                // reopens one an approved request closed. With the batch's
+                // overwrite option on, and for a shop that does not exist yet,
+                // `r` is `sheetRow` (but for the route, below).
                 // Everything below reads `r`, exactly as it did.
-                const crm = branchCrmRule(overwriteCrm, sheetRow, branchOwner);
+                //
+                // Owner's answer 2026-11-11 ("A1 stop"): and a shop that exists
+                // keeps its route, whatever the sheet and whatever the overwrite
+                // option say (lib/import-shop-route.ts). The row is otherwise
+                // loaded as before; a route it names that differs is noted on
+                // the row and counted by the end-of-load notice. The region of
+                // the shop's own route still repairs a stale region.
+                const held = branchOwner ? holdShopRoute(sheetRow, branchOwner, routeById) : null;
+                fullRoute[k] = held?.notApplied ?? null;
+                const crm = branchCrmRule(overwriteCrm, held ? held.row : sheetRow, branchOwner);
                 const r = crm.row;
                 fullCrm[k] = crm;
                 // F21 (auditor recheck 2026-09-27): a branch this row would not
@@ -3424,14 +3537,12 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 await nameRow(fullIdx[k]);
                 fullBranchWritten = true;
                 // Gap 4: what this row writes on the shop, for its audit row.
-                const branchWrite: Record<string, unknown> = {
-                  branchName: r.nameGiven ? r.branchName : undefined,
-                  regionId: r.routeResolved ? r.regionId : undefined,
-                  routeId: r.routeResolved ? r.routeId : undefined,
-                  address: r.sheetAddress ?? undefined,
-                  dayOfVisit: (r.dayOfVisit as DayOfWeek | null) ?? undefined,
-                  status: (r.status as CustomerStatus | null) ?? undefined,
-                };
+                // No route in it (lib/import-shop-route.ts existingShopWrite).
+                // The update half below is the same write: when no shop was read
+                // (`held` null: a shop inserted by someone else since the read
+                // above), it writes no region either, so it moves nothing.
+                const shopWrite = existingShopWrite(held ? r : { ...r, routeResolved: false });
+                const branchWrite: Record<string, unknown> = shopWrite;
                 const written = await tx.branch.upsert({
                   where: { branchCode: r.branchCode },
                   // Item 20 (owner decision): a blank cell keeps the stored value.
@@ -3439,10 +3550,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   // empty address or route replaced a salesman's approved address with
                   // "Address pending" and moved the branch to UNASSIGNED.
                   update: {
-                    branchName: r.nameGiven ? r.branchName : undefined,
-                    regionId: r.routeResolved ? r.regionId : undefined,
-                    routeId: r.routeResolved ? r.routeId : undefined,
-                    address: r.sheetAddress ?? undefined,
+                    ...shopWrite,
                     customerId,
                     dayOfVisit: (r.dayOfVisit as DayOfWeek | null) ?? undefined,
                     status: (r.status as CustomerStatus | null) ?? undefined,
@@ -3507,7 +3615,16 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               }
               // Merged, not replaced: the lead row may already carry the
               // sub-channel note (F16), which this used to wipe.
-              for (const i of fullIdx) rowNotes[i] = { ...rowNotes[i], note: null, written: true };
+              // Owner's answer 2026-11-11: and a route the row named that was NOT applied.
+              fullIdx.forEach((i, k) => {
+                const notApplied = fullRoute[k] ?? null;
+                rowNotes[i] = {
+                  ...rowNotes[i],
+                  note: null,
+                  written: true,
+                  route: notApplied ? routeNotAppliedNote(fullBranches[k]!.branchCode, notApplied) : null,
+                };
+              });
               // Finding 1: each full-lane row says what the rule kept or replaced on its shop.
               fullIdx.forEach((i, k) =>
                 addCrmNotes(i, { shop: fullBranches[k]!.branchCode }, fullCrm[k] ?? null)
@@ -3522,6 +3639,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 resolved: laneIdx.map((i) => resolvedBranches[i]),
                 me: me.id,
                 overwriteCrm,
+                routeById,
                 beforeWrite: (k) => nameRow(laneIdx[k]),
                 afterWrite: (k, branchId, change) =>
                   auditEntity(laneIdx[k]!, { type: 'Branch', id: branchId }, change),
@@ -3529,10 +3647,12 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               // The customer's own writes below are the lead row's again.
               await nameRow(leadIdx);
               laneIdx.forEach((i, k) => {
+                const notApplied = out.route[k] ?? null;
                 rowNotes[i] = {
                   note: out.notes[k] ?? null,
                   written: out.written[k] ?? false,
                   shopNotChanged: out.shopNotChanged[k] === true,
+                  route: notApplied ? routeNotAppliedNote(resolvedBranches[i]!.branchCode, notApplied) : null,
                 };
                 // Finding 1: a fixed row says what the rule kept or replaced on its shop.
                 addCrmNotes(i, { shop: resolvedBranches[i]!.branchCode }, out.crm[k] ?? null);
@@ -3738,12 +3858,44 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // transaction, so the count is exactly the rows that committed — a
             // slice that dies later loses none of it. The batch page shows it
             // until the Data Steward acknowledges it (acknowledgeShopsNotChanged).
-            const notChangedHere = rowNotes.filter((n) => n?.shopNotChanged === true).length;
+            // Owner's answer 2026-11-11: a row whose route was NOT applied is
+            // counted too, once (inShopNotice); the notice's words cover both.
+            const notChangedHere = rowNotes.filter(inShopNotice).length;
             if (notChangedHere > 0) {
               await tx.importBatch.update({
                 where: { id: batchId },
                 data: { shopNotChangedRows: { increment: notChangedHere } },
               });
+            }
+            // Owner's answer 2026-11-11 (A5): a row whose customer or Temix code was
+            // read in capital letters says so.
+            g.parsed.forEach((p, i) => {
+              const capitals = capitalisedNote(capitalisedOf(p));
+              if (capitals) rowNotes[i] = { ...(rowNotes[i] ?? { note: null, written: false }), capitals };
+            });
+            // A full-lane row carries a note only when its customer's sub-channel
+            // was cleared (F16, on the lead row).
+            // Finding 1: or a CRM value kept or replaced, or a credit cell not applied.
+            noted =
+              refreshedRow ||
+              rowNotes.some(
+                (n) =>
+                  !!n?.extra ||
+                  !!n?.subChannel ||
+                  (n?.kept?.length ?? 0) > 0 ||
+                  !!n?.credit ||
+                  !!n?.route ||
+                  !!n?.capitals
+              );
+            if (noted) {
+              // The branch outcome of each row: a branch left as it was, and why, or
+              // what a fixed row did not write. It used to be invisible — the row
+              // read PROMOTED and the counts balanced while the branch it described
+              // was never written. Review of A1 (2026-11-11): written in this same
+              // transaction as the PROMOTED state and the notice's count above, so a
+              // row the notice counts always carries the note that says what was not
+              // applied — a load cut off after the commit can no longer leave it bare.
+              await writeLaneNotes(tx, g.rowIds, rowNotes, groupResolveErrors);
             }
             // Compute completenessScore for the promoted customer. Without this,
             // every imported customer/branch stayed at 0, hiding them from
@@ -3768,14 +3920,6 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         if (firstTemixCodeOf) {
           logger.info({ ...firstTemixCodeOf, batchId }, 'import.promote.first_temix_code');
         }
-        // A full-lane row carries a note only when its customer's sub-channel
-        // was cleared (F16, on the lead row).
-        // Finding 1: or a CRM value kept or replaced, or a credit cell not applied.
-        const noted =
-          refreshedRow ||
-          rowNotes.some(
-            (n) => !!n?.extra || !!n?.subChannel || (n?.kept?.length ?? 0) > 0 || !!n?.credit
-          );
         sliceNotes.kept += rowNotes.filter((n) => (n?.kept?.length ?? 0) > 0).length;
         sliceNotes.replaced += replacedRows.size;
         sliceNotes.creditNotApplied += rowNotes.filter((n) => !!n?.credit).length;
@@ -3785,13 +3929,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         // branch_code, or naming another customer's or an archived branch, was
         // reported as "shop NOT changed" too.
         sliceNotes.shopNotChanged += rowNotes.filter((n) => n?.shopNotChanged === true).length;
-        if (noted) {
-          // The branch outcome of each row: a branch left as it was, and why, or
-          // what a fixed row did not write. It used to be invisible — the row
-          // read PROMOTED and the counts balanced while the branch it described
-          // was never written.
-          await writeLaneNotes(g.rowIds, rowNotes, groupResolveErrors).catch(() => undefined);
-        }
+        // Owner's answer 2026-11-11: rows whose route was NOT applied.
+        sliceNotes.routeNotApplied += rowNotes.filter((n) => !!n?.route).length;
         // Not when the notes were written: writeLaneNotes puts these same
         // warnings on every row whose branch was written, which on the full
         // lane is every row, and this would overwrite the note.
@@ -3972,6 +4111,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         rowsReplaced: sliceNotes.replaced,
         rowsCreditNotApplied: sliceNotes.creditNotApplied,
         rowsShopNotChanged: sliceNotes.shopNotChanged,
+        rowsRouteNotApplied: sliceNotes.routeNotApplied,
       } as unknown as Prisma.InputJsonValue,
       // One audit row per slice: a resumed load leaves a complete, ordered trail
       // instead of a single summary that hides how the batch actually landed.

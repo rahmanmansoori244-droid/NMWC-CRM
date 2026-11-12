@@ -66,6 +66,11 @@ const fake = {
   },
   branch: {
     findMany: async (args: Call['args']) => {
+      // Owner's answer 2026-11-11 (A5): every shop code of the customers found.
+      if (args.where.customerId) {
+        calls.push({ model: 'branch.ofCustomer', args });
+        return shops.filter((b) => (args.where.customerId as { in: string[] }).in.includes(b.customerId as string));
+      }
       calls.push({ model: 'branch', args });
       return shops.filter((b) => args.where.branchCode!.in!.includes(b.branchCode as string));
     },
@@ -184,10 +189,35 @@ describe('loadPromoteSummary', () => {
       customers: 3,
       created: { customers: 1, shops: 1, shopsOnExisting: 0 },
       // Route codes are matched without case, as at Promote: 'R2' is the route stored as 'r2'.
-      temix: { shopsRouteMoved: 1 },
+      // Owner's answer 2026-11-11 ("A1 stop"): the shop is not moved to it any more
+      // (this pinned temix.shopsRouteMoved: 1); the row is counted as route NOT applied.
+      routeNotApplied: 1,
       crm: { customersDiffer: 0, shopsDiffer: 1, byField: [{ field: 'address', count: 1 }] },
       unchangedCustomers: 1,
     });
+  });
+
+  // Owner's answers 2026-11-11 (A5).
+  it('counts the rows whose codes were read in capitals, and expects a lookalike shop code to be rejected', async () => {
+    staged = [
+      parsed({ custCode: 'C1', branchCode: '1', capitalised: [{ cell: 'cust_code', from: 'c1', to: 'C1' }] }),
+      parsed({ custCode: 'C2', branchCode: '01' }),
+    ];
+    customers = [customer('C1'), customer('C2')];
+    // C1's only shop is C1-01, which the row's "1" does not name: it is found by the customer's id.
+    shops = [shop('C1-01', 'id-C1'), shop('C2-01', 'id-C2')];
+    const s = await load();
+    expect(calls.filter((c) => c.model === 'branch.ofCustomer').map((c) => c.args.where.customerId)).toEqual([
+      { in: ['id-C1', 'id-C2'] },
+    ]);
+    expect(s).toMatchObject({
+      codesCapitalised: 1,
+      expectRejected: { customers: 1, rows: 1 },
+      unchangedCustomers: 1,
+    });
+    expect(s.expectRejected.reasons.map((r) => r.reason)).toEqual([
+      "a branch_code that only looks like one of the customer's shops or rows (01 / 1, Ab / AB)",
+    ]);
   });
 
   it('a Temix code staged in lower case (an older batch) is folded as Promote folds it: the refresh lane', async () => {

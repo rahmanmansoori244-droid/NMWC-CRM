@@ -43,6 +43,8 @@ const h = vi.hoisted(() => ({
   promote: null as Record<string, unknown> | null,
   /** Finding 23: the account upload's IMPORT summary row (its after), or none. */
   importSummary: null as Record<string, unknown> | null,
+  /** Owner's answer 2026-11-11: shops on record, by composed code, with their customer and route. */
+  shops: [] as Array<{ branchCode: string; nmwcCode: string; route: string }>,
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: h.user }) }));
@@ -65,6 +67,7 @@ vi.mock('@/services/import-fixes', () => ({
   recheckImportRowAction: vi.fn(),
   correctImportRowAction: vi.fn(),
   releaseImportRowPhoneAction: vi.fn(),
+  releaseImportRowShopCodeAction: vi.fn(),
   excludeImportRowsAction: vi.fn(),
   includeImportRowAction: vi.fn(),
   withdrawImportRowFixAction: vi.fn(),
@@ -88,6 +91,12 @@ vi.mock('@/lib/db', () => {
       // lib/import-master-lookup newerUploadsCarrying: the rows of newer uploads carrying these customers.
       $queryRaw: async () => h.newer,
       auditLog: { findFirst: async () => (h.importSummary ? { after: h.importSummary } : null) },
+      branch: {
+        findMany: async ({ where }: { where: { branchCode: { in: string[] } } }) =>
+          h.shops
+            .filter((s) => where.branchCode.in.includes(s.branchCode))
+            .map((s) => ({ branchCode: s.branchCode, customer: { nmwcCode: s.nmwcCode }, route: { code: s.route } })),
+      },
       customer: {
         findMany: async ({ where }: { where: { nmwcCode: { in: string[] } } }) =>
           h.linked.filter((c) => where.nmwcCode.in.includes(c)).map((nmwcCode) => ({ nmwcCode })),
@@ -149,6 +158,7 @@ beforeEach(() => {
   h.kind = 'CUSTOMER';
   h.batch = {};
   h.importSummary = null;
+  h.shops = [];
   h.promote = null;
   h.findMany.mockReset();
   h.findMany.mockImplementation(async ({ where, skip, take }: { where: Record<string, unknown>; skip: number; take: number }) => {
@@ -293,6 +303,8 @@ describe('/import/[batchId]', () => {
       { id: 'q2', rowNumber: 3, state: 'QUARANTINED', raw: { cust_code: 'B', phone: '99758980' }, parsed: {}, issues: [{ field: 'phone', message: 'phone already exists in master on customer H' }] },
       { id: 'r1', rowNumber: 4, state: 'REJECTED', raw: { cust_code: 'C' }, parsed: {}, issues: [{ field: '_promote', message: 'payment_terms disagrees with the terms already recorded for this customer' }] },
       { id: 'p1', rowNumber: 5, state: 'PROMOTED', raw: { cust_code: 'D' }, parsed: {}, issues: null },
+      // Owner's answers 2026-11-11 (A5): a shop code that only looks like one of the customer's.
+      { id: 'q3', rowNumber: 6, state: 'QUARANTINED', raw: { cust_code: 'E', branch_code: '1' }, parsed: {}, issues: [{ field: 'branch_code', message: 'Shop code "1" looks like this customer’s existing shop "E-01" (Excel may have dropped a zero).' }] },
     ];
     await open({ show: 'all' });
     const rowOf = (code: string) => screen.getAllByText(code)[0].closest('tr')!;
@@ -302,6 +314,8 @@ describe('/import/[batchId]', () => {
     // A payment-terms rejection names no cell: re-check or exclude, nothing to edit.
     expect(buttons('C')).toEqual(['Re-check', 'Exclude…']);
     expect(buttons('D')).toEqual([]);
+    // A5: its branch_code can be corrected, or the row released as a different shop.
+    expect(buttons('E')).toEqual(['Re-check', 'Correct…', 'Different shop: release…', 'Exclude…']);
   });
 
   it('an excluded row says who excluded it and why; a swept row can only be excluded', async () => {
@@ -413,6 +427,48 @@ describe('/import/[batchId]', () => {
     expect(rowOf('M').textContent).not.toMatch(/linked to Temix/);
     // Not linked: the full lane writes the phone.
     expect(rowOf('N').textContent).not.toMatch(/linked to Temix/);
+  });
+
+  // Owner's answer 2026-11-11 ("A1 stop"): a held-back row, or a fix waiting to
+  // load, that names a different route for a shop already in the CRM says, before
+  // it is corrected and before it loads, that the route will NOT be applied.
+  it('a row naming a different route for a shop already in the CRM says the route will not be applied', async () => {
+    const held = (id: string, n: number, code: string, branch: string, route: string): Row => ({
+      id,
+      rowNumber: n,
+      state: 'QUARANTINED',
+      raw: { cust_code: code, branch_code: branch, route, day_of_visit: 'XYZ' },
+      parsed: { custCode: code, branchCode: branch },
+      issues: [{ field: 'day_of_visit', message: 'x' }],
+    });
+    h.rows = [
+      held('a', 2, 'P', '01', 'R2'),
+      // Same route as on record (codes compared without case): nothing to say.
+      held('b', 3, 'Q', '01', 'r1'),
+      // A new shop: it is created on the sheet's route.
+      held('c', 4, 'S', '05', 'R2'),
+      // The code is another customer's shop: not this rule (promote rejects it).
+      held('d', 5, 'T', 'P-01', 'R2'),
+      // A fix waiting to load says it too.
+      { id: 'e', rowNumber: 6, state: 'CLEAN', raw: { cust_code: 'U', branch_code: 'U-02', route: 'R3' }, parsed: { custCode: 'U', fixedInApp: true }, issues: null },
+    ];
+    h.shops = [
+      { branchCode: 'P-01', nmwcCode: 'P', route: 'R1' },
+      { branchCode: 'Q-01', nmwcCode: 'Q', route: 'R1' },
+      { branchCode: 'U-02', nmwcCode: 'U', route: 'R1' },
+    ];
+    await open({ show: 'all' });
+    const rowOf = (n: string) => screen.getByText(n).closest('tr')!;
+    const warning = (n: string) => within(rowOf(n)).queryByTestId('route-not-applied')?.textContent ?? null;
+    expect(warning('#2')).toBe(
+      'Shop P-01 is already in the CRM, on route R1. This row names route R2: when it loads, that route is NOT applied and the shop stays on route R1. The rest of the row loads as usual. The route was NOT applied; the shop stays on its current route. Route moves are made in Temix.'
+    );
+    expect(warning('#3')).toBeNull();
+    expect(warning('#4')).toBeNull();
+    expect(warning('#5')).toBeNull();
+    expect(warning('#6')).toContain('Shop U-02 is already in the CRM, on route R1. This row names route R3');
+    // The row's own buttons stay as they were: the route alone holds nothing back.
+    expect(within(rowOf('#2')).queryAllByRole('button').map((b) => b.textContent)).toEqual(['Re-check', 'Correct…', 'Exclude…']);
   });
 
   // Pre-merge review: the server fixes a rejected row with its customer's other
@@ -662,7 +718,7 @@ describe('/import/[batchId]: rows loaded with their shop NOT changed', () => {
     for (let visit = 0; visit < 2; visit++) {
       await open();
       const note = screen.getByTestId('shops-not-changed');
-      expect(note.textContent).toContain('2 row(s) were loaded, but their shop was NOT changed.');
+      expect(note.textContent).toContain('2 row(s) were loaded, but not everything they say about their shop was applied.');
       expect(note.textContent).toContain(SHOP_NOT_CHANGED_MEANING);
       expect(note.textContent).toContain(ROUTE_NOT_APPLIED);
       expect(within(note).getByRole('button', { name: 'I have read this' })).toBeTruthy();
@@ -689,7 +745,7 @@ describe('/import/[batchId]: rows loaded with their shop NOT changed', () => {
     cleanup();
     h.batch = { status: 'PROMOTED', shopNotChangedRows: 5, shopNotChangedAckRows: 2 };
     await open();
-    expect(screen.getByTestId('shops-not-changed').textContent).toContain('3 row(s) were loaded, but their shop was NOT changed.');
+    expect(screen.getByTestId('shops-not-changed').textContent).toContain('3 row(s) were loaded, but not everything they say about their shop was applied.');
   });
 
   it('none such, or a promote still running: no notice', async () => {

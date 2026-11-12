@@ -65,8 +65,13 @@ describe('services/imports.ts: branch writes, scores and row notes', () => {
     const start = src.indexOf('for (const [k, sheetRow] of fullBranches.entries())');
     const upsert = src.indexOf('tx.branch.upsert(');
     const loop = src.slice(start, upsert);
-    const rule = loop.indexOf('const crm = branchCrmRule(overwriteCrm, sheetRow, branchOwner);');
-    expect(rule).toBeGreaterThan(-1);
+    // Owner's answer 2026-11-11 ("A1 stop"): a shop that exists first keeps its
+    // route (lib/import-shop-route.ts), then the rule narrows that row. This
+    // pinned `branchCrmRule(overwriteCrm, sheetRow, branchOwner)`.
+    const held = loop.indexOf('const held = branchOwner ? holdShopRoute(sheetRow, branchOwner, routeById) : null;');
+    expect(held).toBeGreaterThan(-1);
+    const rule = loop.indexOf('const crm = branchCrmRule(overwriteCrm, held ? held.row : sheetRow, branchOwner);');
+    expect(rule).toBeGreaterThan(held);
     expect(loop.indexOf('const r = crm.row;')).toBeGreaterThan(rule);
     expect(loop.indexOf('differingBranchCells(r, branchOwner)')).toBeGreaterThan(loop.indexOf('const r = crm.row;'));
     const update = callAt(upsert);
@@ -81,7 +86,9 @@ describe('services/imports.ts: branch writes, scores and row notes', () => {
 
     // Fixed rows (the branch-only lane): the update reads the narrowed row.
     const lane = src.slice(src.indexOf('async function refreshLaneBranches('), src.indexOf('async function writeLaneNotes('));
-    expect(lane).toMatch(/const rule = branchCrmRule\(overwriteCrm, r, found\);\s*const w = rule\.row;/);
+    // Owner's answer 2026-11-11: the row with the shop's own route (`h`), then the rule (this pinned `branchCrmRule(overwriteCrm, r, found)`).
+    expect(lane).toMatch(/const held = holdShopRoute\(r, found, routeById\);\s*const h = held\.row;/);
+    expect(lane).toMatch(/const rule = branchCrmRule\(overwriteCrm, h, found\);\s*const w = rule\.row;/);
     const laneUpdate = lane.slice(lane.indexOf('tx.branch.update('));
     expect(laneUpdate.slice(0, laneUpdate.indexOf('version: { increment: 1 }'))).not.toMatch(/\br\.(nameGiven|sheetAddress|dayOfVisit|status)\b/);
 
@@ -103,13 +110,15 @@ describe('services/imports.ts: branch writes, scores and row notes', () => {
   });
 
   it('the full lane merges its row reset, so the lead row keeps the sub-channel note', () => {
-    expect(src).toMatch(
-      /for \(const i of fullIdx\) rowNotes\[i\] = \{ \.\.\.rowNotes\[i\], note: null, written: true \};/
-    );
+    // Since the owner's answer of 2026-11-11 the reset also sets the row's route
+    // note, per row (fullIdx.forEach); it still spreads what the row had first.
+    const reset =
+      /fullIdx\.forEach\(\(i, k\) => \{[^}]*?rowNotes\[i\] = \{\s*\.\.\.rowNotes\[i\],\s*note: null,\s*written: true,/.exec(src);
+    expect(reset).not.toBeNull();
     // The note is set before that reset, on the lead row, only when the clear is.
     const note = src.indexOf('rowNotes[plainIdx[0]] = {');
     expect(note).toBeGreaterThan(src.indexOf('if (clearSub) {'));
-    expect(note).toBeLessThan(src.indexOf('for (const i of fullIdx) rowNotes[i]'));
+    expect(note).toBeLessThan(reset!.index);
     // Gap 4 (lossless paths): the write is built once (customerWrite), and the
     // upsert sends only the cells of it that differ from the stored customer.
     expect(src).toMatch(/const customerWrite: Record<string, unknown> = \{[\s\S]*?subChannelId: clearSub \? null : undefined,/);

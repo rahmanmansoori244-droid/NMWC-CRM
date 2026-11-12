@@ -28,6 +28,7 @@ import {
   type PromoteSummary,
 } from './import-plan';
 import { normalizeTemixCode } from './temix-code';
+import { capitalisedOf } from './import-shop-code';
 
 type Db = Prisma.TransactionClient | PrismaClient;
 
@@ -55,9 +56,12 @@ export async function loadPromoteSummary(db: Db, batchId: string, overwrite: boo
 
   // Grouped as the promote groups them: by cust_code, in sheet order.
   const groups = new Map<string, PlanRow[]>();
+  // Owner's answer 2026-11-11 (A5): clean rows whose codes were read in capitals.
+  let codesCapitalised = 0;
   for (const row of cleanRows) {
     const p = row.parsed as unknown as PlanRow | null;
     if (!p?.custCode) continue;
+    if (capitalisedOf(p).length > 0) codesCapitalised += 1;
     if (p.temixCode) p.temixCode = normalizeTemixCode(p.temixCode) || null;
     const g = groups.get(p.custCode) ?? [];
     g.push(p);
@@ -144,7 +148,23 @@ export async function loadPromoteSummary(db: Db, batchId: string, overwrite: boo
     for (const c of found) if (c.temixCode) liveTemixCodes.add(normalizeTemixCode(c.temixCode));
   }
 
+  // Owner's answer 2026-11-11 (A5): every shop code of the customers the file
+  // names, archived shops too, as the promote reads them under the lock.
+  const shopsOfCustomer = new Map<string, string[]>();
+  const idToCode = new Map([...customers].map(([code, c]) => [c.id, code] as const));
+  for (const ids of chunks([...idToCode.keys()])) {
+    const found = await db.branch.findMany({
+      where: { customerId: { in: ids } },
+      select: { branchCode: true, customerId: true },
+    });
+    for (const b of found) {
+      const code = idToCode.get(b.customerId)!;
+      shopsOfCustomer.set(code, [...(shopsOfCustomer.get(code) ?? []), b.branchCode]);
+    }
+  }
+
   const summary = emptySummary();
+  summary.codesCapitalised = codesCapitalised;
   for (const [custCode, rows] of groups) {
     addGroup(
       summary,
@@ -157,6 +177,7 @@ export async function loadPromoteSummary(db: Db, batchId: string, overwrite: boo
         routeByCode,
         channelIdByKey,
         liveTemixCodes,
+        customerShops: shopsOfCustomer.get(custCode) ?? [],
       })
     );
   }

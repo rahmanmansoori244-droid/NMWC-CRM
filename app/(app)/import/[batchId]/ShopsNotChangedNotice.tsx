@@ -3,7 +3,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { acknowledgeShopsNotChangedAction } from '@/services/import-fixes';
-import { ROUTE_NOT_APPLIED, SHOP_NOT_CHANGED_MEANING } from '@/lib/import-shop-notice';
+import { ROUTE_NOT_APPLIED, ROUTE_ONLY_MEANING, SHOP_NOT_CHANGED_MEANING } from '@/lib/import-shop-notice';
 
 /**
  * Code review 2026-11-10, finding 28 (second round): rows a promote of this
@@ -16,6 +16,11 @@ import { ROUTE_NOT_APPLIED, SHOP_NOT_CHANGED_MEANING } from '@/lib/import-shop-n
  * It used to live inside the Promote button and held the result back until it
  * was acknowledged; the refresh to PROMOTED took the button away, and with it
  * the notice and the result, unseen.
+ *
+ * Owner's answer 2026-11-11 ("A1 stop"): it also counts the rows whose route
+ * was NOT applied to their shop (services/imports.ts inShopNotice; each row
+ * once). Their other cells may have been loaded, so the words no longer say
+ * every counted row left its shop unchanged: they say what was not applied.
  */
 export function ShopsNotChangedNotice({
   batchId,
@@ -55,12 +60,17 @@ export function ShopsNotChangedNotice({
       className="mx-4 mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900 ring-1 ring-inset ring-amber-300 sm:mx-6"
     >
       <p className="font-semibold">
-        {rows.toLocaleString('en-US')} row(s) were loaded, but their shop was NOT changed.
+        {rows.toLocaleString('en-US')} row(s) were loaded, but not everything they say about their shop was applied.
       </p>
       <p className="mt-1">
-        {SHOP_NOT_CHANGED_MEANING} Where such a row gives a different route: {ROUTE_NOT_APPLIED}{' '}
-        Each row says what was not applied, under &ldquo;Loaded with a warning&rdquo;.
+        <span className="font-semibold">Rows loaded with their shop NOT changed.</span> {SHOP_NOT_CHANGED_MEANING}{' '}
+        Where such a row gives a different route: {ROUTE_NOT_APPLIED}
       </p>
+      <p className="mt-1">
+        <span className="font-semibold">Rows that name a different route for a shop already in the CRM:</span>{' '}
+        {ROUTE_ONLY_MEANING}
+      </p>
+      <p className="mt-1">Each row says what was not applied, under &ldquo;Loaded with a warning&rdquo;.</p>
       {error && (
         <p role="status" className="mt-2 font-medium text-red-700">
           {error}

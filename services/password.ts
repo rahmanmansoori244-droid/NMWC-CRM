@@ -26,6 +26,7 @@ import {
 } from '@/lib/rate-limit';
 import { requireActor } from '@/lib/session';
 import { signIn, signOut } from '@/lib/auth';
+import { limitSignInCookie } from '@/lib/sign-in-cookies';
 import { logger } from '@/lib/logger';
 import { revalidatePath } from 'next/cache';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
@@ -164,7 +165,11 @@ async function changeOwnPasswordCore(formData: FormData) {
  */
 async function renewOwnSession(userId: string, username: string, password: string): Promise<boolean> {
   try {
+    // A6: a renewal is a sign-in with the new password, so it starts a fresh
+    // 8 hours; its cookie is cut to end no later than that (lib/sign-in-cookies.ts).
+    const startedAt = Date.now();
     await signIn('credentials', { username, password, redirect: false });
+    await limitSignInCookie(startedAt);
     return true;
   } catch (err) {
     logger.warn({ err: String(err), userId }, 'password.change.renew_failed');

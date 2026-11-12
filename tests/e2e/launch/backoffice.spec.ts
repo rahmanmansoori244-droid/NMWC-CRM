@@ -68,6 +68,7 @@ import {
   replayServerAction,
   requestsOf,
   requireLaunchEnv,
+  resetLimits,
   seedPhoto,
   seedUpdateEdit,
   signInViaUi,
@@ -80,6 +81,9 @@ import {
 import {
   IN_PLACE_MS,
   MAX_IMPORT_BYTES,
+  ROUTE_NOT_APPLIED,
+  ROUTE_ONLY_MEANING,
+  SHOP_NOT_CHANGED_MEANING,
   TEMIX_QUEUE_WHERE,
   CUSTOMER_HEADERS,
   XLSX_MIME,
@@ -103,6 +107,7 @@ import {
   type AccountRows,
   type Cell,
 } from './support/backoffice-helpers';
+import { NOT_SIGNED_IN, SIGN_IN_LIMIT_MESSAGE, loginNotice, runOutSignIn } from './support/sign-in-limit-helpers';
 
 // ── shared page helpers ──────────────────────────────────────────────────────
 
@@ -1278,6 +1283,599 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     await expect(page.getByText(/Overwrite CRM fields from this sheet was switched on for this batch on .+ and is off again\./)).toBeVisible();
     // A row that replaced a value carries no warning: it loaded as it always did.
     await expect(page.getByRole('link', { name: /^Loaded with a warning\s*0$/ })).toBeVisible();
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 2a. The owner's answers of 2026-11-11 on the customer import, in the browser:
+//     "A1 stop" — no import moves a shop already in the CRM to another route;
+//     A5 — code spellings (customer codes read in capitals, shop codes that
+//     only look alike held back); A6 — a promote the 8-hour sign-in limit stops.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** "Promote n clean rows" → the review, its first line answered; returns the review and its Go button. */
+async function openReview(page: Page, n: number): Promise<{ review: Locator; go: Locator }> {
+  await page.getByRole('button', { name: `Promote ${n} clean rows`, exact: true }).click();
+  const review = page.getByRole('dialog', { name: 'Before you promote' });
+  await expect(review).toBeVisible();
+  await expect(review.getByText(new RegExp(`^Checked ${n} clean rows? for \\d+ customers? against the CRM as it is now\\.$`))).toBeVisible({
+    timeout: 90_000,
+  });
+  return { review, go: review.getByRole('button', { name: `Promote ${n} clean rows now`, exact: true }) };
+}
+
+/** The branch line a customer page prints for a shop: code · region · route (app/(app)/customers/[id]/page.tsx). */
+async function shopLineOnCustomerPage(page: Page, customerId: string, branchCode: string): Promise<Locator> {
+  await page.goto(`/customers/${customerId}`);
+  return page.getByText(new RegExp(`^${branchCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} · `));
+}
+
+test.describe('back office (owner, A1 stop): a sheet never moves a shop already in the CRM to another route', { tag: ['@desktop'] }, () => {
+  requireLaunchEnv();
+  installLaunchHooks();
+  test.describe.configure({ mode: 'serial' });
+
+  let w: World;
+  let stw: FixtureUser;
+  let newCode = '';
+  let phone = '';
+  let batch = '';
+  let since: Date;
+
+  test.beforeAll(async () => {
+    test.setTimeout(300_000);
+    since = new Date();
+    w = await createWorld('bkr', {
+      regions: [{ key: 'R1' }, { key: 'R2' }],
+      routes: [
+        { key: 'A', region: 'R1' },
+        { key: 'A2', region: 'R1' },
+        { key: 'B', region: 'R2' },
+      ],
+      users: [
+        { key: 'STW', role: 'STEWARD' },
+        { key: 'M1', role: 'MANAGER', regions: ['R1'] },
+        { key: 'SA', role: 'SALESMAN', route: 'A', supervisor: 'M1' },
+      ],
+      // No Temix code: rows of these customers take the full lane (and, fixed in the app, the fixed lane).
+      customers: [
+        { key: 'EXA', phone: true, temixCode: null, branches: [{ key: 'S', route: 'A' }] },
+        { key: 'EXB', phone: true, temixCode: null, branches: [{ key: 'S', route: 'A' }] },
+      ],
+    });
+    stw = w.user('STW');
+    newCode = `E2E${w.SFX}-NEWR`;
+    [phone] = await w.allocPhones(1);
+  });
+
+  test.afterAll(async () => {
+    test.setTimeout(300_000);
+    if (w) await w.cleanup();
+  });
+
+  /** A sheet row for a world shop as the CRM has it, with the given changes. */
+  const shopRow = (key: string, extra: Record<string, Cell>): Record<string, Cell> => {
+    const c = w.customer(key);
+    return {
+      cust_code: c.code,
+      cust_name: c.legalName,
+      branch_code: c.branch.code,
+      branch_name: c.branch.name,
+      sales_region: w.region('R1').code,
+      route: w.route('A').code,
+      address: 'Way 3012, Al Ghubra North, Muscat',
+      phone: c.phone,
+      payment_terms: 'CASH',
+      day_of_visit: OMAN_TODAY,
+      ...extra,
+    };
+  };
+
+  test('the batch page warns before the fix and before the load; Before you promote counts the rows and asks for the tick; after the load the shops keep their route, new shops get the sheet’s, and the notice is read and recorded', async ({ browser }) => {
+    test.setTimeout(420_000);
+    const exa = w.customer('EXA');
+    const exb = w.customer('EXB');
+    const [A, A2, B] = [w.route('A'), w.route('A2'), w.route('B')];
+    const [R1, R2] = [w.region('R1'), w.region('R2')];
+    await resetStewardLimits(stw);
+    const page = await openAs(browser, stw, '/import');
+    const msg = await upload(page, 'Customer master', {
+      name: `${w.sfx}-customers-routes.xlsx`,
+      buffer: await customerWorkbook([
+        // #2: EXA's shop named on route A2, held back for its visit day: corrected in the app, it loads on the fixed lane.
+        shopRow('EXA', { route: A2.code, day_of_visit: 'Mnday' }),
+        // #3: EXB's shop named on route B (region R2): the full lane.
+        shopRow('EXB', { route: B.code, sales_region: R2.code }),
+        // #4: a NEW shop of EXB on route B.
+        shopRow('EXB', { branch_code: `${exb.code}-02`, branch_name: `${exb.legalName} second shop`, route: B.code, sales_region: R2.code }),
+        // #5: a NEW customer on route B.
+        {
+          cust_code: newCode,
+          cust_name: w.name('Imported NEWR'),
+          branch_code: `${newCode}-01`,
+          branch_name: w.name('Imported NEWR shop'),
+          sales_region: R2.code,
+          route: B.code,
+          address: ADDRESS,
+          phone,
+          payment_terms: 'CASH',
+          day_of_visit: OMAN_TODAY,
+        },
+      ]),
+    });
+    await expect(msg).toHaveText(/^Uploaded — 3 clean · 1 quarantined\./);
+    batch = await batchIdOf(msg);
+    w.adopt.importBatch(batch);
+    const rows = await db.importRow.findMany({ where: { batchId: batch }, select: { id: true, rowNumber: true } });
+    const idOf = (n: number) => rows.find((r) => r.rowNumber === n)!.id;
+
+    // 1. Before the fix: the held-back row says the route will NOT be applied.
+    const warning = `Shop ${exa.branch.code} is already in the CRM, on route ${A.code}. This row names route ${A2.code}: when it loads, that route is NOT applied and the shop stays on route ${A.code}. The rest of the row loads as usual. ${ROUTE_NOT_APPLIED}`;
+    await page.goto(`/import/${batch}?show=all`);
+    await expect(batchRow(page, '#2').getByTestId('route-not-applied')).toHaveText(warning);
+    // A clean row is not "held back or waiting": it carries no fix and no warning there.
+    await expect(batchRow(page, '#3').getByTestId('route-not-applied')).toHaveCount(0);
+    // The route is not a cell the Steward can correct.
+    await batchRow(page, '#2').getByRole('button', { name: 'Correct…' }).click();
+    await expect(page.locator(`#fix-${idOf(2)}-route`)).toHaveCount(0);
+    await page.locator(`#fix-${idOf(2)}-day_of_visit`).fill(OMAN_TODAY);
+    await batchRow(page, '#2').getByRole('button', { name: 'Save and re-check' }).click();
+    // 2. Waiting to load: still said.
+    await shownInPlace(
+      page,
+      'Correct… on row #2',
+      async (timeout) => {
+        await expect(batchRow(page, '#2')).toContainText('Fixed in the app — loads on the next promote.', { timeout });
+        await expect(batchRow(page, '#2').getByTestId('route-not-applied')).toHaveText(warning, { timeout });
+      },
+      async () => (await db.importRow.findUniqueOrThrow({ where: { id: idOf(2) }, select: { state: true } })).state === 'CLEAN'
+    );
+
+    // 3. Before you promote: the count, in words, and the tick before Go.
+    const live = await liveCustomerPromotes();
+    notRunHere(live > 0, `another customer import holds a live promote lease (${live})`);
+    const { review, go } = await openReview(page, 4);
+    await expect(
+      review.getByText(
+        `Route NOT applied: 2 row(s) name a route other than the current route of their shop, which is already in the CRM. The rest of each row loads as the lines here say; the route does not. ${ROUTE_NOT_APPLIED}`,
+        { exact: true }
+      )
+    ).toBeVisible();
+    await expect(review.getByText(/^New: 1 customer\(s\) and 2 shop\(s\) will be created \(1 of the shops on customers already in the CRM\)\.$/)).toBeVisible();
+    const tick = review.getByRole('checkbox');
+    await expect(tick).toHaveCount(1);
+    await expect(review.locator('label').filter({ has: page.getByRole('checkbox') })).toHaveText(
+      `I understand that 2 row(s) name a different route for a shop already in the CRM: ${ROUTE_ONLY_MEANING} Each such row is listed under “Loaded with a warning”.`
+    );
+    await expect(go, 'no load before the tick').toBeDisabled();
+    await tick.check();
+    await expect(go).toBeEnabled();
+    const done = seeText(page, /✓ Done — 4 rows promoted in this run\..*2 row\(s\) named a different route that was NOT applied/);
+    await go.click();
+    await done;
+
+    // 4. The shops already in the CRM are still on their route — read on the customer pages.
+    const custPage = await openAs(browser, stw, `/customers/${exa.id}`);
+    await expect(await shopLineOnCustomerPage(custPage, exa.id, exa.branch.code)).toHaveText(`${exa.branch.code} · ${R1.name} · ${A.name}`);
+    await expect(await shopLineOnCustomerPage(custPage, exb.id, exb.branch.code)).toHaveText(`${exb.branch.code} · ${R1.name} · ${A.name}`);
+    // New shops get the sheet's route: a new shop of a customer in the CRM, and a new customer's.
+    await expect(await shopLineOnCustomerPage(custPage, exb.id, `${exb.code}-02`)).toHaveText(`${exb.code}-02 · ${R2.name} · ${B.name}`);
+    const created = await db.customer.findUniqueOrThrow({ where: { nmwcCode: newCode }, select: { id: true } });
+    w.adopt.customer(created.id);
+    await expect(await shopLineOnCustomerPage(custPage, created.id, `${newCode}-01`)).toHaveText(`${newCode}-01 · ${R2.name} · ${B.name}`);
+    // No route change was written anywhere for the two shops: no BranchHistory row with another route.
+    const moved = await db.branchHistory.count({
+      where: { branchId: { in: [exa.branch.id, exb.branch.id] }, recordedAt: { gte: since }, OR: [{ routeId: { not: A.id } }, { changedFields: { has: 'routeId' } }] },
+    });
+    expect(moved, 'no dated history of another route').toBe(0);
+
+    // 5. The rows say so, under "Loaded with a warning", in the app's sentence.
+    await page.goto(`/import/${batch}?show=warnings`);
+    await expect(batchRow(page, '#2')).toContainText(`Route not applied: shop ${exa.branch.code}: the sheet names route ${A2.code}; the shop is on route ${A.code}. ${ROUTE_NOT_APPLIED}`);
+    await expect(batchRow(page, '#3')).toContainText(`Route not applied: shop ${exb.branch.code}: the sheet names route ${B.code}; the shop is on route ${A.code}. ${ROUTE_NOT_APPLIED}`);
+
+    await page.goto(`/import/${batch}?show=all`);
+    await expect(batchRow(page, '#4'), 'a new shop has no such note').not.toContainText('Route not applied');
+    await expect(batchRow(page, '#5')).not.toContainText('Route not applied');
+
+    // 6. The end-of-load notice, its two paragraphs, read and recorded.
+    const notice = page.getByTestId('shops-not-changed');
+    await expect(notice.locator('p').nth(0)).toHaveText('2 row(s) were loaded, but not everything they say about their shop was applied.');
+    await expect(notice.locator('p').nth(1)).toHaveText(
+      `Rows loaded with their shop NOT changed. ${SHOP_NOT_CHANGED_MEANING} Where such a row gives a different route: ${ROUTE_NOT_APPLIED}`
+    );
+    await expect(notice.locator('p').nth(2)).toHaveText(`Rows that name a different route for a shop already in the CRM: ${ROUTE_ONLY_MEANING}`);
+    await page.reload();
+    await expect(notice, 'it stays until it is read').toBeVisible();
+    await notice.getByRole('button', { name: 'I have read this', exact: true }).click();
+    await shownInPlace(
+      page,
+      'I have read this',
+      (timeout) => expect(notice).toHaveCount(0, { timeout }),
+      async () => (await db.importBatch.findUniqueOrThrow({ where: { id: batch }, select: { shopNotChangedAckRows: true } })).shopNotChangedAckRows === 2
+    );
+    const said = 'Rows loaded with something about their shop not applied (shop NOT changed, or route not applied), acknowledged by the Data Steward: 2';
+    await page.goto(`/audit?entityType=ImportBatch&action=UPDATE&q=${batch}`);
+    await expect(page.locator('tbody tr').filter({ hasText: said })).toHaveCount(1);
+    await expect(page.locator('tbody tr').filter({ hasText: said })).toContainText(stw.fullName);
+  });
+});
+
+test.describe('back office (owner, A5): code spellings on the customer import', { tag: ['@desktop'] }, () => {
+  requireLaunchEnv();
+  installLaunchHooks();
+  test.describe.configure({ mode: 'serial' });
+
+  let w: World;
+  let stw: FixtureUser;
+  let caseShop = '';
+  let blankCode = '';
+  let blankPhone = '';
+  let batch = '';
+  const RELEASE = 'Two shops of one owner in one street';
+
+  test.beforeAll(async () => {
+    test.setTimeout(300_000);
+    w = await createWorld('bkc', {
+      regions: [{ key: 'R1' }],
+      routes: [{ key: 'A', region: 'R1' }],
+      users: [
+        { key: 'STW', role: 'STEWARD' },
+        { key: 'M1', role: 'MANAGER', regions: ['R1'] },
+        { key: 'SA', role: 'SALESMAN', route: 'A', supervisor: 'M1' },
+      ],
+      customers: ['CAP', 'LZC', 'LZR', 'LZW', 'CASE'].map((key) => ({ key, phone: true, temixCode: null, branches: [{ key: 'S', route: 'A' }] })),
+    });
+    stw = w.user('STW');
+    // A shop code with letters after the customer's: CASE's shop is "<code>-AB".
+    const c = w.customer('CASE');
+    caseShop = `${c.code}-AB`;
+    await db.branch.update({ where: { id: c.branch.id }, data: { branchCode: caseShop } });
+    blankCode = `E2E${w.SFX}-NEWBL`;
+    [blankPhone] = await w.allocPhones(1);
+  });
+
+  test.afterAll(async () => {
+    test.setTimeout(300_000);
+    if (w) await w.cleanup();
+  });
+
+  const shopRow = (key: string, extra: Record<string, Cell>): Record<string, Cell> => {
+    const c = w.customer(key);
+    return {
+      cust_code: c.code,
+      cust_name: c.legalName,
+      branch_code: c.branch.code,
+      branch_name: c.branch.name,
+      sales_region: w.region('R1').code,
+      route: w.route('A').code,
+      address: 'Way 3012, Al Ghubra North, Muscat',
+      phone: c.phone,
+      payment_terms: 'CASH',
+      day_of_visit: OMAN_TODAY,
+      ...extra,
+    };
+  };
+  const blankRow = (branch: string | null, name: string): Record<string, Cell> => ({
+    cust_code: blankCode,
+    cust_name: w.name('Imported NEWBL'),
+    branch_code: branch,
+    branch_name: w.name(name),
+    sales_region: w.region('R1').code,
+    route: w.route('A').code,
+    address: ADDRESS,
+    phone: blankPhone,
+    payment_terms: 'CASH',
+    day_of_visit: OMAN_TODAY,
+  });
+  const branchesOf = async (customerId: string) =>
+    (await db.branch.findMany({ where: { customerId, deletedAt: null }, select: { branchCode: true }, orderBy: { branchCode: 'asc' } })).map((b) => b.branchCode);
+  const lookalike = (sheet: string, shop: string) =>
+    `Shop code "${sheet}" looks like this customer's existing shop "${shop}" (Excel may have dropped a zero). Correct the code if it is the same shop; if it is a different shop, release the row with a reason.`;
+
+  test('a customer code in small letters loads into its customer; a shop code 1 beside 01 is held back naming both, corrected or released, a release withdrawn; a code that differs only in capitals offers no release; a new customer’s blank code beside "1" is rejected at Promote and loads once given a code', async ({ browser }) => {
+    test.setTimeout(480_000);
+    const [cap, lzc, lzr, lzw] = ['CAP', 'LZC', 'LZR', 'LZW'].map((k) => w.customer(k));
+    const caseCust = w.customer('CASE');
+    const small = cap!.code.toLowerCase();
+    expect(small, 'the code has letters to change').not.toBe(cap!.code);
+    await resetStewardLimits(stw);
+    const page = await openAs(browser, stw, '/import');
+    const msg = await upload(page, 'Customer master', {
+      name: `${w.sfx}-customers-spellings.xlsx`,
+      buffer: await customerWorkbook([
+        shopRow('CAP', { cust_code: small }), // #2
+        shopRow('LZC', { branch_code: '1' }), // #3: corrected to 01
+        shopRow('LZR', { branch_code: '1' }), // #4: released as a different shop
+        shopRow('LZW', { branch_code: '1' }), // #5: released, then the release withdrawn
+        shopRow('CASE', { branch_code: 'ab' }), // #6: only capitals differ
+        blankRow(null, 'Blank code shop'), // #7
+        blankRow('1', 'Coded shop'), // #8
+      ]),
+    });
+    await expect(msg).toHaveText(/^Uploaded — 3 clean · 4 quarantined\./);
+    batch = await batchIdOf(msg);
+    w.adopt.importBatch(batch);
+    const rows = await db.importRow.findMany({ where: { batchId: batch }, select: { id: true, rowNumber: true } });
+    const idOf = (n: number) => rows.find((r) => r.rowNumber === n)!.id;
+    const stateOf = async (n: number) => (await db.importRow.findUniqueOrThrow({ where: { id: idOf(n) }, select: { state: true } })).state;
+
+    await page.goto(`/import/${batch}?show=all`);
+    // The reasons name both codes and the branch_code cell.
+    for (const [n, c] of [
+      [3, lzc],
+      [4, lzr],
+      [5, lzw],
+    ] as const) {
+      await expect(batchRow(page, `#${n}`)).toContainText(lookalike('1', c!.branch.code));
+      await expect(batchRow(page, `#${n}`).getByRole('button', { name: 'Different shop: release…' })).toBeVisible();
+    }
+    await expect(batchRow(page, '#6')).toContainText(
+      `Shop code "ab" looks like this customer's existing shop "${caseShop}" (only capital and small letters differ). Correct the code: shop codes are kept in capital letters, so if it is the same shop write it as that shop's code, and if it is a different shop give it a different code.`
+    );
+    await expect(batchRow(page, '#6').getByRole('button', { name: 'Different shop: release…' }), 'no release for capitals only').toHaveCount(0);
+
+    // #3: Correct on the branch_code cell — the same shop.
+    await batchRow(page, '#3').getByRole('button', { name: 'Correct…' }).click();
+    await page.locator(`#fix-${idOf(3)}-branch_code`).fill('01');
+    await batchRow(page, '#3').getByRole('button', { name: 'Save and re-check' }).click();
+    await shownInPlace(
+      page,
+      'Correct… on row #3',
+      (timeout) => expect(batchRow(page, '#3')).toContainText('Fixed in the app — loads on the next promote.', { timeout }),
+      async () => (await stateOf(3)) === 'CLEAN'
+    );
+    // #6: Correct to the shop's own code in capitals.
+    await batchRow(page, '#6').getByRole('button', { name: 'Correct…' }).click();
+    await page.locator(`#fix-${idOf(6)}-branch_code`).fill('AB');
+    await batchRow(page, '#6').getByRole('button', { name: 'Save and re-check' }).click();
+    await shownInPlace(
+      page,
+      'Correct… on row #6',
+      (timeout) => expect(batchRow(page, '#6')).toContainText('Fixed in the app — loads on the next promote.', { timeout }),
+      async () => (await stateOf(6)) === 'CLEAN'
+    );
+    // #4: a different shop — released with a typed reason.
+    for (const n of [4, 5]) {
+      await batchRow(page, `#${n}`).getByRole('button', { name: 'Different shop: release…' }).click();
+      await expect(page.getByLabel('Why is this a different shop and not the one its code looks like?')).toBeVisible();
+      const release = batchRow(page, `#${n}`).getByRole('button', { name: 'Release and re-check' });
+      await page.locator(`#releaseShop-${idOf(n)}`).fill('Two');
+      await expect(release, 'a reason of five characters or more').toBeDisabled();
+      await page.locator(`#releaseShop-${idOf(n)}`).fill(RELEASE);
+      await release.click();
+      await shownInPlace(
+        page,
+        `Different shop: release… on row #${n}`,
+        (timeout) => expect(batchRow(page, `#${n}`).getByRole('button', { name: 'Withdraw fix' })).toBeVisible({ timeout }),
+        async () => (await stateOf(n)) === 'CLEAN'
+      );
+    }
+    // #5: Withdraw undoes the release — held back again, with the release on offer again.
+    await batchRow(page, '#5').getByRole('button', { name: 'Withdraw fix' }).click();
+    await shownInPlace(
+      page,
+      'Withdraw fix on row #5',
+      (timeout) => expect(batchRow(page, '#5').getByRole('button', { name: 'Different shop: release…' })).toBeVisible({ timeout }),
+      async () => (await stateOf(5)) === 'QUARANTINED'
+    );
+    await expect(batchRow(page, '#5')).toContainText(lookalike('1', lzw!.branch.code));
+
+    // Before you promote: the capitals line, and the blank-coded new customer expected to be rejected.
+    const live = await liveCustomerPromotes();
+    notRunHere(live > 0, `another customer import holds a live promote lease (${live})`);
+    const first = seeText(page, /✓ Done — 4 rows promoted in this run · 1 customer\(s\) failed\./);
+    await promoteThroughReview(page, 6, {
+      before: async (review) => {
+        await expect(
+          review.getByText(
+            'Codes in capitals: 1 row(s) have a customer code or Temix code typed in small letters. They are read in capital letters (cct0005 is CCT0005), so they load as that customer; each row says so.',
+            { exact: true }
+          )
+        ).toBeVisible();
+        await expect(review.getByText(/^Expected to be rejected at Promote: 2 row\(s\) of 1 customer\(s\)/)).toBeVisible();
+      },
+    });
+    await first;
+
+    // Small letters: loaded into the customer in the CRM — no second customer — and the row says so.
+    expect(await db.customer.count({ where: { nmwcCode: { equals: cap!.code, mode: 'insensitive' } } }), 'one customer').toBe(1);
+    expect(await branchesOf(cap!.id)).toEqual([cap!.branch.code]);
+    await page.goto(`/import/${batch}?show=warnings`);
+    await expect(batchRow(page, '#2')).toContainText(
+      `Code in capitals: Small letters changed to capitals: customer code "${small}" was read as "${cap!.code}". The sheet is not changed.`
+    );
+    // Corrected: loaded as that shop. Released: a second shop, audited. Capitals corrected: that shop.
+    expect(await branchesOf(lzc!.id)).toEqual([lzc!.branch.code]);
+    expect(await branchesOf(lzr!.id)).toEqual([lzr!.branch.code, `${lzr!.code}-1`].sort());
+    expect(await branchesOf(caseCust.id)).toEqual([caseShop]);
+    expect((await auditFor({ entityId: idOf(4), action: 'FORCE_OVERRIDE' })).map((a) => a.reason)).toEqual([
+      `Shop code released as a different shop by the Data Steward: ${RELEASE}`,
+    ]);
+    // Withdrawn: still held back, nothing added.
+    expect(await stateOf(5)).toBe('QUARANTINED');
+    expect(await branchesOf(lzw!.id)).toEqual([lzw!.branch.code]);
+
+    // The new customer: both rows rejected with the sentence that names the rows, and no customer.
+    expect(await db.customer.count({ where: { nmwcCode: blankCode } })).toBe(0);
+    await page.goto(`/import/${batch}?show=rejected`);
+    for (const n of ['#7', '#8']) {
+      await expect(batchRow(page, n)).toContainText('The branch_code on row 7 is blank, so it would be numbered "');
+      await expect(batchRow(page, n)).toContainText('Give row 7 a branch_code: the same code if it is the same shop, a different one if it is a different shop.');
+    }
+    // The Steward gives the blank row a code; the batch loads both shops.
+    await batchRow(page, '#7').getByRole('button', { name: 'Correct…' }).click();
+    await page.locator(`#fix-${idOf(7)}-branch_code`).fill('02');
+    await batchRow(page, '#7').getByRole('button', { name: 'Save and re-check' }).click();
+    await expect.poll(() => stateOf(7), { timeout: 60_000 }).toBe('CLEAN');
+    await expect.poll(() => stateOf(8), { timeout: 60_000, message: 'the coded row comes back with the fix' }).toBe('CLEAN');
+    await page.goto(`/import/${batch}`);
+    const second = seeText(page, '✓ Done — 2 rows promoted in this run.');
+    await promoteThroughReview(page, 2);
+    await second;
+    const loaded = await db.customer.findUniqueOrThrow({ where: { nmwcCode: blankCode }, select: { id: true } });
+    w.adopt.customer(loaded.id);
+    expect(await branchesOf(loaded.id)).toEqual([`${blankCode}-02`, `${blankCode}-1`].sort());
+  });
+});
+
+test.describe('back office (owner, A6): a promote the 8-hour sign-in limit stops', { tag: ['@desktop'] }, () => {
+  requireLaunchEnv();
+  installLaunchHooks();
+  test.describe.configure({ mode: 'serial' });
+
+  let w: World;
+  let stw: FixtureUser;
+  let newCode = '';
+  let phone = '';
+
+  test.beforeAll(async () => {
+    test.setTimeout(300_000);
+    w = await createWorld('bks', {
+      regions: [{ key: 'R1' }],
+      routes: [{ key: 'A', region: 'R1' }],
+      users: [
+        { key: 'STW', role: 'STEWARD' },
+        { key: 'M1', role: 'MANAGER', regions: ['R1'] },
+        { key: 'SA', role: 'SALESMAN', route: 'A', supervisor: 'M1' },
+      ],
+      customers: [{ key: 'EXL', phone: true, temixCode: null, branches: [{ key: 'S', route: 'A' }] }],
+    });
+    stw = w.user('STW');
+    newCode = `E2E${w.SFX}-NEWL`;
+    [phone] = await w.allocPhones(1);
+  });
+
+  test.afterAll(async () => {
+    test.setTimeout(300_000);
+    if (w) await w.cleanup();
+  });
+
+  test('the limit between two slices: the next slice is refused, he is taken to the sign-in page with the sentence; signed in again, Resume is offered once the lease runs out and loads the rest once', async ({ browser }) => {
+    test.setTimeout(420_000);
+    test.info().annotations.push({
+      type: 'how the limit is reached mid-promote',
+      description:
+        'A slice yields after 15 s (PROMOTE_SLICE_BUDGET_MS). The test holds the first customer’s row lock for 17 s, so the first slice — begun on a good sign-in — outlasts its budget and leaves one row; the sign-in is run out meanwhile, so the second slice meets the limit.',
+    });
+    const exl = w.customer('EXL');
+    const ip = w.ip(1);
+    await resetStewardLimits(stw);
+    await resetLimits({ users: [stw], ips: [ip] });
+    const ctx = await contextAs(browser, stw, { device: 'desktop' });
+    const page = await ctx.newPage();
+    acceptDialogs(page);
+    trackRequests(page);
+    const msg = await upload(page, 'Customer master', {
+      name: `${w.sfx}-customers-limit.xlsx`,
+      buffer: await customerWorkbook([
+        {
+          cust_code: exl.code,
+          cust_name: exl.legalName,
+          branch_code: exl.branch.code,
+          branch_name: exl.branch.name,
+          sales_region: w.region('R1').code,
+          route: w.route('A').code,
+          address: 'Way 3012, Al Ghubra North, Muscat',
+          phone: exl.phone,
+          payment_terms: 'CASH',
+          day_of_visit: OMAN_TODAY,
+        },
+        {
+          cust_code: newCode,
+          cust_name: w.name('Imported NEWL'),
+          branch_code: `${newCode}-01`,
+          branch_name: w.name('Imported NEWL shop'),
+          sales_region: w.region('R1').code,
+          route: w.route('A').code,
+          address: ADDRESS,
+          phone,
+          payment_terms: 'CASH',
+          day_of_visit: OMAN_TODAY,
+        },
+      ]),
+    });
+    await expect(msg).toHaveText(/^Uploaded — 2 clean · 0 quarantined/);
+    const batch = await batchIdOf(msg);
+    w.adopt.importBatch(batch);
+    const live = await liveCustomerPromotes();
+    notRunHere(live > 0, `another customer import holds a live promote lease (${live})`);
+    await page.goto(`/import/${batch}`);
+    const { go } = await openReview(page, 2);
+    await expect(go).toBeEnabled();
+
+    // Hold the first customer's row, so the first slice outlasts its 15 s budget.
+    let locked!: () => void;
+    const isLocked = new Promise<void>((r) => (locked = r));
+    const hold = db.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "Customer" WHERE "id" = ${exl.id} FOR UPDATE`;
+        locked();
+        await new Promise((r) => setTimeout(r, 17_000));
+      },
+      { timeout: 60_000, maxWait: 10_000 }
+    );
+    await isLocked;
+    // Every server action of the batch page is a POST to it: the two slices, in order.
+    const slices: Array<Promise<string>> = [];
+    page.on('response', (r) => {
+      if (r.request().method() === 'POST' && new URL(r.url()).pathname === `/import/${batch}`) slices.push(r.text().catch(() => ''));
+    });
+    const firstSlice = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === `/import/${batch}`);
+    await go.click();
+    await firstSlice;
+    // The first slice is on its way with the good sign-in; the sign-in runs out now.
+    await runOutSignIn(ctx, stw);
+    await hold;
+
+    // The next slice is refused, and the page's refresh takes him to the sign-in page, which says why.
+    await expect(page).toHaveURL(/\/login(\?|$)/, { timeout: 120_000 });
+    await expect(loginNotice(page)).toHaveText(SIGN_IN_LIMIT_MESSAGE);
+    // The second slice was answered as anyone signed out is answered.
+    expect(slices.length, 'two slices were sent').toBeGreaterThanOrEqual(2);
+    expect(await slices[1], 'the second slice').toContain(NOT_SIGNED_IN);
+    const rowStates = async () =>
+      (await db.importRow.findMany({ where: { batchId: batch }, orderBy: { rowNumber: 'asc' }, select: { state: true } })).map((r) => r.state);
+    expect(await rowStates(), 'the first slice is saved; the rest waits').toEqual(['PROMOTED', 'CLEAN']);
+    expect(await db.customer.count({ where: { nmwcCode: newCode } })).toBe(0);
+    expect((await db.importBatch.findUniqueOrThrow({ where: { id: batch }, select: { status: true } })).status).toBe('PROMOTING');
+
+    // Signed in again: his home, then the batch. The stopped run keeps a short hand-over lease
+    // (PROMOTE_HANDOFF_GRACE_MS, 20 s); while it lasts the page says another promote is running.
+    // Once it is over the page says the promote was interrupted, and Resume carries on.
+    await signInViaUi(page, stw.username, stw.password, { ip, expectUrl: /\/import(\?|$)/ });
+    const running = page.getByText('Another promote is running — wait for it to finish.');
+    await page.goto(`/import/${batch}`);
+    test.info().annotations.push({
+      type: 'batch page right after signing in again',
+      description: (await running.isVisible())
+        ? 'it said "Another promote is running — wait for it to finish." — his own stopped run, inside its hand-over lease'
+        : 'the hand-over lease was already over',
+    });
+    await expect
+      .poll(
+        async () => {
+          await page.goto(`/import/${batch}`);
+          return page.getByText('Promote interrupted.').isVisible();
+        },
+        { timeout: 120_000, intervals: [3_000], message: 'the page says the promote was interrupted once the stopped run’s lease is over' }
+      )
+      .toBe(true);
+    await expect(running).toHaveCount(0);
+    const resume = page.getByRole('button', { name: 'Resume promote (1 rows left)', exact: true });
+    await expect(resume).toBeEnabled();
+    const done = seeText(page, '✓ Done — 1 rows promoted in this run.');
+    await resume.click();
+    const review = page.getByRole('dialog', { name: 'Before you resume' });
+    const again = review.getByRole('button', { name: 'Resume promote now (1 rows left)', exact: true });
+    await expect(again).toBeEnabled({ timeout: 90_000 });
+    await again.click();
+    await done;
+    expect(await rowStates()).toEqual(['PROMOTED', 'PROMOTED']);
+    const created = await db.customer.findUniqueOrThrow({ where: { nmwcCode: newCode }, select: { id: true } });
+    w.adopt.customer(created.id);
+    expect(await db.customer.count({ where: { nmwcCode: newCode } }), 'loaded once').toBe(1);
+    expect((await db.importBatch.findUniqueOrThrow({ where: { id: batch }, select: { status: true } })).status).toBe('PROMOTED');
   });
 });
 

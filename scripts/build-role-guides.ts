@@ -482,6 +482,10 @@ const SALESMAN_EN: Guide = {
         headers: ['Situation', 'What to do'],
         rows: [
           [
+            'Asked to sign in again in the middle of the day',
+            'A sign-in lasts at most 8 hours from the moment you signed in, even if you use the app all day. If you were in the middle of a form, keep that page open: sign in again in another tab, come back and tap Try again (or Retry upload for a photo). What you typed is still on the form.',
+          ],
+          [
             'Photo upload keeps failing',
             'Move outside or near a window. Wait a few seconds. The app retries automatically. If still stuck, tap "Retry upload" — your photo is saved.',
           ],
@@ -741,6 +745,10 @@ const SUPERVISOR_EN: Guide = {
         headers: ['Message you see', 'What it means'],
         rows: [
           [
+            '"You were signed out because a sign-in lasts at most 8 hours"',
+            'A sign-in ends 8 hours after you signed in, however busy you were. Sign in again. A reason you were typing, or a decision you pressed after the 8 hours ("Not signed in."), is kept only while that page stays open: sign in in another tab, come back and press the button again.',
+          ],
+          [
             '"Edit was just decided by another reviewer"',
             'Another supervisor or manager approved/rejected before you. Refresh the queue.',
           ],
@@ -997,6 +1005,10 @@ const MANAGER_EN: Guide = {
         headers: ['Situation', 'What to do'],
         rows: [
           [
+            'Asked to sign in again after 8 hours',
+            'A sign-in lasts at most 8 hours from the moment you signed in, however busy you were. Sign in again. A reason you were typing, or a decision you pressed after the 8 hours ("Not signed in."), is kept only while that page stays open: sign in in another tab, come back and press the button again.',
+          ],
+          [
             'A salesman says "Submit is greyed out"',
             'The form lists what is still missing (photos, GPS, phone …). They can save a draft and finish at the shop. Nothing reaches you until it is submitted.',
           ],
@@ -1209,7 +1221,7 @@ const STEWARD_EN: Guide = {
           html: 'The page shows six figures: <strong>Total · Clean · Quarantined · Promoted · Rejected · Left to promote</strong>. The table below opens on <strong>Needs attention</strong> — every REJECTED and QUARANTINED row you have not excluded. The other views are <strong>Rejected</strong>, <strong>Quarantined</strong>, <strong>Loaded with a warning</strong>, <strong>Excluded</strong> and <strong>All rows</strong>; each says how many rows it holds, and <strong>Previous / Next</strong> reach every one of them, however long the file. Each row shows the customer, its branch, route and day, what happened to it in words, and — under <strong>As uploaded</strong> — the values exactly as your sheet had them.',
         },
         {
-          html: 'Review the <strong>QUARANTINED</strong> rows first — bad phone format, an unknown channel or visit-day code, a duplicate phone or CR on a different customer. When the reason names a customer already in the master (“phone already exists in master on customer X”), open that customer first: it may be the same shop. Each problem row has a <strong>Fix</strong> column: <strong>Correct…</strong> changes only the cells its problem names (never payment terms, credit or the Temix code) and checks the row again; <strong>Release shared phone…</strong>, offered only when the phone being on another customer is the row’s one problem, lets it through with your written reason; <strong>Re-check</strong> checks it again as it stands; <strong>Exclude…</strong> records, with a reason, that it stays out. A fixed row turns CLEAN, waits under <strong>Fixed, waiting to promote</strong>, and loads when you click <strong>Promote</strong>; until then <strong>Withdraw fix</strong> puts it back exactly as it was. The row as your sheet had it is kept; your corrections are shown beside it. For a customer linked to Temix a fixed row writes only its branch — a phone, name, CR, contact or channel you corrected or released there is <strong>not</strong> written to the customer (the row says so, before and after; change those on the customer’s page), except a phone when the customer has none, which it fills; a fixed row with no branch_code — every go-live head-office row — comes back REJECTED so you can give it one (a code the customer does not use yet adds a new branch). Fixing a rejected row brings its customer’s other rejected rows back with it (they say so); if a newer upload overtakes one of them, or they wait past 90 days, Promote rejects them all together (a row held back again stays out, and the others say they load without it), and withdrawing the fix — from any of those rows — takes back exactly them. Fix a row only in the newest upload that carries it: rows a newer upload superseded offer only Exclude (a rejected row also when one of the rows rejected with it is superseded — exclude that one first), a fix that a newer upload overtakes while it waits, or that waits past 90 days, is rejected at Promote with the rows it brought back, and rows uploaded more than 90 days ago can no longer be fixed. For a customer linked to Temix only a newer row about the same branch counts, so an inbound Temix refresh does not stop you fixing a held-back branch row.',
+          html: 'Review the <strong>QUARANTINED</strong> rows first — bad phone format, an unknown channel or visit-day code, a duplicate phone or CR on a different customer. When the reason names a customer already in the master (“phone already exists in master on customer X”), open that customer first: it may be the same shop. Each problem row has a <strong>Fix</strong> column: <strong>Correct…</strong> changes only the cells its problem names (never payment terms, credit or the Temix code) and checks the row again; <strong>Release shared phone…</strong>, offered only when the phone being on another customer is the row’s one problem, lets it through with your written reason; <strong>Different shop: release…</strong>, offered when a shop code only looks like another shop of the same customer by its zeros, loads it as a different shop with your written reason; <strong>Re-check</strong> checks it again as it stands; <strong>Exclude…</strong> records, with a reason, that it stays out. A fixed row turns CLEAN, waits under <strong>Fixed, waiting to promote</strong>, and loads when you click <strong>Promote</strong>; until then <strong>Withdraw fix</strong> puts it back exactly as it was. The row as your sheet had it is kept; your corrections are shown beside it. For a customer linked to Temix a fixed row writes only its branch — a phone, name, CR, contact or channel you corrected or released there is <strong>not</strong> written to the customer (the row says so, before and after; change those on the customer’s page), except a phone when the customer has none, which it fills; a fixed row with no branch_code — every go-live head-office row — comes back REJECTED so you can give it one (a code the customer does not use yet adds a new branch). Fixing a rejected row brings its customer’s other rejected rows back with it (they say so); if a newer upload overtakes one of them, or they wait past 90 days, Promote rejects them all together (a row held back again stays out, and the others say they load without it), and withdrawing the fix — from any of those rows — takes back exactly them. Fix a row only in the newest upload that carries it: rows a newer upload superseded offer only Exclude (a rejected row also when one of the rows rejected with it is superseded — exclude that one first), a fix that a newer upload overtakes while it waits, or that waits past 90 days, is rejected at Promote with the rows it brought back, and rows uploaded more than 90 days ago can no longer be fixed. For a customer linked to Temix only a newer row about the same branch counts, so an inbound Temix refresh does not stop you fixing a held-back branch row.',
         },
         {
           html: 'Click <strong>Promote N clean rows</strong>. On a full master this <strong>runs in passes</strong> — the button reads “Promoting… 1,200 done, 2,100 left” and keeps going by itself. Leave the tab open until it reports <strong>Done</strong>.',
@@ -1221,7 +1233,7 @@ const STEWARD_EN: Guide = {
           html: 'Only <strong>one</strong> customer import can be promoted at a time. A second attempt is refused and names the file already running — finish (or abandon) that one first.',
         },
         {
-          html: 'When it finishes, <strong>reconcile</strong>: <em>Left to promote</em> must be 0, and <em>Promoted + Rejected + Quarantined</em> must equal <em>Total</em>. Then open the <strong>Rejected</strong> view and read every row: a rejected row is <strong>not</strong> in the master. Typical reasons are a branch code that already belongs to another customer, a Temix code recorded on a different customer, or payment terms that disagree with the ones on record. Fix a rejected row as above — <strong>Re-check</strong> takes its whole customer with it — or exclude it. A payment-terms or crosswalk rejection comes back rejected until the master itself changes. Then open <strong>Loaded with a warning</strong>: those customers are in the master, but something in the row was substituted or not applied — a route or region that was not found, or, for a customer already linked to Temix, branch values in a file row, which a re-import never changes. Change those on the customer’s page. Note that the lane is decided by each ROW: a file row whose <strong>temix_code</strong> cell is blank takes the full lane even for a customer linked to Temix, overwriting its name, phone, CR, contact, channel, status and branch cells without telling Temix — so always fill temix_code with the customer’s own code.',
+          html: 'When it finishes, <strong>reconcile</strong>: <em>Left to promote</em> must be 0, and <em>Promoted + Rejected + Quarantined</em> must equal <em>Total</em>. Then open the <strong>Rejected</strong> view and read every row: a rejected row is <strong>not</strong> in the master. Typical reasons are a branch code that already belongs to another customer, a Temix code recorded on a different customer, or payment terms that disagree with the ones on record. Fix a rejected row as above — <strong>Re-check</strong> takes its whole customer with it — or exclude it. A payment-terms or crosswalk rejection comes back rejected until the master itself changes. Then open <strong>Loaded with a warning</strong>: those customers are in the master, but something in the row was substituted or not applied — a route or region that was not found, or, for a customer already linked to Temix, branch values in a file row, which a re-import never changes. Change those on the customer’s page. A row that names a different route for a shop already in the CRM is labelled <strong>Route not applied</strong>: the rest of the row was loaded, but the shop stays on its current route — no import moves an existing shop to another route, because route moves are made in Temix. A new shop is still created on the route its row names. Before you promote, the summary says how many rows name a different route, and the batch page says it on a held-back row before you correct it. After the load, the notice you acknowledge with <strong>I have read this</strong> counts these rows too. Note that the lane is decided by each ROW: a file row whose <strong>temix_code</strong> cell is blank takes the full lane even for a customer linked to Temix, overwriting its name, phone, CR, contact, channel, status and branch cells without telling Temix — so always fill temix_code with the customer’s own code.',
         },
         {
           html: 'Record the six figures (a screenshot of the batch page is enough) as the evidence that the load was checked. The load is complete when <strong>Needs attention</strong> is empty: every rejected and quarantined row fixed and loaded, or excluded with a reason. Until then the batch stays on your <strong>Work</strong> list.',
@@ -1448,6 +1460,10 @@ const STEWARD_EN: Guide = {
         headers: ['Situation', 'What to do'],
         rows: [
           [
+            'Asked to sign in again after 8 hours',
+            'A sign-in lasts at most 8 hours from the moment you signed in, however busy you were. Sign in again. A promote the limit stops sends you to the sign-in page, and keeps every slice it loaded: sign in again, open the batch, and Resume promote once the page offers it (within about a minute and a half). A reason you were typing is kept only while that page stays open: sign in in another tab, then come back and press the button again.',
+          ],
+          [
             '"Branch not updated" on a row that loaded',
             'The customer is linked to Temix, so a file row carrying its temix_code refreshes its Temix fields only and leaves its branches alone. Change the branch values on the customer’s page. A branch that was held back is added by fixing its held-back row on the batch page, not by uploading it again.',
           ],
@@ -1458,6 +1474,14 @@ const STEWARD_EN: Guide = {
           [
             '"phone already exists in master on customer X"',
             'Open customer X. If it is the same shop, exclude the held-back row. If it is a different shop sharing the owner’s phone, use Release shared phone… on the row, with the reason, then promote the batch. For a customer linked to Temix the release lets the row’s branch load, and the phone becomes the customer’s phone only if the customer has none — otherwise change it on the customer’s page.',
+          ],
+          [
+            '"Shop code "1" looks like this customer’s existing shop "X-01""',
+            'Excel often turns 01 into 1, and the same shop typed as ab and AB is one shop. The row is held back so no second shop is made. If it is the same shop, use Correct… and type the code exactly as the CRM has it. If 1 and 01 really are two different shops, use Different shop: release… with the reason. Codes that differ only in capital letters cannot be two shops: correct the code, or exclude the row. Two rows of the same customer in one sheet that look alike are both held back.',
+          ],
+          [
+            'A customer code typed in small letters (cct0005)',
+            'Nothing to do. The import reads it in capital letters, so it is the customer CCT0005, and the row says “Code in capitals”. The sheet itself is not changed. A code with a different number of zeros (CCT005) is NOT the same customer: correct the sheet.',
           ],
           [
             '"Phone now belongs to X (Y) — reject and ask the salesman"',
@@ -1746,6 +1770,10 @@ const SALESMAN_AR: Guide = {
         headers: ['الموقف', 'ما العمل'],
         rows: [
           [
+            'طُلب منك تسجيل الدخول مرة أخرى في منتصف اليوم',
+            'يستمر تسجيل الدخول 8 ساعات على الأكثر من لحظة تسجيل دخولك، حتى لو استخدمت التطبيق طوال اليوم. إذا كنت في منتصف نموذج، اترك تلك الصفحة مفتوحة: سجّل الدخول مرة أخرى في علامة تبويب أخرى، ثم عُد واضغط "حاول مرة أخرى" (أو "إعادة الرفع" للصورة). ما كتبته لا يزال في النموذج.',
+          ],
+          [
             'رفع الصورة يفشل باستمرار',
             'انتقل إلى الخارج أو قرب نافذة. انتظر بضع ثوانٍ. التطبيق يحاول تلقائيًا. إذا استمر التعذر، اضغط "إعادة الرفع" — صورتك محفوظة.',
           ],
@@ -1990,6 +2018,10 @@ const SUPERVISOR_AR: Guide = {
         headers: ['الرسالة التي تراها', 'معناها'],
         rows: [
           [
+            '"تم تسجيل خروجك لأن تسجيل الدخول يستمر 8 ساعات على الأكثر"',
+            'ينتهي تسجيل الدخول بعد 8 ساعات من لحظة تسجيل دخولك، مهما كنت مشغولًا. سجّل الدخول مرة أخرى. السبب الذي كنت تكتبه، أو القرار الذي ضغطته بعد انقضاء الـ 8 ساعات ("Not signed in.")، يبقى محفوظًا فقط ما دامت تلك الصفحة مفتوحة: سجّل الدخول في علامة تبويب أخرى، ثم عُد واضغط الزر مرة أخرى.',
+          ],
+          [
             '"تم اتخاذ قرار في هذا التحرير من قبل مراجع آخر"',
             'مشرف آخر أو مدير اعتمد/رفض قبلك. أعد تحميل القائمة.',
           ],
@@ -2232,6 +2264,10 @@ const MANAGER_AR: Guide = {
       table: {
         headers: ['الموقف', 'ما العمل'],
         rows: [
+          [
+            'طُلب منك تسجيل الدخول مرة أخرى بعد 8 ساعات',
+            'ينتهي تسجيل الدخول بعد 8 ساعات من لحظة تسجيل دخولك، مهما كنت مشغولًا. سجّل الدخول مرة أخرى. السبب الذي كنت تكتبه، أو القرار الذي ضغطته بعد انقضاء الـ 8 ساعات ("Not signed in.")، يبقى محفوظًا فقط ما دامت تلك الصفحة مفتوحة: سجّل الدخول في علامة تبويب أخرى، ثم عُد واضغط الزر مرة أخرى.',
+          ],
           [
             'مندوب يقول "زر الإرسال رمادي"',
             'النموذج يعرض ما ينقص (صور، موقع، هاتف…). يستطيع حفظ مسودة وإكمالها في المحل. لا يصلك شيء قبل الإرسال.',

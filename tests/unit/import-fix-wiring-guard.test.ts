@@ -29,6 +29,9 @@ describe('one row check for the upload and the fix', () => {
     expect(upload).toContain('checkCustomerRow(');
     expect(upload).toContain('fileCollisions(');
     expect(upload).toContain('masterCollisionMaps(');
+    // Owner's answers 2026-11-11 (A5): the shops of each customer, in the CRM and in the sheet.
+    expect(upload).toContain('masterShopCodes(');
+    expect(upload).toContain('fileShopCodes(');
     expect(imports).not.toMatch(/field:\s*'cust_code',\s*message:\s*'required'/);
     expect(imports).not.toMatch(/expected SAT\/SUN\/MON/);
   });
@@ -38,6 +41,9 @@ describe('one row check for the upload and the fix', () => {
     expect(recheck).toContain('checkCustomerRow(');
     expect(recheck).toContain('masterCollisionMaps(');
     expect(recheck).toContain('correctedRow(');
+    // A5: a corrected branch_code is compared with the customer's shops and rows again.
+    expect(recheck).toContain('masterShopCodes(');
+    expect(recheck).toMatch(/shopCodeReleased:\s*!!c\.shopCodeReleased/);
   });
 });
 
@@ -48,6 +54,8 @@ describe('every fix action', () => {
     'recheckCore',
     'correctCore',
     'releaseCore',
+    // Owner's answers 2026-11-11 (A5): a lookalike shop code released as a different shop.
+    'releaseShopCodeCore',
     'withdrawCore',
     'excludeCore',
     'includeCore',
@@ -116,8 +124,14 @@ describe('the count behind the "shop NOT changed" notice', () => {
   it('is added to the batch right after the rows are marked PROMOTED, inside the customer transaction', () => {
     const at = imports.indexOf('data: { state: ImportRowState.PROMOTED, reviewedById: me.id, reviewedAt: new Date() }');
     expect(at).toBeGreaterThan(-1);
-    const after = imports.slice(at, at + 900);
-    expect(after).toMatch(/rowNotes\.filter\(\(n\) => n\?\.shopNotChanged === true\)\.length/);
+    // stripComments keeps a comment's length as blanks: 2026-11-11 added two comment lines here (was 900).
+    const after = imports.slice(at, at + 1100);
+    // Owner's answer 2026-11-11 ("A1 stop"): the notice also counts the rows whose
+    // route was not applied, each row once (this pinned the shopNotChanged-only filter).
+    expect(after).toMatch(/rowNotes\.filter\(inShopNotice\)\.length/);
+    expect(imports).toMatch(
+      /const inShopNotice = \(n: RowNote \| undefined\): boolean => n\?\.shopNotChanged === true \|\| !!n\?\.route;/
+    );
     expect(after).toMatch(/await tx\.importBatch\.update\(\{\s*where: \{ id: batchId \},\s*data: \{ shopNotChangedRows: \{ increment: notChangedHere \} \}/);
     // and not by the slice's finalize, which a slice that dies after committing never reaches
     expect(imports).not.toMatch(/shopNotChangedRows: sliceNotes/);

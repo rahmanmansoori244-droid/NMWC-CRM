@@ -75,7 +75,9 @@ export function parsePage(value: string | undefined): number {
  * customer's first row, with its branch written — the row's channel change
  * cleared the customer's sub-channel (F16). Since the code review of 2026-11-10
  * (finding 1) also a row whose CRM value differed from the record and was kept,
- * and a row whose credit cells were not applied.
+ * and a row whose credit cells were not applied; since the owner's answer of
+ * 2026-11-11, a row that named a different route for a shop already in the CRM
+ * (the route was not applied).
  */
 export function rowViewWhere(batchId: string, view: RowView): Prisma.ImportRowWhereInput {
   switch (view) {
@@ -147,6 +149,10 @@ const FIELD_LABEL: Record<string, string> = {
   // Code review 2026-11-10, finding 1 (services/imports.ts writeLaneNotes).
   _kept: 'CRM value kept',
   _credit: 'Credit not applied',
+  // Owner's answer 2026-11-11 ("A1 stop"): a shop that exists keeps its route.
+  _route: 'Route not applied',
+  // Owner's answer 2026-11-11 (A5): a code typed in small letters, read in capitals.
+  _capitals: 'Code in capitals',
   cust_code: 'Customer code',
   cust_name: 'Name',
   phone: 'Phone',

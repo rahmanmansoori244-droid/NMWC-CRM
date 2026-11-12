@@ -3,7 +3,11 @@
 import { useEffect, useState, useTransition } from 'react';
 import { loginAction } from '@/app/actions/auth';
 
-export function LoginForm() {
+/**
+ * `notice`: why the person is on this page, when the server knows (A6: the
+ * 8-hour sign-in limit signed him out). Information, not an error.
+ */
+export function LoginForm({ notice = null }: { notice?: string | null } = {}) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   // Go-live browser walk (2026-09-10): a tap on "Sign in" BEFORE React has
@@ -30,6 +34,11 @@ export function LoginForm() {
       data-hydrated={hydrated ? '1' : undefined}
       className="space-y-4 rounded-lg bg-white p-6 shadow-sm ring-1 ring-slate-200"
     >
+      {notice && (
+        <p role="status" className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-900 ring-1 ring-sky-200">
+          {notice}
+        </p>
+      )}
       <div>
         <label htmlFor="username" className="mb-1 block text-sm font-medium text-slate-700">
           Username
