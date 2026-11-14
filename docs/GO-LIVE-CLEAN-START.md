@@ -150,10 +150,11 @@ it, the photo step still works.
 
 **K. Your operations log.** In your private handover pack, start the entry: the date,
 "go-live clean start", your decisions, "I authorise it". Leave space for the run link,
-the plan id and the results. The Audit page shows that the clean start happened and why,
-but **not** how many records of each kind were removed: those figures are only in the
-run's encrypted report. If you want them in your log, Claude reads the report with you
-after the reset.
+the plan id and the results. On reset day the Audit page shows that the clean start
+happened and why, but **not** how many records of each kind were removed: those figures
+are then only in the run's encrypted report. Claude's small follow-up change, which goes
+live after the reset when you say so, adds them under that entry ("What was removed and
+kept"). If you want them in your log before then, Claude reads the report with you.
 
 **L. Everyone signs out.** Before reset day, every person who tested the CRM presses
 **Sign out** on every phone and computer they used. Signing out also deletes the unsent
@@ -322,8 +323,9 @@ from that line. Save. (The automatic backup runs at about 06:00 Oman.)
    exception allowed is "The off-site copies of the seals are there" when the summary
    showed `seal-offsite-copies: fail`.
 5. **Audit**: the clean-start entry is the only row before your sign-ins, with its reason.
-   Write in your private operations log that you saw it, with the run link. (The page
-   does not show how many records were removed; see Step 1 K.)
+   Write in your private operations log that you saw it, with the run link. (Until
+   Claude's follow-up change is live, the page does not show how many records were
+   removed; see Step 1 K.)
 6. Tell staff the CRM is open again, but no new customers yet.
 
 ---

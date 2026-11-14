@@ -54,6 +54,12 @@ import {
   nextOmanMorning,
 } from '../../scripts/ops/clean-start/rehearse-watch';
 import { runIntegrityWatch } from '@/lib/integrity/run';
+import { auditListWhere, listAuditRows } from '@/lib/audit-rows';
+import {
+  CLEAN_START_KIND_LABELS,
+  cleanStartCounts,
+  isCleanStartRecord,
+} from '@/lib/clean-start-record';
 
 vi.setConfig({ testTimeout: 300_000, hookTimeout: 600_000 });
 
@@ -1112,6 +1118,31 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
       Array<{ k: string }>
     >`SELECT DISTINCT "sourceKind" AS k FROM "UserHistory"`;
     expect(kinds).toEqual([{ k: 'script' }]);
+  });
+
+  it('follow-up 1 (F1): the Audit page’s data layer returns the reset row, with every count as the tables were', async () => {
+    // The Steward's default list, exactly as app/(app)/audit/page.tsx reads it.
+    const { total, logs } = await listAuditRows(db, auditListWhere({ action: null, q: null }), 1);
+    expect(total).toBe(1);
+    const row = logs.find((l) => isCleanStartRecord(l));
+    expect(row?.id).toBe(`cleanstart-${RUN}`);
+    const rows = cleanStartCounts(row!.after)!;
+    const by = Object.fromEntries(rows.map((r) => [r.kind, r]));
+    const now = await counts();
+    for (const t of TABLES.EMPTY) {
+      expect(by[t], t).toEqual({ kind: t, label: CLEAN_START_KIND_LABELS[t], removed: before[t], kept: null });
+    }
+    for (const t of TABLES.KEEP) {
+      expect(by[t], t).toEqual({ kind: t, label: CLEAN_START_KIND_LABELS[t], removed: null, kept: before[t] });
+    }
+    for (const t of ['CodeSequence', 'CronRun']) {
+      expect(by[t]!.kept, t).toBe(now[t]);
+      expect(by[t]!.removed, t).toBe(before[t]! - now[t]!);
+      expect(by[t]!.removed, t).toBeGreaterThan(0);
+    }
+    // Every kind the record holds is one the page has words for, and every figure is there.
+    expect(rows).toHaveLength(TABLES.EMPTY.length + TABLES.KEEP.length + 2);
+    expect(rows.every((r) => r.label !== r.kind && (r.removed !== null || r.kept !== null))).toBe(true);
   });
 
   it('the kept tables are byte-identical: accounts with their password hashes, history of passwords, regions, routes, manager links, channels', async () => {

@@ -30,7 +30,7 @@ import path from 'node:path';
 import type { ReactNode } from 'react';
 import { stripComments } from '../support/strip-comments';
 
-type Log = { id: string; actorId: string; at: Date; action: string; entityType: string; entityId: string; reason: string | null; actor: { fullName: string; username: string } };
+type Log = { id: string; actorId: string; at: Date; action: string; entityType: string; entityId: string; reason: string | null; actor: { fullName: string; username: string }; after?: unknown; source?: string | null };
 const h = vi.hoisted(() => ({
   role: 'STEWARD',
   regions: ['g-mine'] as string[],
@@ -102,6 +102,7 @@ import {
   STEWARD_HIDDEN_BY_DEFAULT,
 } from '@/lib/audit-scope';
 import { AuditAction, Role } from '@prisma/client';
+import { CLEAN_START_KIND_LABELS } from '@/lib/clean-start-record';
 
 const log = (id: string, actorId: string, fullName: string): Log => ({
   id,
@@ -542,5 +543,82 @@ describe('the Steward’s filter lists every entity type the code writes to the 
     const missing = [...written].filter((t) => !(AUDIT_ENTITY_TYPES as readonly string[]).includes(t));
     expect(missing).toEqual([]);
     for (const t of MANAGER_AUDIT_ENTITY_TYPES) expect(AUDIT_ENTITY_TYPES).toContain(t);
+  });
+});
+
+describe('follow-up 1 (F1): the clean start’s entry shows what it removed and kept', () => {
+  // The row as scripts/ops/clean-start/reset.sql writes it (tests/unit/clean-start-record.test.ts
+  // holds these marks and the lists to the SQL; tests/integration/clean-start.test.ts runs it).
+  const reset = (after: unknown): Log => ({
+    id: 'cleanstart-987654321',
+    actorId: 'u-owner',
+    at: new Date('2026-11-18T16:05:00Z'),
+    action: 'DELETE',
+    entityType: 'System',
+    entityId: 'clean-start',
+    reason:
+      'Go-live clean start (owner decision): test-period customer data, requests, imports, exports, notifications, logs and history removed; accounts, routes and regions kept; seal chain restarted.',
+    actor: { fullName: 'The Owner', username: 'u-owner' },
+    source: 'script:clean-start:987654321',
+    after,
+  });
+  const AFTER = {
+    runId: '987654321',
+    planId: 'a'.repeat(64),
+    removed: { Customer: 3334, Branch: 3901, AuditLog: 52011, CodeSequence: 1, CronRun: 812 },
+    kept: { User: 41, Route: 27, CodeSequence: 0, CronRun: 96, CronHeartbeat: 11 },
+  };
+  const table = () => screen.getByRole('table', { name: /removed and kept by the clean start/ });
+  const cells = () =>
+    [...table().querySelectorAll(':scope > tbody > tr')].map((tr) =>
+      [...tr.querySelectorAll(':scope > th, :scope > td')].map((c) => c.textContent)
+    );
+
+  it('a table of kinds in plain words, each figure exactly as the entry holds it, a dash where it holds none', async () => {
+    h.logs = [reset(AFTER), log('l1', 'u-ali', 'Ali Salesman')];
+    await open();
+    expect(screen.getByText('What was removed and kept')).toBeTruthy();
+    expect(cells()).toEqual([
+      ['Customers', '3,334', '—'],
+      ['Branches (shops)', '3,901', '—'],
+      ['Audit log entries', '52,011', '—'],
+      ['Scheduled job runs', '812', '96'],
+      ['Customer code counters', '1', '0'],
+      ['Accounts', '—', '41'],
+      ['Routes', '—', '27'],
+      ['Scheduled job heartbeats', '—', '11'],
+    ]);
+    expect(screen.getByText(/A dash: the entry holds no figure for that kind/)).toBeTruthy();
+    // The reason is still shown as it was.
+    expect(screen.getByText(/Go-live clean start \(owner decision\)/)).toBeTruthy();
+    // Only that entry: one such table on the page.
+    expect(screen.getAllByRole('table', { name: /removed and kept/ })).toHaveLength(1);
+  });
+
+  it('the labels come from the one word list', async () => {
+    h.logs = [reset(AFTER)];
+    await open();
+    expect(cells().map((r) => r[0])).toEqual(
+      ['Customer', 'Branch', 'AuditLog', 'CronRun', 'CodeSequence', 'User', 'Route', 'CronHeartbeat'].map((k) => CLEAN_START_KIND_LABELS[k])
+    );
+  });
+
+  it('an entry with no counts says so, and shows no figure', async () => {
+    h.logs = [reset({ runId: '987654321' })];
+    await open();
+    expect(screen.getByText('This entry holds no counts of what was removed and kept.')).toBeTruthy();
+    expect(screen.queryByRole('table', { name: /removed and kept/ })).toBeNull();
+  });
+
+  it('any other entry, even one that looks alike, shows no such table', async () => {
+    h.logs = [
+      { ...reset(AFTER), id: 'ckabc0000000000000000000' },
+      { ...reset(AFTER), source: null },
+      { ...reset(AFTER), entityId: 'app-role-verify' },
+      log('l1', 'u-ali', 'Ali Salesman'),
+    ];
+    await open();
+    expect(screen.queryByText('What was removed and kept')).toBeNull();
+    expect(screen.queryByText(/holds no counts/)).toBeNull();
   });
 });

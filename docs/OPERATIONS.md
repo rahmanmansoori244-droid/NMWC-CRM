@@ -537,11 +537,14 @@ per region, route, account and route holder (the SQL of
 `20261013100100_history_foundation`, with only the source, kind and actor changed), and
 `AuditLog` gets exactly one row, `cleanstart-<run>`, with the run, commit, plan id,
 backup, the hashes of the exported photo-key list and seals, the old chain, the archive
-prefix, the Neon safety branch and the removed and kept counts. **No screen shows those
-counts**: the Audit page lists the row (when, who, action, reason) but not its `after`
-detail. The counts are read from the run's encrypted report
-(`cleanstart/<run>/report/`), by Claude with the owner; showing them on the Audit page
-is an app follow-up (below). No sequence is reset. Nobody is signed out: the accounts are
+prefix, the Neon safety branch and the removed and kept counts. **Until follow-up
+release 1 is live no screen shows those counts**: the Audit page lists the row (when,
+who, action, reason) but not its `after` detail, and the counts are read from the run's
+encrypted report (`cleanstart/<run>/report/`), by Claude with the owner. From that
+release on, the Audit page lists them under the row ("What was removed and kept"): one
+line per kind in plain words, removed and kept, read from the row's `after` only, with
+a dash where the row holds no figure (`lib/clean-start-record.ts`). There is no Excel
+export of the audit log, so nothing else changes. No sequence is reset. Nobody is signed out: the accounts are
 not touched, which is part of the proof that nothing real changed. Saved filters are
 deleted (they were built on test data).
 
@@ -802,9 +805,11 @@ operations-log entry, written before and completed after. The compliance notes:
 `lib/insights/policy.ts` `HISTORY_BASELINE_DAY` moves to the reset day (until then a
 dashboard window reaching back before the reset compares with emptied days; planned for
 reset day + 1); `db-backup.yml` stops printing the total row count; `lib/test-records.ts`
-`KNOWN_TEST_RECORDS.customerCode` is no longer a test record (§7, "Flag a test record");
-the Audit page shows the reset row's removed and kept counts (owner question 10, default
-yes; today they are only in the encrypted report).
+`KNOWN_TEST_RECORDS.customerCode` is no longer a test record (§7, "Flag a test record").
+
+**Follow-up release 1** (branch `claude/follow-up-1`; live only after the reset, when
+the owner says so; no migration): the Audit page shows the reset row's removed and kept
+counts (owner question 10, default yes; above).
 
 ### Tests
 

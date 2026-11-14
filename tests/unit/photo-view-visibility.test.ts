@@ -53,6 +53,12 @@ const READERS: Record<string, string> = {
   // Code review 2026-11-10, finding 23 (adversarial review).
   'lib/account-import-repeat.ts':
     "one account's own password_reset_via_import row from an earlier upload of the same file; returns only its time, never a row",
+  // Follow-up 1 (F1): the Steward's list, moved out of the page unchanged; the page calls it only for the Steward.
+  'lib/audit-rows.ts':
+    "/audit's Steward list (no customer filter): photo views left out unless he picks that action; called only on the Steward's path of app/(app)/audit/page.tsx",
+  // Follow-up 1 (F2): the dashboard's comparisons read the clean start's moment.
+  'lib/clean-start-record.ts':
+    "the go-live clean start's own System row (id cleanstart-…, entityId clean-start); returns only its time, never a row",
 };
 
 /** The entity type each listed non-page reader is held to, read from its query. */
@@ -63,6 +69,7 @@ const READ_ONLY_ENTITY: Record<string, string> = {
   'lib/integrity/checks.ts': 'User',
   'app/(app)/import/[batchId]/page.tsx': 'ImportBatch',
   'lib/account-import-repeat.ts': 'User',
+  'lib/clean-start-record.ts': 'System',
 };
 
 const ROOTS = ['app', 'lib', 'services', 'components'];
