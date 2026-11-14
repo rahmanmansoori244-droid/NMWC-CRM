@@ -181,6 +181,17 @@ describe.skipIf(!ENABLED)('bug hunt fixes on the customer import', () => {
     expect((await check(batchId)).summary).toMatchObject({ excelErrorRows: 1 });
     expect(await promoteFully(imports, batchId)).toMatchObject({ promoted: 1, failed: 0 });
     expect(await shopsOf(B)).toEqual([`${B}-01`]);
+
+    // Review of the hunt fixes: once the Steward excludes the #N/A row, it is no
+    // longer "held back" for an Excel error, and the line goes away.
+    await prisma.rateLimit.deleteMany({ where: { key: { contains: steward } } });
+    const out = await fixes.excludeImportRowsAction(
+      fd({ batchId, reason: 'a failed lookup, not a customer', rowIds: JSON.stringify([staged[1]!.id]) })
+    );
+    expect(out.ok, JSON.stringify(out)).toBe(true);
+    const after = await check(batchId);
+    expect(after.summary).toMatchObject({ excelErrorRows: 0 });
+    expect(after.lines.some((l) => l.text.startsWith('Excel errors'))).toBe(false);
   });
   it('round 1, finding 6: a new customer from [CLOSED, blank] rows ends ACTIVE, and its trail says how', async () => {
     const G = `${P}-G`;

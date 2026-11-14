@@ -1275,7 +1275,7 @@ not built yet (item D).
      formula whose saved result is an error) is held back at upload, on that column, naming the
      error. It is never matched, created or promoted, it holds no other row back (a failed lookup in
      `cust_code` used to gather the shops of several customers into one customer coded
-     `#ERROR:#N/A`), and "Before you promote" counts it. The rest of the file loads. Put the real
+     `#ERROR:#N/A`), and "Before you promote" counts it (not once it is excluded). The rest of the file loads. Put the real
      value in the cell: on the batch page for a cell the fix form offers, otherwise in the file and
      upload it again (the route, branch name, region and the credit and Temix columns are not
      editable on the batch page).

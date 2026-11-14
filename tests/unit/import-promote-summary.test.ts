@@ -233,7 +233,8 @@ describe('loadPromoteSummary', () => {
     excelHeld = 3;
     const s = await load();
     expect(calls.find((c) => c.model === 'importRow.count')?.args).toEqual({
-      where: { batchId: 'batch-9', state: 'QUARANTINED', parsed: { path: ['excelError'], equals: true } },
+      // An excluded row is dealt with and is not counted (review of the hunt fixes).
+      where: { batchId: 'batch-9', state: 'QUARANTINED', excludedAt: null, parsed: { path: ['excelError'], equals: true } },
     });
     expect(s.excelErrorRows).toBe(3);
   });
