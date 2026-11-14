@@ -132,10 +132,11 @@ async function uploadTemixDailyFileCore(formData: FormData): Promise<TemixDailyU
         // One upload at a time decides the same-file and order rules.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended('nmwc:temix-daily:upload', 42))`;
         // The load day is the database's Oman day, the one its guard checks, and
-        // the upload time is the same instant, read AFTER the lock: the order
-        // rule ranks files by uploadedAt, so it must follow the lock's order (the
-        // column's default is the transaction's start, which may come before
-        // another upload that took the lock first) and fall on the load day.
+        // the upload time is that same instant, read AFTER the lock: the order
+        // rule ranks files by uploadedAt, so it must follow the lock's order and
+        // fall on the load day. (Left to the column's @default(now()), Prisma
+        // fills it from the app server's clock at the create, a second clock
+        // and a later instant than the day was read at.)
         const [{ day, at }] = await tx.$queryRaw<Array<{ day: string; at: Date }>>`
           SELECT to_char((t.at AT TIME ZONE 'Asia/Muscat')::date, 'YYYY-MM-DD') AS "day", t.at AS "at"
             FROM (SELECT clock_timestamp() AS at) t`;

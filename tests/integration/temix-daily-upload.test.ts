@@ -235,6 +235,10 @@ describe.skipIf(!ENABLED)('the daily Temix upload on Postgres', () => {
     await holder;
     const res = okData(await pending);
     const f = await prisma.temixDailyFile.findUniqueOrThrow({ where: { id: res.fileId } });
+    // Behaviour, not the regression proof: Prisma's @default(now()) is also
+    // filled after the lock, so this held before too. The proof that the time
+    // is the database's one instant read with the day is structural
+    // (tests/unit/temix-daily-upload-guard.test.ts).
     expect(f.uploadedAt.getTime()).toBeGreaterThanOrEqual(releasedAt.getTime());
     expect(omanDay(f.uploadedAt)).toBe(res.loadDay);
   });
