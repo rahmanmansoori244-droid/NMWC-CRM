@@ -420,7 +420,6 @@ describe('run.sh chain-id / chain-id-fetch / finish-may: production\'s new chain
     expect(run(`chain-id "$CS_DIR/chain-id.out" ${RUN}`, { BACKUP_AGE_RECIPIENTS: recipient }).lines).toEqual(['new seal chain id recorded: no']);
     // Apply stopped at step g or h: the old seal files must still go back (seal-archive.sh
     // restore with "none", which moves nothing and refuses a chain it cannot name).
-    rmSync(envFile(), { force: true });
     const r = run('chain-id-fetch 1234', { BACKUP_AGE_IDENTITY: identity, GITHUB_ENV: envFile() });
     expect([r.code, r.lines]).toEqual([0, ['new seal chain id of that run recorded: no']]);
     expect(readEnvFile()).toContain('NEW_CHAIN=none');
@@ -562,7 +561,6 @@ describe('run.sh neon: branches of production, never production, always cleaned 
 
   it('the copy at the noted time is a NEW branch from the rehearsal branch\'s history (Neon restores only root branches), deleted first', () => {
     fresh();
-    rmSync(envFile(), { force: true });
     rmSync(join(sb.csDir, 'neon-branches'), { force: true });
     const env = { ...neon, GITHUB_ENV: envFile() };
     expect(run('neon-create cleanstart-rehearsal-5 compute', env).code).toBe(0);

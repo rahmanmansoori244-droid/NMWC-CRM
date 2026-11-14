@@ -92,7 +92,9 @@ export const ENV_HEADER_SHAPES: Record<string, RegExp> = {
   CS_BACKUP_SHA256: /^[0-9a-f]{64}$/,
   EXPECTED_MIGRATIONS: /^[0-9a-f]{64}$/,
   OLD_CHAIN: /^(?:[0-9a-f]{16}|none)$/,
-  NEW_CHAIN: /^[0-9a-f]{16}$/,
+  NEW_CHAIN: /^(?:[0-9a-f]{16}|none)$/,
+  // The photo run's delete step outcome (the record step runs only on these two).
+  DELETE_OUTCOME: /^(?:success|failure)$/,
   BACKUP_KEY: /^db\/[0-9T-]+Z\.sql\.gz\.age$/,
   CS_BACKUP_KEY: /^db\/[0-9T-]+Z\.sql\.gz\.age$/,
   CS_SAFETY_BRANCH: /^pre-clean-start-\d{4}-\d{2}-\d{2}-\d{1,20}$/,
