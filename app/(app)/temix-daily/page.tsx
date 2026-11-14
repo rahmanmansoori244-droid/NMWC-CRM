@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { Role } from '@prisma/client';
 import { auth } from '@/lib/auth';
@@ -13,7 +14,10 @@ import {
   readNotesAtUpload,
 } from '@/lib/temix-daily-file';
 import { applyBlockedBy, dateColumnDay, overtakenBy, type DailyFileForOrder } from '@/lib/temix-daily-order';
+import { pilotGate } from '@/lib/temix-daily-check';
+import { loadPilotWaiting } from '@/lib/temix-daily-check-load';
 import { TemixDailyUploadForm } from './upload-form';
+import { PilotBanner } from './pilot-banner';
 
 export const metadata = { title: 'Temix daily file · NMWC' };
 
@@ -59,6 +63,7 @@ export default async function TemixDailyPage() {
     take: 1,
     select: { id: true, filename: true, loadDay: true, uploadedAt: true, state: true, fileSha256: true },
   });
+  const gate = pilotGate(await loadPilotWaiting(prisma));
   const order: DailyFileForOrder[] = [...unfinished, ...inFlightOrLoaded].map((f) => ({ ...f, loadDay: dateColumnDay(f.loadDay) }));
 
   // The notes were counted once at upload and kept on the file: the list never
@@ -73,7 +78,17 @@ export default async function TemixDailyPage() {
       <PageHeader
         title="Temix daily file"
         subtitle="Upload the day's customer export from Temix (.xlsx or .csv). Upload stages the file only: nothing in it is applied to customers yet."
+        actions={
+          <Link href="/temix-daily/routes" className="text-sm font-medium text-brand-700 hover:underline">
+            Route map
+          </Link>
+        }
       />
+      {gate.stopped && (
+        <div className="px-4 pt-4 sm:px-6">
+          <PilotBanner gate={gate} />
+        </div>
+      )}
 
       <div className="grid gap-4 p-4 sm:p-6 lg:grid-cols-2">
         <section className="rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
@@ -143,7 +158,13 @@ export default async function TemixDailyPage() {
                     <td className="px-4 py-2 font-mono text-xs">{me.loadDay}</td>
                     <td className="px-4 py-2 text-xs text-slate-500">{omanDateTime(f.uploadedAt)}</td>
                     <td className="px-4 py-2 font-medium">
-                      {f.filename}
+                      {finished ? (
+                        f.filename
+                      ) : (
+                        <Link href={`/temix-daily/${f.id}`} className="text-brand-700 hover:underline">
+                          {f.filename}
+                        </Link>
+                      )}
                       {f.sameBytesAs && (
                         <p className="mt-1 text-xs font-normal text-amber-700">
                           Exactly the same file as {dateColumnDay(f.sameBytesAs.loadDay)} (&quot;{f.sameBytesAs.filename}&quot;).

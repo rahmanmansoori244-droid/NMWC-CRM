@@ -533,9 +533,11 @@ describe('38 — tables scroll inside themselves', () => {
     for (const t of tables) {
       expect(t.parentTag, `${t.file}:${t.line} — wrap the table in <TableScroll>`).toBe('TableScroll');
     }
-    // The ten that exist today (two on /status/integrity, gap 29; one on /temix-daily,
-    // the daily Temix import). Without this the loop can pass on nothing.
-    expect(tables).toHaveLength(10);
+    // The seventeen that exist today (two on /status/integrity, gap 29; one on
+    // /temix-daily, the daily Temix import; four on its Check, /temix-daily/<file>,
+    // the status pairs drawn by one component; three on its route map,
+    // /temix-daily/routes). Without this the loop can pass on nothing.
+    expect(tables).toHaveLength(17);
   });
 });
 

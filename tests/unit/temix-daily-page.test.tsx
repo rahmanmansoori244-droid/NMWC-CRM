@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   files: [] as unknown[],
   unfinished: [] as unknown[],
   applied: [] as unknown[],
+  waiting: [] as unknown[],
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => (h.user ? { user: h.user } : null) }));
@@ -47,6 +48,8 @@ vi.mock('@/lib/db', () => ({
     $queryRaw: async () => {
       throw new Error('the page ran raw SQL');
     },
+    // The pilot rule's banner (stage 4).
+    customerEdit: { findMany: async () => h.waiting },
   },
 }));
 
@@ -78,6 +81,7 @@ beforeEach(() => {
   h.files = [newer, older];
   h.unfinished = [older, newer];
   h.applied = [];
+  h.waiting = [];
 });
 afterEach(cleanup);
 
