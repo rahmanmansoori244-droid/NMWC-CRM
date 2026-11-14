@@ -111,7 +111,7 @@ describe('the daily upload writes only the staged file, its rows and its audit r
     const gates = readdirSync('tests/integration')
       .filter((f) => f.startsWith('temix-daily'))
       .flatMap((f) => [...readFileSync(join('tests/integration', f), 'utf8').matchAll(/process\.env\.(RUN_[A-Z_]+)/g)].map((m) => m[1]!));
-    expect(gates).toEqual(expect.arrayContaining(['RUN_TEMIX_DAILY', 'RUN_TEMIX_DAILY_UPLOAD', 'RUN_TEMIX_DAILY_CHECK']));
+    expect(gates).toEqual(expect.arrayContaining(['RUN_TEMIX_DAILY', 'RUN_TEMIX_DAILY_UPLOAD', 'RUN_TEMIX_DAILY_CHECK', 'RUN_TEMIX_DAILY_APPLY']));
     for (const g of new Set(gates)) expect(job, g).toMatch(new RegExp(`^\\s+${g}: '1'$`, 'm'));
   });
 
