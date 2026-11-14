@@ -27,6 +27,7 @@ type Probe = {
 const h = vi.hoisted(() => ({
   me: null as null | Record<string, unknown>,
   probe: null as null | Probe,
+  customerArgs: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock('@/lib/auth', () => ({
@@ -45,7 +46,12 @@ vi.mock('@/lib/db', () => ({
       findMany: async () => [],
       findUnique: async () => null,
     },
-    customer: { findMany: async () => [] },
+    customer: {
+      findMany: async (a: Record<string, unknown>) => {
+        h.customerArgs.push(a);
+        return [];
+      },
+    },
   },
 }));
 vi.mock('@/lib/customer-count', () => ({ customerCountFast: async () => ({ total: 0, isApprox: false }) }));
@@ -129,5 +135,16 @@ describe('/customers filter lists are cut to the viewer’s scope', () => {
     me(role);
     render(await CustomersPage({ searchParams: Promise.resolve({}) }));
     expect(ids(h.probe!.supervisors)).toEqual(['v-dho', 'v-idle', 'v-mct']);
+  });
+});
+
+describe('/customers pages in a total order (follow-up 1, H9)', () => {
+  it('orders by legal name, then id, so same-named customers cannot repeat or vanish across pages', async () => {
+    me('STEWARD');
+    h.customerArgs = [];
+    render(await CustomersPage({ searchParams: Promise.resolve({ page: '2' }) }));
+    const list = h.customerArgs.find((a) => a.take === 50)!;
+    expect(list.orderBy).toEqual([{ legalName: 'asc' }, { id: 'asc' }]);
+    expect(list.skip).toBe(50);
   });
 });

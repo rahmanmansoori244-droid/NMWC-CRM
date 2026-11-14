@@ -399,3 +399,8 @@ Three adversarial reviews of the items above found these; each is fixed with a t
 - **How:** `services/reactivations.ts` (`EVIDENCE_KINDS`, `assertEvidenceKind`, and the claim in `wireEvidence`).
 - **Docs:** `AUDITOR-BRIEF.md` (close shop / reactivation).
 - **Tests:** `tests/unit/status-evidence-kind.test.ts` (new: for both requests, each confidential kind is refused with nothing written, and FREE, SHOP and SIGNBOARD go on as before — the refusals fail without the change).
+
+### The /customers list pages in a fixed order (bug hunt round 2, F7; follow-up release 1, H9; branch `claude/follow-up-1`)
+- **What changed:** the list is shown 50 customers a page and was ordered by legal name alone. Two customers with the same legal name have no defined order between them in the database, so at a page boundary one of them could show on both pages and the other on neither, and paging back and forth could change which. The list is now ordered by legal name and then by the customer's internal id, so every customer appears on exactly one page. "Export filtered" uses the same order (it is one capped read, so it never repeated or dropped a customer; it now lists same-named customers in the order the pages show them). Nothing else changes.
+- **How:** `app/(app)/customers/page.tsx`, `services/customer-export.ts`.
+- **Tests:** `tests/unit/customers-filter-scope.test.tsx` (new: page 2 reads in that order), `tests/unit/customer-export-branch.test.ts` (the export's order) — both fail without the change.
