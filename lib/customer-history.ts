@@ -511,6 +511,10 @@ function rowPart(row: string): string {
   if (row === 'setup') return ' (set-up)';
   if (row === 'summary') return ' (closing write)';
   if (row === 'upload') return ' (upload)';
+  if (row === 'apply') return ' (apply started)';
+  if (row === 'lease') return ' (load progress)';
+  if (row === 'finalize') return ' (load finished)';
+  if (row === 'discard') return ' (discarded)';
   return `, row ${row}`;
 }
 

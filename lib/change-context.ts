@@ -162,6 +162,14 @@ export const src = {
    * own append-only list (TemixRouteMap) with one AuditLog row per entry.
    */
   temixRouteMap: (action: 'add' | 'retire', code: string) => join('temix-route-map', action, code),
+  /**
+   * The daily Temix file's own steps (stage 5): 'apply' (the Steward starts the
+   * load, with his ticks), 'lease' (a slice takes or hands back the load),
+   * 'finalize' (the file is counted and LOADED) and 'discard'. None of them
+   * writes a customer or a shop: the changes themselves are named per row with
+   * temixDaily(file, row) and dated the load day.
+   */
+  temixDailyStep: (fileId: string, step: 'apply' | 'lease' | 'finalize' | 'discard') => join('temix-daily', fileId, step),
 } as const;
 
 /** The three values set_config receives. Throws on a malformed context, before any transaction opens. */

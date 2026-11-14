@@ -9,8 +9,10 @@
  *    (TemixChange, TemixChangeReview, TemixNoticeSeen, TemixRouteMap) or
  *    Notification row, and names no raw UPDATE, INSERT or DELETE.
  *  - No other file in app/, components/, lib/ or services/ writes the daily
- *    file or its rows through Prisma (the retention sweep's raw SQL empties old
- *    payloads, lib/purge-summary.ts, and is the only other writer).
+ *    file or its rows through Prisma, but the apply (stage 5,
+ *    services/temix-daily-apply.ts: a file's state, lease and counts, a row's
+ *    outcome; tests/unit/temix-daily-write-set.test.ts holds what it writes).
+ *    The retention sweep's raw SQL empties old payloads (lib/purge-summary.ts).
  *  - The page and the action are the Data Steward's only.
  */
 import { describe, expect, it } from 'vitest';
@@ -19,6 +21,8 @@ import { join } from 'node:path';
 import { stripComments } from '../support/strip-comments';
 
 const SERVICE = 'services/temix-daily.ts';
+/** Stage 5: the apply moves a staged file and its rows on (its write set: tests/unit/temix-daily-write-set.test.ts). */
+const APPLY_SERVICE = 'services/temix-daily-apply.ts';
 const code = stripComments(readFileSync(SERVICE, 'utf8'), SERVICE);
 
 const WRITE = '(create|createMany|createManyAndReturn|update|updateMany|upsert|delete|deleteMany)';
@@ -84,7 +88,7 @@ describe('the daily upload writes only the staged file, its rows and its audit r
   it('no other source writes the daily file or its rows through Prisma', () => {
     const found: string[] = [];
     for (const file of ['app', 'components', 'lib', 'services'].flatMap(walk)) {
-      if (file === SERVICE) continue;
+      if (file === SERVICE || file === APPLY_SERVICE) continue;
       const src = stripComments(readFileSync(file, 'utf8'), file);
       for (const m of src.matchAll(MODEL_WRITE_RE)) {
         if (m[1] === 'temixDailyFile' || m[1] === 'temixDailyRow') found.push(`${file}: ${m[0]}`);
@@ -107,7 +111,7 @@ describe('the daily upload writes only the staged file, its rows and its audit r
     const gates = readdirSync('tests/integration')
       .filter((f) => f.startsWith('temix-daily'))
       .flatMap((f) => [...readFileSync(join('tests/integration', f), 'utf8').matchAll(/process\.env\.(RUN_[A-Z_]+)/g)].map((m) => m[1]!));
-    expect(gates).toEqual(expect.arrayContaining(['RUN_TEMIX_DAILY', 'RUN_TEMIX_DAILY_UPLOAD']));
+    expect(gates).toEqual(expect.arrayContaining(['RUN_TEMIX_DAILY', 'RUN_TEMIX_DAILY_UPLOAD', 'RUN_TEMIX_DAILY_CHECK']));
     for (const g of new Set(gates)) expect(job, g).toMatch(new RegExp(`^\\s+${g}: '1'$`, 'm'));
   });
 

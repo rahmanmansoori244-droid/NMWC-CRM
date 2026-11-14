@@ -62,6 +62,7 @@ one complete list: OPERATIONS.md §3 used to be that list and had fallen behind.
 | `RATE_LIMIT_BACKEND` | | `memory` forces the in-process limiter (tests only) | — | — |
 | `SALESMAN_SUBMIT_GATE` | | `FULL` makes every mandatory field block a salesman's submission; unset means the lighter `CORE` gate | — | — |
 | `PROMOTE_SLICE_BUDGET_MS`, `BULK_BUDGET_MS` | | Time budgets for import promote and bulk approve | — | — |
+| `TEMIX_DAILY_SLICE_MAX_GROUPS` | | Customers per slice of the daily Temix apply (1 to 100, default 100; tests and tuning) | — | — |
 | `WORK_TZ_OFFSET_MIN`, `WORK_DAYS`, `WORK_HOUR_START`, `WORK_HOUR_END` | | The working calendar SLA clocks run on | — | — |
 | `SLA_SUPERVISOR_MIN`, `SLA_ACCOUNTANT_MIN`, `SLA_MANAGER_MIN`, `SLA_FINANCE_MIN`, `SLA_GM_MIN`, `SLA_SALES_DIRECTOR_MIN`, `SLA_SIGNED_FORM_MIN` | | Approval SLA per tier, in working minutes. `SLA_SALES_DIRECTOR_MIN` (default 960, a placeholder like the Finance Manager’s) and `SLA_SIGNED_FORM_MIN` (default 1,620 = 3 working days, owner decisions 2026-10-11) are the credit chain’s Sales Director and signed-application steps | — | — |
 | `NOTIFY_EMAIL_ENABLED` | | F1 kill switch: `on` lets the e-mail drain send notification e-mail; anything else and it sends nothing and reads nothing. Off until the owner turns it on; a change needs a redeploy (OPERATIONS.md §5i) | — | — |

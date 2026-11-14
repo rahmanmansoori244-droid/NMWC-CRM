@@ -63,6 +63,10 @@ describe('source builders', () => {
       [src.verify('app-role'), 'verify:app-role'],
       [src.temixDaily('f1', 7), 'temix-daily:f1:7'],
       [src.temixDailyUpload('f1'), 'temix-daily:f1:upload'],
+      [src.temixDailyStep('f1', 'apply'), 'temix-daily:f1:apply'],
+      [src.temixDailyStep('f1', 'lease'), 'temix-daily:f1:lease'],
+      [src.temixDailyStep('f1', 'finalize'), 'temix-daily:f1:finalize'],
+      [src.temixDailyStep('f1', 'discard'), 'temix-daily:f1:discard'],
       [src.temixRouteMap('add', 'C10MA'), 'temix-route-map:add:C10MA'],
       [src.temixRouteMap('retire', 'C 10/MA'), 'temix-route-map:retire:C-10/MA'],
     ];
