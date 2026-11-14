@@ -1270,6 +1270,15 @@ not built yet (item D).
      counts such rows. Two rows whose codes differ only in capitals are rows of ONE customer: as
      for any customer with several rows, the first row is the customer's, and their branch codes
      must differ.
+   - **A cell holding an Excel error is held back** (bug hunt round 2, F1). A row with `#N/A`,
+     `#REF!`, `#VALUE!` or any other Excel error in one of the 17 columns the import reads (also a
+     formula whose saved result is an error) is held back at upload, on that column, naming the
+     error. It is never matched, created or promoted, it holds no other row back (a failed lookup in
+     `cust_code` used to gather the shops of several customers into one customer coded
+     `#ERROR:#N/A`), and "Before you promote" counts it. The rest of the file loads. Put the real
+     value in the cell: on the batch page for a cell the fix form offers, otherwise in the file and
+     upload it again (the route, branch name, region and the credit and Temix columns are not
+     editable on the batch page).
    - **A shop code that only looks like another shop of the same customer is held back**
      (owner's answer 2026-11-11). The row's `branch_code` is compared with the codes of the shops
      the same customer has in the CRM (archived ones too) and with the other rows of that customer
@@ -1301,7 +1310,8 @@ not built yet (item D).
      unchanged.
    - **Promote opens "Before you promote".** It counts, against the CRM as it is at that moment:
      customers and shops that will be created; Temix-owned fields refreshed; rows naming a route
-     that will NOT be applied; rows whose codes were read in capitals; blank CRM fields filled; customers and shops where the sheet differs
+     that will NOT be applied; rows whose codes were read in capitals; rows held back for an Excel
+     error in a cell; blank CRM fields filled; customers and shops where the sheet differs
      from the record (kept); rows whose credit cells will not be applied, and why; and rows
      expected to be rejected. It is a check, not a lock. Resume and Finish skip it.
    - **"Overwrite CRM fields from this sheet"** is in that dialog. Steward only, off by default,

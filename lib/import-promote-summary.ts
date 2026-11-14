@@ -165,6 +165,10 @@ export async function loadPromoteSummary(db: Db, batchId: string, overwrite: boo
 
   const summary = emptySummary();
   summary.codesCapitalised = codesCapitalised;
+  // Bug hunt round 2, F1: the rows held back for a cell holding an Excel error.
+  summary.excelErrorRows = await db.importRow.count({
+    where: { batchId, state: ImportRowState.QUARANTINED, parsed: { path: ['excelError'], equals: true } },
+  });
   for (const [custCode, rows] of groups) {
     addGroup(
       summary,

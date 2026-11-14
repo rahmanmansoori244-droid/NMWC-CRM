@@ -121,8 +121,8 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
           obj[h] = rt.map((r) => r.text).join('');
         } else if (typeof v === 'object' && 'error' in (v as object)) {
           // F-10: cell evaluates to an Excel error (#N/A / #REF! / #VALUE!)
-          // — surface it explicitly so the row gets quarantined with a
-          // useful message instead of `[object Object]`.
+          // — surface it explicitly instead of `[object Object]`. The customer
+          // import holds such a row back (lib/import-row-check.ts excelErrorCells).
           obj[h] = `#ERROR:${(v as { error: string }).error}`;
         } else if (typeof v === 'object' && 'text' in (v as object)) {
           obj[h] = String((v as { text: string }).text);

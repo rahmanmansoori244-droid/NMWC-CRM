@@ -39,6 +39,7 @@ let staged: Row[];
 let customers: Row[];
 let shops: Row[];
 let calls: Call[];
+let excelHeld = 0;
 
 /** Reads only: a write on any model is a method this fake does not have. */
 const fake = {
@@ -46,6 +47,11 @@ const fake = {
     findMany: async (args: Call['args']) => {
       calls.push({ model: 'importRow', args });
       return staged.map((parsed) => ({ parsed }));
+    },
+    // Bug hunt round 2, F1: the rows held back for a cell holding an Excel error.
+    count: async (args: Call['args']) => {
+      calls.push({ model: 'importRow.count', args });
+      return excelHeld;
     },
   },
   route: { findMany: async () => [{ id: 'rt1', code: 'R1', regionId: 'rg1' }, { id: 'rt2', code: 'r2', regionId: 'rg2' }] },
@@ -149,6 +155,7 @@ beforeEach(() => {
   customers = [];
   shops = [];
   calls = [];
+  excelHeld = 0;
   h.role = 'STEWARD';
   h.limit = { ok: true, retryAfterSec: 0 };
   h.limitKeys = [];
@@ -218,6 +225,16 @@ describe('loadPromoteSummary', () => {
     expect(s.expectRejected.reasons.map((r) => r.reason)).toEqual([
       "a branch_code that only looks like one of the customer's shops or rows (01 / 1, Ab / AB)",
     ]);
+  });
+
+  it('counts the held-back rows whose cells hold an Excel error (bug hunt round 2, F1)', async () => {
+    staged = [parsed()];
+    excelHeld = 3;
+    const s = await load();
+    expect(calls.find((c) => c.model === 'importRow.count')?.args).toEqual({
+      where: { batchId: 'batch-9', state: 'QUARANTINED', parsed: { path: ['excelError'], equals: true } },
+    });
+    expect(s.excelErrorRows).toBe(3);
   });
 
   it('a Temix code staged in lower case (an older batch) is folded as Promote folds it: the refresh lane', async () => {

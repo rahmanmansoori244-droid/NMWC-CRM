@@ -40,6 +40,7 @@ import { getAuditEnvelope, writeAudit, type AuditEnvelope } from '@/lib/audit';
 import { correctionAudit } from '@/lib/import-lineage';
 import {
   checkCustomerRow,
+  excelErrorCells,
   rowCrNorm,
   rowBranchCode,
   rowCustCode,
@@ -308,7 +309,8 @@ async function recheck(
   // The batch's other rows, for the in-file duplicate checks: only the three
   // values the check compares, never the whole payload of a 20,000-row batch.
   // Rows accepted as excluded are not going into the master, so they no longer
-  // collide with anything.
+  // collide with anything; nor do rows still held back for a cell holding an
+  // Excel error (lib/import-row-check.ts excelErrorCells), as at the upload.
   const others = await tx.$queryRaw<
     Array<{
       id: string;
@@ -323,7 +325,8 @@ async function recheck(
     SELECT "id", "rowNumber", "parsed"->>'custCode' AS "code", "parsed"->>'phone' AS "phone", "parsed"->>'crNumber' AS "cr",
            "parsed"->>'branchCode' AS "branch", ("parsed"->>'shopCodeReleased') = 'true' AS "released"
       FROM "ImportRow"
-     WHERE "batchId" = ${batch.id} AND "excludedAt" IS NULL AND "parsed" IS NOT NULL`;
+     WHERE "batchId" = ${batch.id} AND "excludedAt" IS NULL AND "parsed" IS NOT NULL
+       AND NOT ("state" = 'QUARANTINED' AND ("parsed"->>'excelError') = 'true')`;
   const phonesInFile = new Map<string, FileDup[]>();
   const crsInFile = new Map<string, FileDup[]>();
   const add = (m: Map<string, FileDup[]>, k: string | null, d: FileDup) => {
@@ -347,6 +350,7 @@ async function recheck(
     addShop(o.code, { row: o.rowNumber, code: o.branch ?? '', released: o.released === true });
   }
   for (const { t, c, row } of corrected) {
+    if (excelErrorCells(row).length > 0) continue;
     add(phonesInFile, rowPhoneNorm(row), { row: t.rowNumber, code: rowCustCode(row) });
     add(crsInFile, rowCrNorm(row), { row: t.rowNumber, code: rowCustCode(row) });
     addShop(rowCustCode(row), { row: t.rowNumber, code: rowBranchCode(row) ?? '', released: !!c.shopCodeReleased });

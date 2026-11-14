@@ -849,6 +849,12 @@ export type PromoteSummary = {
   routeNotApplied: number;
   /** Owner's answer 2026-11-11 (A5): clean rows whose customer or Temix code was read in capital letters. */
   codesCapitalised: number;
+  /**
+   * Bug hunt round 2, F1: held-back rows of the batch whose cells hold an Excel
+   * error (lib/import-row-check.ts excelErrorCells). Never loaded; counted so
+   * the Steward sees them before Promote.
+   */
+  excelErrorRows: number;
   crm: {
     customersFilled: number;
     shopsFilled: number;
@@ -877,6 +883,7 @@ export function emptySummary(): PromoteSummary {
     temix: { customersOnRefresh: 0, customersChanged: 0 },
     routeNotApplied: 0,
     codesCapitalised: 0,
+    excelErrorRows: 0,
     crm: {
       customersFilled: 0,
       shopsFilled: 0,
@@ -976,6 +983,12 @@ export function summaryLines(s: PromoteSummary, overwrite: boolean): SummaryLine
     lines.push({
       tone: 'plain',
       text: `Codes in capitals: ${n(s.codesCapitalised)} row(s) have a customer code or Temix code typed in small letters. They are read in capital letters (cct0005 is CCT0005), so they load as that customer; each row says so.`,
+    });
+  }
+  if (s.excelErrorRows > 0) {
+    lines.push({
+      tone: 'warn',
+      text: `Excel errors: ${n(s.excelErrorRows)} row(s) are held back because a cell holds an Excel error (such as #N/A or #REF!) instead of a value. They are not loaded, matched or counted above; each row names the cell. The rest of the file loads.`,
     });
   }
   if (s.crm.customersFilled + s.crm.shopsFilled > 0) {

@@ -596,6 +596,8 @@ describe('addGroup and summaryLines — the counts and the words', () => {
       routeNotApplied: 0,
       // Owner's answer 2026-11-11 (A5): counted by the loader, not by addGroup.
       codesCapitalised: 0,
+      // Bug hunt round 2, F1: counted by the loader too (held-back rows).
+      excelErrorRows: 0,
       crm: {
         customersFilled: 0,
         shopsFilled: 0,
