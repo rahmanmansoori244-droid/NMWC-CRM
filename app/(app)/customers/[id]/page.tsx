@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
+import { RetryingPhoto } from '@/components/nmwc/RetryingPhoto';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { omanDateTime } from '@/lib/tz';
@@ -432,6 +433,10 @@ function Row({
  * Photos open through the scope-checked /api/photos route. Go-live: the tiles
  * used to say only "Captured" — a supervisor/manager reviewing a salesman's
  * enrichment could not actually LOOK at the photo from the profile.
+ *
+ * H8 (bug hunt round 2, F6): lazy and retried (RetryingPhoto). A chain customer
+ * with 30 or more photographed shops asked for every photo at once, past the
+ * photo route's burst of 60, and the later ones showed broken.
  */
 function PhotoRow({ label, photo }: { label: string; photo: { id: string } | null }) {
   return (
@@ -445,8 +450,7 @@ function PhotoRow({ label, photo }: { label: string; photo: { id: string } | nul
             rel="noreferrer"
             className="inline-flex items-center gap-2 rounded-md bg-emerald-50 px-2 py-1 text-sm font-medium text-emerald-700 ring-1 ring-emerald-200 hover:bg-emerald-100"
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
+            <RetryingPhoto
               src={`/api/photos/${photo.id}`}
               alt={label}
               className="h-10 w-10 rounded object-cover ring-1 ring-emerald-200"
@@ -473,8 +477,7 @@ function PhotoTile({ label, photo }: { label: string; photo: { id: string } | nu
         className="relative flex h-24 flex-1 items-end overflow-hidden rounded-md border border-emerald-200 bg-emerald-50 text-sm font-medium text-white"
         aria-label={`${label} photo`}
       >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
+        <RetryingPhoto
           src={`/api/photos/${photo.id}`}
           alt={label}
           className="absolute inset-0 h-full w-full object-cover"

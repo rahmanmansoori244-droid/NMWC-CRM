@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { Camera, Image as ImageIcon, Trash2, RefreshCw, Check, Loader2, RotateCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ActionResult } from '@/lib/errors';
+import { RetryingPhoto } from './RetryingPhoto';
 
 export type PhotoSlotKind =
   | 'SHOP'
@@ -887,14 +888,25 @@ export function PhotoCaptureSlot({
         progress === 'error' && 'border-red-300 bg-red-50 text-red-700'
       )}
     >
-      {imgSrc && (
+      {/* H8: a photo already on file (remoteUrl, /api/photos) loads lazily and is
+          asked for again past the photo route's burst limit (RetryingPhoto); a
+          form with many shops showed the later ones broken. The preview of a
+          photo just taken is a local blob: shown as it is. */}
+      {photo?.previewUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={imgSrc}
+          src={photo.previewUrl}
           alt={LABELS[kind]}
           className="absolute inset-0 h-full w-full object-cover"
         />
-      )}
+      ) : photo?.remoteUrl ? (
+        <RetryingPhoto
+          key={photo.remoteUrl}
+          src={photo.remoteUrl}
+          alt={LABELS[kind]}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      ) : null}
       <div
         className={cn(
           'relative z-10 flex w-full flex-1 flex-col items-center justify-center gap-1 p-2',
