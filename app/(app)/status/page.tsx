@@ -333,6 +333,13 @@ function ImportsCard({ s }: { s: ServiceStatus }) {
           from Work items.
         </p>
       )}
+      {i.dailyLoadsHeldByPilot > 0 && (
+        <p>
+          {i.dailyLoadsHeldByPilot} daily Temix load{i.dailyLoadsHeldByPilot === 1 ? '' : 's'} held by the pilot rule — a
+          new-customer request waits at the Accountant; the Data Steward resumes it once that is decided. Not counted as
+          stuck.
+        </p>
+      )}
       {i.stuckUploads > 0 && (
         <p>
           {i.stuckUploads} upload{i.stuckUploads === 1 ? '' : 's'} in the last day never finished reading. Upload the

@@ -16,7 +16,8 @@ import { managerQueueWhere, SUPERVISOR_STEP_OR } from '@/lib/manager-queue';
 import { stepName } from '@/lib/approval-chains';
 import { omanDateTime } from '@/lib/tz';
 import { DECISION_TRAIL, earlierCountText, sentBackTrail } from '@/lib/request-reasons';
-import { stalledDailyLoadWhere } from '@/lib/temix-daily-apply';
+import { stalledDailyLoadItem, stalledDailyLoadWhere } from '@/lib/temix-daily-apply';
+import { loadPilotWaiting } from '@/lib/temix-daily-check-load';
 
 export const metadata = { title: 'Work items · NMWC' };
 
@@ -381,18 +382,20 @@ export default async function WorkPage() {
     // The daily Temix import (stage 5): a load left half-finished (the tab was
     // closed, the pilot rule stopped it, an error released it) sits APPLYING or
     // FINALIZING with no live lease. It is listed until it is resumed to the end.
+    // While the pilot rule holds, Resume would only stop again: the item says
+    // it waits for the Accountant instead (review 2026-11-15, finding 3).
     const stalledDaily = await prisma.temixDailyFile.findMany({
       where: stalledDailyLoadWhere(new Date()),
       orderBy: { loadDay: 'asc' },
       take: 5,
       select: { id: true, filename: true, loadDay: true, totalRows: true, applyStartedAt: true, _count: { select: { rows: { where: { outcome: 'PENDING' } } } } },
     });
+    const pilotWaiting = stalledDaily.length > 0 ? (await loadPilotWaiting(prisma)).length : 0;
     items.push(
       ...stalledDaily.map((f) => ({
         id: `temix-daily-${f.id}`,
-        category: 'Temix daily load to resume',
+        ...stalledDailyLoadItem({ totalRows: f.totalRows, pendingRows: f._count.rows }, pilotWaiting),
         title: f.filename,
-        subtitle: `Load interrupted: ${(f.totalRows - f._count.rows).toLocaleString('en-US')} of ${f.totalRows.toLocaleString('en-US')} rows done. Open it and Resume.`,
         href: `/temix-daily/${f.id}` as WorkHref,
         when: f.applyStartedAt,
       }))

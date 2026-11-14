@@ -70,7 +70,7 @@ function status(over: Partial<ServiceStatus> = {}): ServiceStatus {
       { role: 'MANAGER', open: 0, pastDue: 0, oldestWorkingMinutes: null },
     ],
     temix: { status: 'met', waiting: 0, oldestWaitingSince: null, uploadedAwaitingTemix: 0 },
-    imports: { status: 'breached', stuckPromotes: 1, stuckUploads: 0, stuckDailyLoads: 0 },
+    imports: { status: 'breached', stuckPromotes: 1, stuckUploads: 0, stuckDailyLoads: 0, dailyLoadsHeldByPilot: 0 },
     jobs: [
       {
         key: 'keep-warm', label: 'Keep-warm ping', severity: 'warning', state: 'failed', alarm: true,
@@ -161,6 +161,14 @@ describe('what it says', () => {
     render(await StatusPage());
     expect(screen.getByText(/2 past due · oldest waiting 11 h 40 m of working time/)).toBeTruthy();
     expect(screen.getByText(/1 past due · oldest waiting 11 h 0 m of working time/)).toBeTruthy();
+  });
+
+  it('a daily load held by the pilot rule is said so, and not counted as stuck (review 2026-11-15, finding 3)', async () => {
+    h.load.mockResolvedValue(status({ imports: { status: 'met', stuckPromotes: 0, stuckUploads: 0, stuckDailyLoads: 0, dailyLoadsHeldByPilot: 1 } }));
+    render(await StatusPage());
+    expect(screen.getByText(/1 daily Temix load held by the pilot rule — a\s+new-customer request waits at the Accountant/)).toBeTruthy();
+    expect(screen.getByText('None stuck')).toBeTruthy();
+    expect(screen.queryByText(/daily Temix load interrupted/)).toBeNull();
   });
 
   it('a warning-tier alarm says it leaves the health check green, and Vercel’s last run is shown', async () => {
