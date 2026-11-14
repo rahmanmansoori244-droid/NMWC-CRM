@@ -69,6 +69,16 @@ review** and a button **Review deployments**.
 2. Tick **production-reset**.
 3. Click **Approve and deploy**.
 
+**A run you will not approve now: reject it.** Only one Clean start run (or Clean start
+photos run) can go at a time. A run left at **Waiting for review** keeps its place for up
+to 30 days, and every later run then only waits behind it, showing **Pending**. So if you
+will not approve a waiting run now (you changed your mind, it is too late in the evening,
+or you are not sure it is yours): open it → **Review deployments** → tick
+**production-reset** → **Reject**. Rejecting changes nothing. Before you start any run,
+look at the **Clean start** and **Clean start photos** lists: no run may still show a
+yellow circle. If one does and it is waiting for review, reject it first; if it is
+running, wait for it.
+
 **The run id.** Some steps ask for a run id. It is the long number in the address bar of
 the run's page, after `/runs/`. The apply run also prints it in its summary, as
 `run_id for the photo step: <number>`. It is not the short number with a `#`.
@@ -269,7 +279,8 @@ start is refused safely (`the target guard refused`), but the evening is lost.
    changes the database and stops the reset. You switch them on again in Step 6, whatever
    tonight's result.
 4. Actions → **DB Backup** → **Run workflow**. Wait for the green tick.
-5. Actions → **Clean start** → **Run workflow**:
+5. Actions → **Clean start**. No earlier run may still show a yellow circle (see "A run
+   you will not approve now: reject it" above). Then **Run workflow**:
    - mode `apply`;
    - host box `ep-sweet-haze`;
    - phrase box `REMOVE ALL TEST DATA` and today's date in Oman, for example
