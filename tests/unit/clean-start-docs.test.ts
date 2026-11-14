@@ -89,6 +89,12 @@ describe("the owner's guide quotes only lines the code prints", () => {
     expect(step5).toMatch(/No earlier run may still show a yellow circle/);
   });
 
+  it('Step 1 L covers a phone whose 8-hour sign-in already ended (Sign out is only there once signed in)', () => {
+    const l = guide.slice(guide.indexOf('**L. Everyone signs out.**'), guide.indexOf('**M. The merge.**'));
+    expect(l).toMatch(/already shows the sign-in page, they sign in, then press \*\*Sign out\*\*/);
+    expect(l).toMatch(/before the evening of dry run 2/);
+  });
+
   it('the guide no longer says the Audit page shows the reset figures', () => {
     expect(guide).not.toMatch(/figures from the Audit page/i);
     expect(guide).not.toMatch(/Copy its figures/i);

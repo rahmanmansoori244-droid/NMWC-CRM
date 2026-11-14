@@ -169,6 +169,10 @@ after the reset.
 **Sign out** on every phone and computer they used. Signing out also deletes the unsent
 copies of forms that a phone keeps for 7 days; otherwise a test request saved during
 testing could be sent after the reset and become a real-looking request.
+A sign-in ends by itself after 8 hours, and that does **not** delete those copies. So if
+a phone or computer already shows the sign-in page, they sign in, then press **Sign out**.
+Do this before the evening of dry run 2 (Step 4): a sign-in during a run's evening
+changes the database and stops the run.
 
 **M. The merge.** When Claude says the pull request is green, reply "merge it". After the
 merge, wait about 15 minutes for the live site to update before the first dry run.
