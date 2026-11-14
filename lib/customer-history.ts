@@ -510,6 +510,7 @@ function rowPart(row: string): string {
   if (sheet) return `, ${sheet[1]} sheet row ${sheet[2]}`;
   if (row === 'setup') return ' (set-up)';
   if (row === 'summary') return ' (closing write)';
+  if (row === 'upload') return ' (upload)';
   return `, row ${row}`;
 }
 

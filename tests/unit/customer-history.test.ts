@@ -579,6 +579,7 @@ describe('what caused it', () => {
     ['routes:toggle-route:r1', 'Route administration (toggle-route)', '/routes'],
     ['temix:loaded:tb1', 'Temix upload queue (loaded)', '/temix'],
     ['temix-daily:f20261020:44', 'Daily Temix file f20261020, row 44', null],
+    ['temix-daily:f20261020:upload', 'Daily Temix file f20261020 (upload)', null],
     ['cron:photo-gc', 'Scheduled job photo-gc', null],
     ['script:reassign-route:run9', 'Operator script reassign-route (run run9)', null],
     ['migration:20261013100100_history_foundation', 'History start', null],

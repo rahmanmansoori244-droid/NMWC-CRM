@@ -49,11 +49,42 @@ const LABEL: Record<TemixChangeKind | 'HELD_ROWS', string> = {
   HELD_ROWS: 'rows held back',
 };
 
-/** The summary's words: counts by kind, in the ledger's order; nothing else. */
+/** The same words for a count of one. */
+const LABEL_ONE: Record<TemixChangeKind | 'HELD_ROWS', string> = {
+  ROUTE_MOVE: 'shop moved to another route',
+  TERMS_CHANGED: 'payment terms changed',
+  CREDIT_LIMIT_CHANGED: 'credit limit changed',
+  CREDIT_DAYS_CHANGED: 'credit days changed',
+  CUSTOMER_CREATED: 'customer created',
+  SHOP_CREATED: 'shop created',
+  TEMIX_CODE_CONFIRMED: 'Temix code confirmed',
+  STATUS_DIFFERS: 'status difference',
+  NAME_DIFFERS: 'name difference',
+  ROUTE_NOT_MATCHED: 'route code not matched',
+  ROUTE_INACTIVE: 'row naming a switched-off route',
+  SHOP_CODE_LOOKALIKE: 'look-alike shop code',
+  SHOP_NOT_LINKED: 'shop not linked',
+  DUPLICATE_SUSPECT: 'possible duplicate',
+  CODE_HELD_BY_OTHER: 'code held by another customer',
+  MISSING_FROM_FILE: 'customer missing from the file',
+  ACCOUNTANT_CODE_NOT_SEEN: "Accountant's Temix code not seen",
+  DAUGHTER_TERMS_IGNORED: 'shop credit figure ignored',
+  HELD_ROWS: 'row held back',
+};
+
+/**
+ * The summary's words: counts by kind, in the ledger's order; nothing else.
+ * STAGE 6 RE-CHECK: written ahead of finalize (stage 2 shipped it switched
+ * off, uncalled); finalize must re-check these kinds and words against the
+ * counts it really has before stage 7 switches it on.
+ */
 export function summaryText(loadDay: string, counts: SummaryCounts): { title: string; body: string } {
   const parts = (Object.keys(LABEL) as Array<keyof typeof LABEL>)
     .filter((k) => (counts[k] ?? 0) > 0)
-    .map((k) => `${(counts[k] ?? 0).toLocaleString('en-US')} ${LABEL[k]}`);
+    .map((k) => {
+      const n = counts[k] ?? 0;
+      return `${n.toLocaleString('en-US')} ${n === 1 ? LABEL_ONE[k] : LABEL[k]}`;
+    });
   return {
     title: `Temix daily file for ${loadDay}: loaded`,
     body: parts.length > 0 ? `${parts.join('; ')}. Open the Temix daily file page for the details.` : 'No changes. Open the Temix daily file page for the details.',

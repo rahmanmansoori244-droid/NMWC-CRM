@@ -131,7 +131,7 @@ describe('when switched on (stage 7)', () => {
         userId: 'stw-1',
         kind: 'TEMIX_DAILY_SUMMARY',
         title: 'Temix daily file for 2026-11-14: loaded',
-        body: '2 shops moved to another route; 1 rows held back. Open the Temix daily file page for the details.',
+        body: '2 shops moved to another route; 1 row held back. Open the Temix daily file page for the details.',
       },
     ]);
     // Each Steward is checked under his own lock.
@@ -147,5 +147,11 @@ describe('when switched on (stage 7)', () => {
     });
     // The counts are typed by ledger kind; anything else is not a key it reads.
     expect(summaryText('2026-11-14', { ['Customer 1' as never]: 3 }).body).toBe('No changes. Open the Temix daily file page for the details.');
+  });
+
+  it('a count of one reads in the singular, any other count in the plural', () => {
+    expect(summaryText('2026-11-14', { CUSTOMER_CREATED: 1, SHOP_CREATED: 2, HELD_ROWS: 1, STATUS_DIFFERS: 1200 }).body).toBe(
+      '1 customer created; 2 shops created; 1,200 status differences; 1 row held back. Open the Temix daily file page for the details.'
+    );
   });
 });
