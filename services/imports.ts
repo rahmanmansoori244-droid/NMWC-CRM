@@ -75,6 +75,7 @@ import {
   importRouteHolderIssue,
   importSupervisorCoverIssue,
   strandedCreatesImportIssue,
+  strandedHolderImportIssue,
 } from '@/lib/account-edit';
 import { onlyHisToCloseWhere } from '@/lib/stranded-creates';
 import { assertPasswordNotReused, rotatePasswordHistory } from '@/lib/password-policy';
@@ -921,6 +922,36 @@ async function uploadAccountMasterCore(formData: FormData): Promise<AccountUploa
               message: strandedCreatesImportIssue(username, stranded),
             });
             continue;
+          }
+        }
+        // (5) Bug hunt round 2, F2: the same guard for the ACTIVE salesman this row
+        // takes the route from (change_route=yes, rule 1). He is left with no
+        // route, so every request only he can send or close — a draft, one sent
+        // back, or a credit request waiting for his upload of the signed
+        // application — could never be sent again, and would hold its shop and
+        // CR number. Guard (4) counted them only for the account the row names.
+        if (routeMoves) {
+          const holder = await prisma.user.findUnique({
+            where: { ownedRouteId: ownedRouteId! },
+            select: { id: true, username: true, isActive: true },
+          });
+          if (holder && holder.isActive && holder.username !== username) {
+            const stranded = await prisma.customerEdit.count({
+              where: { submittedById: holder.id, ...onlyHisToCloseWhere() },
+            });
+            if (stranded > 0) {
+              issues.push({
+                sheet: 'Users',
+                row: sheetRow,
+                message: strandedHolderImportIssue({
+                  username,
+                  holder: holder.username,
+                  routeCode: ownedRouteCode!,
+                  count: stranded,
+                }),
+              });
+              continue;
+            }
           }
         }
 

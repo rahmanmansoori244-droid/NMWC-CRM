@@ -29,6 +29,10 @@
  * the leaver's name, phone and supervisor onto the joiner who now signs in with
  * the route code.
  *
+ * And bug hunt round 2, F2: change_route=yes does not take the route from an
+ * active salesman who has requests only he can send or close (he would be left
+ * with no route and could never send them); the row is held back, nothing moves.
+ *
  *   RUN_IMPORT_TESTS=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/import-route-handover.test.ts
  */
@@ -36,7 +40,7 @@ import { pointsAtProduction } from '../../scripts/lib/assert-not-production';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import ExcelJS from 'exceljs';
-import { purgeAuditLog, purgeHistory } from '../support/audit';
+import { purgeAuditLog, purgeCustomerEdits, purgeHistory } from '../support/audit';
 
 import { RESERVED_USERNAME_MESSAGE } from '@/lib/demo-accounts';
 
@@ -109,6 +113,8 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
   const batchIds: string[] = [];
   let regionId = '';
   let routeId = '';
+  /** Routes a test makes for itself (bug hunt round 2, F2), deleted with the suite's own. */
+  const extraRouteIds: string[] = [];
 
   const upload = async (rows: Array<Record<string, string>>) => uploadBytes(await accountMaster(rows));
   /** One workbook's bytes, so the same file can be uploaded twice (finding 23). */
@@ -187,13 +193,13 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
         where: { username: { in: [owner, emailHolder, viewer, gone, ...newcomers] } },
       });
       await prisma.user.deleteMany({ where: { id: stewardId } });
-      await prisma.route.deleteMany({ where: { id: routeId } });
+      await prisma.route.deleteMany({ where: { id: { in: [routeId, ...extraRouteIds] } } });
       await prisma.region.deleteMany({ where: { id: regionId } });
       // Last: the deletes above wrote DELETE tombstones; the suite's own dated
       // history (and its accounts' session cut-offs) goes with them.
       await purgeHistory(prisma, {
         userIds: [...userIds, stewardId],
-        routeIds: routeId ? [routeId] : [],
+        routeIds: routeId ? [routeId, ...extraRouteIds] : extraRouteIds,
         regionIds: regionId ? [regionId] : [],
       });
     } catch (e) {
@@ -487,5 +493,49 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
     ]);
     expect(out.messages).toEqual([RESERVED_USERNAME_MESSAGE]);
     expect(await prisma.user.findUnique({ where: { username: reserved } })).toBeNull();
+  });
+  it('bug hunt round 2, F2: change_route=yes does not strand the active salesman it takes the route from', async () => {
+    const holder = `zz.rho.busy.${tag}`;
+    const fresh = `zz.rho.taker.${tag}`;
+    newcomers.push(holder, fresh);
+    const code = `${routeCode}-S`;
+    const r2 = (await prisma.route.create({ data: { code, name: `ZZ RHO S ${tag}`, regionId } })).id;
+    extraRouteIds.push(r2);
+    const busy = await prisma.user.create({
+      data: { username: holder, passwordHash: 'x', fullName: 'ZZ Busy', role: 'SALESMAN', ownedRouteId: r2 },
+    });
+    // A credit request of his waiting for his upload of the signed application.
+    const edit = await prisma.customerEdit.create({
+      data: {
+        process: 'CREATE',
+        target: 'CUSTOMER',
+        state: 'SUBMITTED',
+        pendingRole: 'SALESMAN',
+        submittedById: busy.id,
+        submittedAt: new Date(),
+        fieldChanges: {},
+        attachmentChanges: {},
+      },
+    });
+    const reassignedBefore = (await reassignRows()).length;
+    try {
+      const res = await upload([salesman(fresh, { route_code: code, change_route: 'yes' })]);
+      expect(res.clean).toBe(0);
+      expect(res.messages).toEqual([
+        `route ${code} is worked by "${holder}", who has 1 new-customer request(s) only he can send or close (drafts, sent back to him, or waiting for his upload of the customer's signed credit application). Nothing was written for "${fresh}". This row would leave "${holder}" with no route, and then he could never send them again. Ask him to send or withdraw them first, or change his account on Users (Edit account), which can withdraw them with the change; then upload the sheet again.`,
+      ]);
+      expect((await prisma.user.findUniqueOrThrow({ where: { id: busy.id } })).ownedRouteId).toBe(r2);
+      expect(await prisma.user.findUnique({ where: { username: fresh } })).toBeNull();
+      expect((await reassignRows()).length).toBe(reassignedBefore);
+
+      // Once it is closed (a withdrawn request is REJECTED), the same row takes the route, as before.
+      await prisma.customerEdit.update({ where: { id: edit.id }, data: { state: 'REJECTED' } });
+      const again = await upload([salesman(fresh, { route_code: code, change_route: 'yes' })]);
+      expect(again.clean).toBe(1);
+      expect((await prisma.user.findUniqueOrThrow({ where: { id: busy.id } })).ownedRouteId).toBeNull();
+      expect((await reassignRows()).length).toBe(reassignedBefore + 1);
+    } finally {
+      await purgeCustomerEdits(prisma, { where: { id: edit.id } });
+    }
   });
 });

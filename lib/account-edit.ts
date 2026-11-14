@@ -390,6 +390,23 @@ export function strandedCreatesImportIssue(username: string, count: number): str
 }
 
 /**
+ * Bug hunt round 2, F2: the account import's words when a row with
+ * change_route=yes would take a route from an ACTIVE salesman who has
+ * new-customer requests only he can send or close. He would be left with no
+ * route, so he could never send them again (the guard strandedCreatesImportIssue
+ * applies to the row's own account). /users refuses to take a route from an
+ * active salesman at all, so the way out is his own requests, or his own account.
+ */
+export function strandedHolderImportIssue(p: {
+  username: string;
+  holder: string;
+  routeCode: string;
+  count: number;
+}): string {
+  return `route ${p.routeCode} is worked by "${p.holder}", who has ${p.count} new-customer request(s) only he can send or close (drafts, sent back to him, or waiting for his upload of the customer's signed credit application). Nothing was written for "${p.username}". This row would leave "${p.holder}" with no route, and then he could never send them again. Ask him to send or withdraw them first, or change his account on Users (Edit account), which can withdraw them with the change; then upload the sheet again.`;
+}
+
+/**
  * Owner decisions 2026-10-11 (review, Q-signed-form-stranded): disabling an
  * account while a credit request of his waits at his signed-application step.
  * Nobody else can upload the signed form, send that step back or close the
