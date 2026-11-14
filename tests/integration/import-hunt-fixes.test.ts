@@ -6,6 +6,8 @@
  *   - round 2, F1: a row with an Excel error cell (#N/A) is held back at upload
  *     on that column, is counted before Promote, is never created, and holds no
  *     other row back; the rest of the file loads; corrected, it loads.
+ *   - round 1, finding 6: a NEW customer created from [CLOSED, blank status]
+ *     rows ends ACTIVE, and its own audit trail and history now say how.
  *
  *   RUN_IMPORT_TESTS=1 npx vitest run tests/integration/import-hunt-fixes.test.ts
  */
@@ -175,5 +177,46 @@ describe.skipIf(!ENABLED)('bug hunt fixes on the customer import', () => {
     expect((await check(batchId)).summary).toMatchObject({ excelErrorRows: 1 });
     expect(await promoteFully(imports, batchId)).toMatchObject({ promoted: 1, failed: 0 });
     expect(await shopsOf(B)).toEqual([`${B}-01`]);
+  });
+  it('round 1, finding 6: a new customer from [CLOSED, blank] rows ends ACTIVE, and its trail says how', async () => {
+    const G = `${P}-G`;
+    const batchId = await upload([
+      row({ cust_code: G, branch_code: '01', phone: phone(5), customer_status: 'CLOSED' }),
+      row({ cust_code: G, branch_code: '02', phone: phone(5), customer_status: '' }),
+    ]);
+    expect(await promoteFully(imports, batchId)).toMatchObject({ promoted: 2, failed: 0 });
+    const g = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: G }, include: { branches: { orderBy: { branchCode: 'asc' } } } });
+    expect(g.branches.map((x) => x.status)).toEqual(['CLOSED', 'ACTIVE']);
+    expect(g.status).toBe('ACTIVE');
+    // The customer's own audit rows, oldest first: created CLOSED (the file's
+    // status), then reopened by its open shop. Only the CREATE was written before.
+    const audit = await prisma.auditLog.findMany({
+      where: { entityType: 'Customer', entityId: g.id },
+      orderBy: { at: 'asc' },
+      select: { action: true, before: true, after: true, reason: true, source: true },
+    });
+    expect(audit.map((a) => a.action)).toEqual(['CREATE', 'REACTIVATE']);
+    expect((audit[0]!.after as { status: string }).status).toBe('CLOSED');
+    expect(audit[1]).toMatchObject({
+      before: { status: 'CLOSED' },
+      after: { status: 'ACTIVE' },
+      reason: `customer status follows its branches: import ${batchId}`,
+    });
+    // Named as the customer's other writes are: its lead row.
+    expect(audit[1]!.source).toBe(audit[0]!.source);
+    // The dated history holds both states too.
+    const history = await prisma.customerHistory.findMany({ where: { customerId: g.id }, orderBy: { id: 'asc' }, select: { status: true } });
+    expect(history.map((h) => h.status)).toEqual(['CLOSED', 'ACTIVE']);
+
+    // [CLOSED, CLOSED] stays CLOSED and writes no second row.
+    const H = `${P}-H`;
+    const b2 = await upload([
+      row({ cust_code: H, branch_code: '01', phone: phone(6), customer_status: 'CLOSED' }),
+      row({ cust_code: H, branch_code: '02', phone: phone(6), customer_status: 'CLOSED' }),
+    ]);
+    await promoteFully(imports, b2);
+    const h = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: H } });
+    expect(h.status).toBe('CLOSED');
+    expect((await prisma.auditLog.findMany({ where: { entityType: 'Customer', entityId: h.id } })).map((a) => a.action)).toEqual(['CREATE']);
   });
 });

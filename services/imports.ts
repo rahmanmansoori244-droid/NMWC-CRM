@@ -123,7 +123,7 @@ import {
   type RouteNotApplied,
 } from '@/lib/import-shop-route';
 import { lockCustomerRowByCode } from '@/lib/locks';
-import { branchStatusEvents, followBranchStatus, liveBranchStatuses } from '@/lib/customer-status';
+import { branchStatusEvents, followBranchStatus, liveBranchStatuses, statusAuditAction } from '@/lib/customer-status';
 import { archivedUncodedDeactivationWhere } from '@/lib/temix';
 import {
   lockTemixCode,
@@ -3680,6 +3680,23 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 await tx.customer.update({
                   where: { id: customerId },
                   data: { status: settled },
+                });
+              }
+              // Bug hunt round 1, finding 6: a NEW customer was created with the
+              // file's status (its CREATE audit row says so) and is moved here when
+              // one of its new shops is open — [CLOSED, blank] ends ACTIVE. That move
+              // was written with no audit row, so the customer's trail said CLOSED.
+              // It is audited as every other status move is (lib/customer-status.ts
+              // followBranchStatus, which runs only for a customer that existed).
+              // An existing customer's move is audited by followBranchStatus below.
+              if (!existing && settled !== statedStatus) {
+                await writeAudit(tx, env, {
+                  action: statusAuditAction(settled),
+                  entityType: 'Customer',
+                  entityId: customerId,
+                  before: { status: statedStatus },
+                  after: { status: settled },
+                  reason: `customer status follows its branches: import ${batchId}`,
                 });
               }
             }

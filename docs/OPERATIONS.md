@@ -1378,7 +1378,10 @@ not built yet (item D).
      do not, and always take this lane.
    - **Status.** With the option off, a sheet's `customer_status` is read only for a customer or
      shop the load creates; a new open shop under a customer that is not ACTIVE still makes the
-     customer ACTIVE (owner decision 7), and the summary counts it. The rest of this bullet is
+     customer ACTIVE (owner decision 7), and the summary counts it. A NEW customer is created with
+     the file's status, and when one of its new shops is open it is then made ACTIVE: its trail
+     shows both, the CREATE row with the file's status and a REACTIVATE row (until bug hunt round 1,
+     finding 6, the second move had no audit row). The rest of this bullet is
      what the full lane does **with the option on**.
      On the full lane a customer's status follows all its live branches, not only the file's rows:
      it is settled after the branches are written, and a blank `customer_status` cell says nothing
