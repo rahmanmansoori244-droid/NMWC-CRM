@@ -179,8 +179,17 @@ export function GpsCaptureButton({
   // is a labelled group, and the button that leads it takes the focus the link
   // had: the link is gone once the question is open.
   const keepNewRef = useRef<HTMLButtonElement | null>(null);
+  // Review of follow-up 1: "Keep the new location" closes the question and the
+  // link comes back, so the focus goes back to the link (it fell to the page).
+  const wrongPlaceRef = useRef<HTMLButtonElement | null>(null);
+  const refocusLinkRef = useRef(false);
   useEffect(() => {
-    if (askBack) keepNewRef.current?.focus();
+    if (askBack) {
+      keepNewRef.current?.focus();
+    } else if (refocusLinkRef.current) {
+      refocusLinkRef.current = false;
+      wrongPlaceRef.current?.focus();
+    }
   }, [askBack]);
 
   function take(next: Gps) {
@@ -516,6 +525,7 @@ export function GpsCaptureButton({
         <button
           type="button"
           disabled={disabled}
+          ref={wrongPlaceRef}
           onClick={() => !disabledRef.current && setAskBack(true)}
           data-testid="gps-wrong-place"
           className={`relative inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 underline underline-offset-2 hover:text-slate-700 ${WIDE_TAP_AREA}`}
@@ -539,7 +549,10 @@ export function GpsCaptureButton({
               ref={keepNewRef}
               type="button"
               disabled={disabled}
-              onClick={() => setAskBack(false)}
+              onClick={() => {
+                refocusLinkRef.current = true;
+                setAskBack(false);
+              }}
               className="min-h-11 rounded-md bg-brand-600 px-3 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
             >
               Keep the new location

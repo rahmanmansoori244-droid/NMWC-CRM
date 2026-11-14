@@ -790,6 +790,13 @@ describe('follow-up 1, F4: the "Wrong place?" link and the waiting line', () => 
     const group = screen.getByRole('group', { name: question });
     expect(group.contains(screen.getByRole('button', { name: 'Keep the new location' }))).toBe(true);
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep the new location' }));
+    // Review of follow-up 1: "Keep the new location" closes the question, and the
+    // focus goes back to the link that opened it, not to the page.
+    fireEvent.click(screen.getByRole('button', { name: 'Keep the new location' }));
+    expect(screen.queryByRole('group', { name: question })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Wrong place? Go back to the saved location…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Wrong place? Go back to the saved location…' }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep the new location' }));
     // The rougher-reading question, which appears by itself after a listen, is still an alert.
     fireEvent.click(screen.getByRole('button', { name: 'Keep the new location' }));
     fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
