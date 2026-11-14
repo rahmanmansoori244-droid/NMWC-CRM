@@ -50,7 +50,7 @@ import {
 import { submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
 import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
 import { notifyUsers, settleRequestAlerts } from '@/lib/notifications';
-import { UNWIRED_LIVE } from '@/lib/photo-attach';
+import { PHOTO_OTHER_SLOT_MESSAGE, UNWIRED_LIVE } from '@/lib/photo-attach';
 import { closureFromHistory, evidenceEntry, readEvidenceEntry, sentRequestAudit } from '@/lib/request-evidence';
 import { requestScopeAtSubmit } from '@/lib/scope-at-submit';
 import { REQUEST_REASON_LEGACY_COPY, requestReasonOf } from '@/lib/request-reasons';
@@ -233,6 +233,23 @@ function evidenceUnwired(att: Attachment, branchId: string): boolean | null {
 const EVIDENCE_USED_ELSEWHERE_MESSAGE = 'This photo is already used elsewhere. Take a new photo of the shop.';
 
 /**
+ * Follow-up 1, H7 (bug hunt round 2, F5): the kinds a photo of the shop may be
+ * when it is taken as evidence. wireEvidence re-files it as a FREE photo of the
+ * shop, so a CR copy, an ID card, a guarantee or a credit document taken in its
+ * own slot would lose its confidential handling (no-store, every view recorded:
+ * app/api/photos/[id]/route.ts). The FREE slot's attach refuses that re-kind
+ * already (services/photos.ts); the evidence takes only shop pictures too.
+ */
+const EVIDENCE_KINDS: AttachmentKind[] = [AttachmentKind.FREE, AttachmentKind.SHOP, AttachmentKind.SIGNBOARD];
+
+/** A photo on no slot yet that is not a picture of a shop is refused before anything is written. */
+function assertEvidenceKind(att: Attachment, unwired: boolean): void {
+  if (unwired && !EVIDENCE_KINDS.includes(att.kind)) {
+    throw new ValidationError({ attachmentId: PHOTO_OTHER_SLOT_MESSAGE });
+  }
+}
+
+/**
  * The photo onto the branch as one of its extra photos, written as the FREE
  * slot's attach writes it (services/photos.ts), audit row included. The claim
  * re-asserts "live, on no slot, not claimed by a new-customer request, his own"
@@ -247,7 +264,7 @@ async function wireEvidence(
   meId: string
 ): Promise<void> {
   const claim = await tx.attachment.updateMany({
-    where: { id: attachmentId, ...UNWIRED_LIVE, editId: null, capturedById: meId },
+    where: { id: attachmentId, ...UNWIRED_LIVE, editId: null, capturedById: meId, kind: { in: EVIDENCE_KINDS } },
     data: { branchExtraId: branchId, branchId, kind: AttachmentKind.FREE },
   });
   if (claim.count !== 1) {
@@ -348,6 +365,7 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
   if (unwired === null) {
     throw new ValidationError({ attachmentId: EVIDENCE_USED_ELSEWHERE_MESSAGE });
   }
+  assertEvidenceKind(att, unwired);
   // Gap 19: every sent request has its CREATE row in the ledger, so the envelope
   // is read for every submit, before the transaction (DG-06).
   const env = await getAuditEnvelope(me.id);
@@ -520,6 +538,7 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
   if (unwired === null) {
     throw new ValidationError({ attachmentId: EVIDENCE_USED_ELSEWHERE_MESSAGE });
   }
+  assertEvidenceKind(att, unwired);
   // Gap 19: as for a reactivation — read for every submit, before the transaction.
   const env = await getAuditEnvelope(me.id);
 
