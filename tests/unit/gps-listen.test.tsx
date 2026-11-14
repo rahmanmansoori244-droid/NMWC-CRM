@@ -775,6 +775,8 @@ describe('follow-up 1, F4: the "Wrong place?" link and the waiting line', () => 
     const link = screen.getByRole('button', { name: 'Wrong place? Go back to the saved location…' });
     expect(outside.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(outside.className).toContain('relative z-[1]');
+    // Contained: the raised buttons never paint over the form's Submit bar (tests/unit/mobile-submit-bar.test.ts).
+    expect(outside.closest('.isolate')).not.toBeNull();
   });
 
   it('the question it opens is not an alert: a group named by the question, and the button that leads it takes the focus', async () => {

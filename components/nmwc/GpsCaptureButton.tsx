@@ -385,7 +385,9 @@ export function GpsCaptureButton({
   const currentLabel = gps && saved && samePoint(gps, saved) ? 'the saved location' : 'the location already here';
 
   return (
-    <div className="space-y-2">
+    // isolate: the two buttons raised over the "Wrong place?" tap area (z-[1])
+    // stay inside this block and never paint over the form's Submit bar.
+    <div className="isolate space-y-2">
       <button
         type="button"
         onClick={capture}
