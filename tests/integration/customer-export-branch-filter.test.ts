@@ -127,4 +127,18 @@ describe.skipIf(!ENABLED)('F17: the filtered export shows the branch the filter 
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ Route: routeA.code, Address: 'Way A, older' });
   });
+
+  // Follow-up 1, H12 (bug hunt round 1, finding 5): the days are Oman days.
+  it('a customer created at 01:30 Oman on the 19th is in "Created after 19th" and not in "Created before 18th"', async () => {
+    // 21:30 UTC on the 18th is 01:30 on the 19th in Oman.
+    await prisma.customer.update({
+      where: { nmwcCode: `${P}-ONLYA` },
+      data: { createdAt: new Date('2026-11-18T21:30:00.000Z') },
+    });
+    const codes = async (params: Record<string, string>) =>
+      (await exportWith({ q: P, ...params })).map((r) => r['NMWC code']);
+    expect(await codes({ createdAfter: '2026-11-19' })).toContain(`${P}-ONLYA`);
+    expect(await codes({ createdBefore: '2026-11-18' })).not.toContain(`${P}-ONLYA`);
+    expect(await codes({ createdAfter: '2026-11-19', createdBefore: '2026-11-19' })).toEqual([`${P}-ONLYA`]);
+  });
 });
