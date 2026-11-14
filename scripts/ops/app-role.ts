@@ -45,6 +45,7 @@ import {
   LEDGER_SEQ_SEQUENCES,
   historySequence,
 } from '../../lib/history-tables';
+import { TEMIX_DAILY_LEDGERS } from '../../lib/temix-daily-tables';
 
 const ROLE = 'nmwc_app';
 
@@ -233,6 +234,21 @@ async function appendOnlyTablesPresent(client: PrismaClient): Promise<string[]> 
 }
 
 /**
+ * The daily Temix import's ledgers (migration 20261114100000_temix_daily_tables),
+ * as this database has them: insert-only for the role like the ledgers above,
+ * but listed apart (lib/temix-daily-tables.ts), as they are not sealed yet.
+ */
+async function temixLedgersPresent(client: PrismaClient): Promise<string[]> {
+  const rows = await client.$queryRawUnsafe<{ relname: string }[]>(
+    `SELECT c.relname FROM pg_class c
+      WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r'
+        AND c.relname IN (${TEMIX_DAILY_LEDGERS.map((t) => `'${t}'`).join(', ')})
+      ORDER BY c.relname`
+  );
+  return rows.map((r) => r.relname);
+}
+
+/**
  * Gap 28: the seq-key sequences of AuditLog, EditApproval and ExportJob, as this
  * database has them (none before migration 20261024120200_ledger_seals).
  */
@@ -308,6 +324,8 @@ async function grant() {
     // Gap 28: the seq keys the seal ranges are read by. nextval on every ledger
     // insert, so USAGE is needed; setval would move a sealed range, so no UPDATE.
     const keySequences = await ledgerKeySequencesPresent(owner);
+    // The daily Temix import's ledgers: the same, after the blanket GRANT.
+    const temixLedgers = await temixLedgersPresent(owner);
     const stmts = [
       `GRANT CONNECT ON DATABASE "${db}" TO "${ROLE}"`,
       `GRANT USAGE ON SCHEMA public TO "${ROLE}"`,
@@ -339,6 +357,9 @@ async function grant() {
       ...ledgerSequences.map((t) => `REVOKE UPDATE ON SEQUENCE "${historySequence(t)}" FROM "${ROLE}"`),
       ...keySequences.map((q) => `GRANT USAGE, SELECT ON SEQUENCE "${q}" TO "${ROLE}"`),
       ...keySequences.map((q) => `REVOKE UPDATE ON SEQUENCE "${q}" FROM "${ROLE}"`),
+      // the daily Temix import's ledgers: insert only, ids drawn but never set
+      ...temixLedgers.map((t) => `REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON "${t}" FROM "${ROLE}"`),
+      ...temixLedgers.map((t) => `REVOKE UPDATE ON SEQUENCE "${t}_id_seq" FROM "${ROLE}"`),
       // tables and sequences created by FUTURE migrations (run by the owner) inherit the grants
       // No DELETE here on purpose: a table added by a future migration must not
       // become deletable by the runtime credential without somebody deciding so.

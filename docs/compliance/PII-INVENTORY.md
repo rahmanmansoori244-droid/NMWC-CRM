@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**544 stored columns across 37 tables** — Customer contact: 30 · Employee: 99 · Customer entity (personal if a sole establishment): 50 · Not personal data: 365.
+**622 stored columns across 43 tables** — Customer contact: 32 · Employee: 114 · Customer entity (personal if a sole establishment): 55 · Not personal data: 421.
 
 ## Columns holding personal data
 
@@ -329,6 +329,58 @@ Every column the database stores, classified by whose personal data it is. This 
 | Column | Subject | Kind | Note |
 |---|---|---|---|
 | `createdById` | Employee | behaviour |  |
+
+### TemixDailyFile
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `uploadedById` | Employee | behaviour |  |
+| `uploadedAt` | Employee | behaviour |  |
+| `applyLeaseBy` | Employee | identifier | which Steward holds the apply lease |
+| `applyStartedAt` | Employee | behaviour |  |
+| `appliedById` | Employee | behaviour |  |
+| `discardedById` | Employee | behaviour |  |
+| `discardedAt` | Employee | behaviour |  |
+| `discardReason` | Employee | free text | why the Steward discarded the file; may name a customer |
+| `reversalAckById` | Employee | behaviour |  |
+| `reversalAckAt` | Employee | behaviour |  |
+
+### TemixDailyRow
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `raw` | Customer contact | snapshot | the daily file row verbatim (name, phone, address, CR number as Temix sends them); emptied by temix-daily-payload-90d |
+| `parsed` | Customer contact | snapshot | emptied with raw by temix-daily-payload-90d |
+| `custCodeKey` | Customer entity (personal if a sole establishment) | identifier | the normalised customer code |
+| `branchCodeKey` | Customer entity (personal if a sole establishment) | identifier | the normalised shop code |
+
+### TemixChange
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `fromValue` | Customer entity (personal if a sole establishment) | financial | codes, ids, terms and figures only (a route code, a credit limit); never a name, phone, address or CR number |
+| `toValue` | Customer entity (personal if a sole establishment) | financial | codes, ids, terms and figures only (a route code, a credit limit); never a name, phone, address or CR number |
+
+### TemixChangeReview
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `reviewedById` | Employee | behaviour |  |
+| `reviewedAt` | Employee | behaviour |  |
+
+### TemixNoticeSeen
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `valueHash` | Customer entity (personal if a sole establishment) | identifier | a keyed hash of the name Temix sent (the key is a server secret), never the name itself |
+
+### TemixRouteMap
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `reason` | Employee | free text | why the Steward added or retired the entry |
+| `byId` | Employee | behaviour |  |
+| `at` | Employee | behaviour |  |
 
 ## Tables with no personal data
 
@@ -705,5 +757,61 @@ Every column the database stores, classified by whose personal data it is. This 
 | TemixSyncBatch | `markedLoadedAt` | DateTime | record timestamp, not an attribute of a person |
 | CodeSequence | `scope` | String | structural / operational value |
 | CodeSequence | `next` | Int | customer-code counter |
+| TemixDailyFile | `id` | String | foreign key / structural value |
+| TemixDailyFile | `filename` | String | operator-supplied file name |
+| TemixDailyFile | `loadDay` | DateTime | the Oman day the file dates its changes to |
+| TemixDailyFile | `fileSha256` | String | fingerprint of the uploaded file; the file itself is not kept |
+| TemixDailyFile | `fileBytes` | Int | size of the uploaded file |
+| TemixDailyFile | `headings` | Json | the file headings (column names only) |
+| TemixDailyFile | `state` | TemixDailyFileState | structural / operational value |
+| TemixDailyFile | `totalRows` | Int | structural / operational value |
+| TemixDailyFile | `appliedRows` | Int | structural / operational value |
+| TemixDailyFile | `noChangeRows` | Int | structural / operational value |
+| TemixDailyFile | `heldRows` | Int | structural / operational value |
+| TemixDailyFile | `rejectedRows` | Int | structural / operational value |
+| TemixDailyFile | `noticeRows` | Int | structural / operational value |
+| TemixDailyFile | `applyLeaseUntil` | DateTime | record timestamp, not an attribute of a person |
+| TemixDailyFile | `loadedAt` | DateTime | record timestamp, not an attribute of a person |
+| TemixDailyFile | `sameBytesAsFileId` | String | foreign key / structural value |
+| TemixDailyRow | `id` | String | foreign key / structural value |
+| TemixDailyRow | `fileId` | String | foreign key / structural value |
+| TemixDailyRow | `rowNumber` | Int | structural / operational value |
+| TemixDailyRow | `isMainRow` | Boolean | structural / operational value |
+| TemixDailyRow | `customerId` | String | foreign key / structural value |
+| TemixDailyRow | `branchId` | String | foreign key / structural value |
+| TemixDailyRow | `outcome` | TemixDailyRowOutcome | structural / operational value |
+| TemixDailyRow | `holdReasons` | String[] | reason codes only (CHECK TemixDailyRow_hold_reasons_check) |
+| TemixDailyRow | `doneAt` | DateTime | record timestamp, not an attribute of a person |
+| TemixDailyRow | `createdAt` | DateTime | record timestamp, not an attribute of a person |
+| TemixChange | `id` | BigInt | the strict order of the ledger |
+| TemixChange | `createdAt` | DateTime | record timestamp, not an attribute of a person |
+| TemixChange | `fileId` | String | foreign key / structural value |
+| TemixChange | `rowId` | String | foreign key / structural value |
+| TemixChange | `loadDay` | DateTime | structural / operational value |
+| TemixChange | `kind` | String | structural / operational value |
+| TemixChange | `applied` | Boolean | structural / operational value |
+| TemixChange | `customerId` | String | foreign key / structural value |
+| TemixChange | `branchId` | String | foreign key / structural value |
+| TemixChange | `field` | String | a column name |
+| TemixChange | `detailCode` | String | a code word |
+| TemixChange | `source` | String | the change-context source |
+| TemixChange | `txId` | BigInt | database transaction id (joins the history and AuditLog) |
+| TemixChangeReview | `id` | BigInt | foreign key / structural value |
+| TemixChangeReview | `changeId` | BigInt | foreign key / structural value |
+| TemixChangeReview | `note` | String | a code word (CHECK), never free text |
+| TemixChangeReview | `source` | String | the change-context source |
+| TemixChangeReview | `txId` | BigInt | database transaction id (joins AuditLog.txId) |
+| TemixNoticeSeen | `id` | BigInt | foreign key / structural value |
+| TemixNoticeSeen | `customerId` | String | foreign key / structural value |
+| TemixNoticeSeen | `kind` | String | structural / operational value |
+| TemixNoticeSeen | `firstFileId` | String | foreign key / structural value |
+| TemixNoticeSeen | `firstSeenAt` | DateTime | record timestamp, not an attribute of a person |
+| TemixRouteMap | `id` | BigInt | the strict order of the route map |
+| TemixRouteMap | `temixRouteCode` | String | structural / operational value |
+| TemixRouteMap | `action` | String | ADD or RETIRE |
+| TemixRouteMap | `routeId` | String | foreign key / structural value |
+| TemixRouteMap | `retiresId` | BigInt | foreign key / structural value |
+| TemixRouteMap | `source` | String | the change-context source |
+| TemixRouteMap | `txId` | BigInt | database transaction id (joins AuditLog.txId) |
 
 </details>

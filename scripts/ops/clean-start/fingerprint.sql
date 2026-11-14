@@ -49,7 +49,8 @@ empty_tables(t) AS (
     ('ImportRow'), ('TemixSyncBatch'), ('ExportJob'), ('AuditLog'), ('AuthEvent'),
     ('JobRunDay'), ('PurgeSummary'), ('IntegrityCheckResult'), ('SealRecord'), ('SavedView'),
     ('CustomerHistory'), ('BranchHistory'), ('AttachmentHistory'), ('UserHistory'), ('RouteHistory'),
-    ('RouteOwnerHistory'), ('RegionHistory')
+    ('RouteOwnerHistory'), ('RegionHistory'),
+    ('TemixDailyFile'), ('TemixDailyRow'), ('TemixChange'), ('TemixChangeReview'), ('TemixNoticeSeen'), ('TemixRouteMap')
 ),
 keep_fp AS (
   SELECT 'keep:' || k.t AS name,

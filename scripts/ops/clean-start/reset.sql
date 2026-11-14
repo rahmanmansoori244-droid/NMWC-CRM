@@ -4,7 +4,7 @@
 -- the change context names the run, every table the reset reads or changes is
 -- locked in SHARE mode (writers wait, readers go on), the plan checks and the
 -- plan fingerprint are checked AGAIN under the locks, then ONE
---   TRUNCATE <the 28 EMPTY tables> CONTINUE IDENTITY RESTRICT
+--   TRUNCATE <the 34 EMPTY tables> CONTINUE IDENTITY RESTRICT
 -- (no sequence is reset, no CASCADE: Postgres itself refuses it if a kept table
 -- points into an emptied one), the two partial DELETEs, the one reset AuditLog
 -- row, the four BASELINE history inserts copied from
@@ -124,6 +124,7 @@ LOCK TABLE
   public."JobRunDay", public."PurgeSummary", public."IntegrityCheckResult", public."SealRecord", public."RateLimit",
   public."SavedView", public."CustomerHistory", public."BranchHistory", public."AttachmentHistory", public."UserHistory",
   public."RouteHistory", public."RouteOwnerHistory", public."RegionHistory",
+  public."TemixDailyFile", public."TemixDailyRow", public."TemixChange", public."TemixChangeReview", public."TemixNoticeSeen", public."TemixRouteMap",
   public."CodeSequence", public."CronRun",
   public."User", public."PasswordHistory", public."Region", public."Route", public."_ManagerRegions",
   public."Channel", public."SubChannel"
@@ -168,7 +169,8 @@ TRUNCATE TABLE
   public."ImportRow", public."TemixSyncBatch", public."ExportJob", public."AuditLog", public."AuthEvent",
   public."JobRunDay", public."PurgeSummary", public."IntegrityCheckResult", public."SealRecord", public."RateLimit",
   public."SavedView", public."CustomerHistory", public."BranchHistory", public."AttachmentHistory", public."UserHistory",
-  public."RouteHistory", public."RouteOwnerHistory", public."RegionHistory"
+  public."RouteHistory", public."RouteOwnerHistory", public."RegionHistory",
+  public."TemixDailyFile", public."TemixDailyRow", public."TemixChange", public."TemixChangeReview", public."TemixNoticeSeen", public."TemixRouteMap"
   CONTINUE IDENTITY RESTRICT;
 
 DELETE FROM public."CodeSequence" WHERE "scope" ~ '^CUSTOMER-[0-9]{4}$';

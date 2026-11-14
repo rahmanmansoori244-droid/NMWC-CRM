@@ -93,8 +93,26 @@ function migrationFkRules(t: Tables, fks = migrationForeignKeys()): string[] {
  * into a kept one, which TRUNCATE ... RESTRICT allows and which leaves User
  * untouched). A later migration fails the pin below on purpose: re-check
  * tables.json, guards.sql and the fingerprint against it, then move the pin.
+ *
+ * Re-checked 2026-11-14 against the 43rd, 20261114100000_temix_daily_tables
+ * (the daily Temix import, stage 1): six new tables, all EMPTY. TemixDailyFile
+ * and TemixDailyRow hold only what uploaded daily files carried (the rows'
+ * raw and parsed are customer data, like ImportRow's); TemixChange,
+ * TemixChangeReview and TemixNoticeSeen are those files' ledger, its review
+ * marks and its "listed once" hashes, which mean nothing once the customers
+ * they name are emptied; TemixRouteMap starts empty by design and holds only
+ * entries made for daily files, so a test-period entry must not route the first
+ * real file. Five carry a BEFORE TRUNCATE guard bound to
+ * nmwc_forbid_audit_mutation (17 -> 22), which the owner's window passes like
+ * the other ledgers'. Foreign keys: from the new tables into User and Route
+ * (emptied into kept, allowed) and among themselves; none from a kept table into
+ * them. Their BIGSERIAL sequences are left as they are (CONTINUE IDENTITY), as
+ * every other emptied table's. Two new enums, no change to a kept table, and
+ * PurgeSummary (emptied) gets one more rule id in its CHECK. guards.sql CS001,
+ * CS003 and CS005, selfcheck.sql CS101, the fingerprint's empty_tables, the
+ * reset's LOCK and TRUNCATE lists and verify.sql CS302 name them.
  */
-const REVIEWED_THROUGH = { count: 42, last: '20261111120000_import_shop_notice_ack' };
+const REVIEWED_THROUGH = { count: 43, last: '20261114100000_temix_daily_tables' };
 
 /** The rules; each returns what is wrong (empty = right). */
 function tableRules(t: Tables, schema: ParsedSchema): string[] {
@@ -165,19 +183,19 @@ function tableRules(t: Tables, schema: ParsedSchema): string[] {
 }
 
 describe('clean start: tables.json classifies every table', () => {
-  it('the schema has the 37 models and one implicit join table the design names', () => {
-    expect(SCHEMA.models).toHaveLength(37);
+  it('the schema has the 43 models and one implicit join table the design names', () => {
+    expect(SCHEMA.models).toHaveLength(43);
     expect(implicitJoinTables(SCHEMA)).toEqual(['_ManagerRegions']);
   });
 
   it('every table is EMPTY, PARTIAL or KEEP, once; no kept table points into an emptied one', () => {
     expect(tableRules(TABLES, SCHEMA)).toEqual([]);
-    expect(TABLES.EMPTY).toHaveLength(28);
+    expect(TABLES.EMPTY).toHaveLength(34);
     expect(TABLES.KEEP).toHaveLength(8);
   });
 
-  it('every ledger the migrations guard against TRUNCATE is in the list (17 of them)', () => {
-    expect(truncateGuarded()).toHaveLength(17);
+  it('every ledger the migrations guard against TRUNCATE is in the list (22 of them)', () => {
+    expect(truncateGuarded()).toHaveLength(22);
   });
 
   it('no foreign key in any migration points from a kept table into an emptied one', () => {
@@ -190,6 +208,11 @@ describe('clean start: tables.json classifies every table', () => {
       from: 'ImportBatch',
       to: 'User',
     });
+    // The 43rd: the daily Temix tables point into kept User and Route (allowed), and
+    // nothing kept points into them.
+    for (const to of ['User', 'Route'])
+      expect(fks).toContainEqual({ migration: '20261114100000_temix_daily_tables', from: 'TemixRouteMap', to });
+    expect(fks.filter((k) => k.migration === '20261114100000_temix_daily_tables' && !k.from.startsWith('Temix'))).toEqual([]);
   });
 
   it('the inventory was checked against every migration there is', () => {
