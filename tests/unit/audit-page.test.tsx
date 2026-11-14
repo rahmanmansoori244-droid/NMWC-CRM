@@ -568,37 +568,33 @@ describe('follow-up 1 (F1): the clean start’s entry shows what it removed and 
     removed: { Customer: 3334, Branch: 3901, AuditLog: 52011, CodeSequence: 1, CronRun: 812 },
     kept: { User: 41, Route: 27, CodeSequence: 0, CronRun: 96, CronHeartbeat: 11 },
   };
-  const table = () => screen.getByRole('table', { name: /removed and kept by the clean start/ });
-  const cells = () =>
-    [...table().querySelectorAll(':scope > tbody > tr')].map((tr) =>
-      [...tr.querySelectorAll(':scope > th, :scope > td')].map((c) => c.textContent)
-    );
-
-  it('a table of kinds in plain words, each figure exactly as the entry holds it, a dash where it holds none', async () => {
+  const list = () => screen.getByRole('list', { name: /removed and kept by the clean start/ });
+  const cells = () => [...list().querySelectorAll(':scope > li')].map((li) => li.textContent);
+  it('a list of kinds in plain words, each figure exactly as the entry holds it, a dash where it holds none', async () => {
     h.logs = [reset(AFTER), log('l1', 'u-ali', 'Ali Salesman')];
     await open();
     expect(screen.getByText('What was removed and kept')).toBeTruthy();
     expect(cells()).toEqual([
-      ['Customers', '3,334', '—'],
-      ['Branches (shops)', '3,901', '—'],
-      ['Audit log entries', '52,011', '—'],
-      ['Scheduled job runs', '812', '96'],
-      ['Customer code counters', '1', '0'],
-      ['Accounts', '—', '41'],
-      ['Routes', '—', '27'],
-      ['Scheduled job heartbeats', '—', '11'],
+      'Customers: removed 3,334, kept —',
+      'Branches (shops): removed 3,901, kept —',
+      'Audit log entries: removed 52,011, kept —',
+      'Scheduled job runs: removed 812, kept 96',
+      'Customer code counters: removed 1, kept 0',
+      'Accounts: removed —, kept 41',
+      'Routes: removed —, kept 27',
+      'Scheduled job heartbeats: removed —, kept 11',
     ]);
     expect(screen.getByText(/A dash: the entry holds no figure for that kind/)).toBeTruthy();
     // The reason is still shown as it was.
     expect(screen.getByText(/Go-live clean start \(owner decision\)/)).toBeTruthy();
     // Only that entry: one such table on the page.
-    expect(screen.getAllByRole('table', { name: /removed and kept/ })).toHaveLength(1);
+    expect(screen.getAllByRole('list', { name: /removed and kept/ })).toHaveLength(1);
   });
 
   it('the labels come from the one word list', async () => {
     h.logs = [reset(AFTER)];
     await open();
-    expect(cells().map((r) => r[0])).toEqual(
+    expect(cells().map((t) => t!.split(':')[0])).toEqual(
       ['Customer', 'Branch', 'AuditLog', 'CronRun', 'CodeSequence', 'User', 'Route', 'CronHeartbeat'].map((k) => CLEAN_START_KIND_LABELS[k])
     );
   });
@@ -607,10 +603,10 @@ describe('follow-up 1 (F1): the clean start’s entry shows what it removed and 
     h.logs = [reset({ runId: '987654321' })];
     await open();
     expect(screen.getByText('This entry holds no counts of what was removed and kept.')).toBeTruthy();
-    expect(screen.queryByRole('table', { name: /removed and kept/ })).toBeNull();
+    expect(screen.queryByRole('list', { name: /removed and kept/ })).toBeNull();
   });
 
-  it('any other entry, even one that looks alike, shows no such table', async () => {
+  it('any other entry, even one that looks alike, shows no such list', async () => {
     h.logs = [
       { ...reset(AFTER), id: 'ckabc0000000000000000000' },
       { ...reset(AFTER), source: null },

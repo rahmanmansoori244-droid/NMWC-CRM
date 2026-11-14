@@ -361,25 +361,16 @@ function CleanStartCounts({ after }: { after: Prisma.JsonValue }) {
   return (
     <details className="mt-1">
       <summary className="cursor-pointer font-medium text-brand-700">What was removed and kept</summary>
-      <table className="mt-1 text-[11px]">
-        <caption className="sr-only">Records removed and kept by the clean start, by kind</caption>
-        <thead className="text-left text-slate-500">
-          <tr>
-            <th scope="col" className="py-0.5 pr-3 font-medium">Kind</th>
-            <th scope="col" className="py-0.5 pr-3 text-right font-medium">Removed</th>
-            <th scope="col" className="py-0.5 text-right font-medium">Kept</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.kind}>
-              <th scope="row" className="py-0.5 pr-3 text-left font-normal">{r.label}</th>
-              <td className="py-0.5 pr-3 text-right tabular-nums">{n(r.removed)}</td>
-              <td className="py-0.5 text-right tabular-nums">{n(r.kept)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {/* A list, not a nested table: every table sits in a TableScroll of its own
+          (tests/unit/mobile-quick-wins.test.tsx), and a list wraps on a phone. */}
+      <ul aria-label="Records removed and kept by the clean start, by kind" className="mt-1 space-y-0.5 text-[11px]">
+        {rows.map((r) => (
+          <li key={r.kind}>
+            <span className="font-medium text-slate-700">{r.label}</span>: removed{' '}
+            <span className="tabular-nums">{n(r.removed)}</span>, kept <span className="tabular-nums">{n(r.kept)}</span>
+          </li>
+        ))}
+      </ul>
       <p className="mt-1 text-slate-500">A dash: the entry holds no figure for that kind.</p>
     </details>
   );
