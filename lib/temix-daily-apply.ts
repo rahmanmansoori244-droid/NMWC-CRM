@@ -12,10 +12,15 @@
  *    -> HELD, with the Check's reasons. Nothing is written but the row.
  *  - a shop found whose route is not applied (no route in the file, a code not
  *    matched, a code two CRM routes share, a switched-off route)
- *    -> HELD, with that reason (ROUTE_NOT_MATCHED, ...). The shop keeps its
- *    route. In this stage the move is all a row can change, so a row whose move
- *    is not applied changes nothing; once credit and terms are applied (stage 8,
- *    after the owner's answer) such a row would be PARTLY_APPLIED.
+ *    -> NO_CHANGE, with that reason kept in its reasons (ROUTE_NOT_MATCHED,
+ *    ...). The shop keeps its route. The plan: an unmatched route on a shop
+ *    that exists "is not a hold of the whole row; the rest of the row still
+ *    applies", and the Check counts such a row under "no change", the figure
+ *    the Steward confirms (review 2026-11-15, finding 2: such rows were stored
+ *    HELD, so a load ended with more held rows than were confirmed). In this
+ *    stage the move is all a row can change, so such a row changes nothing;
+ *    once credit and terms are applied (stage 8, after the owner's answer) it
+ *    would be PARTLY_APPLIED.
  *  - a move that would set back the last move the daily file made on that shop
  *    (to the route it came from) on a file whose reversal warning was not ticked
  *    -> HELD, REVERSAL_NOT_ACKED. The start asks for the tick whenever its
@@ -23,6 +28,11 @@
  *  - a move -> APPLIED, through moveShopToRoute.
  *  - anything else (the shop is already on the route) -> NO_CHANGE. Nothing is
  *    written but the row: the same file twice changes nothing the second time.
+ *  - a customer whose transaction fails APPLY_GROUP_MAX_FAILURES times for a
+ *    reason that is not a conflict (review 2026-11-15) -> HELD, APPLY_FAILED,
+ *    nothing of it written, so the file can still finish and the order rule
+ *    does not stop every later file behind it. The next file brings the rows
+ *    again.
  *
  * WHAT IS NOT DECIDED HERE (waits for the owner): credit and terms (mainRowOf
  * stays undecided, nothing reads them), the A/I status, creating customers or
@@ -34,6 +44,8 @@
  * PURE: no database.
  */
 import type { RouteHold, RowPlan } from './temix-daily-check';
+import { asciiDigits } from './digits';
+import { normalizeTemixCode } from './temix-code';
 
 // ── Timing (the customer import's figures, services/imports.ts) ───────────
 
@@ -57,14 +69,49 @@ export function sliceMaxGroups(raw: string | undefined): number {
 
 /** The hold of a move that would set back the previous file's move, without the tick. */
 export const REVERSAL_NOT_ACKED = 'REVERSAL_NOT_ACKED';
+/** The hold of a customer whose transaction kept failing (not a conflict). */
+export const APPLY_FAILED = 'APPLY_FAILED';
+/** A customer's transaction is tried this many times (one per slice) before its rows are held APPLY_FAILED. */
+export const APPLY_GROUP_MAX_FAILURES = 3;
 
-export const APPLY_HOLD_LABEL: Record<RouteHold | typeof REVERSAL_NOT_ACKED, string> = {
+export const APPLY_HOLD_LABEL: Record<RouteHold | typeof REVERSAL_NOT_ACKED | typeof APPLY_FAILED, string> = {
   ROUTE_MISSING: 'no route in the file; the shop keeps its route',
   ROUTE_NOT_MATCHED: 'the route code is not a CRM route and has no route-map entry; the shop keeps its route',
   ROUTE_AMBIGUOUS: 'two CRM routes have this code once capitals and spaces are set aside; the shop keeps its route',
   ROUTE_SWITCHED_OFF: 'the CRM route it names is switched off; the shop keeps its route',
   REVERSAL_NOT_ACKED: 'the move would set back the previous file’s move and the reversal warning was not ticked',
+  APPLY_FAILED: `applying this customer failed ${APPLY_GROUP_MAX_FAILURES} times; nothing of it was written (the next file brings the rows again)`,
 };
+
+// ── Which customers a code names ──────────────────────────────────────────
+
+/**
+ * A code's digits, Arabic-Indic and Persian ones as ASCII, everything else
+ * dropped. normalizeTemixCode changes no digit (it folds those digits to
+ * ASCII, removes invisible characters, trims and capitalises), so two codes it
+ * makes equal have the same digits. The apply's SQL pre-filter compares these,
+ * which is never narrower than the Check's own comparison; the Check's
+ * comparison (customerHasCode) then decides (review 2026-11-15, finding 1: an
+ * upper(btrim()) filter missed a customer whose stored code carried an Arabic
+ * digit or an invisible character, so a DUPLICATE_SUSPECT the preview held
+ * became a match in the apply).
+ */
+export function codeDigits(code: string): string {
+  return asciiDigits(code).replace(/[^0-9]/g, '');
+}
+
+/** The Arabic-Indic then Persian digits, and the ASCII digit each folds to (codeDigits as SQL translate()). */
+export const FOLDED_DIGITS = {
+  from:
+    Array.from({ length: 10 }, (_, i) => String.fromCharCode(0x0660 + i)).join('') +
+    Array.from({ length: 10 }, (_, i) => String.fromCharCode(0x06f0 + i)).join(''),
+  to: '01234567890123456789',
+} as const;
+
+/** Whether the customer has `custCodeKey` as its NMWC or Temix code, compared exactly as the Check compares them. */
+export function customerHasCode(c: { nmwcCode: string; temixCode: string | null }, custCodeKey: string): boolean {
+  return normalizeTemixCode(c.nmwcCode) === custCodeKey || (!!c.temixCode && normalizeTemixCode(c.temixCode) === custCodeKey);
+}
 
 // ── Reversals ─────────────────────────────────────────────────────────────
 
@@ -99,13 +146,14 @@ export function reversalsOf(plans: readonly RowPlan[], last: ReadonlyMap<string,
 
 export type RowDecision =
   | { outcome: 'HELD'; holds: string[] }
-  | { outcome: 'NO_CHANGE' }
+  /** routeHold: the shop was found and keeps its route; the reason is stored with the row. */
+  | { outcome: 'NO_CHANGE'; routeHold?: RouteHold }
   | { outcome: 'APPLIED'; move: NonNullable<RowPlan['move']>; via: 'EXACT' | 'MAP'; routeMapEntryId: string | null };
 
 /** What the apply does with one planned row. */
 export function decideRow(p: RowPlan, opts: { reversalAcked: boolean; last: LastMove | undefined; fileId: string }): RowDecision {
   if (p.holds.length > 0) return { outcome: 'HELD', holds: [...p.holds] };
-  if (p.routeHold) return { outcome: 'HELD', holds: [p.routeHold] };
+  if (p.routeHold) return { outcome: 'NO_CHANGE', routeHold: p.routeHold };
   if (p.move) {
     if (!opts.reversalAcked && isReversal(p.move, opts.last, opts.fileId)) return { outcome: 'HELD', holds: [REVERSAL_NOT_ACKED] };
     return { outcome: 'APPLIED', move: p.move, via: p.move.via, routeMapEntryId: p.route.kind === 'MAP' ? p.route.entryId : null };
@@ -113,9 +161,10 @@ export function decideRow(p: RowPlan, opts: { reversalAcked: boolean; last: Last
   return { outcome: 'NO_CHANGE' };
 }
 
-/** The row's stored reasons: its notes from the upload, and the holds of its decision, sorted, once each. */
+/** The row's stored reasons: its notes from the upload, and the holds (or route reason) of its decision, sorted, once each. */
 export function storedReasons(notes: readonly string[], d: RowDecision): string[] {
-  return [...new Set([...notes, ...(d.outcome === 'HELD' ? d.holds : [])])].sort();
+  const own = d.outcome === 'HELD' ? d.holds : d.outcome === 'NO_CHANGE' && d.routeHold ? [d.routeHold] : [];
+  return [...new Set([...notes, ...own])].sort();
 }
 
 // ── The start ─────────────────────────────────────────────────────────────
@@ -237,4 +286,31 @@ export function stalledDailyLoadWhere(staleBefore: Date) {
     state: { in: ['APPLYING', 'FINALIZING'] as Array<'APPLYING' | 'FINALIZING'> },
     OR: [{ applyLeaseUntil: null }, { applyLeaseUntil: { lt: staleBefore } }],
   };
+}
+
+/**
+ * Review 2026-11-15, finding 3: while the pilot rule holds (a new-customer
+ * request waits at the Accountant) every slice of a stalled load stops again,
+ * so Resume can do nothing. Such loads are "held by the pilot rule", not
+ * stuck: /status does not count them as a breach, and Work items says what
+ * they wait for. Once the request is decided they are stuck again (Resume).
+ */
+export function splitStalledDailyLoads(stalled: number, pilotWaiting: number): { stuck: number; heldByPilot: number } {
+  return pilotWaiting > 0 ? { stuck: 0, heldByPilot: stalled } : { stuck: stalled, heldByPilot: 0 };
+}
+
+/** The Work item of a stalled daily load. */
+export function stalledDailyLoadItem(
+  f: { totalRows: number; pendingRows: number },
+  pilotWaiting: number
+): { category: string; subtitle: string } {
+  const done = `${(f.totalRows - f.pendingRows).toLocaleString('en-US')} of ${f.totalRows.toLocaleString('en-US')} rows done`;
+  if (pilotWaiting > 0) {
+    const one = pilotWaiting === 1;
+    return {
+      category: 'Temix daily load held by the pilot rule',
+      subtitle: `Waits for the Accountant (pilot rule): ${pilotWaiting} new-customer request${one ? ' waits' : 's wait'}. ${done}. Resume once ${one ? 'it is' : 'they are'} decided.`,
+    };
+  }
+  return { category: 'Temix daily load to resume', subtitle: `Load interrupted: ${done}. Open it and Resume.` };
 }

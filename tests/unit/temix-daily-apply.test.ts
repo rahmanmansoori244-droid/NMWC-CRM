@@ -10,11 +10,16 @@
 import { describe, expect, it } from 'vitest';
 import { checkDailyFile, type RowPlan } from '@/lib/temix-daily-check';
 import {
+  APPLY_FAILED,
   APPLY_FIELDS,
+  APPLY_GROUP_MAX_FAILURES,
   APPLY_HOLD_LABEL,
   APPLY_SLICE_MAX_GROUPS,
+  FOLDED_DIGITS,
   REVERSAL_NOT_ACKED,
   applyFigures,
+  codeDigits,
+  customerHasCode,
   decideRow,
   discardRefusal,
   finalCounts,
@@ -23,12 +28,15 @@ import {
   reversalsOf,
   seenFigures,
   sliceMaxGroups,
+  splitStalledDailyLoads,
+  stalledDailyLoadItem,
   stalledDailyLoadWhere,
   startRefusal,
   storedReasons,
   type StartInput,
 } from '@/lib/temix-daily-apply';
 import { checkInput } from '../support/temix-daily-check-fixture';
+import { normalizeTemixCode } from '@/lib/temix-code';
 
 const plan = checkDailyFile(checkInput());
 const row = new Map<number, RowPlan>(plan.rows.map((p) => [p.rowNumber, p]));
@@ -47,10 +55,14 @@ describe('what each row of the synthetic file becomes', () => {
     expect(decide(2)).toEqual({ outcome: 'NO_CHANGE' });
   });
 
-  it('a route not matched, switched off or missing holds the row; the shop keeps its route', () => {
-    expect(decide(14)).toEqual({ outcome: 'HELD', holds: ['ROUTE_NOT_MATCHED'] });
-    expect(decide(15)).toEqual({ outcome: 'HELD', holds: ['ROUTE_SWITCHED_OFF'] });
-    expect(decide(16)).toEqual({ outcome: 'HELD', holds: ['ROUTE_MISSING'] });
+  it('a route not matched, switched off or missing changes nothing, with its reason; the shop keeps its route', () => {
+    // Review 2026-11-15, finding 2: the Check counts these under "no change"
+    // (the plan: not a hold of the whole row), so the apply stores them so.
+    expect(decide(14)).toEqual({ outcome: 'NO_CHANGE', routeHold: 'ROUTE_NOT_MATCHED' });
+    expect(decide(15)).toEqual({ outcome: 'NO_CHANGE', routeHold: 'ROUTE_SWITCHED_OFF' });
+    expect(decide(16)).toEqual({ outcome: 'NO_CHANGE', routeHold: 'ROUTE_MISSING' });
+    expect(storedReasons([], decide(14))).toEqual(['ROUTE_NOT_MATCHED']);
+    expect(storedReasons(['CODE_LOWERCASE'], decide(15))).toEqual(['CODE_LOWERCASE', 'ROUTE_SWITCHED_OFF']);
   });
 
   it('a row the Check holds stays held, for the Check\'s reasons', () => {
@@ -60,13 +72,17 @@ describe('what each row of the synthetic file becomes', () => {
     expect(decide(8)).toEqual({ outcome: 'HELD', holds: ['BRANCH_CODE_BLANK'] });
   });
 
-  it('every row of the file, as the Check counted it, with the rows whose route is not applied held', () => {
+  it('every row of the file becomes what the Check counted: the held figure confirmed is the HELD count', () => {
     const outcomes = plan.rows.map((p) => decideRow(p, { reversalAcked: false, last: undefined, fileId: 'f1' }).outcome);
     const count = (o: string) => outcomes.filter((x) => x === o).length;
-    // The Check's wouldMove 2; its noChange 4 counts the three shops whose route is
-    // not applied, which the apply holds with that reason; the 13 it holds stay held.
-    expect([count('APPLIED'), count('NO_CHANGE'), count('HELD')]).toEqual([2, 1, 16]);
+    expect([count('APPLIED'), count('NO_CHANGE'), count('HELD')]).toEqual([2, 4, 13]);
     expect(plan.counts).toMatchObject({ wouldMove: 2, noChange: 4, held: 13 });
+    // The Steward ticks "N rows are held" from applyFigures; the load ends with as many HELD.
+    expect(applyFigures(plan, 0).held).toBe(count('HELD'));
+    expect(finalCounts({ APPLIED: count('APPLIED'), NO_CHANGE: count('NO_CHANGE'), HELD: count('HELD') }, 0)).toMatchObject({
+      heldRows: applyFigures(plan, 0).held,
+      noChangeRows: plan.counts.noChange,
+    });
   });
 
   it('a move through a route-map entry names the entry', () => {
@@ -80,6 +96,43 @@ describe('what each row of the synthetic file becomes', () => {
     expect(storedReasons(['DUPLICATE_ROW'], { outcome: 'HELD', holds: ['DUPLICATE_ROW'] })).toEqual(['DUPLICATE_ROW']);
     expect(storedReasons(['CODE_LOWERCASE'], { outcome: 'NO_CHANGE' })).toEqual(['CODE_LOWERCASE']);
     for (const h of Object.keys(APPLY_HOLD_LABEL)) expect(h).toMatch(/^[A-Z][A-Z0-9_]{0,59}$/); // TemixDailyRow_hold_reasons_check
+    expect(APPLY_HOLD_LABEL[APPLY_FAILED]).toMatch(new RegExp(`failed ${APPLY_GROUP_MAX_FAILURES} times; nothing of it was written`));
+  });
+});
+
+describe('which customers a code names (review 2026-11-15, finding 1)', () => {
+  const ZWSP = String.fromCharCode(0x200b);
+  const ARABIC_ONE = String.fromCharCode(0x0661);
+  const PERSIAN_ONE = String.fromCharCode(0x06f1);
+  const ARABIC_367 = String.fromCharCode(0x0663, 0x0666, 0x0667);
+
+  it('compares as the Check does: Arabic and Persian digits, invisible characters, ends and capitals folded', () => {
+    expect(customerHasCode({ nmwcCode: `CA${ARABIC_ONE}`, temixCode: null }, 'CA1')).toBe(true);
+    expect(customerHasCode({ nmwcCode: `CA1${ZWSP}`, temixCode: null }, 'CA1')).toBe(true);
+    expect(customerHasCode({ nmwcCode: 'NMWC-2026-000009', temixCode: ` ca${PERSIAN_ONE} ` }, 'CA1')).toBe(true);
+    expect(customerHasCode({ nmwcCode: 'CA10', temixCode: 'CA01' }, 'CA1')).toBe(false);
+    expect(customerHasCode({ nmwcCode: 'CB1', temixCode: null }, 'CA1')).toBe(false);
+  });
+
+  it('the SQL pre-filter (the digits) is never narrower than that comparison', () => {
+    const codes = ['CA1', `CA${ARABIC_ONE}`, `ca1${ZWSP}`, ` CA${PERSIAN_ONE}\t`, `C${ZWSP}A1`, 'CAA0367', `CAA0${ARABIC_367}`, 'ABC', `a${ZWSP}bc`];
+    let pairs = 0;
+    for (const a of codes)
+      for (const b of codes)
+        if (a !== b && normalizeTemixCode(a) === normalizeTemixCode(b)) {
+          pairs++;
+          expect(codeDigits(a), `${JSON.stringify(a)} ${JSON.stringify(b)}`).toBe(codeDigits(b));
+        }
+    expect(pairs).toBeGreaterThan(10);
+    expect(codeDigits(`CA${ARABIC_ONE}`)).toBe('1');
+    expect(codeDigits('NMWC-2026-000009')).toBe('2026000009');
+    expect(codeDigits('ABC')).toBe('');
+  });
+
+  it('the digits SQL folds are the ones codeDigits folds, in order', () => {
+    expect(FOLDED_DIGITS.from).toHaveLength(20);
+    expect(FOLDED_DIGITS.to).toHaveLength(20);
+    for (let i = 0; i < 20; i++) expect(codeDigits(FOLDED_DIGITS.from[i]!)).toBe(FOLDED_DIGITS.to[i]);
   });
 });
 
@@ -193,6 +246,21 @@ describe('discard, the end, the slices and the stalled load', () => {
     expect(sliceMaxGroups('100000')).toBe(APPLY_SLICE_MAX_GROUPS);
     expect(sliceMaxGroups('0')).toBe(APPLY_SLICE_MAX_GROUPS);
     expect(sliceMaxGroups('2.5')).toBe(APPLY_SLICE_MAX_GROUPS);
+  });
+
+  it('while the pilot rule holds, a stalled load is held by it, not stuck (review 2026-11-15, finding 3)', () => {
+    expect(splitStalledDailyLoads(2, 0)).toEqual({ stuck: 2, heldByPilot: 0 });
+    expect(splitStalledDailyLoads(2, 1)).toEqual({ stuck: 0, heldByPilot: 2 });
+    expect(splitStalledDailyLoads(0, 3)).toEqual({ stuck: 0, heldByPilot: 0 });
+    expect(stalledDailyLoadItem({ totalRows: 1200, pendingRows: 200 }, 0)).toEqual({
+      category: 'Temix daily load to resume',
+      subtitle: 'Load interrupted: 1,000 of 1,200 rows done. Open it and Resume.',
+    });
+    const held = stalledDailyLoadItem({ totalRows: 10, pendingRows: 4 }, 1);
+    expect(held.category).toBe('Temix daily load held by the pilot rule');
+    expect(held.subtitle).toBe('Waits for the Accountant (pilot rule): 1 new-customer request waits. 6 of 10 rows done. Resume once it is decided.');
+    expect(held.subtitle).not.toMatch(/interrupted/);
+    expect(stalledDailyLoadItem({ totalRows: 10, pendingRows: 4 }, 2).subtitle).toMatch(/2 new-customer requests wait\. .* once they are decided/);
   });
 
   it('a stalled load: applying or finishing with no lease or one older than the given time', () => {

@@ -292,17 +292,25 @@ describe('/temix-daily/<fileId>: the Check', () => {
     h.file = { ...file('f1', '2026-11-14', 'APPLYING'), applyLeaseUntil: null };
     h.outcomes = [
       { outcome: 'APPLIED', _count: { _all: 2 } },
+      { outcome: 'NO_CHANGE', _count: { _all: 1 } },
       { outcome: 'HELD', _count: { _all: 1 } },
-      { outcome: 'PENDING', _count: { _all: 16 } },
+      { outcome: 'PENDING', _count: { _all: 15 } },
     ];
-    h.heldRows = [{ id: 'r14', rowNumber: 14, custCodeKey: 'CE4', branchCodeKey: '01', holdReasons: ['ROUTE_NOT_MATCHED'] }];
+    // Review 2026-11-15, finding 2: a shop that kept its route is NO_CHANGE, and its reason is shown too.
+    h.heldRows = [
+      { id: 'r12', rowNumber: 12, outcome: 'HELD', custCodeKey: 'CX9', branchCodeKey: '01', holdReasons: ['CUSTOMER_UNKNOWN'] },
+      { id: 'r14', rowNumber: 14, outcome: 'NO_CHANGE', custCodeKey: 'CE4', branchCodeKey: '01', holdReasons: ['ROUTE_NOT_MATCHED'] },
+    ];
     render(await open());
     expect(screen.getByRole('heading', { name: 'Load interrupted' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Resume' })).toBeTruthy();
     const rows = section(/^Rows$/);
     expect(within(rows).getByText('Shop moved: 2')).toBeTruthy();
-    expect(within(rows).getByText('Waiting: 16')).toBeTruthy();
-    expect(within(rows).getByText(/the route code is not a CRM route and has no route-map entry; the shop keeps its route/)).toBeTruthy();
+    expect(within(rows).getByText('Waiting: 15')).toBeTruthy();
+    const r14 = within(rows).getByText(/the route code is not a CRM route and has no route-map entry; the shop keeps its route/).closest('tr')!;
+    expect(within(r14 as HTMLElement).getByText('Changed nothing')).toBeTruthy();
+    const r12 = within(rows).getByText(/no customer in the CRM has this code/).closest('tr')!;
+    expect(within(r12 as HTMLElement).getByText('Held')).toBeTruthy();
     expect(screen.queryByText('Summary')).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Apply' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Discard' })).toBeNull();

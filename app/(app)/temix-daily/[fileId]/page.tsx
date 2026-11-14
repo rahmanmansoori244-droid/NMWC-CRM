@@ -127,13 +127,20 @@ export default async function TemixDailyCheckPage({ params }: { params: Promise<
         outcome: g.outcome as string,
         rows: g._count._all,
       }));
+  // The held rows, and the rows that changed nothing because their shop kept
+  // its route (a route not matched, missing, shared or switched off): the
+  // Check counts those under "no change", and the apply stores them so, with
+  // the route reason (review 2026-11-15, finding 2).
   const heldRows = notStarted
     ? []
     : await prisma.temixDailyRow.findMany({
-        where: { fileId: file.id, outcome: 'HELD' },
+        where: {
+          fileId: file.id,
+          OR: [{ outcome: 'HELD' }, { outcome: 'NO_CHANGE', holdReasons: { hasSome: [...ROUTE_HOLDS] } }],
+        },
         orderBy: { rowNumber: 'asc' },
         take: LIST_MAX,
-        select: { id: true, rowNumber: true, custCodeKey: true, branchCodeKey: true, holdReasons: true },
+        select: { id: true, rowNumber: true, outcome: true, custCodeKey: true, branchCodeKey: true, holdReasons: true },
       });
   const leaseLive = !!applyLeaseUntil && applyLeaseUntil > new Date();
   const canApply = notStarted && !!figures && !waits && !overtaken && !gate.stopped;
@@ -516,7 +523,7 @@ function Outcomes({
   held,
 }: {
   outcomes: Array<{ outcome: string; rows: number }>;
-  held: Array<{ id: string; rowNumber: number; custCodeKey: string | null; branchCodeKey: string | null; holdReasons: string[] }>;
+  held: Array<{ id: string; rowNumber: number; outcome: string; custCodeKey: string | null; branchCodeKey: string | null; holdReasons: string[] }>;
 }) {
   const label = (h: string): string | null =>
     (CHECK_HOLD_LABEL as Record<string, string>)[h] ?? (APPLY_HOLD_LABEL as Record<string, string>)[h] ?? null;
@@ -534,20 +541,22 @@ function Outcomes({
           ))}
         </ul>
       </header>
-      <TableScroll label="Held rows of the load" className="border-t border-slate-100">
+      <TableScroll label="Held rows of the load, and rows whose shop kept its route" className="border-t border-slate-100">
         <table className="min-w-full divide-y divide-slate-200 text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
             <tr>
               <th scope="col" className="px-4 py-2 font-medium">Row</th>
+              <th scope="col" className="px-4 py-2 font-medium">Outcome</th>
               <th scope="col" className="px-4 py-2 font-medium">Customer code</th>
               <th scope="col" className="px-4 py-2 font-medium">Shop code</th>
-              <th scope="col" className="px-4 py-2 font-medium">Why held</th>
+              <th scope="col" className="px-4 py-2 font-medium">Why</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {held.map((r) => (
               <tr key={r.id} className="align-top">
                 <td className="px-4 py-2 font-mono text-xs">{r.rowNumber}</td>
+                <td className="px-4 py-2 text-xs">{OUTCOME_LABEL[r.outcome] ?? r.outcome}</td>
                 <td className="px-4 py-2 font-mono text-xs">{r.custCodeKey ?? '-'}</td>
                 <td className="px-4 py-2 font-mono text-xs">{r.branchCodeKey ?? '-'}</td>
                 <td className="px-4 py-2 text-xs text-slate-600">
@@ -560,8 +569,8 @@ function Outcomes({
             ))}
             {held.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-4 text-center text-xs text-slate-500">
-                  No row is held.
+                <td colSpan={5} className="px-4 py-4 text-center text-xs text-slate-500">
+                  No row is held, and no shop kept its route.
                 </td>
               </tr>
             )}

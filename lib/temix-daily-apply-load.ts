@@ -7,10 +7,15 @@
  *  - lockGroupCustomers: every customer whose NMWC code or Temix code is the
  *    rows' customer code, live or archived, locked FOR UPDATE in id order (the
  *    lock order lib/locks.ts keeps: the customer row before its shops). Codes
- *    are compared as the database's own Temix-code index compares them
- *    (upper(btrim(...)), Customer_temixCode_live_unique), and the Check then
- *    compares them again its own way. A save of one of these customers or its
- *    shops that takes the customer lock waits for this transaction.
+ *    are compared exactly as the Check compares them (normalizeTemixCode, in
+ *    customerHasCode), after a SQL pre-filter on the codes' digits that can
+ *    only be wider (codeDigits; review 2026-11-15, finding 1: the earlier
+ *    upper(btrim()) filter was narrower than the Check, so a customer whose
+ *    stored code carried an Arabic digit or an invisible character was not
+ *    seen by the apply although the preview saw it). The candidates are read
+ *    without a lock, then locked by id and compared again as locked. A save of
+ *    one of these customers or its shops that takes the customer lock waits
+ *    for this transaction.
  *  - loadGroupRows: the group's staged rows still PENDING, locked FOR UPDATE,
  *    read with the Check's columns (codes and figures; never the row as sent).
  *  - loadGroupCrm: those customers and every shop that is theirs or carries a
@@ -36,21 +41,34 @@ import {
   loadRoutes,
   type CheckRowColumns,
 } from './temix-daily-check-load';
-import { latestMoveByBranch, type LastMove } from './temix-daily-apply';
+import { FOLDED_DIGITS, codeDigits, customerHasCode, latestMoveByBranch, type LastMove } from './temix-daily-apply';
 
 type Tx = Prisma.TransactionClient;
 
 /** A group: one customer code's rows, or one row that has no customer code. */
 export type GroupKey = { custCodeKey: string } | { rowId: string };
 
-/** Locks the customers a code may name. Returns their ids. */
+type CodeRow = { id: string; nmwcCode: string; temixCode: string | null };
+
+/** A column's digits as codeDigits gives them. */
+const digitsOf = (column: Prisma.Sql) =>
+  Prisma.sql`regexp_replace(translate(COALESCE(${column}, ''), ${FOLDED_DIGITS.from}, ${FOLDED_DIGITS.to}), '[^0-9]', '', 'g')`;
+
+/** Locks the customers a code names, as the Check matches them. Returns their ids. */
 export async function lockGroupCustomers(tx: Tx, key: GroupKey): Promise<string[]> {
   if (!('custCodeKey' in key)) return [];
-  const rows = await tx.$queryRaw<Array<{ id: string }>>`
-    SELECT "id" FROM "Customer"
-     WHERE upper(btrim("nmwcCode")) = ${key.custCodeKey} OR upper(btrim("temixCode")) = ${key.custCodeKey}
-     ORDER BY "id" COLLATE "C" FOR UPDATE`;
-  return rows.map((r) => r.id);
+  const code = key.custCodeKey;
+  const digits = codeDigits(code);
+  const candidates = await tx.$queryRaw<CodeRow[]>(Prisma.sql`
+    SELECT "id", "nmwcCode", "temixCode" FROM "Customer"
+     WHERE ${digitsOf(Prisma.sql`"nmwcCode"`)} = ${digits} OR ${digitsOf(Prisma.sql`"temixCode"`)} = ${digits}`);
+  const ids = candidates.filter((c) => customerHasCode(c, code)).map((c) => c.id);
+  if (ids.length === 0) return [];
+  const locked = await tx.$queryRaw<CodeRow[]>(Prisma.sql`
+    SELECT "id", "nmwcCode", "temixCode" FROM "Customer"
+     WHERE "id" = ANY(${ids}::text[])
+     ORDER BY "id" COLLATE "C" FOR UPDATE`);
+  return locked.filter((c) => customerHasCode(c, code)).map((c) => c.id);
 }
 
 /** The group's rows still waiting, locked; and how many of them had their payload emptied. */

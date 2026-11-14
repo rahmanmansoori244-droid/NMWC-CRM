@@ -136,9 +136,22 @@ describe('the apply writes the file and its rows, field by field, and nothing el
   });
 
   it('a row is written its outcome, customer, shop, reasons and time; nothing of the file\'s payload', () => {
-    expect(dataKeys(APPLY, 'temixDailyRow')).toEqual([['outcome', 'customerId', 'branchId', 'holdReasons', 'doneAt']]);
+    expect(dataKeys(APPLY, 'temixDailyRow')).toEqual([
+      ['outcome', 'customerId', 'branchId', 'holdReasons', 'doneAt'],
+      // A customer that kept failing (review 2026-11-15): its rows HELD APPLY_FAILED, nothing else.
+      ['outcome', 'holdReasons', 'doneAt'],
+    ]);
     // Only a row still PENDING of this file.
     expect(APPLY).toMatch(/temixDailyRow\.updateMany\(\{\s*where: \{ id: p\.rowId, fileId: file\.id, outcome: 'PENDING' \}/);
+    expect(APPLY).toMatch(
+      /temixDailyRow\.updateMany\(\{\s*where: \{ id: r\.id, fileId, outcome: 'PENDING' \},\s*data: \{ outcome: 'HELD', holdReasons: storedReasons\(r\.holdReasons, \{ outcome: 'HELD', holds: \[APPLY_FAILED\] \}\), doneAt \}/
+    );
+    // Held only after the limit, counted from the file's own audit rows, under the lease.
+    const at = APPLY.indexOf('async function recordGroupFailure(');
+    const body = APPLY.slice(at, APPLY.indexOf('\n}\n', at));
+    expect(body).toMatch(/FOR SHARE/);
+    expect(body).toMatch(/if \(failures < APPLY_GROUP_MAX_FAILURES\) return 0;/);
+    expect(body.indexOf('writeAudit(')).toBeLessThan(body.indexOf('temixDailyRow.updateMany('));
   });
 
   it('a file is written its state, lease, ticks, counts and discard only', () => {

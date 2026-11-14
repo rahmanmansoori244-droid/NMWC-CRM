@@ -12,8 +12,9 @@
  *  - The order rule: B waits for A. The pilot rule and the figures the Steward
  *    confirms refuse the start, writing nothing.
  *  - A moves two shops (one into another region) and leaves the rest: an
- *    unknown route holds its row and the shop stays where it was; a switched-off
- *    route, an unknown customer are held. Each move: one BranchHistory UPDATE of
+ *    unknown route or a switched-off route changes nothing, its reason kept,
+ *    and the shop stays where it was; an unknown customer is held. The held
+ *    figure confirmed at the start is the file's held count at the end. Each move: one BranchHistory UPDATE of
  *    routeId and regionId dated the START OF THE LOAD DAY, one AuditLog row with
  *    the file's lineage, one ledger row, joined by txId; the route intervals
  *    follow. The salesman's list, his Today list, the manager's list and the
@@ -320,7 +321,9 @@ describe.skipIf(!ENABLED)('the daily Temix apply on Postgres', () => {
     expect(end).toMatchObject({ done: true, state: 'LOADED', stopped: null });
 
     const f = await prisma.temixDailyFile.findUniqueOrThrow({ where: { id: A } });
-    expect(f).toMatchObject({ state: 'LOADED', appliedById: w.steward, appliedRows: 2, noChangeRows: 1, heldRows: 3, rejectedRows: 0, noticeRows: 0, applyLeaseBy: null, reversalAckById: null });
+    expect(f).toMatchObject({ state: 'LOADED', appliedById: w.steward, appliedRows: 2, noChangeRows: 3, heldRows: 1, rejectedRows: 0, noticeRows: 0, applyLeaseBy: null, reversalAckById: null });
+    // Review 2026-11-15, finding 2: what the Steward confirmed as held is what the load holds.
+    expect(f.heldRows).toBe(started.figures.held);
     expect(f.loadedAt).not.toBeNull();
 
     // The shops: moved with their region, version and editor; the others as they were.
@@ -334,8 +337,8 @@ describe.skipIf(!ENABLED)('the daily Temix apply on Postgres', () => {
       [2, 'APPLIED', []],
       [3, 'APPLIED', []],
       [4, 'NO_CHANGE', []],
-      [5, 'HELD', ['ROUTE_NOT_MATCHED']],
-      [6, 'HELD', ['ROUTE_SWITCHED_OFF']],
+      [5, 'NO_CHANGE', ['ROUTE_NOT_MATCHED']],
+      [6, 'NO_CHANGE', ['ROUTE_SWITCHED_OFF']],
       [7, 'HELD', ['CUSTOMER_UNKNOWN']],
     ]);
     expect(rows[0]).toMatchObject({ customerId: ids.c4, branchId: ids.b41 });

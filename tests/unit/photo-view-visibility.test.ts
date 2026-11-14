@@ -53,6 +53,9 @@ const READERS: Record<string, string> = {
   // Code review 2026-11-10, finding 23 (adversarial review).
   'lib/account-import-repeat.ts':
     "one account's own password_reset_via_import row from an earlier upload of the same file; returns only its time, never a row",
+  // The daily Temix import, review 2026-11-15: how often one customer's transaction failed.
+  'services/temix-daily-apply.ts':
+    "a count of the file's own TEMIX_DAILY_GROUP_FAILED rows for one customer group; returns a number, never a row",
 };
 
 /** The entity type each listed non-page reader is held to, read from its query. */
@@ -62,7 +65,7 @@ const READ_ONLY_ENTITY: Record<string, string> = {
   'services/imports.ts': 'Customer',
   'lib/integrity/checks.ts': 'User',
   'app/(app)/import/[batchId]/page.tsx': 'ImportBatch',
-  'lib/account-import-repeat.ts': 'User',
+  'lib/account-import-repeat.ts': 'User',  'services/temix-daily-apply.ts': 'TemixDailyFile',
 };
 
 const ROOTS = ['app', 'lib', 'services', 'components'];

@@ -36,7 +36,13 @@
  *  half-way leaves only whole customers done: the next slice, or Resume after
  *  the lease lapses, takes the rest and nothing twice. A shop saved by someone
  *  else meanwhile fails its customer's transaction (VERSION_CONFLICT, recorded
- *  as a CONFLICT row); its rows stay PENDING for the next slice.
+ *  as a CONFLICT row); its rows stay PENDING for the next slice. Any other
+ *  failure of a customer's transaction is recorded (one AuditLog row,
+ *  TEMIX_DAILY_GROUP_FAILED, with the error's code only); at the
+ *  APPLY_GROUP_MAX_FAILURES-th its rows are HELD, APPLY_FAILED, in a
+ *  transaction of their own, so the file can still finish (review 2026-11-15:
+ *  a customer that kept failing kept the file from ever loading, and the order
+ *  rule then stopped every later file).
  *
  *  THE END. When no row is PENDING the file goes FINALIZING, then LOADED with
  *  its counts and one AuditLog row. Stage 6 hangs its finalize (notices,
@@ -48,7 +54,7 @@
  * WRITES ONLY: TemixDailyFile (state, lease, counts, ticks), TemixDailyRow
  * (outcome, customer, shop, reasons, doneAt), and through moveShopToRoute the
  * Branch's route and region, one AuditLog and one TemixChange row per move;
- * one AuditLog row per start, end and discard. No Customer, no Notification, no
+ * one AuditLog row per start, end, discard and failed customer transaction. No Customer, no Notification, no
  * Temix queue (tests/unit/temix-daily-write-set.test.ts). Data Steward only.
  */
 
@@ -67,7 +73,9 @@ import { checkDailyFile, pilotGate } from '@/lib/temix-daily-check';
 import { loadCheckInput, loadPilotWaiting } from '@/lib/temix-daily-check-load';
 import { applyBlockedBy, dateColumnDay, overtakenBy, type DailyFileForOrder } from '@/lib/temix-daily-order';
 import {
+  APPLY_FAILED,
   APPLY_FIELDS,
+  APPLY_GROUP_MAX_FAILURES,
   APPLY_HANDOFF_GRACE_MS,
   APPLY_LEASE_MS,
   APPLY_SLICE_BUDGET_MS,
@@ -98,6 +106,8 @@ export type TemixDailySliceResult = {
   /** Customers whose transaction failed (their rows stay PENDING for the next slice). */
   conflicts: number;
   failed: number;
+  /** Of the failed: customers whose rows are now HELD APPLY_FAILED (counted in held too). */
+  heldAfterFailures: number;
   remaining: number;
   done: boolean;
   /** Set when the pilot rule stopped the load: it is resumed once the request is decided. */
@@ -256,16 +266,19 @@ async function setLease(fileId: string, actorId: string, token: string, until: D
   );
 }
 
-/** The next customers of the file with rows still PENDING: by customer code, then the rows with none. */
+/**
+ * The next customers of the file with rows still PENDING: by customer code,
+ * then the rows with none. The codes are chosen in SQL (DISTINCT ... LIMIT, on
+ * the (fileId, custCodeKey) index): Prisma's `distinct` without the
+ * nativeDistinct feature reads every PENDING row of the file to dedupe in
+ * memory, once per slice (review 2026-11-15).
+ */
 async function nextGroups(fileId: string, max: number): Promise<GroupKey[]> {
-  const keyed = await prisma.temixDailyRow.findMany({
-    where: { fileId, outcome: 'PENDING', custCodeKey: { not: null } },
-    distinct: ['custCodeKey'],
-    orderBy: { custCodeKey: 'asc' },
-    take: max,
-    select: { custCodeKey: true },
-  });
-  const groups: GroupKey[] = keyed.map((r) => ({ custCodeKey: r.custCodeKey! }));
+  const keyed = await prisma.$queryRaw<Array<{ custCodeKey: string }>>`
+    SELECT DISTINCT "custCodeKey" FROM "TemixDailyRow"
+     WHERE "fileId" = ${fileId} AND "outcome" = 'PENDING' AND "custCodeKey" IS NOT NULL
+     ORDER BY 1 LIMIT ${max}`;
+  const groups: GroupKey[] = keyed.map((r) => ({ custCodeKey: r.custCodeKey }));
   if (groups.length < max) {
     const bare = await prisma.temixDailyRow.findMany({
       where: { fileId, outcome: 'PENDING', custCodeKey: null },
@@ -343,6 +356,61 @@ async function applyGroup(
   return out;
 }
 
+/** The error's code for the audit row: a Prisma code or the error's class, never its message (it may quote values). */
+function errorCode(err: unknown): string {
+  if (err instanceof Prisma.PrismaClientKnownRequestError) return err.code;
+  return err instanceof Error ? err.name.slice(0, 60) : 'UNKNOWN';
+}
+
+/**
+ * A customer's transaction failed (not a conflict, not a lost lease): one
+ * AuditLog row on the file naming the group and the error's code; at the
+ * APPLY_GROUP_MAX_FAILURES-th such row for this group, its PENDING rows are
+ * HELD APPLY_FAILED. Nothing else is written. Returns how many rows were held.
+ */
+async function recordGroupFailure(
+  me: { id: string },
+  env: AuditEnvelope,
+  fileId: string,
+  token: string,
+  key: GroupKey,
+  err: unknown
+): Promise<number> {
+  const group = 'custCodeKey' in key ? `${key.custCodeKey}` : key.rowId;
+  return withChangeContext(prisma, { actorId: me.id, source: src.temixDaily(fileId, group) }, async (tx) => {
+    const [f] = await tx.$queryRaw<Array<{ state: string; leaseBy: string | null }>>`
+      SELECT "state"::text AS "state", "applyLeaseBy" AS "leaseBy" FROM "TemixDailyFile" WHERE "id" = ${fileId} FOR SHARE`;
+    if (!f || f.state !== 'APPLYING' || f.leaseBy !== token) throw new Error(NOT_OURS);
+    await writeAudit(tx, env, {
+      action: AuditAction.UPDATE,
+      entityType: 'TemixDailyFile',
+      entityId: fileId,
+      after: { kind: 'TEMIX_DAILY_GROUP_FAILED', group, error: errorCode(err) },
+    });
+    const failures = await tx.auditLog.count({
+      where: {
+        entityType: 'TemixDailyFile',
+        entityId: fileId,
+        AND: [{ after: { path: ['kind'], equals: 'TEMIX_DAILY_GROUP_FAILED' } }, { after: { path: ['group'], equals: group } }],
+      },
+    });
+    if (failures < APPLY_GROUP_MAX_FAILURES) return 0;
+    const rows = await tx.temixDailyRow.findMany({
+      where: { fileId, outcome: 'PENDING', ...('custCodeKey' in key ? { custCodeKey: key.custCodeKey } : { id: key.rowId, custCodeKey: null }) },
+      select: { id: true, rowNumber: true, holdReasons: true },
+    });
+    const doneAt = new Date();
+    for (const r of rows) {
+      await setChangeContext(tx, { actorId: me.id, source: src.temixDaily(fileId, r.rowNumber) });
+      await tx.temixDailyRow.updateMany({
+        where: { id: r.id, fileId, outcome: 'PENDING' },
+        data: { outcome: 'HELD', holdReasons: storedReasons(r.holdReasons, { outcome: 'HELD', holds: [APPLY_FAILED] }), doneAt },
+      });
+    }
+    return rows.length;
+  });
+}
+
 /** Every row is done: FINALIZING, then LOADED with the counts. Idempotent: a second call finds the file LOADED. */
 async function finalize(me: { id: string }, env: AuditEnvelope, fileId: string, token: string): Promise<boolean> {
   await withChangeContext(prisma, { actorId: me.id, source: src.temixDailyStep(fileId, 'finalize') }, async (tx) => {
@@ -397,6 +465,7 @@ export async function runTemixDailySliceAction(formData: FormData): SafeAction<T
       held: 0,
       conflicts: 0,
       failed: 0,
+      heldAfterFailures: 0,
       remaining: 0,
       done: false,
       stopped: null,
@@ -433,7 +502,7 @@ export async function runTemixDailySliceAction(formData: FormData): SafeAction<T
         return result({ state: file.state, stopped: 'PILOT', remaining: await prisma.temixDailyRow.count({ where: { fileId, outcome: 'PENDING' } }) });
       }
       const fileInfo = { id: fileId, loadDay: dateColumnDay(file.loadDay), reversalAcked: file.reversalAckAt !== null };
-      const tally = { applied: 0, noChange: 0, held: 0, conflicts: 0, failed: 0 };
+      const tally = { applied: 0, noChange: 0, held: 0, conflicts: 0, failed: 0, heldAfterFailures: 0 };
       if (file.state === 'APPLYING') {
         if ((await emptiedRows(prisma, fileId, true)) > 0) {
           await setLease(fileId, me.id, token, null);
@@ -462,6 +531,20 @@ export async function runTemixDailySliceAction(formData: FormData): SafeAction<T
             if (err instanceof ValidationError) throw err;
             tally.failed++;
             logger.warn({ fileId, err: (err as Error)?.message?.slice(0, 120) }, 'temix-daily.apply.group_failed');
+            let heldRows = 0;
+            try {
+              heldRows = await recordGroupFailure(me, env, fileId, token, g, err);
+            } catch (recErr) {
+              if (recErr instanceof Error && recErr.message === NOT_OURS) {
+                const why = 'This load was taken over by another tab or Steward.';
+                throw new ValidationError({ fileId: why }, why);
+              }
+              logger.warn({ fileId, err: (recErr as Error)?.message?.slice(0, 120) }, 'temix-daily.apply.group_failure_not_recorded');
+            }
+            if (heldRows > 0) {
+              tally.heldAfterFailures++;
+              tally.held += heldRows;
+            }
           }
         }
       }
