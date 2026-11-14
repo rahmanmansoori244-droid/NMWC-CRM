@@ -188,15 +188,20 @@ jobs:
 
       - name: Record it in production's audit log
         if: always() && (steps.delete.outcome == 'success' || steps.delete.outcome == 'failure')
+        env:
+          DELETE_OUTCOME: ${{ steps.delete.outcome }}
         run: |
           set -euo pipefail
           [ -f "$CS_DIR/photo-delete.counts" ] || { bash scripts/ops/clean-start/run.sh record "photo deletion recorded" 1; exit 1; }
           read -r LISTED SKIP_SHAPE SKIP_UAT DELETED < "$CS_DIR/photo-delete.counts"
+          # A red delete step is recorded as NOT complete: the row never says "deleted" then.
+          COMPLETE=no
+          if [ "$DELETE_OUTCOME" = success ]; then COMPLETE=yes; fi
           rc=0
           psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/photos-record.sql \
             -v run_id="$GITHUB_RUN_ID" -v reset_run_id="$TARGET_RUN" -v actor_username="$CLEANSTART_ACTOR_USERNAME" \
             -v list_sha256="$LIST_SHA256" -v listed="$LISTED" -v skipped_shape="$SKIP_SHAPE" \
-            -v skipped_uat="$SKIP_UAT" -v deleted="$DELETED" > "$CS_DIR/record.out" 2>&1 || rc=$?
+            -v skipped_uat="$SKIP_UAT" -v deleted="$DELETED" -v complete="$COMPLETE" > "$CS_DIR/record.out" 2>&1 || rc=$?
           bash scripts/ops/clean-start/run.sh sql "photo deletion recorded in the audit log" "$rc" "$CS_DIR/record.out"
 
       - name: The encrypted report

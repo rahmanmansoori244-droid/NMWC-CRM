@@ -1225,4 +1225,35 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     expect([other.code, /CS301/.test(other.out)]).toEqual([3, true]);
     await dropCopy(url);
   });
+
+  it('PHOTOS record: a red delete step is recorded as NOT complete, never as "deleted"', async () => {
+    const url = await copyOf('photos');
+    const sum = run(
+      `psql "$DIRECT_URL" -X -q -At -c "SELECT a.\\"after\\" ->> 'photoKeysSha256' FROM \\"AuditLog\\" a WHERE a.id = 'cleanstart-${RUN}'"`,
+      { DIRECT_URL: url }
+    ).out.trim();
+    expect(sum).toMatch(/^[0-9a-f]{64}$/);
+    const record = (runId: string, complete: string, deleted: number) =>
+      run(
+        `psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f ${DIR}/photos-record.sql -v run_id=${runId} -v reset_run_id=${RUN} ` +
+          `-v actor_username='${w.actorName}' -v list_sha256=${sum} -v listed=10 -v skipped_shape=1 -v skipped_uat=1 -v deleted=${deleted} -v complete=${complete}`,
+        { DIRECT_URL: url }
+      );
+    expect(record('801', 'yes', 8), 'complete').toMatchObject({ code: 0 });
+    expect(record('802', 'no', 3), 'partial').toMatchObject({ code: 0 });
+    const bad = record('803', 'maybe', 3);
+    expect([bad.code, /CS401/.test(bad.out)]).toEqual([3, true]);
+    const rows = run(
+      `psql "$DIRECT_URL" -X -q -At -F '|' -c "SELECT id, reason, \\"after\\" ->> 'complete', \\"after\\" ->> 'deleted' FROM \\"AuditLog\\" WHERE id LIKE 'cleanstart-photos-%' ORDER BY id"`,
+      { DIRECT_URL: url }
+    ).out.trim().split(/\r?\n/).map((l) => l.split('|'));
+    expect(rows.map((r) => [r[0], r[2], r[3]])).toEqual([
+      ['cleanstart-photos-801', 'true', '8'],
+      ['cleanstart-photos-802', 'false', '3'],
+    ]);
+    expect(rows[0]![1]).toMatch(/were deleted from storage/);
+    expect(rows[1]![1]).toMatch(/did NOT complete/);
+    expect(rows[1]![1]).not.toMatch(/were deleted/);
+    await dropCopy(url);
+  });
 });
