@@ -226,25 +226,38 @@ export function importPayloadPurgeSql(now: Date, limit: number, run: PurgeRun): 
 
 /**
  * temix-daily-payload-90d: the verbatim payload (raw, parsed) of the staged rows
- * of a daily Temix file that is finished, LOADED or DISCARDED, once the row is
- * past the cut-off. The row keeps its codes, hold reasons and outcome, and the
- * ledger (TemixChange) is not touched. A file still STAGED, CHECKED or mid-load
- * keeps its rows' payload: apply and the drill-down read it, and the order rule
- * stops any later file while it is left unfinished. Counted by file and outcome.
+ * of a daily Temix file, once the row is past the cut-off (the plan: cleared at
+ * 90 days, beside import-payload-90d). The row keeps its codes, hold reasons and
+ * outcome, and the ledger (TemixChange) is not touched.
+ *
+ * Review of stage 1: whatever the file's state, as the import rule does for a
+ * batch that can never load (code review 2026-11-10, second round). A file
+ * LOADED or DISCARDED; and one left STAGED or CHECKED, or stopped APPLYING or
+ * FINALIZING with no live lease, uploaded before the cut-off: before, such a file
+ * kept its rows' names, phones, addresses and CR numbers for ever. Only a file
+ * with a live lease (a load running at that moment) keeps them. Counted by file
+ * and outcome.
  */
 export function temixDailyPayloadPurgeSql(now: Date, limit: number, run: PurgeRun): Prisma.Sql {
   const rule = RETENTION_RULES['temix-daily-payload-90d'];
   const cutoff = retentionCutoff(rule, now);
   // The same expression as the partial index TemixDailyRow_payload_createdAt_idx.
   const hasPayload = (r: string) => Prisma.raw(`(${r}."raw" <> '{}'::jsonb OR ${r}."parsed" IS NOT NULL)`);
-  const finishedFile = (f: string) => Prisma.raw(`${f}."state" IN ('LOADED', 'DISCARDED')`);
+  // A file no load is running on: finished, or left unfinished before the cut-off
+  // with no live lease.
+  const noLiveLoad = (f: string) =>
+    Prisma.sql`(${Prisma.raw(f)}."state" IN ('LOADED', 'DISCARDED')
+         OR (${Prisma.raw(f)}."uploadedAt" < ${ts(cutoff)}
+             AND (${Prisma.raw(f)}."state" IN ('STAGED', 'CHECKED')
+                  OR (${Prisma.raw(f)}."state" IN ('APPLYING', 'FINALIZING')
+                      AND (${Prisma.raw(f)}."applyLeaseUntil" IS NULL OR ${Prisma.raw(f)}."applyLeaseUntil" < ${ts(now)})))))`;
   return Prisma.sql`WITH doomed AS (
     SELECT r."id"
       FROM "TemixDailyRow" r
       JOIN "TemixDailyFile" f ON f."id" = r."fileId"
      WHERE r."createdAt" < ${ts(cutoff)}
        AND ${hasPayload('r')}
-       AND ${finishedFile('f')}
+       AND ${noLiveLoad('f')}
      ORDER BY r."createdAt"
      LIMIT ${limit}
   ), gone AS (
@@ -254,7 +267,7 @@ export function temixDailyPayloadPurgeSql(now: Date, limit: number, run: PurgeRu
      WHERE x."id" = doomed."id"
        AND x."createdAt" < ${ts(cutoff)}
        AND ${hasPayload('x')}
-       AND EXISTS (SELECT 1 FROM "TemixDailyFile" xf WHERE xf."id" = x."fileId" AND ${finishedFile('xf')})
+       AND EXISTS (SELECT 1 FROM "TemixDailyFile" xf WHERE xf."id" = x."fileId" AND ${noLiveLoad('xf')})
     RETURNING x."createdAt" AS d, x."fileId" AS file, x."outcome"::text AS outcome
   ), s AS (
     ${summaryInsert(

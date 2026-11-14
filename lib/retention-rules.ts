@@ -112,7 +112,8 @@ export const RETENTION_RULES = {
   },
   // The daily Temix import (migration 20261114100000_temix_daily_tables): the
   // staged copy of each file row, kept for the same 90 days as the customer
-  // import's upload details, once its file is LOADED or DISCARDED.
+  // import's upload details, whatever its file's state, except while a load
+  // holds a live lease on it (review of stage 1).
   'temix-daily-payload-90d': {
     id: 'temix-daily-payload-90d',
     job: 'retention-sweep',
@@ -120,7 +121,7 @@ export const RETENTION_RULES = {
     action: 'CLEAR_PAYLOAD',
     days: 90,
     dateColumn: 'createdAt',
-    why: 'a finished daily-file row keeps its codes and outcome, not a verbatim copy of the customer data',
+    why: 'a daily-file row past 90 days keeps its codes and outcome, not a verbatim copy of the customer data',
   },
 } as const satisfies Record<RetentionRuleId, RetentionRule>;
 

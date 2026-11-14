@@ -95,7 +95,7 @@ describe('one statement removes the batch and writes its summary', () => {
     expect(dead).toContain(`lr."parsed"->>'fixedAfterLoad' = 'true'`);
   });
 
-  it('a daily Temix row is emptied only past the cut-off, only with a payload, only in a LOADED or DISCARDED file', () => {
+  it('a daily Temix row is emptied only past the cut-off, only with a payload, never under a live load', () => {
     const sql = STATEMENTS['temix-daily-payload-90d'].sql;
     const doomed = sql.slice(sql.indexOf('doomed AS ('), sql.indexOf('gone AS ('));
     const update = sql.slice(sql.indexOf('UPDATE "TemixDailyRow"'), sql.indexOf('RETURNING'));
@@ -107,6 +107,12 @@ describe('one statement removes the batch and writes its summary', () => {
       // The partial index's own predicate, so the sweep reads only rows that still hold a payload.
       expect(part).toContain(`(${r}."raw" <> '{}'::jsonb OR ${r}."parsed" IS NOT NULL)`);
       expect(part).toContain(`${f}."state" IN ('LOADED', 'DISCARDED')`);
+      // Review of stage 1: a file left unfinished before the cut-off is cleared
+      // too (as the import's never-loaded batch), unless a load holds a live lease.
+      const w = part.replace(/\s+/g, ' ');
+      expect(w).toContain(
+        `OR (${f}."uploadedAt" < (?::timestamptz AT TIME ZONE 'UTC') AND (${f}."state" IN ('STAGED', 'CHECKED') OR (${f}."state" IN ('APPLYING', 'FINALIZING') AND (${f}."applyLeaseUntil" IS NULL OR ${f}."applyLeaseUntil" < (?::timestamptz AT TIME ZONE 'UTC')))))`
+      );
     }
     expect(sql).toMatch(/ORDER BY r\."createdAt"\s+LIMIT \?/);
     // Nothing else: the ledger and the file are read, never written.

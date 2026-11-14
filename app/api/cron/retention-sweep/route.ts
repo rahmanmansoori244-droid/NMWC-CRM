@@ -169,8 +169,8 @@ async function handle(req: NextRequest) {
   }
 
   // 2b. The daily Temix file's staged rows (raw, parsed): the same 90 days as the
-  //     import's payloads, only for a file that is LOADED or DISCARDED (a file
-  //     still staged or mid-load keeps them). Bounded like the import step; its
+  //     import's payloads, whatever the file's state, except while a load holds
+  //     a live lease on it. Bounded like the import step; its
   //     own budget, so the import's catch-up cannot starve it or the reverse.
   try {
     const started = Date.now();
