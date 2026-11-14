@@ -54,7 +54,7 @@ import {
   nextOmanMorning,
 } from '../../scripts/ops/clean-start/rehearse-watch';
 import { runIntegrityWatch } from '@/lib/integrity/run';
-import { auditListWhere, listAuditRows } from '@/lib/audit-rows';
+import { listAuditRows } from '@/lib/audit-rows';
 import {
   CLEAN_START_KIND_LABELS,
   cleanStartCounts,
@@ -1133,7 +1133,7 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
 
   it('follow-up 1 (F1): the Audit page’s data layer returns the reset row, with every count as the tables were', async () => {
     // The Steward's default list, exactly as app/(app)/audit/page.tsx reads it.
-    const { total, logs } = await listAuditRows(db, auditListWhere({ action: null, q: null }), 1);
+    const { total, logs } = await listAuditRows(db, { action: null, q: null }, 1);
     expect(total).toBe(1);
     const row = logs.find((l) => isCleanStartRecord(l));
     expect(row?.id).toBe(`cleanstart-${RUN}`);

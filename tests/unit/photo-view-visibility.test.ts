@@ -20,6 +20,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { AuditAction } from '@prisma/client';
 import { MANAGER_AUDIT_ACTIONS, STEWARD_ONLY_AUDIT_ACTIONS, managerAuditScopeSql } from '@/lib/audit-scope';
+import { listAuditRows } from '@/lib/audit-rows';
 import { stripComments } from '../support/strip-comments';
 
 describe('a Manager’s audit scope never holds a Steward-only action', () => {
@@ -55,7 +56,7 @@ const READERS: Record<string, string> = {
     "one account's own password_reset_via_import row from an earlier upload of the same file; returns only its time, never a row",
   // Follow-up 1 (F1): the Steward's list, moved out of the page unchanged; the page calls it only for the Steward.
   'lib/audit-rows.ts':
-    "/audit's Steward list (no customer filter): photo views left out unless he picks that action; called only on the Steward's path of app/(app)/audit/page.tsx",
+    "/audit's Steward list (no customer filter): it builds its own where from the filters, photo views left out unless he picks that action; imported and called only on the Steward's path of app/(app)/audit/page.tsx (both pinned at the end of this file)",
   // Follow-up 1 (F2): the dashboard's comparisons read the clean start's moment.
   'lib/clean-start-record.ts':
     "the go-live clean start's own System row (id cleanstart-…, entityId clean-start); returns only its time, never a row",
@@ -148,4 +149,50 @@ describe('every reader of the audit log keeps photo views from anyone but the St
     expect(src).toMatch(/const customerCode = isManager \? null : /);
     expect(src).toMatch(/if \(isManager\) \{[\s\S]*?rawConds = \[managerAuditScopeSql\(/);
   });
+});
+
+// Review of follow-up 1: lib/audit-rows.ts reads rows of any entity, so its
+// place on the list above is made true here. It builds its own `where` from the
+// filters (no caller can skip the photo-view exclusion), and only the Steward's
+// path of /audit calls it.
+describe('lib/audit-rows.ts lists photo views only when the Steward asks for them', () => {
+  function fakeDb() {
+    const wheres: unknown[] = [];
+    const db = {
+      auditLog: {
+        count: async (a: { where: unknown }) => (wheres.push(a.where), 0),
+        findMany: async (a: { where: unknown }) => (wheres.push(a.where), []),
+      },
+    };
+    return { db: db as unknown as Parameters<typeof listAuditRows>[0], wheres };
+  }
+
+  it('with no action picked, the count and the page both leave photo views out', async () => {
+    const { db, wheres } = fakeDb();
+    await listAuditRows(db, { action: null, q: null }, 1);
+    expect(wheres).toHaveLength(2);
+    for (const w of wheres) expect(w).toEqual({ action: { notIn: [AuditAction.PHOTO_VIEW] } });
+  });
+
+  it('photo views only when that action is picked; the other filters as given', async () => {
+    const { db, wheres } = fakeDb();
+    await listAuditRows(db, { action: AuditAction.PHOTO_VIEW, actor: 'u1', entityType: 'Attachment', q: 'x' }, 2);
+    for (const w of wheres) {
+      expect(w).toEqual({ action: AuditAction.PHOTO_VIEW, actorId: 'u1', entityType: 'Attachment', entityId: { contains: 'x' } });
+    }
+  });
+
+  it('only app/(app)/audit/page.tsx imports it, and calls it once, on the Steward’s path without a customer filter', () => {
+    const importers: string[] = [];
+    for (const root of ROOTS) {
+      for (const file of walk(root)) {
+        const src = stripComments(readFileSync(file, 'utf8'), file);
+        if (/from\s+['"](?:@\/lib|\.{1,2}(?:\/[\w.-]+)*)\/audit-rows['"]/.test(src)) importers.push(rel(file));
+      }
+    }
+    expect(importers).toEqual(['app/(app)/audit/page.tsx']);
+    const src = stripComments(readFileSync('app/(app)/audit/page.tsx', 'utf8'), 'page.tsx');
+    expect(src.match(/listAuditRows\(/g)).toHaveLength(1);
+    expect(src).toMatch(/if \(isManager\) \{[\s\S]*?\} else if \(customerCode\) \{[\s\S]*?\} else \{\s*\(\{ total, logs \} = await listAuditRows\(/);
+  }, 30_000);
 });

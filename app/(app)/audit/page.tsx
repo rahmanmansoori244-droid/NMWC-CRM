@@ -19,7 +19,7 @@ import {
   managerAuditUserIds,
   type AuditCustomer,
 } from '@/lib/audit-scope';
-import { AUDIT_PAGE_SIZE, AUDIT_ROW_INCLUDE, auditListWhere, listAuditRows, type AuditRow } from '@/lib/audit-rows';
+import { AUDIT_PAGE_SIZE, AUDIT_ROW_INCLUDE, listAuditRows, type AuditRow } from '@/lib/audit-rows';
 import { cleanStartCounts, isCleanStartRecord } from '@/lib/clean-start-record';
 
 export const metadata = { title: 'Audit log · NMWC' };
@@ -97,11 +97,7 @@ export default async function AuditPage({
   } else {
     // Owner decisions 2026-10-11: photo views are left out of the Steward's list
     // and its count unless he picks that action (or uses the customer filter).
-    ({ total, logs } = await listAuditRows(
-      prisma,
-      auditListWhere({ actor: sp.actor, action, entityType: sp.entityType, q }),
-      page
-    ));
+    ({ total, logs } = await listAuditRows(prisma, { actor: sp.actor, action, entityType: sp.entityType, q }, page));
   }
   if (rawConds) {
     const conds = [...rawConds];

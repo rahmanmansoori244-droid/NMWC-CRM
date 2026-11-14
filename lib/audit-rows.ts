@@ -28,7 +28,7 @@ export type AuditListFilters = {
  * Owner decisions 2026-10-11: photo views are left out of the Steward's list and
  * its count unless he picks that action.
  */
-export function auditListWhere(f: AuditListFilters): Prisma.AuditLogWhereInput {
+function auditListWhere(f: AuditListFilters): Prisma.AuditLogWhereInput {
   const where: Prisma.AuditLogWhereInput = {};
   if (f.actor) where.actorId = f.actor;
   where.action = f.action ?? { notIn: [...STEWARD_HIDDEN_BY_DEFAULT] };
@@ -37,12 +37,18 @@ export function auditListWhere(f: AuditListFilters): Prisma.AuditLogWhereInput {
   return where;
 }
 
-/** One page of the list, newest first, and how many rows match. */
+/**
+ * One page of the list, newest first, and how many rows match. It takes the
+ * filters, never a `where`, and builds the `where` itself through
+ * auditListWhere: no caller can list photo views the Steward did not ask for
+ * (review of follow-up 1; tests/unit/photo-view-visibility.test.ts).
+ */
 export async function listAuditRows(
   db: PrismaClient,
-  where: Prisma.AuditLogWhereInput,
+  filters: AuditListFilters,
   page: number
 ): Promise<{ total: number; logs: AuditRow[] }> {
+  const where = auditListWhere(filters);
   const [total, logs] = await Promise.all([
     db.auditLog.count({ where }),
     db.auditLog.findMany({
