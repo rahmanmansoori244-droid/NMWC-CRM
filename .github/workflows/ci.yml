@@ -280,6 +280,11 @@ jobs:
           # INSERT-only ledger (UPDATE and DELETE refused), the staged-row and
           # finished-file guards and the retention sweep (temix-daily-tables).
           RUN_TEMIX_DAILY: '1'
+          # The daily Temix import, stage 4: the Check of a synthetic staged file
+          # from the real reads (moves, holds, routes not matched, terms not
+          # applied), the route map through its real actions (add, refusals, two
+          # at once, retire) and nothing else written (temix-daily-check).
+          RUN_TEMIX_DAILY_CHECK: '1'
 
   # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
   # person typing `npm run test:e2e`. It shows: login.spec.ts asserted
