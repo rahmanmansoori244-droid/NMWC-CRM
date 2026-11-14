@@ -92,6 +92,54 @@ describe('lib/phone — Persian digits (F19)', () => {
   });
 });
 
+// H10 (bug hunt round 2, F11): a number copied from WhatsApp or the contacts of
+// an Arabic-language phone arrives wrapped in invisible bidi marks; it was
+// refused as "not a valid Oman number" on create, edit and draft.
+describe('lib/phone — invisible bidi and format characters (H10)', () => {
+  const INVISIBLE = [
+    '­', // soft hyphen
+    '؜', // Arabic letter mark
+    '​', '‌', '‍', '‎', '‏', // zero-width space/joiners, LRM, RLM
+    '‪', '‫', '‬', '‭', '‮', // bidi embeddings / overrides / pop
+    '⁠', // word joiner
+    '⁦', '⁧', '⁨', '⁩', // bidi isolates
+    '﻿', // byte-order mark
+  ];
+  const hex = (ch: string) => `U+${ch.charCodeAt(0).toString(16).toUpperCase()}`;
+
+  it('a number wrapped in them, as WhatsApp copies it, is valid and normalizes', () => {
+    const pasted = '‪+968 9123 4567‬';
+    expect(isValidPhoneFormat(pasted)).toBe(true);
+    expect(normalizePhone(pasted)).toBe('+96891234567');
+    const isolated = '⁨٩١٢٣ ٤٥٦٧⁩';
+    expect(isValidPhoneFormat(isolated)).toBe(true);
+    expect(normalizePhone(isolated)).toBe('+96891234567');
+  });
+
+  it('each of them, around or inside the number, is ignored', () => {
+    for (const ch of INVISIBLE) {
+      expect(isValidPhoneFormat(`${ch}91234567${ch}`), hex(ch)).toBe(true);
+      expect(isValidPhoneFormat(`+968${ch} 9123${ch}4567`), hex(ch)).toBe(true);
+      expect(normalizePhone(`${ch}+968${ch} 9123${ch}4567${ch}`), hex(ch)).toBe('+96891234567');
+    }
+  });
+
+  it('they do not make a wrong number right, and alone they are no number', () => {
+    expect(isValidPhoneFormat('‎1234567‎')).toBe(false); // seven digits
+    expect(isValidPhoneFormat('‪call 91234567‬')).toBe(false); // words around it
+    expect(isValidPhoneFormat('‎‪⁩')).toBe(false);
+    expect(normalizePhone('‎‪⁩')).toBeNull();
+  });
+
+  it('the create and edit phone rules accept it and keep the normalized number', async () => {
+    const { createPhone, requiredPhone, clearablePhone } = await import('@/lib/validation/fields');
+    const pasted = '‪+968 9123 4567‬';
+    expect(createPhone.safeParse(pasted).success).toBe(true);
+    expect(requiredPhone('Enter a phone').parse(pasted)).toBe('+96891234567');
+    expect(clearablePhone.parse(`⁦${'91234567'}⁩`)).toBe('+96891234567');
+  });
+});
+
 describe('lib/cr — CR normalization', () => {
   // UXI-014: PRD §8 says strip whitespace + uppercase only. Hyphens / slashes
   // / underscores were previously also stripped which collapsed `1234567/2024`

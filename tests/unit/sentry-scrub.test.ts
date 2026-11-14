@@ -309,9 +309,17 @@ describe('every notation lib/phone.ts accepts is redacted, or is a gap lib/scrub
     ['9123\u0664\u0665\u0666\u0667', 'a bare contiguous mobile in two scripts'],
     ['+968\u20029123\u20024567', 'another Unicode space (an en space)'],
     ['+968 - 9123 - 4567', 'more than two separators between two digits'],
+    // H10: lib/phone.ts ignores the invisible bidi and format characters.
+    ['+968‎ 9123‎4567', 'an invisible format character between the digits'],
   ])('a listed gap, left as typed: %s (%s)', (input) => {
     expect(isValidPhoneFormat(input)).toBe(true);
     expect(scrub(input)).toBe(input);
+  });
+
+  it('a number wrapped in invisible bidi marks (H10) is redacted inside them', () => {
+    const pasted = '‪+968 9123 4567‬';
+    expect(isValidPhoneFormat(pasted)).toBe(true);
+    expect(scrub(pasted)).toBe('‪[phone]‬');
   });
 
   it.each([

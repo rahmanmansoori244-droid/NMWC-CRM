@@ -12,6 +12,12 @@
  *   (۰..۹, U+06F0–U+06F9) too. Some Arabic keyboards type those, and lib/cr.ts
  *   has folded them in CR numbers since item 16; a phone typed on the same
  *   keyboard was refused while its CR was accepted.
+ * - H10 (bug hunt round 2, F11): the invisible bidi and format characters that
+ *   a number copied from WhatsApp or the contacts of an Arabic-language phone
+ *   carries (U+202A..U+202E, U+200E/U+200F, U+2066..U+2069, U+061C and the rest
+ *   of lib/digits.ts's INVISIBLE_FORMAT, the set lib/cr.ts strips) are removed
+ *   before the number is checked, so a pasted number is not refused. `\s` and
+ *   trim() do not match them.
  * - Strip everything else that is not a digit or '+'.
  * - Accept 8 local digits, or 11 digits with country prefix `968`, or `00968`.
  * - Reject anything that doesn't match those — previous code returned a
@@ -28,6 +34,8 @@
  * tests/unit/sentry-scrub.test.ts holds each one to this file.
  */
 
+import { INVISIBLE_FORMAT } from './digits';
+
 /** What every form says about a phone this file refuses (CREATE, UPDATE). */
 export const INVALID_PHONE_MESSAGE = 'Enter a valid Oman number (8 digits, or +968 XXXXXXXX).';
 
@@ -38,6 +46,7 @@ const PERSIAN_DIGIT = /[\u06F0-\u06F9]/g;
 
 function asciifyDigits(s: string): string {
   return s
+    .replace(INVISIBLE_FORMAT, '')
     .replace(ARABIC_INDIC_DIGIT, (d) => String(d.charCodeAt(0) - 0x0660))
     .replace(PERSIAN_DIGIT, (d) => String(d.charCodeAt(0) - 0x06f0));
 }
@@ -79,7 +88,8 @@ const PHONE_REGEX = /^[\d\s\-+()]{7,20}$/;
  */
 export function isValidPhoneFormat(input: string | null | undefined): boolean {
   if (!input) return false;
-  // Validate AFTER asciifying so an Arabic-keyboard input doesn't fail the
+  // Validate AFTER asciifying (which also drops the invisible format
+  // characters) so an Arabic-keyboard or pasted input doesn't fail the
   // length / character check.
   const ascii = asciifyDigits(input);
   return PHONE_REGEX.test(ascii) && normalizePhone(input) !== null;

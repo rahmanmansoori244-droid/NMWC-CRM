@@ -71,6 +71,10 @@
  *   - any other Unicode space as a separator (U+2000–U+2008, U+200A, U+205F,
  *     U+3000 and the rest): lib/phone.ts accepts every `\s`, and the classes here
  *     list their spaces one by one.
+ *   - an invisible bidi or format character (U+200E, U+202A, U+2066 and the rest
+ *     of lib/digits.ts's INVISIBLE_FORMAT) between two digits: lib/phone.ts
+ *     ignores them since H10 (a number pasted from WhatsApp), and the classes
+ *     here do not list them. A number they only wrap is redacted inside them.
  * The separator classes are spelled out rather than using `\s` on purpose — `\s`
  * matches a newline, which would let the pattern weld digits from two unrelated
  * log lines into one "phone number".
