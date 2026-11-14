@@ -25,13 +25,14 @@ export type RetentionRuleId =
   | 'cron-run-90d'
   | 'notification-read-90d'
   | 'photo-detached-30d'
-  | 'password-history-last-5';
+  | 'password-history-last-5'
+  | 'temix-daily-payload-90d';
 
 export type RetentionRule = {
   id: RetentionRuleId;
   /** The job that applies it: a cron route's key, or the password policy. */
   job: 'retention-sweep' | 'sla-escalate' | 'photo-gc' | 'password-policy';
-  table: 'RateLimit' | 'ImportRow' | 'Notification' | 'CronRun' | 'Attachment' | 'PasswordHistory';
+  table: 'RateLimit' | 'ImportRow' | 'Notification' | 'CronRun' | 'Attachment' | 'PasswordHistory' | 'TemixDailyRow';
   /** DELETE removes the row; CLEAR_PAYLOAD empties the personal columns and keeps the row. */
   action: 'DELETE' | 'CLEAR_PAYLOAD';
   /** The age past which the rule applies, in days; null for a count rule. */
@@ -108,6 +109,18 @@ export const RETENTION_RULES = {
     keep: 5,
     dateColumn: 'createdAt',
     why: 'reuse is checked against the last five passwords only',
+  },
+  // The daily Temix import (migration 20261114100000_temix_daily_tables): the
+  // staged copy of each file row, kept for the same 90 days as the customer
+  // import's upload details, once its file is LOADED or DISCARDED.
+  'temix-daily-payload-90d': {
+    id: 'temix-daily-payload-90d',
+    job: 'retention-sweep',
+    table: 'TemixDailyRow',
+    action: 'CLEAR_PAYLOAD',
+    days: 90,
+    dateColumn: 'createdAt',
+    why: 'a finished daily-file row keeps its codes and outcome, not a verbatim copy of the customer data',
   },
 } as const satisfies Record<RetentionRuleId, RetentionRule>;
 

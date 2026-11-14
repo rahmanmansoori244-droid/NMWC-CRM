@@ -28,6 +28,7 @@ const WORDED: Record<RetentionRuleId, string> = {
   'notification-read-90d': '90 days',
   'photo-detached-30d': '30 days',
   'password-history-last-5': 'Last 5',
+  'temix-daily-payload-90d': '90 days',
 };
 
 describe('the schedule’s status', () => {

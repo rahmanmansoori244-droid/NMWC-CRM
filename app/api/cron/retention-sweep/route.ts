@@ -48,6 +48,7 @@ import {
   purgeRunId,
   rateLimitPurgeSql,
   runPurge,
+  temixDailyPayloadPurgeSql,
   unreadNotificationPurgeSql,
   type PurgeRun,
 } from '@/lib/purge-summary';
@@ -62,6 +63,7 @@ export const dynamic = 'force-dynamic';
 //                            (the Steward's in-app fix refuses a row past the same 90 days)
 //   notification-unread-180d the read ones are swept at 90 days by the SLA job
 //   cron-run-90d             three 30-day service-level windows
+//   temix-daily-payload-90d  the daily Temix file's staged rows, as the import's
 /** Bound the work per run so the job stays well inside the function timeout. */
 const BATCH = 500;
 /**
@@ -73,6 +75,8 @@ const BATCH = 500;
  */
 const IMPORT_BATCH = 2000;
 const IMPORT_BUDGET_MS = 30_000;
+/** The daily Temix rows: one file a day, a few thousand rows at most; a smaller share of the 60 s. */
+const TEMIX_DAILY_BUDGET_MS = 5_000;
 /** Scheduled-run history: the service-level report reads 30 days; keep three windows. */
 // Not exported: a route file may export only what Next allows, and only
 // `next build` checks that (CLAUDE.md).
@@ -162,6 +166,27 @@ async function handle(req: NextRequest) {
   } catch (err) {
     errors += 1;
     logger.error({ err: (err as Error).message }, 'retention.import_rows_failed');
+  }
+
+  // 2b. The daily Temix file's staged rows (raw, parsed): the same 90 days as the
+  //     import's payloads, only for a file that is LOADED or DISCARDED (a file
+  //     still staged or mid-load keeps them). Bounded like the import step; its
+  //     own budget, so the import's catch-up cannot starve it or the reverse.
+  try {
+    const started = Date.now();
+    let cleared = 0;
+    let last = 0;
+    do {
+      last = await withChangeContext(prisma, CAUSE, (tx) =>
+        runPurge(tx, 'temix-daily-payload-90d', temixDailyPayloadPurgeSql(now, IMPORT_BATCH, run))
+      );
+      cleared += last;
+    } while (last === IMPORT_BATCH && Date.now() - started < TEMIX_DAILY_BUDGET_MS);
+    swept.temixDailyRowPayloads = cleared;
+    if (last === IMPORT_BATCH) swept.temixDailyRowPayloadsBehind = 1;
+  } catch (err) {
+    errors += 1;
+    logger.error({ err: (err as Error).message }, 'retention.temix_daily_rows_failed');
   }
 
   // 3. Notifications nobody ever opened. The SLA sweep handles read ones at 90

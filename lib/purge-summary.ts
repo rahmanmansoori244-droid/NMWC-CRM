@@ -19,7 +19,7 @@
  *
  * This module is the ONLY place in app/, lib/ and services/ that deletes from
  * RateLimit, Notification, CronRun, Attachment or PasswordHistory, or empties an
- * import row's payload (tests/unit/purge-summary-guard.test.ts).
+ * import row's or a daily Temix row's payload (tests/unit/purge-summary-guard.test.ts).
  *
  * PURE: no next/* and no lib/db import; the caller passes its client.
  */
@@ -41,6 +41,7 @@ export type PurgeOutcome = { affected: number; summarised: number };
 export const PURGE_DETAIL_KEYS: Record<RetentionRule['table'], readonly string[]> = {
   RateLimit: ['byKind'],
   ImportRow: ['byBatch', 'excludedAt'],
+  TemixDailyRow: ['byFile'],
   Notification: ['byMonth'],
   CronRun: ['byKey'],
   Attachment: ['byKind'],
@@ -218,6 +219,53 @@ export function importPayloadPurgeSql(now: Date, limit: number, run: PurgeRun): 
                       GROUP BY st.batch) bb),
         'excludedAt', CASE WHEN count(gone.excluded) > 0
                            THEN jsonb_build_object('oldest', min(gone.excluded), 'newest', max(gone.excluded)) END)`
+    )}
+  )
+  ${OUTCOME}`;
+}
+
+/**
+ * temix-daily-payload-90d: the verbatim payload (raw, parsed) of the staged rows
+ * of a daily Temix file that is finished, LOADED or DISCARDED, once the row is
+ * past the cut-off. The row keeps its codes, hold reasons and outcome, and the
+ * ledger (TemixChange) is not touched. A file still STAGED, CHECKED or mid-load
+ * keeps its rows' payload: apply and the drill-down read it, and the order rule
+ * stops any later file while it is left unfinished. Counted by file and outcome.
+ */
+export function temixDailyPayloadPurgeSql(now: Date, limit: number, run: PurgeRun): Prisma.Sql {
+  const rule = RETENTION_RULES['temix-daily-payload-90d'];
+  const cutoff = retentionCutoff(rule, now);
+  // The same expression as the partial index TemixDailyRow_payload_createdAt_idx.
+  const hasPayload = (r: string) => Prisma.raw(`(${r}."raw" <> '{}'::jsonb OR ${r}."parsed" IS NOT NULL)`);
+  const finishedFile = (f: string) => Prisma.raw(`${f}."state" IN ('LOADED', 'DISCARDED')`);
+  return Prisma.sql`WITH doomed AS (
+    SELECT r."id"
+      FROM "TemixDailyRow" r
+      JOIN "TemixDailyFile" f ON f."id" = r."fileId"
+     WHERE r."createdAt" < ${ts(cutoff)}
+       AND ${hasPayload('r')}
+       AND ${finishedFile('f')}
+     ORDER BY r."createdAt"
+     LIMIT ${limit}
+  ), gone AS (
+    UPDATE "TemixDailyRow" x
+       SET "raw" = '{}'::jsonb, "parsed" = NULL
+      FROM doomed
+     WHERE x."id" = doomed."id"
+       AND x."createdAt" < ${ts(cutoff)}
+       AND ${hasPayload('x')}
+       AND EXISTS (SELECT 1 FROM "TemixDailyFile" xf WHERE xf."id" = x."fileId" AND ${finishedFile('xf')})
+    RETURNING x."createdAt" AS d, x."fileId" AS file, x."outcome"::text AS outcome
+  ), s AS (
+    ${summaryInsert(
+      rule,
+      run,
+      cutoff,
+      Prisma.sql`jsonb_build_object(
+        'byFile', (SELECT COALESCE(jsonb_object_agg(ff.file, ff.outcomes), '{}'::jsonb) FROM (
+                     SELECT o.file, jsonb_object_agg(o.outcome, o.n) AS outcomes FROM (
+                       SELECT gone.file, gone.outcome, count(*)::int AS n FROM gone GROUP BY 1, 2) o
+                     GROUP BY o.file) ff))`
     )}
   )
   ${OUTCOME}`;
