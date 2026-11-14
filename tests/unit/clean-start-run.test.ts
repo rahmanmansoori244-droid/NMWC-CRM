@@ -181,21 +181,28 @@ describe('run.sh: release, approval rule, backups, rehearsal, window', () => {
   });
 
   it('backup-pick: the newest dump, with its manifest, young enough', () => {
-    expect(run('backup-pick 4').code).toBe(1); // none
-    const stamp = (msAgo: number) => new Date(Date.now() - msAgo).toISOString().slice(0, 19).replace(/:/g, '-') + 'Z';
+    // "Now" is pinned to a morning instant (the date stand-in answers `date -u +%s`
+    // from FAKE_UTC_EPOCH): with the real clock this test failed every evening from
+    // 15:00 UTC, when the evening-dump rule (tested on its own below) refuses first.
+    const nowMs = Date.parse(`${new Date().toISOString().slice(0, 10)}T11:00:00Z`);
+    const clock = { FAKE_UTC_EPOCH: String(nowMs / 1000) };
+    const pick = (args: string, env: Record<string, string> = {}) => run(`backup-pick ${args}`, { ...clock, ...env });
+    rmSync(join(sb.s3, 'backups', 'db'), { recursive: true, force: true });
+    expect(pick('4').code).toBe(1); // none
+    const stamp = (msAgo: number) => new Date(nowMs - msAgo).toISOString().slice(0, 19).replace(/:/g, '-') + 'Z';
     const old = stamp(5 * 3600_000);
     sb.put('backups', `db/${old}.sql.gz.age`, 'x');
     sb.put('backups', `db/${old}.manifest.json`, '{}');
-    expect(run('backup-pick 4').out).toMatch(/newest backup at most 4 h old: no/);
-    expect(run('backup-pick 6').code).toBe(0);
+    expect(pick('4').out).toMatch(/newest backup at most 4 h old: no/);
+    expect(pick('6').code).toBe(0);
     const fresh = stamp(600_000);
     sb.put('backups', `db/${fresh}.sql.gz.age`, 'x');
-    expect(run('backup-pick 4').out).toMatch(/newest backup has a manifest: no/);
+    expect(pick('4').out).toMatch(/newest backup has a manifest: no/);
     sb.put('backups', `db/${fresh}.manifest.json`, '{}');
-    const r = run('backup-pick 4', { GITHUB_OUTPUT: join(sb.root, 'out2') });
+    const r = pick('4', { GITHUB_OUTPUT: join(sb.root, 'out2') });
     expect(r.code).toBe(0);
     expect(readFileSync(join(sb.root, 'out2'), 'utf8')).toContain(`backup_key=db/${fresh}.sql.gz.age`);
-    expect(run(`backup-pick 6 db/${old}.sql.gz.age`).out).toMatch(/the rehearsed backup is still the newest: no/);
+    expect(pick(`6 db/${old}.sql.gz.age`).out).toMatch(/the rehearsed backup is still the newest: no/);
   });
 
   it('neon-green: a green neon-rehearsal of these exact scripts AND workflow, on the default branch, within 14 days', () => {
