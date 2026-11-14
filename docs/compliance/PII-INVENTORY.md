@@ -349,7 +349,7 @@ Every column the database stores, classified by whose personal data it is. This 
 
 | Column | Subject | Kind | Note |
 |---|---|---|---|
-| `raw` | Customer contact | snapshot | the daily file row verbatim (name, phone, address, CR number as Temix sends them); emptied by temix-daily-payload-90d |
+| `raw` | Customer contact | snapshot | the daily file row verbatim, agreed columns only (name, phone, address, CR number as Temix sends them); emptied by temix-daily-payload-90d |
 | `parsed` | Customer contact | snapshot | emptied with raw by temix-daily-payload-90d |
 | `custCodeKey` | Customer entity (personal if a sole establishment) | identifier | the normalised customer code |
 | `branchCodeKey` | Customer entity (personal if a sole establishment) | identifier | the normalised shop code |
@@ -762,7 +762,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | TemixDailyFile | `loadDay` | DateTime | the Oman day the file dates its changes to |
 | TemixDailyFile | `fileSha256` | String | fingerprint of the uploaded file; the file itself is not kept |
 | TemixDailyFile | `fileBytes` | Int | size of the uploaded file |
-| TemixDailyFile | `headings` | Json | the file headings (column names only) |
+| TemixDailyFile | `headings` | Json | the file headings (column names only) and the counts of the notes found at upload (code words and numbers) |
 | TemixDailyFile | `state` | TemixDailyFileState | structural / operational value |
 | TemixDailyFile | `totalRows` | Int | structural / operational value |
 | TemixDailyFile | `appliedRows` | Int | structural / operational value |
