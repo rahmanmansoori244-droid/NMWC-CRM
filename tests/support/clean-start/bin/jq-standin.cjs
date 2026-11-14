@@ -56,7 +56,11 @@ const PROGRAMS = {
   '.databases[0].name // empty': (j) => [alt(arr(j?.databases)[0]?.name, empty)],
   '.databases[0].owner_name // empty': (j) => [alt(arr(j?.databases)[0]?.owner_name, empty)],
   '[.branches[]? | select(.name == $n)] | length': (j) => [arr(j?.branches).filter((b) => b?.name === named.n).length],
-  '.branches[]? | select(.name == $n) | .id': (j) => arr(j?.branches).filter((b) => b?.name === named.n).map((b) => b.id),
+  '[.branches[]? | select(.name == $n and .parent_id == $p)] | length': (j) => [
+    arr(j?.branches).filter((b) => b?.name === named.n && b?.parent_id === named.p).length,
+  ],
+  '.endpoints[]? | .host // empty': (j) => arr(j?.endpoints).map((e) => alt(e?.host, empty)),
+  '.branches[]? | select(.name == $n) | .id':(j) => arr(j?.branches).filter((b) => b?.name === named.n).map((b) => b.id),
   '.branches[]? | .name': (j) => arr(j?.branches).map((b) => b?.name),
   '.uri // empty': (j) => [alt(j?.uri, empty)],
   '[.operations[]? | select($b == "" or .branch_id == $b) | select(.status != "finished" and .status != "skipped" and .status != "cancelled" and .status != "failed")] | length': (j) => [

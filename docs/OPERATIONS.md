@@ -633,12 +633,16 @@ next customer number (`next customer code would be number 000001: yes`).
 
 Plan, then (after Approve) a temporary branch `cleanstart-rehearsal-<run>` of the
 default branch with a compute; its host must not be production. Its fingerprint is taken
-and the time noted; the reset and verify run on it, then the watch; then the branch is
-restored through the Neon API to the noted time (`preserve_under_name`
-`cleanstart-rehearsal-<run>-after`), the reset row must be gone and the plan id must
-return exactly (`the Neon restore returned the exact fingerprint: yes`). Both branches
-are deleted in an `always()` step; if one is left, the run says so and the owner deletes
-it by hand. `branch equals production's plan` is only recorded: the proof is that the
+and the time noted; the reset and verify run on it, then the watch; then Neon makes a
+new branch `cleanstart-rehearsal-<run>-at` from the rehearsal branch's history at the
+noted time (a branch create with `parent_timestamp`: Neon's own point-in-time
+`/restore` works on root branches only, and the rehearsal branch is a child), the reset
+row must be gone there and the plan id must return exactly
+(`the Neon restore returned the exact fingerprint: yes`). Both branches are deleted in an `always()` step, the newer
+first (Neon refuses to delete a branch with a child); if one is left, the run says so and
+the owner deletes it by hand. This proves Neon's history holds the noted time on a
+branch of production; it does not exercise the console Restore of the production (root)
+branch itself, rollback route 1. `branch equals production's plan` is only recorded: the proof is that the
 restore returns the branch's own fingerprint. Apply needs a green run of this mode with
 the same scripts within 14 days, so it is repeated after any change to
 `scripts/ops/clean-start/`.

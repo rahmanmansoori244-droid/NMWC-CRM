@@ -440,7 +440,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
       "branch equals production's plan: yes",
       'reset on the Neon branch: ok',
       'first integrity checks as expected: yes',
-      'Neon restored the branch to the noted time: yes',
+      'Neon made a copy of the branch as it was at the noted time: yes',
       'the reset row is gone after the restore: yes',
       'the Neon restore returned the exact fingerprint: yes',
       'temporary Neon branches deleted: yes',

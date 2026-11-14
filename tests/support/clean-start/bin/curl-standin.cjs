@@ -11,8 +11,11 @@
 //                                             local test cluster (FAKE_PG_ADMIN_URL, FAKE_PSQL):
 //                                             a branch with a compute is CREATE DATABASE … TEMPLATE
 //                                             <FAKE_NEON_SOURCE_DB>, with a snapshot taken at
-//                                             creation that a restore to a time after creation
-//                                             returns to (the only history this stand-in keeps).
+//                                             creation that a branch made from it at a later
+//                                             time (parent_timestamp) starts from (the only
+//                                             history this stand-in keeps). As Neon: a
+//                                             point-in-time /restore needs root branches, and
+//                                             a branch with a child cannot be deleted.
 // Supports: -s -o FILE -w '%{http_code}' --max-time N -X M -H H -d BODY URL.
 'use strict';
 const fs = require('fs');
@@ -125,11 +128,24 @@ if (u.host === 'console.neon.tech') {
     const name = (req.branch && req.branch.name) || id;
     const parent = (req.branch && req.branch.parent_id) || st.branches.find((b) => b.default).id;
     const compute = Array.isArray(req.endpoints) && req.endpoints.length > 0;
+    // parent_timestamp: the parent AS IT WAS then (Neon allows it on any branch whose
+    // history holds that time). Here only the parent's snapshot at its creation is
+    // kept, so the time must lie between the parent's creation and now.
+    const at = req.branch && req.branch.parent_timestamp;
+    let source = process.env.FAKE_NEON_SOURCE_DB;
+    if (at) {
+      const p = st.branches.find((x) => x.id === parent);
+      if (!p) reply(404, { code: '', message: 'parent branch not found' });
+      if (!p.snapshot) reply(400, { code: '', message: 'not simulated: a past point of this parent' });
+      const t = new Date(at).getTime();
+      if (!(t >= Math.floor(new Date(p.createdAt).getTime() / 1000) * 1000) || t > Date.now()) reply(400, { code: '', message: 'timestamp outside history' });
+      source = p.snapshot;
+    }
     const b = { id, name, parent, db: null, snapshot: null, createdAt: new Date().toISOString() };
     if (compute) {
       b.db = `cs_neon_${st.seq}`;
       b.snapshot = `cs_neon_${st.seq}_t0`;
-      sql(`CREATE DATABASE ${b.db} TEMPLATE ${process.env.FAKE_NEON_SOURCE_DB}`);
+      sql(`CREATE DATABASE ${b.db} TEMPLATE ${source}`);
       sql(`CREATE DATABASE ${b.snapshot} TEMPLATE ${b.db}`);
     }
     st.branches.push(b);
@@ -160,6 +176,11 @@ if (u.host === 'console.neon.tech') {
     const req = JSON.parse(body || '{}');
     const b = st.branches.find((x) => x.id === mm[1]);
     if (!b || !b.snapshot) reply(400, { code: '', message: 'cannot restore' });
+    // Neon: a point-in-time restore (a timestamp or an LSN) needs ROOT branches
+    // (neon.com/docs/guides/branch-restore); a child branch cannot be restored so.
+    const src = st.branches.find((x) => x.id === req.source_branch_id);
+    if ((req.source_timestamp || req.source_lsn) && (b.parent || !src || src.parent))
+      reply(400, { code: '', message: 'point in time restore is supported for root branches only' });
     if (req.source_branch_id === b.id && !req.preserve_under_name) reply(400, { code: '', message: 'preserve_under_name is required' });
     if (!req.source_timestamp || new Date(req.source_timestamp) < new Date(b.createdAt)) reply(400, { code: '', message: 'timestamp outside history' });
     const keep = { id: `br-fake-${++st.seq}`, name: req.preserve_under_name, parent: b.parent, db: `cs_neon_${st.seq}`, snapshot: null };
@@ -174,6 +195,8 @@ if (u.host === 'console.neon.tech') {
     const b = st.branches.find((x) => x.id === mm[1]);
     if (!b) reply(404, { code: '', message: 'not found' });
     if (b.default) reply(400, { code: '', message: 'cannot delete the default branch' });
+    // Neon: "You cannot delete a branch that has child branches."
+    if (st.branches.some((x) => x.parent === b.id)) reply(422, { code: '', message: 'branch has children' });
     for (const d of [b.db, b.snapshot]) if (d) sql(`DROP DATABASE IF EXISTS ${d} WITH (FORCE)`);
     st.branches = st.branches.filter((x) => x.id !== b.id);
     save();

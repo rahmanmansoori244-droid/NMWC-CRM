@@ -514,6 +514,7 @@ describe('run.sh neon: branches of production, never production, always cleaned 
     GITHUB_ENV: '',
   };
   const fresh = () => neonState({ seq: 0, retention: 604800, branches: [{ id: 'br-main-1', name: 'main', default: true }] });
+  const names = () => (JSON.parse(readFileSync(join(sb.state, 'neon.json'), 'utf8')) as { branches: Array<{ name: string }> }).branches.map((b) => b.name);
 
   it('a safety branch without compute is created, confirmed, and deleted only by cleanup', () => {
     fresh();
@@ -537,6 +538,44 @@ describe('run.sh neon: branches of production, never production, always cleaned 
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/host is a production host/);
     expect(run('neon-cleanup', env).code).toBe(0);
+  });
+
+  it('the copy at the noted time is a NEW branch from the rehearsal branch\'s history (Neon restores only root branches), deleted first', () => {
+    fresh();
+    rmSync(envFile(), { force: true });
+    rmSync(join(sb.csDir, 'neon-branches'), { force: true });
+    const env = { ...neon, GITHUB_ENV: envFile() };
+    expect(run('neon-create cleanstart-rehearsal-5 compute', env).code).toBe(0);
+    const ids = () => [...readEnvFile().matchAll(/CS_NEON_BRANCH_ID=(\S+)/g)].map((m) => m[1]!);
+    const rehearsal = ids().at(-1)!;
+    const at = new Date().toISOString().slice(0, 19) + 'Z';
+    const r = run(`neon-restore ${at} cleanstart-rehearsal-5-at`, { ...env, CS_NEON_BRANCH_ID: rehearsal });
+    expect(r.code, r.out).toBe(0);
+    expect(r.lines).toEqual(['Neon made a copy of the branch as it was at the noted time: yes']);
+    const st = JSON.parse(readFileSync(join(sb.state, 'neon.json'), 'utf8')) as { branches: Array<{ id: string; name: string; parent?: string }> };
+    const copy = st.branches.find((b) => b.name === 'cleanstart-rehearsal-5-at')!;
+    expect(copy.parent).toBe(rehearsal);
+    // The later steps read the copy, never the rehearsal branch.
+    expect(ids().at(-1)).toBe(copy.id);
+    expect(readFileSync(join(sb.csDir, 'neon-current-id'), 'utf8')).toBe(copy.id);
+    // Neither branch is restored in place: no /restore call at all.
+    expect(readFileSync(sb.logs.http, 'utf8')).not.toContain('/restore"');
+    const c = run('neon-cleanup', env);
+    expect(c.lines).toContain('temporary Neon branches deleted: yes');
+    expect(names()).toEqual(['main']);
+  });
+
+  it('a time before the rehearsal branch existed is refused, and the cleanup still deletes everything', () => {
+    fresh();
+    rmSync(join(sb.csDir, 'neon-branches'), { force: true });
+    const env = { ...neon, GITHUB_ENV: envFile() };
+    expect(run('neon-create cleanstart-rehearsal-6 compute', env).code).toBe(0);
+    const id = [...readEnvFile().matchAll(/CS_NEON_BRANCH_ID=(\S+)/g)].map((m) => m[1]!).at(-1)!;
+    const r = run('neon-restore 2020-01-01T00:00:00Z cleanstart-rehearsal-6-at', { ...env, CS_NEON_BRANCH_ID: id });
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/Neon did not make the copy of the branch at the noted time/);
+    expect(run('neon-cleanup', env).lines).toContain('temporary Neon branches deleted: yes');
+    expect(names()).toEqual(['main']);
   });
 
   it('never restores or deletes the default branch', () => {
