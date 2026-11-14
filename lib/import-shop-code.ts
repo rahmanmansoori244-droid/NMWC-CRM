@@ -114,8 +114,9 @@ export type ShopLookalike =
       otherNumbered?: boolean;
       /**
        * The row whose code was compared (groupShopLookalike). The promote writes
-       * one reason to every row of the customer, so a reason about a blank
-       * (numbered) code names its rows by number, never "this row".
+       * one reason to every row of the customer, so the reason names both rows
+       * by number, never "this row": a blank (numbered) code always did, and
+       * since follow-up 1 (F5) two coded rows that look alike do too.
        */
       selfRow?: number | string;
     };
@@ -201,9 +202,16 @@ export function shopLookalikeMessage(hit: ShopLookalike): string {
     hit.kind === 'shop'
       ? `this customer's existing shop "${hit.other}"`
       : `shop code "${hit.other}" on row ${hit.row} of the same customer in this sheet`;
+  // Follow-up 1, F5: two CODED rows of one customer that look alike. The
+  // promote writes this reason to every row of the customer, so it also says
+  // which row holds the first code: on the row that holds the other one, "Shop
+  // code "01" looks like shop code "1" on row 3" did not say where "01" is. A
+  // sentence of its own after the bracket, so the start and the bracket are as
+  // before (SHOP_LOOKALIKE, SHOP_LOOKALIKE_RELEASABLE).
+  const where = hit.kind === 'row' && hit.selfRow !== undefined ? ` "${hit.sheetCode}" is on row ${hit.selfRow}.` : '';
   return hit.caseOnly
-    ? `Shop code "${hit.sheetCode}" looks like ${like} (only capital and small letters differ). Correct the code: shop codes are kept in capital letters, so if it is the same shop write it as that shop's code, and if it is a different shop give it a different code.`
-    : `Shop code "${hit.sheetCode}" looks like ${like} (Excel may have dropped a zero). Correct the code if it is the same shop; if it is a different shop, release the row with a reason.`;
+    ? `Shop code "${hit.sheetCode}" looks like ${like} (only capital and small letters differ).${where} Correct the code: shop codes are kept in capital letters, so if it is the same shop write it as that shop's code, and if it is a different shop give it a different code.`
+    : `Shop code "${hit.sheetCode}" looks like ${like} (Excel may have dropped a zero).${where} Correct the code if it is the same shop; if it is a different shop, release the row with a reason.`;
 }
 
 /**
@@ -243,8 +251,9 @@ export function groupShopLookalike(
     const mine = codeOf(r);
     const hit = shopLookalike(custCode, mine.code, shops, siblings, r.shopCodeReleased === true);
     if (!hit) continue;
-    const withRow =
-      hit.kind === 'row' && (mine.numbered || hit.otherNumbered) ? { ...hit, selfRow: r.rowNumber } : hit;
+    // Every row-to-row hit names the row compared: the reason goes to every row
+    // of the customer (follow-up 1, F5: coded rows too, not only numbered ones).
+    const withRow = hit.kind === 'row' ? { ...hit, selfRow: r.rowNumber } : hit;
     return mine.numbered ? { ...withRow, numbered: true } : withRow;
   }
   return null;

@@ -19,6 +19,7 @@ import {
   shopLookalike,
   shopLookalikeMessage,
   SHOP_LOOKALIKE,
+  SHOP_LOOKALIKE_RELEASABLE,
 } from '@/lib/import-shop-code';
 import {
   checkCustomerRow,
@@ -183,7 +184,7 @@ describe('shopLookalike — a shop code that only looks like another', () => {
     ).toMatchObject({ kind: 'shop', sheetCode: '1' });
     expect(
       groupShopLookalike('CCT0009', [{ branchCode: '01', rowNumber: 2 }, { branchCode: '1', rowNumber: 3 }], [])
-    ).toMatchObject({ kind: 'row', sheetCode: '01', row: 3 });
+    ).toMatchObject({ kind: 'row', sheetCode: '01', row: 3, selfRow: 2 });
     expect(
       groupShopLookalike(
         'CCT0009',
@@ -279,6 +280,53 @@ describe('checkCustomerRow — a lookalike shop code is held back on the branch_
     expect(canReleasePhone(issues)).toBe(false);
     expect(canReleaseShopCode([{ field: 'phone', message: 'invalid format' }])).toBe(false);
     expect(canReleaseShopCode([issues[1], { field: 'cust_name', message: 'required' }])).toBe(false);
+  });
+});
+
+// Follow-up 1, F5: two CODED rows of one customer that look alike. The promote
+// writes one reason to every row of the customer, so the reason says which row
+// holds each code, as the blank-code reason already did; the start and the
+// bracket are unchanged, so release, correct and withdraw behave as before.
+describe('groupShopLookalike — two coded rows that look alike name both rows', () => {
+  const zeros = groupShopLookalike('C2', [{ branchCode: '01', rowNumber: 2 }, { branchCode: '1', rowNumber: 3 }], []);
+  const letters = groupShopLookalike('C2', [{ branchCode: 'ab', rowNumber: 5 }, { branchCode: 'AB', rowNumber: 4 }], []);
+
+  it('01 and 1: both row numbers, both codes, the same start and bracket as before', () => {
+    expect(zeros).toEqual({ kind: 'row', sheetCode: '01', other: '1', row: 3, caseOnly: false, selfRow: 2 });
+    const msg = shopLookalikeMessage(zeros!);
+    expect(msg).toBe(
+      'Shop code "01" looks like shop code "1" on row 3 of the same customer in this sheet (Excel may have dropped a zero). "01" is on row 2. Correct the code if it is the same shop; if it is a different shop, release the row with a reason.'
+    );
+    expect(msg).not.toMatch(/this row|this one|that row/i);
+    expect(SHOP_LOOKALIKE.test(msg)).toBe(true);
+    expect(SHOP_LOOKALIKE_RELEASABLE.test(msg)).toBe(true);
+    // Release, correct and withdraw read it exactly as before.
+    expect(canReleaseShopCode([{ field: 'branch_code', message: msg }])).toBe(true);
+    expect(editableColumns([{ field: '_promote', message: `branch_code: ${msg}` }])).toEqual(['branch_code']);
+  });
+
+  it('ab and AB: both row numbers; still corrected, never released', () => {
+    expect(letters).toEqual({ kind: 'row', sheetCode: 'ab', other: 'AB', row: 4, caseOnly: true, selfRow: 5 });
+    const msg = shopLookalikeMessage(letters!);
+    expect(msg).toBe(
+      'Shop code "ab" looks like shop code "AB" on row 4 of the same customer in this sheet (only capital and small letters differ). "ab" is on row 5. Correct the code: shop codes are kept in capital letters, so if it is the same shop write it as that shop\'s code, and if it is a different shop give it a different code.'
+    );
+    expect(SHOP_LOOKALIKE.test(msg)).toBe(true);
+    expect(SHOP_LOOKALIKE_RELEASABLE.test(msg)).toBe(false);
+    expect(canReleaseShopCode([{ field: 'branch_code', message: msg }])).toBe(false);
+  });
+
+  it('the reason at upload, which each row gets for itself, is unchanged', () => {
+    const hit = shopLookalike('C2', '01', [], [{ row: 3, code: '1' }]);
+    expect(hit).not.toHaveProperty('selfRow');
+    expect(shopLookalikeMessage(hit!)).toBe(
+      'Shop code "01" looks like shop code "1" on row 3 of the same customer in this sheet (Excel may have dropped a zero). Correct the code if it is the same shop; if it is a different shop, release the row with a reason.'
+    );
+  });
+
+  it('a shop already in the CRM: one row, so nothing more to name', () => {
+    const hit = groupShopLookalike('C2', [{ branchCode: '02', rowNumber: 2 }, { branchCode: '1', rowNumber: 3 }], ['C2-01']);
+    expect(hit).toEqual({ kind: 'shop', sheetCode: '1', other: 'C2-01', caseOnly: false });
   });
 });
 
