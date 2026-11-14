@@ -309,7 +309,18 @@ async function sendForm(
     ]);
   } finally {
     clearTimeout(timer);
-    await page.unroute(pattern, handler);
+    // page.unroute(pattern, handler) waited for the page, and with an older
+    // browser build it never returned while the page was navigating (a
+    // successful submit goes to /work at once): the test then sat until its
+    // own timeout. This handler is the only route this file sets, so all
+    // routes go, without waiting for a handler still running and with any
+    // error it throws afterwards swallowed (its answer has already been read
+    // above). The cap only stops a hung unroute from holding the test: the
+    // answer this helper returns was settled before it.
+    await Promise.race([
+      page.unrouteAll({ behavior: 'ignoreErrors' }).catch(() => undefined),
+      new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
+    ]);
   }
 }
 
