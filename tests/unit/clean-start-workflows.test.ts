@@ -268,6 +268,22 @@ describe('targets', () => {
     expect(sr).toMatch(/run\.sh status-lines "\$CS_DIR\/watch-latest\.tsv" refuse/);
   });
 
+  it('age is installed on its own with one retry (the universe mirror flakes; db-backup.yml), in every job that needs it', () => {
+    let n = 0;
+    for (const [f, id, j] of allJobs()) {
+      for (const s of j.steps) {
+        const lines = commands(s.run ?? '').filter((l) => /apt-get install/.test(l));
+        if (!lines.some((l) => /\bage\b/.test(l))) continue;
+        n++;
+        const ages = lines.filter((l) => /\bage\b/.test(l));
+        expect(ages, `${f} ${id}`).toHaveLength(1);
+        expect(ages[0], `${f} ${id}`).toMatch(/install -y --no-install-recommends age > \/dev\/null\s+\|\| \{ sleep \d+; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > \/dev\/null; \}$/);
+        expect(ages[0]).not.toMatch(/postgresql-client/);
+      }
+    }
+    expect(n).toBe(6);
+  });
+
   it('apply settles "reset committed" also after a reset Postgres refused (exit 3), never after a cancel or another failure', () => {
     const steps = MAIN.jobs.apply!.steps;
     const d = steps.findIndex((s) => (s.name ?? '').startsWith('d. THE RESET'));

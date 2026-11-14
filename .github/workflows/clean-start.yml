@@ -127,7 +127,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Preflight
@@ -290,7 +293,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
@@ -649,7 +655,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
@@ -882,7 +891,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
@@ -1047,7 +1059,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Preflight, production named, the apply run's exports
