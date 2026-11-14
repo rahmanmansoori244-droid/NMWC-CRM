@@ -16,7 +16,8 @@ import {
   type InsightScope,
   type RoleScope,
 } from '@/lib/insights/scope';
-import { loadInsights, loadViewerIsTest } from '@/lib/insights/load';
+import { loadCleanStart, loadInsights, loadViewerIsTest } from '@/lib/insights/load';
+import { comparisonFor, type Comparison } from '@/lib/insights/compare';
 import { highlights, highlightsCoverage } from '@/lib/insights/highlights';
 import { insightsDashboardDisabled, WAVE_DEADLINE_MS, withinDeadline } from '@/lib/insights/rollout';
 import type { DashboardQuery } from '@/lib/insights/url';
@@ -116,7 +117,13 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
     );
   }
 
-  const [insights, options] = await Promise.all([loadInsights(scope, period), filterOptions(scope)]);
+  const [insights, options, cleanStart] = await Promise.all([
+    loadInsights(scope, period),
+    filterOptions(scope),
+    loadCleanStart(),
+  ]);
+  // Follow-up 1 (F2): no comparison with a period that starts before the clean start.
+  const comparison = comparisonFor(period, cleanStart);
 
   const scoped = scope.kind !== 'company';
   const applied: DashboardQuery = {
@@ -132,12 +139,13 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
     period,
     periodPhrase: periodPhrase(period),
     against: againstPhrase(period),
+    comparison,
     applied,
     canOpenApprovals: role === 'MANAGER',
     canOpenStatus: STATUS_ROLES.includes(role),
   };
-  const items = highlights(insights, ctx.periodPhrase);
-  const baselineNote = historyNote(period);
+  const items = highlights(insights, ctx.periodPhrase, comparison.kind);
+  const baselineNotes = historyNotes(period, comparison);
   const viewName = describeView(scope, options.regions);
 
   return (
@@ -159,10 +167,12 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
         today={omanDateISO(now)}
         showRegion={!(scope.roleRegionIds && scope.roleRegionIds.length === 1)}
       />
-      {(period.note || baselineNote || filters.rejected || options.failed) && (
+      {(period.note || baselineNotes.length > 0 || filters.rejected || options.failed) && (
         <div className="mx-4 mt-4 space-y-1 rounded-md bg-amber-50 p-3 text-xs text-amber-900 ring-1 ring-amber-200 sm:mx-6">
           {period.note && <p>{period.note}</p>}
-          {baselineNote && <p>{baselineNote}</p>}
+          {baselineNotes.map((n) => (
+            <p key={n}>{n}</p>
+          ))}
           {filters.rejected && <p>A filter in the address was too long to read, so it matches nothing. Clear the filters.</p>}
           {options.failed && <p>The region and route lists could not be loaded just now; the figures below are unaffected.</p>}
         </div>
@@ -192,16 +202,36 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   );
 }
 
-/** The caveat for a window, or its comparison window, reaching back before go-live. */
-function historyNote(p: InsightPeriod): string | null {
+/**
+ * The caveats above the cards: a window, or its comparison window, reaching back
+ * before the go-live clean start (follow-up 1, F2: its records were removed, so
+ * there is nothing to compare with) or, on a database that never had one, before
+ * go-live (HISTORY_BASELINE_DAY); and a comparison that could not be checked.
+ */
+function historyNotes(p: InsightPeriod, c: Comparison): string[] {
+  if (c.kind === 'no-earlier-data') {
+    const day = dayLabel(omanDateISO(c.cleanStartAt));
+    return [
+      p.from.getTime() < c.cleanStartAt.getTime()
+        ? `This period starts before the clean start on ${day}. The records from before it were removed, so the figures count from that day, and there is no earlier data yet to compare with.`
+        : `The period before this one starts before the clean start on ${day}, so there is no earlier data yet to compare with.`,
+    ];
+  }
+  const out: string[] = [];
   const day = dayLabel(HISTORY_BASELINE_DAY);
   if (p.fromDay < HISTORY_BASELINE_DAY) {
-    return `This period starts before go-live (${day}). Activity before then is the pilot and test runs, and some of it was deleted since, so read those weeks with care.`;
+    out.push(
+      `This period starts before go-live (${day}). Activity before then is the pilot and test runs, and some of it was deleted since, so read those weeks with care.`
+    );
+  } else if (c.kind === 'compare' && p.prevFromDay < HISTORY_BASELINE_DAY) {
+    out.push(
+      `The comparison with the period before reaches back before go-live (${day}), when activity was the pilot and test runs, so read the up and down arrows with care.`
+    );
   }
-  if (p.prevFromDay < HISTORY_BASELINE_DAY) {
-    return `The comparison with the period before reaches back before go-live (${day}), when activity was the pilot and test runs, so read the up and down arrows with care.`;
+  if (c.kind === 'unchecked') {
+    out.push('Whether the period before can be compared could not be checked just now, so no comparison is shown. Reload the page to try again.');
   }
-  return null;
+  return out;
 }
 
 function periodPhrase(p: InsightPeriod): string {

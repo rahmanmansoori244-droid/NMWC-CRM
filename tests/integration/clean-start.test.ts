@@ -59,7 +59,10 @@ import {
   CLEAN_START_KIND_LABELS,
   cleanStartCounts,
   isCleanStartRecord,
+  readCleanStartAt,
 } from '@/lib/clean-start-record';
+import { comparisonFor } from '@/lib/insights/compare';
+import { parsePeriod } from '@/lib/insights/period';
 
 vi.setConfig({ testTimeout: 300_000, hookTimeout: 600_000 });
 
@@ -803,6 +806,14 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     expect(await db.importBatch.count({ where: { shopNotChangedAckById: w.steward } })).toBe(1);
   });
 
+  it('follow-up 1 (F2): before any clean start there is no moment, and the dashboard compares as before', async () => {
+    expect(await readCleanStartAt(db)).toBeNull();
+    const cleanStart = { ok: true as const, data: await readCleanStartAt(db) };
+    for (const period of ['7d', '30d', '90d', '12m']) {
+      expect(comparisonFor(parsePeriod({ period }, new Date()), cleanStart), period).toEqual({ kind: 'compare' });
+    }
+  });
+
   it('PLAN: read-only exports whose hashes are the ones the fingerprint binds', async () => {
     const out = join(tmp, 'plan1');
     rmSync(out, { recursive: true, force: true });
@@ -1143,6 +1154,40 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     // Every kind the record holds is one the page has words for, and every figure is there.
     expect(rows).toHaveLength(TABLES.EMPTY.length + TABLES.KEEP.length + 2);
     expect(rows.every((r) => r.label !== r.kind && (r.removed !== null || r.kept !== null))).toBe(true);
+  });
+
+  it('follow-up 1 (F2): the clean start’s moment is its record’s, and a comparison reaching back before it is not drawn', async () => {
+    const [row] = await db.auditLog.findMany({ select: { at: true } });
+    // Read as the dashboard reads it: inside a transaction (lib/insights/load.ts loadCleanStart).
+    const at = await db.$transaction((tx) => readCleanStartAt(tx));
+    expect(at?.toISOString()).toBe(row!.at.toISOString());
+    const cleanStart = { ok: true as const, data: at };
+    // Today: every preset's period before starts before the reset.
+    for (const period of ['7d', '30d', '90d', '12m']) {
+      expect(comparisonFor(parsePeriod({ period }, new Date()), cleanStart), period).toEqual({
+        kind: 'no-earlier-data',
+        cleanStartAt: at,
+      });
+    }
+    // Five weeks on, the 7 days and the 7 before them are both after it: compared as before.
+    const later = new Date(at!.getTime() + 35 * 86_400_000);
+    expect(comparisonFor(parsePeriod({ period: '7d' }, later), cleanStart)).toEqual({ kind: 'compare' });
+    expect(comparisonFor(parsePeriod({ period: '30d' }, later), cleanStart).kind).toBe('no-earlier-data');
+    // A row the app writes later, alike but for its id and source, does not move the
+    // moment (rolled back, so the suites after this one see the reset's log as it is).
+    const ROLLBACK = new Error('rollback');
+    let seen: Date | null = null;
+    await expect(
+      db.$transaction(async (tx) => {
+        await tx.auditLog.create({
+          data: { actorId: w.steward, action: 'DELETE', entityType: 'System', entityId: 'clean-start', reason: 'not the reset' },
+        });
+        seen = await readCleanStartAt(tx);
+        throw ROLLBACK;
+      })
+    ).rejects.toBe(ROLLBACK);
+    expect((seen as Date | null)?.toISOString()).toBe(at!.toISOString());
+    expect(await db.auditLog.count()).toBe(1);
   });
 
   it('the kept tables are byte-identical: accounts with their password hashes, history of passwords, regions, routes, manager links, channels', async () => {

@@ -802,14 +802,22 @@ operations-log entry, written before and completed after. The compliance notes:
 
 ### After it (separate changes)
 
-`lib/insights/policy.ts` `HISTORY_BASELINE_DAY` moves to the reset day (until then a
-dashboard window reaching back before the reset compares with emptied days; planned for
-reset day + 1); `db-backup.yml` stops printing the total row count; `lib/test-records.ts`
+`db-backup.yml` stops printing the total row count; `lib/test-records.ts`
 `KNOWN_TEST_RECORDS.customerCode` is no longer a test record (§7, "Flag a test record").
 
 **Follow-up release 1** (branch `claude/follow-up-1`; live only after the reset, when
 the owner says so; no migration): the Audit page shows the reset row's removed and kept
-counts (owner question 10, default yes; above).
+counts (owner question 10, default yes; above). And the dashboard no longer compares
+with emptied days: a tile, sentence or note that compares a period with the one before
+it (New customers, Customers updated, Branches closed, the "What stands out" sentence on
+new customers, the caveat above the cards) shows "No earlier data yet to compare with"
+instead of an arrow or a percentage when the period before starts before the clean
+start's moment. The moment is the `at` of the reset's own AuditLog row, found by every
+mark `reset.sql` gives it (`lib/clean-start-record.ts` `readCleanStartAt`,
+`lib/insights/compare.ts`); the design named a hand-set `HISTORY_BASELINE_DAY` for this,
+which is no longer needed for the comparisons (it still dates the go-live caveat on a
+database that never had a clean start). On such a database nothing changes. When that
+row cannot be read just then, the tiles say "Not compared just now" and draw no arrow.
 
 ### Tests
 

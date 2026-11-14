@@ -26,6 +26,7 @@ const h = vi.hoisted(() => ({
   executeRaw: vi.fn(),
   transaction: vi.fn(),
   findMany: vi.fn(),
+  auditFindFirst: vi.fn(),
   logError: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({
@@ -33,7 +34,7 @@ vi.mock('@/lib/db', () => ({
 }));
 vi.mock('@/lib/logger', () => ({ logger: { error: h.logError, warn: vi.fn(), info: vi.fn() } }));
 
-import { loadInsights, cellDegFor, __sql } from '@/lib/insights/load';
+import { loadInsights, loadCleanStart, cellDegFor, __sql } from '@/lib/insights/load';
 import { parsePeriod } from '@/lib/insights/period';
 import { resolveInsightScope, type InsightScope } from '@/lib/insights/scope';
 import { MAP } from '@/lib/insights/policy';
@@ -81,13 +82,18 @@ beforeEach(() => {
     .mockReset()
     .mockImplementation(async (ops: unknown) =>
       typeof ops === 'function'
-        ? (ops as (tx: unknown) => Promise<unknown>)({ $executeRaw: h.executeRaw, customerEdit: { findMany: h.findMany } })
+        ? (ops as (tx: unknown) => Promise<unknown>)({
+            $executeRaw: h.executeRaw,
+            customerEdit: { findMany: h.findMany },
+            auditLog: { findFirst: h.auditFindFirst },
+          })
         : Promise.all(ops as unknown[])
     );
   // The queue's read of mixed customers' requests, then its ids.
   h.findMany.mockReset().mockImplementation(async (args: { select: Record<string, unknown> }) =>
     'fieldChanges' in args.select ? [] : [{ id: 'e-q1' }, { id: 'e-q2' }]
   );
+  h.auditFindFirst.mockReset().mockResolvedValue(null);
   h.logError.mockReset();
 });
 
@@ -184,6 +190,53 @@ describe('one failing query degrades only its card', () => {
     const data = await loadInsights(MANAGER, PERIOD);
     expect(data.heat.ok).toBe(false);
     expect(data.state.ok).toBe(true);
+  });
+});
+
+describe('follow-up 1 (F2): the clean start’s moment', () => {
+  const AT = new Date('2026-11-18T16:05:00Z');
+
+  it('is read from its own record, in its own transaction after SET LOCAL statement_timeout', async () => {
+    h.auditFindFirst.mockResolvedValue({ at: AT });
+    expect(await loadCleanStart()).toEqual({ ok: true, data: AT });
+    expect(h.executeRaw).toHaveBeenCalledTimes(1);
+    expect((h.executeRaw.mock.calls[0]![0] as Prisma.Sql).sql).toBe(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`);
+    expect(h.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(h.auditFindFirst.mock.invocationCallOrder[0]!);
+    expect(h.auditFindFirst).toHaveBeenCalledWith({
+      where: {
+        entityType: 'System',
+        entityId: 'clean-start',
+        action: 'DELETE',
+        id: { startsWith: 'cleanstart-' },
+        source: { startsWith: 'script:clean-start:' },
+      },
+      orderBy: { at: 'desc' },
+      select: { at: true },
+    });
+  });
+
+  it('none: the section loads, with no moment', async () => {
+    expect(await loadCleanStart()).toEqual({ ok: true, data: null });
+  });
+
+  it('a read that fails is a failed section, logged by card and class only', async () => {
+    h.auditFindFirst.mockRejectedValue(Object.assign(new Error('secret statement text'), { code: 'P2010' }));
+    expect(await loadCleanStart()).toEqual({ ok: false });
+    expect(h.logError).toHaveBeenCalledWith({ card: 'clean-start', errorClass: 'Error', code: 'P2010' }, 'insights.card_failed');
+    expect(JSON.stringify(h.logError.mock.calls)).not.toMatch(/secret/);
+  });
+
+  it('a read that never answers fails at the wave’s deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      h.auditFindFirst.mockImplementation(() => new Promise(() => {}));
+      const pending = loadCleanStart();
+      await vi.advanceTimersByTimeAsync(WAVE_DEADLINE_MS);
+      expect(await pending).toEqual({ ok: false });
+      expect(h.logError.mock.calls[0]![0]).toEqual({ card: 'clean-start', errorClass: 'InsightsDeadlineError', code: 'DEADLINE' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -458,7 +511,7 @@ describe('the SQL text', () => {
 });
 
 describe('source rules for lib/insights', () => {
-  const files = ['scope', 'sql', 'period', 'policy', 'load', 'shape', 'url', 'highlights', 'rollout'].map((f) => `lib/insights/${f}.ts`);
+  const files = ['scope', 'sql', 'period', 'policy', 'load', 'shape', 'url', 'highlights', 'rollout', 'compare'].map((f) => `lib/insights/${f}.ts`);
   const src = (f: string) => stripComments(readFileSync(f, 'utf8'), f);
 
   it.each(files)('%s: no cache, no server action, no session, no Customer.updatedAt, no row reads', (f) => {
@@ -483,7 +536,7 @@ describe('source rules for lib/insights', () => {
   });
 
   it('the pure modules import no database client', () => {
-    for (const f of ['scope', 'period', 'policy', 'shape', 'url', 'highlights', 'rollout']) {
+    for (const f of ['scope', 'period', 'policy', 'shape', 'url', 'highlights', 'rollout', 'compare']) {
       expect(src(`lib/insights/${f}.ts`)).not.toMatch(/from ['"](\.\.\/db|@\/lib\/db|\.\.\/service-status)['"]/);
     }
   });

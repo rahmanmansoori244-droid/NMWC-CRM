@@ -25,6 +25,8 @@ const h = vi.hoisted(() => ({
   scopeFor: vi.fn(),
   load: vi.fn(),
   push: vi.fn(),
+  /** Follow-up 1 (F2): what loadCleanStart answers (the clean start's moment, from its record). */
+  cleanStart: { ok: true, data: null } as { ok: true; data: Date | null } | { ok: false },
 }));
 vi.mock('@/lib/auth', () => ({ auth: async () => (h.user ? { user: h.user } : null) }));
 vi.mock('@/lib/access', () => ({
@@ -42,7 +44,12 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: h.push }),
 }));
 // Gap 30: whether the viewer is a test account (lib/test-records.ts); never a database here.
-vi.mock('@/lib/insights/load', () => ({ loadInsights: h.load, loadViewerIsTest: async () => false }));
+// Follow-up 1 (F2): the clean start's moment (lib/clean-start-record.ts); never a database here.
+vi.mock('@/lib/insights/load', () => ({
+  loadInsights: h.load,
+  loadViewerIsTest: async () => false,
+  loadCleanStart: async () => h.cleanStart,
+}));
 vi.mock('@/lib/reference-data', () => ({
   getAllActiveRegions: async () => [
     { id: 'r-east', name: 'East', code: 'E' },
@@ -63,7 +70,7 @@ import Loading from '@/app/(app)/dashboard/loading';
 import { NAV_BY_ROLE, Sidebar } from '@/components/nmwc/Sidebar';
 import { DASHBOARD_ROLES, HISTORY_BASELINE_DAY } from '@/lib/insights/policy';
 import { omanDateISO } from '@/lib/tz';
-import { addDays, parsePeriod } from '@/lib/insights/period';
+import { addDays, dayLabel, parsePeriod } from '@/lib/insights/period';
 
 // One instant, read once: 20:30 UTC is already the next day in Oman.
 const NOW = new Date('2026-10-05T20:30:00Z');
@@ -162,6 +169,7 @@ beforeEach(() => {
   h.user = { id: 'u-1', role: 'MANAGER', username: 'u' };
   h.regions = ['r-north', 'r-south'];
   h.scopeFails = false;
+  h.cleanStart = { ok: true, data: null };
   h.scopeFor.mockReset();
   h.push.mockReset();
   h.load.mockReset().mockImplementation(async (_scope: unknown, period: InsightPeriod) => fixture(period.buckets));
@@ -567,5 +575,84 @@ describe('source rules for the dashboard', () => {
       expect(s, f).not.toMatch(/google\.com\/maps|https?:\/\//);
       expect(s, f).not.toMatch(/<table\b/);
     }
+  });
+});
+
+describe('follow-up 1 (F2): comparisons after the go-live clean start', () => {
+  const DAY = 86_400_000;
+  /** The three tiles that compare with the period before. */
+  const TILES = ['New customers', 'Customers updated', 'Branches closed'];
+  const tileText = (label: string) => screen.getByText(label).parentElement!.textContent ?? '';
+  const stands = () => screen.getByRole('heading', { name: 'What stands out' }).closest('section')!.textContent ?? '';
+
+  it('a database that never had one: every comparison as before', async () => {
+    h.cleanStart = { ok: true, data: null };
+    const { container } = await open();
+    expect(tileText('New customers')).toMatch(/▲ \+50% vs the 30 days before/);
+    expect(tileText('Customers updated')).toMatch(/▼ -20% vs the 30 days before/);
+    expect(tileText('Branches closed')).toMatch(/\+50% vs the 30 days before/);
+    expect(stands()).toMatch(/up 50% on the period before/);
+    expect(container.textContent).not.toMatch(/clean start|No earlier data|Not compared/);
+  });
+
+  it('a clean start older than the period before: compared as before', async () => {
+    // 7 days, and the 7 before them, both after a clean start 20 days ago.
+    h.cleanStart = { ok: true, data: new Date(NOW.getTime() - 20 * DAY) };
+    const { container } = await open({ period: '7d' });
+    expect(tileText('New customers')).toMatch(/\+50% vs the 7 days before/);
+    expect(container.textContent).not.toMatch(/clean start|No earlier data/);
+  });
+
+  it('the period before starts before the clean start: no arrow and no percentage anywhere, and a note says why', async () => {
+    const at = new Date(NOW.getTime() - 10 * DAY);
+    h.cleanStart = { ok: true, data: at };
+    const p = parsePeriod({ period: '7d' }, NOW);
+    expect(p.prevFrom.getTime()).toBeLessThan(at.getTime());
+    expect(p.from.getTime()).toBeGreaterThan(at.getTime());
+    const { container } = await open({ period: '7d' });
+    for (const label of TILES) {
+      expect(tileText(label), label).toContain('No earlier data yet to compare with');
+      expect(tileText(label), label).not.toMatch(/[▲▼■]|vs the|none in the|no change/);
+    }
+    expect(stands()).toMatch(/new customers created in the field in the last 7 days; there is no earlier data yet to compare with\./);
+    expect(stands()).not.toMatch(/on the period before|against none/);
+    const day = dayLabel(omanDateISO(at));
+    expect(container.textContent).toContain(`The period before this one starts before the clean start on ${day}, so there is no earlier data yet to compare with.`);
+    // The go-live caveat is not shown beside it.
+    expect(container.textContent).not.toMatch(/go-live/);
+  });
+
+  it('the period itself starts before the clean start: the note says the figures count from that day', async () => {
+    h.cleanStart = { ok: true, data: new Date(NOW.getTime() - 10 * DAY) };
+    // 30 days from 2026-09-06: before go-live too, and the clean start's note replaces that caveat.
+    const { container } = await open();
+    expect(container.textContent).toMatch(
+      /This period starts before the clean start on .+\. The records from before it were removed, so the figures count from that day, and there is no earlier data yet to compare with\./
+    );
+    expect(container.textContent).not.toMatch(/starts before go-live|reaches back before go-live/);
+    for (const label of TILES) expect(tileText(label), label).not.toMatch(/%/);
+  });
+
+  it('the clean start could not be read: no comparison, and the page says so', async () => {
+    h.cleanStart = { ok: false };
+    const { container } = await open({ period: '7d' });
+    for (const label of TILES) {
+      expect(tileText(label), label).toContain('Not compared just now');
+      expect(tileText(label), label).not.toMatch(/[▲▼■]|vs the/);
+    }
+    expect(stands()).not.toMatch(/period before/);
+    expect(container.textContent).toMatch(/Whether the period before can be compared could not be checked just now/);
+  });
+
+  it('the moment the page compares is the clean start’s, against the start of the period before', async () => {
+    // At the boundary: a clean start exactly at the period before's first instant compares as before.
+    const p = parsePeriod({ period: '7d' }, NOW);
+    h.cleanStart = { ok: true, data: p.prevFrom };
+    await open({ period: '7d' });
+    expect(tileText('New customers')).toMatch(/\+50%/);
+    cleanup();
+    h.cleanStart = { ok: true, data: new Date(p.prevFrom.getTime() + 1) };
+    await open({ period: '7d' });
+    expect(tileText('New customers')).toContain('No earlier data yet to compare with');
   });
 });

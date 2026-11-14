@@ -348,9 +348,10 @@ from that line. Save. (The automatic backup runs at about 06:00 Oman.)
      "Different shop: release…" lets the row through with a typed reason. If you are
      unsure, ask Claude first.
 
-Until Claude's small follow-up change lands (planned for the day after the reset), the
-dashboards' "up/down" comparisons that reach back before the reset day compare with
-empty days. Read the comparisons from the reset day on.
+Once Claude's small follow-up change is live (after the reset, when you say so), a
+dashboard comparison whose earlier period starts before the reset shows "No earlier data
+yet to compare with" instead of an up or down figure. Until then, those comparisons
+compare with empty days: read them from the reset day on.
 
 **From this import on there is no way back** for the database. Mistakes are then fixed
 forward.
