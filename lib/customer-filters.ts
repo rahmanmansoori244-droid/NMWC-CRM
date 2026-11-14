@@ -91,9 +91,12 @@ function parseScore(raw: string | undefined): number | null {
  * no filter, since a full timestamp's UTC date can be the Oman day before.
  */
 function parseOmanDay(raw: string | undefined, bound: 'start' | 'end'): Date | null {
-  if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
-  const d = new Date(`${raw}T00:00:00.000Z`);
-  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== raw) return null;
+  const m = raw ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw) : null;
+  if (!m) return null;
+  const [y, mo, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  // The calendar day itself (no clock): 2026-02-30 rolls over, so it is no day.
+  const d = new Date(Date.UTC(y, mo - 1, day));
+  if (d.getUTCFullYear() !== y || d.getUTCMonth() !== mo - 1 || d.getUTCDate() !== day) return null;
   return bound === 'start' ? startOfOmanDay(d) : endOfOmanDay(d);
 }
 
