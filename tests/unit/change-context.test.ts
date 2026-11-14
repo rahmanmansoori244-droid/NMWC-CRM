@@ -62,6 +62,7 @@ describe('source builders', () => {
       [src.test('history-capture'), 'test:history-capture'],
       [src.verify('app-role'), 'verify:app-role'],
       [src.temixDaily('f1', 7), 'temix-daily:f1:7'],
+      [src.temixDailyUpload('f1'), 'temix-daily:f1:upload'],
     ];
     for (const [got, want] of built) {
       expect(got).toBe(want);

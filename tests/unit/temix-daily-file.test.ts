@@ -23,7 +23,7 @@ import {
   type DailySheetRow,
 } from '@/lib/temix-daily-file';
 import { CsvReadError, csvDelimiter, csvRecords, parseCsv, MAX_DAILY_ROWS } from '@/lib/temix-daily-csv';
-import { dailyFileKind, dailyFileKindRefusal, dailyFileName } from '@/lib/temix-daily-upload';
+import { dailyFileKind, dailyFileKindRefusal, dailyFileName, uploadMessage } from '@/lib/temix-daily-upload';
 import { CUSTOMER_COLUMNS } from '@/lib/import-headings';
 
 const HEAD = [...TEMIX_DAILY_COLUMNS] as string[];
@@ -297,5 +297,32 @@ describe('an .xlsx daily file, through the workbook reader', () => {
     const [r] = stageDailyRows(sheet!, report);
     expect(r).toMatchObject({ custCodeKey: 'ZZD0001', branchCodeKey: 'ZZD0001-01', notes: [] });
     expect(r!.parsed).toMatchObject({ route: 'ZR10', paymentTerms: 'CASH', creditLimit: 1500, paymentTermDays: 30, status: 'A', createdDate: { day: '2026-01-15' } });
+  });
+});
+
+describe('what the Steward is told after an upload', () => {
+  const ok = { loadDay: '2026-11-14', rows: 3, rowsWithNotes: 0, notRead: [], otherSheets: [], sameBytesAs: null, waitsFor: null };
+
+  it('staged, and that nothing is applied', () => {
+    expect(uploadMessage(ok)).toEqual({ tone: 'ok', lines: ['Staged 3 rows for 2026-11-14. Nothing is applied to customers yet.'] });
+  });
+
+  it('notes, the same bytes as an earlier day, a file it waits for, sheets and headings not read', () => {
+    const m = uploadMessage({
+      ...ok,
+      rowsWithNotes: 1,
+      notRead: ['Notes'],
+      otherSheets: ['Help'],
+      sameBytesAs: { loadDay: '2026-11-13', filename: 'a.xlsx' },
+      waitsFor: { loadDay: '2026-11-12', filename: 'b.xlsx' },
+    });
+    expect(m.tone).toBe('warn');
+    expect(m.lines.slice(1)).toEqual([
+      '1 row has a note (counted in the list below).',
+      'This file is exactly the same as the one uploaded for 2026-11-13 ("a.xlsx").',
+      'It waits for the file of 2026-11-12 ("b.xlsx"), which must be applied or discarded first.',
+      'Only the first sheet was read. Not read: Help.',
+      'Not read: 1 column is not one of the agreed columns and was ignored: Notes.',
+    ]);
   });
 });

@@ -151,6 +151,11 @@ export const src = {
    * with effectiveFrom = the load day ('YYYY-MM-DD').
    */
   temixDaily: (fileId: string, row: number | string) => join('temix-daily', fileId, row),
+  /**
+   * The daily Temix file's upload (stage 3): the file and its staged rows, and
+   * the AuditLog row naming them. Writes no history: nothing is applied.
+   */
+  temixDailyUpload: (fileId: string) => join('temix-daily', fileId, 'upload'),
 } as const;
 
 /** The three values set_config receives. Throws on a malformed context, before any transaction opens. */

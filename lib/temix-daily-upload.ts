@@ -44,3 +44,47 @@ export function dailyFileName(name: string): string {
   const trimmed = base.trim().slice(0, 200);
   return trimmed || 'unnamed';
 }
+
+export type UploadTone = 'ok' | 'warn' | 'fail';
+
+/** What an accepted upload answers with (services/temix-daily.ts TemixDailyUploadResult). */
+export type DailyUploadAnswer = {
+  loadDay: string;
+  rows: number;
+  rowsWithNotes: number;
+  notRead: string[];
+  otherSheets: string[];
+  sameBytesAs: { loadDay: string; filename: string } | null;
+  waitsFor: { loadDay: string; filename: string } | null;
+};
+
+const NOT_READ_SHOWN = 20;
+
+/** What the Steward is told after an accepted upload: staged, nothing applied, and what to look at. */
+export function uploadMessage(data: DailyUploadAnswer): { tone: UploadTone; lines: string[] } {
+  const n = (x: number) => x.toLocaleString('en-US');
+  const lines = [`Staged ${n(data.rows)} row${data.rows === 1 ? '' : 's'} for ${data.loadDay}. Nothing is applied to customers yet.`];
+  let tone: UploadTone = 'ok';
+  if (data.rowsWithNotes > 0) {
+    tone = 'warn';
+    lines.push(`${n(data.rowsWithNotes)} row${data.rowsWithNotes === 1 ? ' has' : 's have'} a note (counted in the list below).`);
+  }
+  if (data.sameBytesAs) {
+    tone = 'warn';
+    lines.push(`This file is exactly the same as the one uploaded for ${data.sameBytesAs.loadDay} ("${data.sameBytesAs.filename}").`);
+  }
+  if (data.waitsFor) {
+    tone = 'warn';
+    lines.push(`It waits for the file of ${data.waitsFor.loadDay} ("${data.waitsFor.filename}"), which must be applied or discarded first.`);
+  }
+  if (data.otherSheets.length > 0) {
+    tone = 'warn';
+    lines.push(`Only the first sheet was read. Not read: ${data.otherSheets.join(', ')}.`);
+  }
+  const k = data.notRead.length;
+  if (k > 0) {
+    const more = k > NOT_READ_SHOWN ? ` and ${n(k - NOT_READ_SHOWN)} more` : '';
+    lines.push(`Not read: ${n(k)} column${k === 1 ? ' is' : 's are'} not one of the agreed columns and ${k === 1 ? 'was' : 'were'} ignored: ${data.notRead.slice(0, NOT_READ_SHOWN).join(', ')}${more}.`);
+  }
+  return { tone, lines };
+}
