@@ -270,6 +270,12 @@ jobs:
           # actions, including the refused route sign-in rename to a reserved name
           # (account-edit).
           RUN_ACCOUNT_EDIT: '1'
+          # The daily Temix import, stages 2 and 3: a synthetic daily file staged
+          # through the real upload (file, rows, one audit row and nothing else),
+          # the same file refused on its day, a customer master refused, the
+          # order rule, two uploads at once, and the summary kind unwritten
+          # (temix-daily-upload).
+          RUN_TEMIX_DAILY_UPLOAD: '1'
 
   # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
   # person typing `npm run test:e2e`. It shows: login.spec.ts asserted
