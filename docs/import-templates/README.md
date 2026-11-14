@@ -26,7 +26,7 @@ It is safe to interrupt. Everything already promoted is committed, and the batch
 ---
 
 ## 1. Account master (`account-master-template.xlsx`)
-Three sheets, named exactly **Regions**, **Routes**, **Users** (plus an Instructions tab you can ignore). Delete the yellow example rows before importing.
+Three sheets, named exactly **Regions**, **Routes**, **Users** (plus an Instructions tab you can ignore). Delete the yellow example rows before importing. A row with an Excel error in any cell (`#N/A`, `#REF!`, or a formula whose saved result is one) is held back and nothing is written for it; the reason names the column. Put the real value in the cell and upload the sheet again.
 
 ### Regions
 | Column | Required | Notes |

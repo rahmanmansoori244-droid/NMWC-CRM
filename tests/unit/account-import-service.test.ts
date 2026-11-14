@@ -2309,3 +2309,40 @@ describe('finding 25: a reserved username is refused for a new account', () => {
     expect(src).not.toMatch(/isDemoAccount|DEMO_USERNAME_PATTERN|salesman\\\.|supervisor\\\./);
   });
 });
+
+// Review of the hunt fixes: the account-import side of hunt round 2, F1. The
+// parser writes an Excel error cell as '#ERROR:<code>'; it used to be taken as
+// data (a region coded or renamed '#ERROR:#N/A', a person's name or phone).
+describe('a cell holding an Excel error holds its account-sheet row back', () => {
+  const NA = 'the cell holds the Excel error #N/A, not a value. This row is not loaded until the cell holds a real value';
+  it('Regions, Routes and Users rows with an error cell write nothing; the column is named', async () => {
+    const { res, messages } = await uploadWorkbook((wb) => {
+      const regions = wb.addWorksheet('Regions');
+      regions.addRow(['code', 'name']);
+      regions.addRow(['BAT', { error: '#N/A' }]); // would rename a live region
+      regions.addRow([{ error: '#N/A' }, 'Dhofar']); // would create one coded '#ERROR:#N/A'
+      regions.addRow(['DHO', 'Dhofar']);
+      const routes = wb.addWorksheet('Routes');
+      routes.addRow(['code', 'name', 'region_code']);
+      routes.addRow(['MCT-01', { error: '#REF!' }, 'MCT']);
+      const users = wb.addWorksheet('Users');
+      users.addRow(['username', 'full_name', 'role', 'password', 'phone']);
+      users.addRow(['viewer.1', { error: '#N/A' }, 'VIEWER', 'a made up password', '']);
+      users.addRow(['viewer.2', 'V2', 'VIEWER', 'a made up password', { error: '#N/A' }]);
+    });
+    expect(okData(res)).toMatchObject({ clean: 1, issues: 5 });
+    expect(messages).toEqual([
+      `Regions 2: name: ${NA}`,
+      `Regions 3: code: ${NA}`,
+      `Routes 2: name: ${NA.replace('#N/A', '#REF!')}`,
+      `Users 2: full_name: ${NA}`,
+      `Users 3: phone: ${NA}`,
+    ]);
+    expect(h.store.regions.find((r) => r.code === 'BAT')!.name).toBe('Batinah');
+    expect(h.store.regions.some((r) => r.code.includes('#ERROR') || r.name.includes('#ERROR'))).toBe(false);
+    expect(h.store.regions.find((r) => r.code === 'DHO')).toBeTruthy();
+    expect(h.store.routes.find((r) => r.code === 'MCT-01')!.name).toBe('Muscat 1');
+    expect(find('viewer.1')).toBeUndefined();
+    expect(find('viewer.2')).toBeUndefined();
+  });
+});

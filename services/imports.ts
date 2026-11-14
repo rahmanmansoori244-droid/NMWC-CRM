@@ -57,6 +57,7 @@ import {
   accountRowList,
   type AccountSheetRow,
   accountImportInterruptedMessage,
+  accountRowExcelErrorIssue,
   accountRowFailure,
   accountUpdateAudit,
   errorLogFields,
@@ -396,6 +397,12 @@ async function uploadAccountMasterCore(formData: FormData): Promise<AccountUploa
         notReached('Regions', sheetRow);
         continue;
       }
+      // Review of the hunt fixes: a cell holding an Excel error is not data.
+      const excelHeld = accountRowExcelErrorIssue(row);
+      if (excelHeld) {
+        issues.push({ sheet: 'Regions', row: sheetRow, message: excelHeld });
+        continue;
+      }
       const code = uc(row.code ?? row.Code);
       const name = String(row.name ?? row.Name ?? '').trim();
       if (!code || !name) {
@@ -448,6 +455,12 @@ async function uploadAccountMasterCore(formData: FormData): Promise<AccountUploa
       }
       if (outOfTime()) {
         notReached('Routes', sheetRow);
+        continue;
+      }
+      // Review of the hunt fixes: a cell holding an Excel error is not data.
+      const excelHeld = accountRowExcelErrorIssue(row);
+      if (excelHeld) {
+        issues.push({ sheet: 'Routes', row: sheetRow, message: excelHeld });
         continue;
       }
       const code = uc(row.code ?? row.Code);
@@ -549,6 +562,13 @@ async function uploadAccountMasterCore(formData: FormData): Promise<AccountUploa
       }
       if (outOfTime()) {
         notReached('Users', sheetRow);
+        continue;
+      }
+      // Review of the hunt fixes: a cell holding an Excel error is not data (a
+      // failed lookup must not become a person's name, phone or password).
+      const excelHeld = accountRowExcelErrorIssue(row);
+      if (excelHeld) {
+        issues.push({ sheet: 'Users', row: sheetRow, message: excelHeld });
         continue;
       }
       const username = lc(row.username);

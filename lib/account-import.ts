@@ -9,6 +9,23 @@
 import type { Role } from '@prisma/client';
 import { isTransientDbError, mayHaveCommitted } from './db-errors';
 import { scrubAndTruncate } from './scrub';
+import { excelErrorMessage, excelErrorOf } from './import-row-check';
+
+/**
+ * Review of the bug-hunt fixes (the account-import side of hunt round 2, F1):
+ * the parser writes a cell holding an Excel error (#N/A, #REF!, ...) as the text
+ * '#ERROR:<code>', and the Regions, Routes and Users sheets took it as data: a
+ * failed lookup could create a region coded '#ERROR:#N/A', rename a live region
+ * to it, or write it as a person's name or phone. A row with such a cell is held
+ * back, and the reason names the column. Null when no cell holds an error.
+ */
+export function accountRowExcelErrorIssue(row: Record<string, unknown>): string | null {
+  for (const [column, value] of Object.entries(row)) {
+    const error = excelErrorOf(value);
+    if (error) return `${column}: ${excelErrorMessage(error)}`;
+  }
+  return null;
+}
 
 /** Roles an import may neither mint nor change; the Users UI owns them. */
 const ADMIN_ROLES: readonly Role[] = ['MANAGER', 'STEWARD'];
