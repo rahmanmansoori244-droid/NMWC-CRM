@@ -85,6 +85,8 @@ const model = vi.hoisted(() => {
     log: [] as string[],
     lockSql: [] as string[],
     flipWhere: undefined as Where,
+    /** H11: an error the guarantee count (attachment.groupBy, after the commit) throws. */
+    groupByError: null as unknown,
   };
   /** The where shapes services/temix.ts uses, and nothing else (an unknown key fails loudly). */
   function matches(c: Row, where: Where): boolean {
@@ -172,13 +174,31 @@ vi.mock('@/lib/db', () => {
     prisma: {
       $transaction: async (fn: (t: unknown) => Promise<unknown>) => fn(tx),
       customer: customerModel,
-      attachment: { groupBy: async () => [] },
+      attachment: {
+        groupBy: async () => {
+          if (model.state.groupByError) throw model.state.groupByError;
+          return [];
+        },
+      },
       temixSyncBatch: { findUnique: h.batchFind },
     },
   };
 });
 
-import { generateTemixBatchAction, downloadTemixBatchAction, markTemixBatchLoadedAction } from '@/services/temix';
+import {
+  generateTemixBatchAction as generateRaw,
+  downloadTemixBatchAction,
+  markTemixBatchLoadedAction,
+  TEMIX_FILE_NOT_RETURNED,
+} from '@/services/temix';
+
+/**
+ * Generate where its file is expected back, typed as the file answer. H11 added
+ * an answer with no file (the batch saved, its file not made); the tests that
+ * expect it call generateRaw.
+ */
+const generateTemixBatchAction = async () =>
+  (await generateRaw()) as Awaited<ReturnType<typeof downloadTemixBatchAction>>;
 
 const at = new Date('2026-09-20T08:00:00Z');
 function cust(over: Partial<Cust> & { nmwcCode: string }): Record<string, unknown> {
@@ -265,19 +285,41 @@ describe('generateTemixBatchAction — F11: a shared code is held back, not the 
     expect(Object.keys(res.data).sort()).toEqual(['base64', 'batchId', 'customerCount', 'filename', 'heldBack', 'rowCount']);
   });
 
-  it('Generate returns no file when the file cannot be recorded (the batch stays, for its Download)', async () => {
+  // H11 (bug hunt round 2, F4) changed this test: it pinned a failure answer
+  // ("Nothing was saved" for a database error) although the batch had committed.
+  // Still no file; now the answer says the batch was saved.
+  it('Generate returns no file when the file cannot be recorded, and says the batch was saved (H11)', async () => {
     model.state.rows = [cust({ nmwcCode: 'N1', temixCode: 'T1', temixSyncState: TemixSyncState.PENDING_UPLOAD })];
     h.recordExport.mockRejectedValue(new Error('insert failed'));
-    let out: unknown;
-    try {
-      out = await generateTemixBatchAction();
-    } catch (e) {
-      out = e;
-    }
-    expect(JSON.stringify(out ?? null)).not.toMatch(/"base64"/);
-    expect(out && typeof out === 'object' && 'ok' in out && (out as { ok: boolean }).ok).toBeFalsy();
+    const out = await generateRaw();
+    expect(JSON.stringify(out)).not.toMatch(/"base64"/);
+    expect(out).toEqual({
+      ok: true,
+      data: { batchId: 'batch-new', customerCount: 1, fileNotReturned: TEMIX_FILE_NOT_RETURNED },
+    });
     // The claim committed before the file was built: the customer is in the batch.
     expect(row('N1')).toMatchObject({ temixSyncState: 'UPLOADED', lastTemixUploadBatchId: 'batch-new' });
+  });
+
+  it.each([
+    ['the guarantee count', 'P2024'],
+    ['the file record', 'P2028'],
+  ])('a database error in %s after the commit is no "Nothing was saved" (H11)', async (where, code) => {
+    model.state.rows = [cust({ nmwcCode: 'N1', temixCode: 'T1', temixSyncState: TemixSyncState.PENDING_UPLOAD, paymentTerms: 'CREDIT' })];
+    const { Prisma } = await import('@prisma/client');
+    const blip = new Prisma.PrismaClientKnownRequestError('connection pool timeout', { code, clientVersion: 'test' });
+    if (where === 'the file record') h.recordExport.mockRejectedValue(blip);
+    else model.state.groupByError = blip;
+    try {
+      const out = await generateRaw();
+      expect(out.ok).toBe(true);
+      expect(JSON.stringify(out)).not.toMatch(/Nothing was saved/);
+      if (!out.ok) return;
+      expect(out.data).toMatchObject({ batchId: 'batch-new', fileNotReturned: TEMIX_FILE_NOT_RETURNED });
+      expect(row('N1')).toMatchObject({ temixSyncState: 'UPLOADED', lastTemixUploadBatchId: 'batch-new' });
+    } finally {
+      model.state.groupByError = null;
+    }
   });
 
   it('an archived row with no Temix code goes out under its customer code, so a live holder of that code holds it back', async () => {

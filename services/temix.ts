@@ -169,6 +169,23 @@ export type TemixBatchResult = {
   moreQueuedMessage?: string;
 };
 
+/**
+ * Follow-up 1, H11 (bug hunt round 2, F4): what Generate answers when its batch
+ * committed but the file could not be built or recorded afterwards (a database
+ * blip in the guarantee count or in the file's record). The batch is saved and
+ * its customers are marked uploaded, so it must never read as a failure (it
+ * said "Nothing was saved", and a retry then found nothing pending). No file
+ * goes back: a file is handed over only once it is recorded (gap 14), and the
+ * batch's Download builds and records its own.
+ */
+export const TEMIX_FILE_NOT_RETURNED =
+  'The batch was saved and its customers are marked uploaded, but the file could not be made just now. Download it from Batch history below.';
+
+/** Generate's answer: the batch with its file, or the saved batch without one (H11). */
+export type TemixGenerateResult =
+  | TemixBatchResult
+  | (Omit<TemixBatchResult, 'base64' | 'filename' | 'rowCount'> & { fileNotReturned: string });
+
 /** F11: of `codes`, the Temix codes a LIVE customer still holds. */
 async function codesHeldLive(tx: Prisma.TransactionClient, codes: string[]): Promise<Set<string>> {
   const unique = [...new Set(codes)];
@@ -236,11 +253,11 @@ function heldBackText(codes: string[]): string {
   return codes.length > 5 ? `${shown} and ${codes.length - 5} more` : shown;
 }
 
-export async function generateTemixBatchAction(): SafeAction<TemixBatchResult> {
+export async function generateTemixBatchAction(): SafeAction<TemixGenerateResult> {
   return runAction(() => generateTemixBatchCore());
 }
 
-async function generateTemixBatchCore(): Promise<TemixBatchResult> {
+async function generateTemixBatchCore(): Promise<TemixGenerateResult> {
   const me = await requireSteward();
   const lim = await checkLimit(`temix:${me.id}`, { capacity: 3, refillPerSec: 0.05 });
   if (!lim.ok) throw new RateLimitError(`Wait ${lim.retryAfterSec}s before another batch.`);
@@ -408,33 +425,49 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
     return { batch: b, customers: queued, heldBack, heldForRules, moreQueued };
   }, { timeout: 30_000, maxWait: 5_000 });
 
-  const enriched = await withGuaranteeCounts(customers);
-  const { bytes, ...wb } = await buildBatchWorkbook(enriched, batch.id);
+  const notes = {
+    ...(heldBack.length ? { heldBack } : {}),
+    ...(heldForRules.length ? { heldForRules } : {}),
+    ...(moreQueued > 0 ? { moreQueued, moreQueuedMessage: temixMoreQueuedMessage(moreQueued) } : {}),
+  };
   // Gap 14: the file itself — which customers it held, its name and the SHA-256
   // of these bytes — recorded before they are returned. The batch is committed
-  // above; if this fails the Steward gets no file and the batch's Download (which
-  // records its own copy) hands it over instead.
-  await recordExport(env, {
-    kind: 'temix-batch',
-    filters: { batchId: batch.id, action: 'generate', heldBack, ...(heldForRules.length ? { heldForRules } : {}) },
-    customerIds: customers.map((c) => c.id),
-    bytes,
-    filename: wb.filename,
-    rowCount: wb.rowCount,
-    reason: `generate ${wb.rowCount} rows / ${customers.length} customers`,
-  });
+  // above; if anything from here fails the Steward gets no file and the batch's
+  // Download (which records its own copy) hands it over instead. H11: and he is
+  // told that the batch was saved — never a failure, since it committed.
+  let file: Awaited<ReturnType<typeof buildBatchWorkbook>>;
+  try {
+    const enriched = await withGuaranteeCounts(customers);
+    file = await buildBatchWorkbook(enriched, batch.id);
+    await recordExport(env, {
+      kind: 'temix-batch',
+      filters: { batchId: batch.id, action: 'generate', heldBack, ...(heldForRules.length ? { heldForRules } : {}) },
+      customerIds: customers.map((c) => c.id),
+      bytes: file.bytes,
+      filename: file.filename,
+      rowCount: file.rowCount,
+      reason: `generate ${file.rowCount} rows / ${customers.length} customers`,
+    });
+  } catch (err) {
+    logger.error(
+      { batchId: batch.id, customers: customers.length, by: me.id, err: err instanceof Error ? err.message : String(err) },
+      'temix.batch.generate_file_after_commit_failed'
+    );
+    revalidatePath('/temix');
+    return { batchId: batch.id, customerCount: customers.length, fileNotReturned: TEMIX_FILE_NOT_RETURNED, ...notes };
+  }
   logger.info(
-    { batchId: batch.id, customers: customers.length, rows: wb.rowCount, by: me.id },
+    { batchId: batch.id, customers: customers.length, rows: file.rowCount, by: me.id },
     'temix.batch.generate'
   );
   revalidatePath('/temix');
   return {
     batchId: batch.id,
-    ...wb,
+    base64: file.base64,
+    filename: file.filename,
+    rowCount: file.rowCount,
     customerCount: customers.length,
-    ...(heldBack.length ? { heldBack } : {}),
-    ...(heldForRules.length ? { heldForRules } : {}),
-    ...(moreQueued > 0 ? { moreQueued, moreQueuedMessage: temixMoreQueuedMessage(moreQueued) } : {}),
+    ...notes,
   };
 }
 

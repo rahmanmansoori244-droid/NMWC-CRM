@@ -44,6 +44,8 @@ export function GenerateBatchButton({ disabled, queued = 0 }: { disabled: boolea
   const [heldForRules, setHeldForRules] = useState<string[]>([]);
   // Code review 2026-11-10, finding 11: customers still queued after the file (over the cap).
   const [more, setMore] = useState<string | null>(null);
+  // H11: the batch was saved, but its file has to come from Batch history.
+  const [saved, setSaved] = useState<string | null>(null);
 
   function generate() {
     setConfirming(false);
@@ -51,13 +53,20 @@ export function GenerateBatchButton({ disabled, queued = 0 }: { disabled: boolea
     setHeld([]);
     setHeldForRules([]);
     setMore(null);
+    setSaved(null);
     start(async () => {
       const res = await generateTemixBatchAction();
       if (!res.ok) {
         setError(refusal(res));
+        // H11: a refusal can land after something changed (a lost answer, a
+        // blip); the list below shows what the database holds now.
+        router.refresh();
         return;
       }
-      triggerDownload(res.data);
+      // H11: the batch was saved but its file could not be made: no download,
+      // the reason, and the list below shows the batch with its Download.
+      if ('fileNotReturned' in res.data) setSaved(res.data.fileNotReturned);
+      else triggerDownload(res.data);
       setHeld(res.data.heldBack ?? []);
       setHeldForRules(res.data.heldForRules ?? []);
       setMore(res.data.moreQueuedMessage ?? null);
@@ -82,7 +91,12 @@ export function GenerateBatchButton({ disabled, queued = 0 }: { disabled: boolea
           {error}
         </p>
       )}
-      {held.length > 0 && (
+      {saved && (
+        <p role="status" data-testid="temix-file-not-returned" className="max-w-md text-right text-xs font-medium text-amber-700">
+          {saved}
+        </p>
+      )}
+            {held.length > 0 && (
         <p role="status" className="max-w-md text-right text-xs font-medium text-amber-700">
           Not in this file, still queued: {held.slice(0, 10).join(', ')}
           {held.length > 10 ? ` and ${held.length - 10} more` : ''}. Deactivating these archived

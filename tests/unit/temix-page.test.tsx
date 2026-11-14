@@ -106,6 +106,29 @@ describe('the Temix buttons show the refusal itself', () => {
   });
 });
 
+// Follow-up 1, H11 (bug hunt round 2, F4).
+describe('Generate: the batch saved but its file not made', () => {
+  it('says the batch was saved, downloads nothing, and refreshes the list that holds its Download', async () => {
+    const saved =
+      'The batch was saved and its customers are marked uploaded, but the file could not be made just now. Download it from Batch history below.';
+    h.generate.mockResolvedValue({ ok: true, data: { batchId: 'b', customerCount: 2, fileNotReturned: saved } });
+    const createObjectURL = vi.fn(() => 'blob:x');
+    const before = globalThis.URL.createObjectURL;
+    globalThis.URL.createObjectURL = createObjectURL;
+    try {
+      render(<GenerateBatchButton disabled={false} />);
+      fireEvent.click(screen.getByRole('button', { name: /Generate upload file/ }));
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Generate & download' }));
+      expect(await screen.findByText(saved)).toBeTruthy();
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(createObjectURL).not.toHaveBeenCalled();
+      expect(h.refresh).toHaveBeenCalled();
+    } finally {
+      globalThis.URL.createObjectURL = before;
+    }
+  });
+});
+
 // Code review 2026-11-10, finding 11.
 describe('Generate over the cap: the oldest 5,000 go, the rest are counted', () => {
   it('the confirmation says only the 5,000 waiting longest go, and the answer says how many are left', async () => {
