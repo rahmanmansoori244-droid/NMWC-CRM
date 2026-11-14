@@ -156,6 +156,12 @@ export const src = {
    * the AuditLog row naming them. Writes no history: nothing is applied.
    */
   temixDailyUpload: (fileId: string) => join('temix-daily', fileId, 'upload'),
+  /**
+   * The daily Temix import's route map (stage 4): the Data Steward adds or
+   * retires an entry for a Temix route code. Writes no history: the map is its
+   * own append-only list (TemixRouteMap) with one AuditLog row per entry.
+   */
+  temixRouteMap: (action: 'add' | 'retire', code: string) => join('temix-route-map', action, code),
 } as const;
 
 /** The three values set_config receives. Throws on a malformed context, before any transaction opens. */

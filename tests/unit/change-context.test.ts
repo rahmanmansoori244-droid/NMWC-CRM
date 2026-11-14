@@ -63,6 +63,8 @@ describe('source builders', () => {
       [src.verify('app-role'), 'verify:app-role'],
       [src.temixDaily('f1', 7), 'temix-daily:f1:7'],
       [src.temixDailyUpload('f1'), 'temix-daily:f1:upload'],
+      [src.temixRouteMap('add', 'C10MA'), 'temix-route-map:add:C10MA'],
+      [src.temixRouteMap('retire', 'C 10/MA'), 'temix-route-map:retire:C-10/MA'],
     ];
     for (const [got, want] of built) {
       expect(got).toBe(want);
