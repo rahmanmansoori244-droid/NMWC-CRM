@@ -13,7 +13,11 @@
  *    search_path and none has definer rights;
  *  - the CHECKs name exactly the list's kinds and actions, and STATUS_DIFFERS
  *    is not a "listed once" kind (the owner's question);
- *  - the partial indexes are named in CI's drift allowlist.
+ *  - the partial indexes are named in CI's drift allowlist;
+ *  - (review of stage 1) a staged row keeps its file, number and done outcome;
+ *    a finished file never changes; the route map is written under READ
+ *    COMMITTED only; and the nightly checks, the restore check and
+ *    `app-role.ts verify` all watch the module's triggers and privileges.
  *
  * Structural, per CLAUDE.md: SQL comments are stripped first.
  */
@@ -26,14 +30,17 @@ import {
   TEMIX_DAILY_LEDGERS,
   TEMIX_DAILY_MIGRATION,
   TEMIX_DAILY_NO_DELETE,
+  TEMIX_DAILY_PROTECTION_TRIGGERS,
   TEMIX_DAILY_RAW_INDEXES,
+  TEMIX_DAILY_STAGING,
   TEMIX_DAILY_STAMPED,
   TEMIX_DAILY_TABLES,
   TEMIX_DAILY_TRIGGERS,
   TEMIX_NOTICE_SEEN_KINDS,
   TEMIX_ROUTE_MAP_ACTIONS,
 } from '@/lib/temix-daily-tables';
-import { APPEND_ONLY_APP_TABLES, HISTORY_TABLES } from '@/lib/history-tables';
+import { APPEND_ONLY_APP_TABLES, HISTORY_TABLES, PROTECTION_TRIGGERS } from '@/lib/history-tables';
+import { EXPECTED_FUNCTIONS, TRIGGER_BINDINGS } from '@/lib/integrity/expected';
 import { functionShapes, migrationsInOrder, triggerBindings } from '../support/migration-sql';
 
 /** `--` comments removed outside dollar-quoted bodies. */
@@ -138,8 +145,10 @@ describe('the ledgers are INSERT-only, like AuditLog and the history', () => {
       expect(SQL).toContain(`CREATE TRIGGER ${l}_no_delete BEFORE DELETE ON "${t}" FOR EACH ROW EXECUTE FUNCTION nmwc_forbid_audit_mutation()`);
       expect(SQL).toContain(`CREATE TRIGGER ${l}_no_truncate BEFORE TRUNCATE ON "${t}" FOR EACH STATEMENT EXECUTE FUNCTION nmwc_forbid_audit_mutation()`);
     }
-    // The staging rows are not a ledger: their payload is emptied by the retention rule.
-    expect(SQL).not.toMatch(/ON "TemixDailyRow" FOR EACH/);
+    // The staging rows are not a ledger: their payload is emptied by the retention
+    // rule, so no DELETE or TRUNCATE guard, only the row guard (insert, update).
+    const onRow = [...SQL.matchAll(/CREATE TRIGGER ([a-z_]+)\s+BEFORE ([A-Z ]+?) ON "TemixDailyRow"/g)].map((m) => [m[1], m[2]]);
+    expect(onRow).toEqual([['temixdailyrow_guard', 'INSERT OR UPDATE']]);
   });
 
   it('the stamped ones carry their writer’s source and transaction, as AuditLog does', () => {
@@ -174,10 +183,60 @@ describe('the ledgers are INSERT-only, like AuditLog and the history', () => {
     expect(src).toMatch(/TEMIX_DAILY_LEDGERS/);
   });
 
-  it('kept apart from the seal’s and the nightly check’s ledger list for now (a later step)', () => {
+  it('kept apart from the seal’s ledger list for now (a later step)', () => {
     for (const t of TEMIX_DAILY_TABLES) {
       expect(APPEND_ONLY_APP_TABLES as readonly string[]).not.toContain(t);
       expect(HISTORY_TABLES as readonly string[]).not.toContain(t);
+    }
+  });
+});
+
+/** A TypeScript source with its comments removed. */
+const code = (path: string) =>
+  readFileSync(path, 'utf8')
+    .replace(/\r\n/g, '\n')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+
+describe('watched although not sealed (review of stage 1)', () => {
+  it('every trigger of the module is a protection trigger the nightly check expects, with its function’s body', () => {
+    expect([...TEMIX_DAILY_PROTECTION_TRIGGERS].sort()).toEqual(Object.values(TEMIX_DAILY_TRIGGERS).flat().sort());
+    for (const t of TEMIX_DAILY_PROTECTION_TRIGGERS) {
+      expect(PROTECTION_TRIGGERS, t).toContain(t);
+      expect(TRIGGER_BINDINGS[t], t).toBeDefined();
+    }
+    for (const f of TEMIX_DAILY_FUNCTIONS) expect(EXPECTED_FUNCTIONS[f], f).toBeDefined();
+  });
+
+  it('the nightly runtime-role check counts the ledgers, their sequences and the files’ DELETE', () => {
+    const src = code('lib/integrity/checks.ts');
+    const at = src.indexOf(`id: 'runtime-role-privileges'`);
+    const check = src.slice(at, src.indexOf(`id: 'app-login-is-runtime-role'`));
+    expect(check).toMatch(/const ledgers = \[[^\]]*\.\.\.TEMIX_DAILY_LEDGERS\]/);
+    expect(check).toContain(`...TEMIX_DAILY_STAGING.flatMap((t) => ['DELETE', 'TRUNCATE']`);
+    expect(check).toMatch(/const sequences = \[[^\]]*\.\.\.TEMIX_DAILY_LEDGERS\]\.map\(historySequence\)/);
+    expect([...TEMIX_DAILY_STAGING]).toEqual(['TemixDailyFile', 'TemixDailyRow']);
+  });
+
+  it('the restore check knows the triggers (its self-check) and the privilege matrix (R-02)', () => {
+    const src = code('scripts/ops/restore-verify.ts');
+    const start = src.indexOf('const EXPECTED_TRIGGERS = [');
+    const list = src.slice(start, src.indexOf('];', start));
+    expect(list).toContain('...TEMIX_DAILY_PROTECTION_TRIGGERS,');
+    expect(src).toContain(`...Object.fromEntries(TEMIX_DAILY_LEDGERS.map((t) => [t, ['SELECT', 'INSERT']])),`);
+    expect(src).toContain(`...Object.fromEntries(TEMIX_DAILY_STAGING.map((t) => [t, ['SELECT', 'INSERT', 'UPDATE']])),`);
+  });
+
+  it('app-role verify probes them: no UPDATE or DELETE on a ledger, no setval, no DELETE on a file or row', () => {
+    const src = code('scripts/ops/app-role.ts');
+    const verify = src.slice(src.indexOf('async function verify()'));
+    expect(verify).toContain('const temixLedgers = await temixLedgersPresent(app);');
+    for (const probe of [
+      '`${t} UPDATE by ACL (zero rows)`, () =>\n                tx.$executeRawUnsafe(`UPDATE "${t}" SET "id" = "id" WHERE false`)',
+      '`${t} sequence setval`, () =>\n                tx.$queryRawUnsafe(`SELECT setval(\'"${t}_id_seq"\', 1)::text AS v`)',
+      'for (const t of TEMIX_DAILY_STAGING) {',
+    ]) {
+      expect(verify, probe).toContain(probe);
     }
   });
 });
@@ -192,14 +251,48 @@ describe('the functions', () => {
     }
   });
 
-  it('the file guard: no future load day, a fixed identity, final end states', () => {
+  it('the file guard: no future load day, born STAGED, a fixed identity, a finished file never changes', () => {
     const body = /FUNCTION nmwc_temix_daily_file_guard\(\)[\s\S]*?\$\$([\s\S]*?)\$\$/.exec(SQL)![1]!;
+    const b = ws(body);
     expect(body).toContain(`NEW."loadDay" > (clock_timestamp() AT TIME ZONE 'Asia/Muscat')::date`);
-    const identity = body.slice(body.indexOf(`IF TG_OP = 'UPDATE'`), body.indexOf('OLD."state" IN'));
+    expect(b).toContain(`IF TG_OP = 'INSERT' THEN IF NEW."state" <> 'STAGED' THEN`);
+    const identity = body.slice(body.indexOf('IF NEW."id" IS DISTINCT'), body.indexOf('OLD."state" IN'));
     const fixed = [...identity.matchAll(/NEW\."([A-Za-z0-9]+)" IS DISTINCT FROM OLD\."\1"/g)].map((m) => m[1]!).sort();
-    expect(fixed).toEqual(['fileBytes', 'fileSha256', 'filename', 'id', 'loadDay', 'uploadedAt', 'uploadedById']);
-    expect(ws(body)).toContain(`IF OLD."state" IN ('LOADED', 'DISCARDED') AND NEW."state" IS DISTINCT FROM OLD."state" THEN`);
+    // loadDay among them: it is fixed when the file is staged (the plan's data model).
+    expect(fixed).toEqual(['fileBytes', 'fileSha256', 'filename', 'headings', 'id', 'loadDay', 'uploadedAt', 'uploadedById']);
+    // A finished file: its state stays, and then the whole row stays (who
+    // discarded it and why, loadedAt, appliedBy, the counts, the reversal tick).
+    expect(b).toContain(
+      `IF OLD."state" IN ('LOADED', 'DISCARDED') THEN IF NEW."state" IS DISTINCT FROM OLD."state" THEN RAISE EXCEPTION 'TemixDailyFile: a % file stays %'`
+    );
+    expect(b).toContain(`IF NEW IS DISTINCT FROM OLD THEN RAISE EXCEPTION 'TemixDailyFile: a % file is final; nothing about it changes'`);
+    expect(b).toContain(`IF NEW."state" = 'LOADED' AND OLD."state" IS DISTINCT FROM 'LOADED' AND OLD."state" <> 'FINALIZING' THEN`);
+    expect(b).toContain(
+      `IF OLD."reversalAckAt" IS NOT NULL AND (NEW."reversalAckAt" IS DISTINCT FROM OLD."reversalAckAt" OR NEW."reversalAckById" IS DISTINCT FROM OLD."reversalAckById") THEN`
+    );
     expect(SQL).toMatch(/CREATE TRIGGER temixdailyfile_identity_guard\s+BEFORE INSERT OR UPDATE ON "TemixDailyFile"/);
+  });
+
+  it('the row guard: added only to a STAGED file; file, number and creation time fixed; a done row stays done', () => {
+    const body = /FUNCTION nmwc_temix_daily_row_guard\(\)[\s\S]*?\$\$([\s\S]*?)\$\$/.exec(SQL)![1]!;
+    const b = ws(body);
+    expect(b).toContain(
+      `SELECT f."state"::text INTO file_state FROM public."TemixDailyFile" f WHERE f."id" = NEW."fileId"; IF file_state IS DISTINCT FROM 'STAGED' THEN`
+    );
+    const idAt = body.indexOf('IF NEW."id" IS DISTINCT');
+    const identity = body.slice(idAt, body.indexOf('THEN', idAt));
+    const fixed = [...identity.matchAll(/NEW\."([A-Za-z0-9]+)" IS DISTINCT FROM OLD\."\1"/g)].map((m) => m[1]!).sort();
+    expect(fixed).toEqual(['createdAt', 'fileId', 'id', 'rowNumber']);
+    expect(b).toContain(`IF NEW."raw" IS DISTINCT FROM OLD."raw" AND NEW."raw" <> '{}'::jsonb THEN`);
+    expect(b).toContain(`IF OLD."raw" = '{}'::jsonb AND OLD."parsed" IS NULL AND NEW."parsed" IS NOT NULL THEN`);
+    const doneAt = body.indexOf(`IF OLD."outcome" IN`);
+    const done = body.slice(doneAt, body.indexOf('RAISE', doneAt));
+    expect(ws(done)).toMatch(/^IF OLD\."outcome" IN \('APPLIED', 'NO_CHANGE', 'REJECTED'\)/);
+    // Every column but the payload is frozen on a done row (raw may only be emptied, above).
+    const frozen = [...done.matchAll(/NEW\."([A-Za-z0-9]+)" IS DISTINCT FROM OLD\."\1"/g)].map((m) => m[1]!).sort();
+    const cols = storedFields(schema).filter((f) => f.model === 'TemixDailyRow').map((f) => f.name);
+    expect(frozen).toEqual(cols.filter((c) => !['id', 'fileId', 'rowNumber', 'createdAt', 'raw'].includes(c)).sort());
+    expect(SQL).toMatch(/CREATE TRIGGER temixdailyrow_guard\s+BEFORE INSERT OR UPDATE ON "TemixDailyRow"/);
   });
 
   it('the route-map guard serialises writers of one code before it checks', () => {
@@ -207,6 +300,11 @@ describe('the functions', () => {
     const lock = body.indexOf('pg_advisory_xact_lock(');
     expect(lock).toBeGreaterThan(-1);
     expect(lock).toBeLessThan(body.indexOf('IF NEW."action"'));
+    // Review of stage 1: the lock serialises only under READ COMMITTED (a later
+    // snapshot per statement), so any other isolation level is refused first.
+    const iso = body.indexOf(`IF current_setting('transaction_isolation') <> 'read committed' THEN`);
+    expect(iso).toBeGreaterThan(-1);
+    expect(iso).toBeLessThan(lock);
   });
 });
 

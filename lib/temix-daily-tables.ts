@@ -40,8 +40,10 @@ export type TemixDailyTable = (typeof TEMIX_DAILY_TABLES)[number];
  * sequence without setting it.
  *
  * Not (yet) in lib/history-tables.ts APPEND_ONLY_APP_TABLES: that list also
- * puts a table under the daily seal and the nightly protection checks, which
- * changes the seal format; that is a later, separate step.
+ * puts a table under the daily seal, which changes the seal format; that is a
+ * later, separate step. The nightly checks watch them all the same: their
+ * triggers and functions (TEMIX_DAILY_PROTECTION_TRIGGERS) and the runtime
+ * role's privileges on them (lib/integrity/checks.ts runtime-role-privileges).
  */
 export const TEMIX_DAILY_LEDGERS = ['TemixChange', 'TemixChangeReview', 'TemixNoticeSeen', 'TemixRouteMap'] as const;
 
@@ -54,7 +56,7 @@ export const TEMIX_DAILY_STAMPED = ['TemixChange', 'TemixChangeReview', 'TemixRo
 /** Every trigger the migration creates, by table. */
 export const TEMIX_DAILY_TRIGGERS: Record<TemixDailyTable, readonly string[]> = {
   TemixDailyFile: ['temixdailyfile_identity_guard', 'temixdailyfile_no_delete', 'temixdailyfile_no_truncate'],
-  TemixDailyRow: [],
+  TemixDailyRow: ['temixdailyrow_guard'],
   TemixChange: [
     'temixchange_stamp_context',
     'temixchange_insert_guard',
@@ -74,9 +76,27 @@ export const TEMIX_DAILY_TRIGGERS: Record<TemixDailyTable, readonly string[]> = 
 /** The functions the migration creates (each pins its search_path). */
 export const TEMIX_DAILY_FUNCTIONS = [
   'nmwc_temix_daily_file_guard',
+  'nmwc_temix_daily_row_guard',
   'nmwc_temix_change_guard',
   'nmwc_temix_route_map_guard',
 ] as const;
+
+/**
+ * Every trigger of the module, which the nightly checks protection-triggers and
+ * protection-functions watch (lib/history-tables.ts PROTECTION_TRIGGERS, then
+ * lib/integrity/expected.ts) and the restore check expects
+ * (scripts/ops/restore-verify.ts). Watching them is not sealing them: the
+ * ledgers are still outside the daily seal (see TEMIX_DAILY_LEDGERS).
+ */
+export const TEMIX_DAILY_PROTECTION_TRIGGERS: readonly string[] = TEMIX_DAILY_TABLES.flatMap((t) => TEMIX_DAILY_TRIGGERS[t]);
+
+/**
+ * The tables the runtime role may never DELETE from or TRUNCATE (the files and
+ * their rows: read, insert and update only), and the ledgers it may never
+ * UPDATE either. Read by the nightly check runtime-role-privileges, the restore
+ * check's privilege matrix (R-02) and `app-role.ts verify`.
+ */
+export const TEMIX_DAILY_STAGING = ['TemixDailyFile', 'TemixDailyRow'] as const;
 
 /**
  * The raw-SQL indexes Prisma cannot express (partial). CI's drift gate names

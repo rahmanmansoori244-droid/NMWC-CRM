@@ -10,12 +10,15 @@
 -- tests/unit/temix-daily-tables.test.ts holds the two together.
 --
 --   TemixDailyFile     one row per uploaded file; never deleted. loadDay is the
---                      Oman day of the upload, never in the future, and it and
---                      the file's identity never change. The same bytes once
---                      per load day; at most one file mid-load at a time.
+--                      Oman day of the upload, fixed when the file is staged
+--                      and never in the future; it and the file's identity never
+--                      change, and a LOADED or DISCARDED file never changes at
+--                      all. The same bytes once per load day; at most one file
+--                      mid-load at a time.
 --   TemixDailyRow      staging, one row per file row. raw and parsed are the
 --                      customer's details as sent; the retention rule
 --                      temix-daily-payload-90d empties them (lib/retention-rules.ts).
+--                      A row keeps its file and number, and a done row its outcome.
 --   TemixChange        the ledger: one row per applied change or notice. INSERT
 --                      only; source and txId stamped by the database, so txId
 --                      joins the history and AuditLog rows of the same write.
@@ -332,10 +335,19 @@ ALTER TABLE "PurgeSummary" ADD CONSTRAINT "PurgeSummary_rule_check"
 -- ── 4. A file: its load day and identity are fixed, its end states final ──
 
 -- loadDay is never in the future (the Oman calendar day of the database's clock),
--- and the file's name, hash, size, load day, uploader and upload time never
--- change after it is staged. LOADED and DISCARDED are final. Which day a file's
--- changes are dated is loadDay; whether that should be the upload day or the
--- apply day is the owner's open question, so nothing here ties it to either.
+-- and the file's name, hash, size, headings, load day, uploader and upload time
+-- never change after it is staged. A file is born STAGED; it is LOADED only
+-- from FINALIZING (finalize runs once every row is done). LOADED and DISCARDED
+-- are final: nothing about a finished file changes afterwards (who discarded it
+-- and why, when it loaded and who applied it, its counts, its reversal tick).
+-- A reversal tick, once given, is never changed or taken back.
+--
+-- loadDay is FIXED WHEN THE FILE IS STAGED (the plan's data model: the Oman day
+-- of upload, not editable), and every TemixChange row must carry its file's
+-- loadDay (section 5), so a file's changes are always dated by the day chosen at
+-- upload, even when it is applied days later. If the owner answers that changes
+-- should be dated by the apply day instead, that needs a follow-up migration that
+-- lets loadDay be set once, on the STAGED/CHECKED -> APPLYING transition.
 CREATE OR REPLACE FUNCTION nmwc_temix_daily_file_guard() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = pg_catalog, public, pg_temp
@@ -345,21 +357,42 @@ BEGIN
     RAISE EXCEPTION 'TemixDailyFile: load day % is in the future', NEW."loadDay"
       USING ERRCODE = 'check_violation';
   END IF;
-  IF TG_OP = 'UPDATE' THEN
-    IF NEW."id" IS DISTINCT FROM OLD."id"
-       OR NEW."filename" IS DISTINCT FROM OLD."filename"
-       OR NEW."loadDay" IS DISTINCT FROM OLD."loadDay"
-       OR NEW."uploadedById" IS DISTINCT FROM OLD."uploadedById"
-       OR NEW."uploadedAt" IS DISTINCT FROM OLD."uploadedAt"
-       OR NEW."fileSha256" IS DISTINCT FROM OLD."fileSha256"
-       OR NEW."fileBytes" IS DISTINCT FROM OLD."fileBytes" THEN
-      RAISE EXCEPTION 'TemixDailyFile: a staged file''s name, hash, size, load day and uploader never change'
+  IF TG_OP = 'INSERT' THEN
+    IF NEW."state" <> 'STAGED' THEN
+      RAISE EXCEPTION 'TemixDailyFile: a file is staged first (not %)', NEW."state"
         USING ERRCODE = 'check_violation';
     END IF;
-    IF OLD."state" IN ('LOADED', 'DISCARDED') AND NEW."state" IS DISTINCT FROM OLD."state" THEN
+    RETURN NEW;
+  END IF;
+  IF NEW."id" IS DISTINCT FROM OLD."id"
+     OR NEW."filename" IS DISTINCT FROM OLD."filename"
+     OR NEW."loadDay" IS DISTINCT FROM OLD."loadDay"
+     OR NEW."uploadedById" IS DISTINCT FROM OLD."uploadedById"
+     OR NEW."uploadedAt" IS DISTINCT FROM OLD."uploadedAt"
+     OR NEW."fileSha256" IS DISTINCT FROM OLD."fileSha256"
+     OR NEW."fileBytes" IS DISTINCT FROM OLD."fileBytes"
+     OR NEW."headings" IS DISTINCT FROM OLD."headings" THEN
+    RAISE EXCEPTION 'TemixDailyFile: a staged file''s name, hash, size, headings, load day and uploader never change'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  IF OLD."state" IN ('LOADED', 'DISCARDED') THEN
+    IF NEW."state" IS DISTINCT FROM OLD."state" THEN
       RAISE EXCEPTION 'TemixDailyFile: a % file stays %', OLD."state", OLD."state"
         USING ERRCODE = 'check_violation';
     END IF;
+    IF NEW IS DISTINCT FROM OLD THEN
+      RAISE EXCEPTION 'TemixDailyFile: a % file is final; nothing about it changes', OLD."state"
+        USING ERRCODE = 'check_violation';
+    END IF;
+  END IF;
+  IF NEW."state" = 'LOADED' AND OLD."state" IS DISTINCT FROM 'LOADED' AND OLD."state" <> 'FINALIZING' THEN
+    RAISE EXCEPTION 'TemixDailyFile: a file is LOADED only from FINALIZING (not %)', OLD."state"
+      USING ERRCODE = 'check_violation';
+  END IF;
+  IF OLD."reversalAckAt" IS NOT NULL
+     AND (NEW."reversalAckAt" IS DISTINCT FROM OLD."reversalAckAt" OR NEW."reversalAckById" IS DISTINCT FROM OLD."reversalAckById") THEN
+    RAISE EXCEPTION 'TemixDailyFile: a reversal tick, once given, never changes'
+      USING ERRCODE = 'check_violation';
   END IF;
   RETURN NEW;
 END;
@@ -373,6 +406,67 @@ CREATE TRIGGER temixdailyfile_identity_guard
 -- the ledger rows point at it. Only the owner, in the maintenance window.
 CREATE TRIGGER temixdailyfile_no_delete BEFORE DELETE ON "TemixDailyFile" FOR EACH ROW EXECUTE FUNCTION nmwc_forbid_audit_mutation();
 CREATE TRIGGER temixdailyfile_no_truncate BEFORE TRUNCATE ON "TemixDailyFile" FOR EACH STATEMENT EXECUTE FUNCTION nmwc_forbid_audit_mutation();
+
+-- ── 4b. A staged row: what it is never changes; a done row stays done ─────
+--
+-- The row a ledger entry points at stays the row it was: its file, number and
+-- creation time never change (so it never moves to another file, and never
+-- escapes the retention sweep by being redated). Rows are added only to a
+-- STAGED file. The payload as sent (raw) is never rewritten, only emptied;
+-- once emptied it is never refilled. A row whose outcome is APPLIED, NO_CHANGE
+-- or REJECTED is done: that outcome and everything else about it stays, except
+-- that its payload may be emptied. This is the table's identity only; which row
+-- gets which outcome is decided by the stages that write it.
+CREATE OR REPLACE FUNCTION nmwc_temix_daily_row_guard() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+DECLARE
+  file_state text;
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    SELECT f."state"::text INTO file_state FROM public."TemixDailyFile" f WHERE f."id" = NEW."fileId";
+    IF file_state IS DISTINCT FROM 'STAGED' THEN
+      RAISE EXCEPTION 'TemixDailyRow: rows are added only to a STAGED file (file % is %)', NEW."fileId", COALESCE(file_state, 'missing')
+        USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW."id" IS DISTINCT FROM OLD."id"
+     OR NEW."fileId" IS DISTINCT FROM OLD."fileId"
+     OR NEW."rowNumber" IS DISTINCT FROM OLD."rowNumber"
+     OR NEW."createdAt" IS DISTINCT FROM OLD."createdAt" THEN
+    RAISE EXCEPTION 'TemixDailyRow: a staged row''s file, number and creation time never change'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  IF NEW."raw" IS DISTINCT FROM OLD."raw" AND NEW."raw" <> '{}'::jsonb THEN
+    RAISE EXCEPTION 'TemixDailyRow: the row as sent is never rewritten, only emptied'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  IF OLD."raw" = '{}'::jsonb AND OLD."parsed" IS NULL AND NEW."parsed" IS NOT NULL THEN
+    RAISE EXCEPTION 'TemixDailyRow: an emptied payload is never filled again'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  IF OLD."outcome" IN ('APPLIED', 'NO_CHANGE', 'REJECTED')
+     AND (NEW."outcome" IS DISTINCT FROM OLD."outcome"
+          OR NEW."custCodeKey" IS DISTINCT FROM OLD."custCodeKey"
+          OR NEW."branchCodeKey" IS DISTINCT FROM OLD."branchCodeKey"
+          OR NEW."isMainRow" IS DISTINCT FROM OLD."isMainRow"
+          OR NEW."customerId" IS DISTINCT FROM OLD."customerId"
+          OR NEW."branchId" IS DISTINCT FROM OLD."branchId"
+          OR NEW."holdReasons" IS DISTINCT FROM OLD."holdReasons"
+          OR NEW."doneAt" IS DISTINCT FROM OLD."doneAt"
+          OR (NEW."parsed" IS DISTINCT FROM OLD."parsed" AND NEW."parsed" IS NOT NULL)) THEN
+    RAISE EXCEPTION 'TemixDailyRow: a % row is done; only its payload may be emptied', OLD."outcome"
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER temixdailyrow_guard
+  BEFORE INSERT OR UPDATE ON "TemixDailyRow"
+  FOR EACH ROW EXECUTE FUNCTION nmwc_temix_daily_row_guard();
 
 -- ── 5. The ledger: stamped, consistent with its file, insert only ─────────
 
@@ -427,12 +521,20 @@ CREATE TRIGGER temixroutemap_stamp_context
 -- An ADD is refused while the code has a live entry (an ADD with no RETIRE
 -- naming it); a RETIRE must name a live ADD of the same code. Two writers of
 -- one code are put in line by a transaction-level advisory lock on the code,
--- taken before the check, so the second sees the first's committed row.
+-- taken before the check, so the second sees the first's committed row. That
+-- holds only under READ COMMITTED, where each statement takes a new snapshot:
+-- under REPEATABLE READ or SERIALIZABLE the check would read the transaction's
+-- snapshot from before the first writer committed and both ADDs would pass, so
+-- a route-map row is written under READ COMMITTED only.
 CREATE OR REPLACE FUNCTION nmwc_temix_route_map_guard() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = pg_catalog, public, pg_temp
 AS $$
 BEGIN
+  IF current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'TemixRouteMap: written under READ COMMITTED only (this transaction is %)', current_setting('transaction_isolation')
+      USING ERRCODE = 'check_violation';
+  END IF;
   PERFORM pg_advisory_xact_lock(hashtextextended('TemixRouteMap:' || NEW."temixRouteCode", 0));
   IF NEW."action" = 'ADD' THEN
     IF EXISTS (SELECT 1 FROM public."TemixRouteMap" a

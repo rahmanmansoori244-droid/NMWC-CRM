@@ -45,7 +45,7 @@ import {
   LEDGER_SEQ_SEQUENCES,
   historySequence,
 } from '../../lib/history-tables';
-import { TEMIX_DAILY_LEDGERS } from '../../lib/temix-daily-tables';
+import { TEMIX_DAILY_LEDGERS, TEMIX_DAILY_STAGING } from '../../lib/temix-daily-tables';
 
 const ROLE = 'nmwc_app';
 
@@ -645,6 +645,32 @@ async function verify() {
               );
               console.log('  ✓ part C: a job-day summary and a failed sign-in insert; a session cut-off recorded by the database, once');
             }
+          }
+          // The daily Temix import (20261114100000_temix_daily_tables): its ledgers
+          // take no UPDATE or DELETE and their id sequences cannot be set; its
+          // files and rows are never deleted. By ACL, on zero rows, so the trigger
+          // cannot be what refuses. `grant` takes these back after its blanket GRANT.
+          const temixLedgers = await temixLedgersPresent(app);
+          if (temixLedgers.length === 0) {
+            console.log('  - daily Temix tables not migrated yet: probes skipped');
+          } else {
+            for (const t of temixLedgers) {
+              await expectRefused(tx, `${t} UPDATE by ACL (zero rows)`, () =>
+                tx.$executeRawUnsafe(`UPDATE "${t}" SET "id" = "id" WHERE false`)
+              );
+              await expectRefused(tx, `${t} DELETE by ACL (zero rows)`, () =>
+                tx.$executeRawUnsafe(`DELETE FROM "${t}" WHERE false`)
+              );
+              await expectRefused(tx, `${t} sequence setval`, () =>
+                tx.$queryRawUnsafe(`SELECT setval('"${t}_id_seq"', 1)::text AS v`)
+              );
+            }
+            for (const t of TEMIX_DAILY_STAGING) {
+              await expectRefused(tx, `${t} DELETE by ACL (zero rows)`, () =>
+                tx.$executeRawUnsafe(`DELETE FROM "${t}" WHERE false`)
+              );
+            }
+            console.log(`  ✓ daily Temix ledgers (${temixLedgers.join(', ')}): change no, sequences not settable; files and rows never deleted`);
           }
           // Gap 16: a route never changes region, for this role as for any other.
           const routeRule = await app.$queryRawUnsafe<{ n: number }[]>(

@@ -9,14 +9,21 @@
  *    (when NMWC_APP_URL is set) holds no UPDATE, DELETE or TRUNCATE on them.
  *  - A ledger row is stamped with its writer's source and transaction, carries
  *    its file's load day, and names only a row of its own file.
- *  - A file: never deleted, never dated in the future, its identity fixed, its
- *    end states final; the same bytes once per load day (a discarded file frees
- *    its day); one file mid-load at a time.
- *  - The route map: added and retired by new rows, one live entry per code.
+ *  - A file: never deleted, never dated in the future, born STAGED, its identity
+ *    fixed, LOADED only from FINALIZING, its end states final and a finished
+ *    file never changed at all; a reversal tick once given never changes; the
+ *    same bytes once per load day (a discarded file frees its day); one file
+ *    mid-load at a time.
+ *  - A staged row: added only to a STAGED file; its file, number and creation
+ *    time fixed; its payload never rewritten, only emptied, never refilled; a
+ *    done row (APPLIED, NO_CHANGE, REJECTED) stays done.
+ *  - The route map: added and retired by new rows, one live entry per code, and
+ *    written under READ COMMITTED only (where the advisory lock serialises).
  *  - The CHECKs refuse what the list does not name (a kind, a hold reason that
  *    is not a code word, STATUS_DIFFERS as a "listed once" kind).
  *  - The retention rule temix-daily-payload-90d empties raw and parsed of a
- *    LOADED or DISCARDED file's rows past the cut-off, with its summary.
+ *    file's rows past the cut-off, finished or left unfinished, except under a
+ *    live lease, with its summary.
  *
  * Synthetic data only (buildWorld's zz accounts and route); everything it makes
  * is removed in the owner's maintenance window afterwards.
@@ -76,6 +83,19 @@ describe.skipIf(!ENABLED)('the daily Temix tables on Postgres', () => {
     return f;
   }
 
+  /** Take a staged file to LOADED the way the guard allows (through FINALIZING). */
+  async function load(id: string, over: Partial<Prisma.TemixDailyFileUncheckedUpdateInput> = {}) {
+    await prisma.temixDailyFile.update({ where: { id }, data: { state: 'FINALIZING' } });
+    return prisma.temixDailyFile.update({ where: { id }, data: { state: 'LOADED', loadedAt: new Date(), ...over } });
+  }
+
+  async function discard(id: string) {
+    return prisma.temixDailyFile.update({
+      where: { id },
+      data: { state: 'DISCARDED', discardedAt: new Date(), discardedById: w.steward, discardReason: 'zz' },
+    });
+  }
+
   beforeAll(async () => {
     assertNotProductionEnv();
     if (pointsAtProduction(process.env.DATABASE_URL ?? '')) throw new Error('ABORT: production');
@@ -94,7 +114,7 @@ describe.skipIf(!ENABLED)('the daily Temix tables on Postgres', () => {
       await tx.temixRouteMap.deleteMany({ where: { byId: w.steward, action: 'RETIRE' } });
       await tx.temixRouteMap.deleteMany({ where: { byId: w.steward } });
       await tx.temixDailyRow.deleteMany({ where: { fileId: files } });
-      await tx.temixDailyFile.updateMany({ where: { id: files }, data: { sameBytesAsFileId: null } });
+      await tx.temixDailyFile.updateMany({ where: { id: files, sameBytesAsFileId: { not: null } }, data: { sameBytesAsFileId: null } });
       await tx.temixDailyFile.deleteMany({ where: { id: files } });
     });
     if (w) await tearDownWorld(prisma, w);
@@ -109,9 +129,20 @@ describe.skipIf(!ENABLED)('the daily Temix tables on Postgres', () => {
       expect(f.loadDay.toISOString().slice(0, 10)).toBe(yesterday);
     });
 
-    it('keeps its name, hash, size, load day and uploader', async () => {
+    it('is born STAGED', async () => {
+      for (const state of ['CHECKED', 'APPLYING', 'FINALIZING'] as const) {
+        expect(await refusal(() => newFile({ state })), state).toMatch(/a file is staged first/);
+      }
+      expect(await refusal(() => newFile({ state: 'LOADED', loadedAt: new Date() }))).toMatch(/a file is staged first/);
+      expect(
+        await refusal(() => newFile({ state: 'DISCARDED', discardedAt: new Date(), discardedById: w.steward, discardReason: 'zz' }))
+      ).toMatch(/a file is staged first/);
+    });
+
+    it('keeps its name, hash, size, headings, load day and uploader (loadDay fixed when staged)', async () => {
       const f = await newFile();
       for (const data of [
+        { headings: ['other'] },
         { filename: 'other.csv' },
         { fileSha256: sha('other') },
         { fileBytes: 1 },
@@ -120,15 +151,22 @@ describe.skipIf(!ENABLED)('the daily Temix tables on Postgres', () => {
         { uploadedAt: new Date('2026-01-01T00:00:00Z') },
       ]) {
         expect(await refusal(() => prisma.temixDailyFile.update({ where: { id: f.id }, data })), JSON.stringify(Object.keys(data))).toMatch(
-          /name, hash, size, load day and uploader never change/
+          /name, hash, size, headings, load day and uploader never change/
         );
       }
       // Its state and counters move.
       await prisma.temixDailyFile.update({ where: { id: f.id }, data: { state: 'CHECKED', totalRows: 3 } });
     });
 
-    it('LOADED and DISCARDED are final; a discard needs who and why', async () => {
+    it('LOADED only from FINALIZING; LOADED and DISCARDED are final; a discard needs who and why', async () => {
       const a = await newFile();
+      for (const from of ['STAGED', 'CHECKED', 'APPLYING'] as const) {
+        await prisma.temixDailyFile.update({ where: { id: a.id }, data: { state: from } });
+        expect(await refusal(() => prisma.temixDailyFile.update({ where: { id: a.id }, data: { state: 'LOADED', loadedAt: new Date() } })), from).toMatch(
+          new RegExp(`LOADED only from FINALIZING \\(not ${from}\\)`)
+        );
+      }
+      await prisma.temixDailyFile.update({ where: { id: a.id }, data: { state: 'FINALIZING' } });
       expect(await refusal(() => prisma.temixDailyFile.update({ where: { id: a.id }, data: { state: 'LOADED' } }))).toMatch(
         /TemixDailyFile_loaded_check/
       );
@@ -149,6 +187,57 @@ describe.skipIf(!ENABLED)('the daily Temix tables on Postgres', () => {
       expect(await refusal(() => prisma.temixDailyFile.update({ where: { id: b.id }, data: { state: 'STAGED' } }))).toMatch(
         /a DISCARDED file stays DISCARDED/
       );
+    });
+
+    it('a finished file never changes: who and why, when, the counts, the lease, the reversal tick', async () => {
+      const loaded = await newFile({ reversalAckById: w.steward, reversalAckAt: new Date() });
+      await load(loaded.id, { appliedById: w.steward, totalRows: 2, appliedRows: 2 });
+      const discarded = await newFile();
+      await discard(discarded.id);
+      const later = new Date(Date.now() + 60_000);
+      const probes: Array<[string, Prisma.TemixDailyFileUncheckedUpdateInput]> = [
+        [loaded.id, { loadedAt: later }],
+        [loaded.id, { appliedById: w.manager }],
+        [loaded.id, { appliedById: null }],
+        [loaded.id, { totalRows: 3 }],
+        [loaded.id, { appliedRows: 1 }],
+        [loaded.id, { noChangeRows: 1 }],
+        [loaded.id, { heldRows: 1 }],
+        [loaded.id, { rejectedRows: 1 }],
+        [loaded.id, { noticeRows: 1 }],
+        [loaded.id, { applyLeaseBy: 'zz', applyLeaseUntil: later }],
+        [loaded.id, { applyStartedAt: later }],
+        [loaded.id, { sameBytesAsFileId: discarded.id }],
+        [discarded.id, { discardReason: 'another reason' }],
+        [discarded.id, { discardedById: w.manager }],
+        [discarded.id, { discardedAt: later }],
+        [discarded.id, { reversalAckById: w.steward, reversalAckAt: later }],
+      ];
+      for (const [id, data] of probes) {
+        expect(await refusal(() => prisma.temixDailyFile.update({ where: { id }, data })), JSON.stringify(Object.keys(data))).toMatch(
+          /file is final; nothing about it changes|reversal tick, once given, never changes/
+        );
+      }
+      // A no-op update of a finished file changes nothing, so it passes.
+      await prisma.$executeRaw`UPDATE "TemixDailyFile" SET "state" = "state" WHERE "id" = ${loaded.id}`;
+      const after = await prisma.temixDailyFile.findUniqueOrThrow({ where: { id: loaded.id } });
+      expect(after).toMatchObject({ appliedById: w.steward, totalRows: 2, appliedRows: 2, reversalAckById: w.steward });
+    });
+
+    it('a reversal tick, once given, never changes or is taken back', async () => {
+      const f = await newFile();
+      await prisma.temixDailyFile.update({ where: { id: f.id }, data: { reversalAckById: w.steward, reversalAckAt: new Date() } });
+      for (const data of [
+        { reversalAckById: null, reversalAckAt: null },
+        { reversalAckById: w.manager },
+        { reversalAckAt: new Date(Date.now() + 60_000) },
+      ]) {
+        expect(await refusal(() => prisma.temixDailyFile.update({ where: { id: f.id }, data })), JSON.stringify(data)).toMatch(
+          /reversal tick, once given, never changes/
+        );
+      }
+      // The file itself still moves.
+      await prisma.temixDailyFile.update({ where: { id: f.id }, data: { state: 'CHECKED' } });
     });
 
     it('the same bytes once per load day; a discarded file frees its day; another day may stage them', async () => {
@@ -172,9 +261,9 @@ describe.skipIf(!ENABLED)('the daily Temix tables on Postgres', () => {
       expect(await refusal(() => prisma.temixDailyFile.update({ where: { id: b.id }, data: { state: 'FINALIZING' } }))).toMatch(
         /Unique constraint|TemixDailyFile_one_in_flight/
       );
-      await prisma.temixDailyFile.update({ where: { id: a.id }, data: { state: 'LOADED', loadedAt: new Date() } });
+      await load(a.id);
       await prisma.temixDailyFile.update({ where: { id: b.id }, data: { state: 'APPLYING' } });
-      await prisma.temixDailyFile.update({ where: { id: b.id }, data: { state: 'LOADED', loadedAt: new Date() } });
+      await load(b.id);
     });
 
     it('is never deleted or truncated outside the owner’s window', async () => {
@@ -266,6 +355,82 @@ describe.skipIf(!ENABLED)('the daily Temix tables on Postgres', () => {
       await prisma.temixDailyRow.update({ where: { id: rowId }, data: { outcome: 'HELD', raw: {}, parsed: Prisma.DbNull } });
     });
 
+    it('a row is added only to a STAGED file', async () => {
+      const f = await newFile();
+      await prisma.temixDailyFile.update({ where: { id: f.id }, data: { state: 'CHECKED' } });
+      expect(await refusal(() => prisma.temixDailyRow.create({ data: { fileId: f.id, rowNumber: 1, raw: {} } }))).toMatch(
+        /rows are added only to a STAGED file \(file .* is CHECKED\)/
+      );
+      const done = await newFile();
+      await load(done.id);
+      expect(await refusal(() => prisma.temixDailyRow.create({ data: { fileId: done.id, rowNumber: 1, raw: {} } }))).toMatch(
+        /rows are added only to a STAGED file \(file .* is LOADED\)/
+      );
+      const gone = await newFile();
+      await discard(gone.id);
+      expect(await refusal(() => prisma.temixDailyRow.create({ data: { fileId: gone.id, rowNumber: 1, raw: {} } }))).toMatch(
+        /rows are added only to a STAGED file \(file .* is DISCARDED\)/
+      );
+    });
+
+    it('a row keeps its file, number and creation time; its payload is only ever emptied', async () => {
+      const other = await newFile();
+      const r = await prisma.temixDailyRow.create({
+        data: { fileId: file.id, rowNumber: 10, raw: { cust_code: 'zz10' }, parsed: { custCode: 'ZZ10' } },
+      });
+      for (const data of [{ fileId: other.id }, { rowNumber: 11 }, { createdAt: new Date('2024-01-01T00:00:00Z') }]) {
+        expect(await refusal(() => prisma.temixDailyRow.update({ where: { id: r.id }, data })), JSON.stringify(Object.keys(data))).toMatch(
+          /file, number and creation time never change/
+        );
+      }
+      expect(await refusal(() => prisma.temixDailyRow.update({ where: { id: r.id }, data: { raw: { cust_code: 'zz-other' } } }))).toMatch(
+        /the row as sent is never rewritten, only emptied/
+      );
+      // Its parse may be redone while the payload is there; emptied, it is never filled again.
+      await prisma.temixDailyRow.update({ where: { id: r.id }, data: { parsed: { custCode: 'ZZ10', note: 'rechecked' } } });
+      await prisma.temixDailyRow.update({ where: { id: r.id }, data: { raw: {}, parsed: Prisma.DbNull } });
+      expect(await refusal(() => prisma.temixDailyRow.update({ where: { id: r.id }, data: { parsed: { custCode: 'ZZ10' } } }))).toMatch(
+        /an emptied payload is never filled again/
+      );
+      expect(await refusal(() => prisma.temixDailyRow.update({ where: { id: r.id }, data: { raw: { cust_code: 'zz10' } } }))).toMatch(
+        /the row as sent is never rewritten, only emptied/
+      );
+    });
+
+    it.each(['APPLIED', 'NO_CHANGE', 'REJECTED'] as const)('a %s row is done: it stays, only its payload may be emptied', async (outcome) => {
+      const n = 20 + ['APPLIED', 'NO_CHANGE', 'REJECTED'].indexOf(outcome);
+      const r = await prisma.temixDailyRow.create({
+        data: { fileId: file.id, rowNumber: n, raw: { cust_code: 'zz' }, parsed: { custCode: 'ZZ' }, custCodeKey: 'ZZ', customerId: w.customer },
+      });
+      await prisma.temixDailyRow.update({ where: { id: r.id }, data: { outcome, doneAt: new Date() } });
+      for (const data of [
+        { outcome: 'PENDING' as const },
+        { outcome: 'HELD' as const },
+        { customerId: 'someone-else' },
+        { branchId: w.branch },
+        { custCodeKey: 'ZZ2' },
+        { branchCodeKey: 'B1' },
+        { isMainRow: true },
+        { holdReasons: ['ROUTE_NOT_MATCHED'] },
+        { doneAt: null },
+        { parsed: { custCode: 'ZZ3' } },
+      ]) {
+        expect(await refusal(() => prisma.temixDailyRow.update({ where: { id: r.id }, data })), JSON.stringify(data)).toMatch(
+          new RegExp(`a ${outcome} row is done; only its payload may be emptied`)
+        );
+      }
+      await prisma.temixDailyRow.update({ where: { id: r.id }, data: { raw: {}, parsed: Prisma.DbNull } });
+      const after = await prisma.temixDailyRow.findUniqueOrThrow({ where: { id: r.id } });
+      expect(after).toMatchObject({ outcome, raw: {}, parsed: null, customerId: w.customer, custCodeKey: 'ZZ' });
+    });
+
+    it('a row not yet done still moves (held, re-checked, applied)', async () => {
+      const r = await prisma.temixDailyRow.create({ data: { fileId: file.id, rowNumber: 30, raw: { cust_code: 'zz' } } });
+      await prisma.temixDailyRow.update({ where: { id: r.id }, data: { outcome: 'HELD', holdReasons: ['ROUTE_NOT_MATCHED'] } });
+      await prisma.temixDailyRow.update({ where: { id: r.id }, data: { outcome: 'PARTLY_APPLIED', holdReasons: [] } });
+      await prisma.temixDailyRow.update({ where: { id: r.id }, data: { outcome: 'APPLIED', doneAt: new Date() } });
+    });
+
     it.each([...TEMIX_DAILY_LEDGERS])('%s: UPDATE, DELETE and TRUNCATE are refused outside the owner’s window', async (table) => {
       // One row of each ledger exists by now (the route map gets its own below).
       if (table === 'TemixRouteMap') {
@@ -328,21 +493,29 @@ describe.skipIf(!ENABLED)('the daily Temix tables on Postgres', () => {
       if (prisma) await withAuditMaintenance(prisma, (tx) => tx.purgeSummary.deleteMany({ where: { runId } }));
     });
 
-    it('empties raw and parsed of a finished file’s old rows only, and writes its summary in the same statement', async () => {
-      const loaded = await newFile({ state: 'LOADED', loadedAt: new Date() });
-      const discarded = await newFile({ state: 'DISCARDED', discardedAt: new Date(), discardedById: w.steward, discardReason: 'zz' });
+    const payload = { raw: { cust_code: 'zz', name: 'ZZ Customer' }, parsed: { custCode: 'ZZ' } };
+    const mk = (fileId: string, rowNumber: number, createdAt: Date, outcome: 'APPLIED' | 'HELD' | 'PENDING') =>
+      prisma.temixDailyRow.create({ data: { fileId, rowNumber, createdAt, outcome, custCodeKey: 'ZZ', holdReasons: outcome === 'HELD' ? ['ROUTE_NOT_MATCHED'] : [], ...payload } });
+    const sweep = () => withChangeContext(prisma, cause, (tx) => runPurge(tx, 'temix-daily-payload-90d', temixDailyPayloadPurgeSql(now, 2000, { runId })));
+    const payloadOf = async (id: string) => {
+      const r = await prisma.temixDailyRow.findUniqueOrThrow({ where: { id } });
+      return { raw: r.raw, parsed: r.parsed };
+    };
+
+    it('empties raw and parsed of a finished file’s old rows, and writes its summary in the same statement', async () => {
+      const loaded = await newFile();
+      const discarded = await newFile();
+      // Staged now: a row dated before the cut-off in a file uploaded after it is
+      // not reached (the file's own upload time is the test for an unfinished file).
       const staged = await newFile();
-      const payload = { raw: { cust_code: 'zz', name: 'ZZ Customer' }, parsed: { custCode: 'ZZ' } };
-      const mk = (fileId: string, rowNumber: number, createdAt: Date, outcome: 'APPLIED' | 'HELD' | 'PENDING') =>
-        prisma.temixDailyRow.create({ data: { fileId, rowNumber, createdAt, outcome, custCodeKey: 'ZZ', holdReasons: outcome === 'HELD' ? ['ROUTE_NOT_MATCHED'] : [], ...payload } });
       const a = await mk(loaded.id, 1, OLD, 'APPLIED');
       const b = await mk(discarded.id, 1, OLD, 'HELD');
       const keptNew = await mk(loaded.id, 2, NEWER, 'APPLIED');
       const keptStaged = await mk(staged.id, 1, OLD, 'PENDING');
+      await load(loaded.id);
+      await discard(discarded.id);
 
-      const cleared = await withChangeContext(prisma, cause, (tx) =>
-        runPurge(tx, 'temix-daily-payload-90d', temixDailyPayloadPurgeSql(now, 2000, { runId }))
-      );
+      const cleared = await sweep();
       expect(cleared).toBe(2);
       for (const id of [a.id, b.id]) {
         const r = await prisma.temixDailyRow.findUniqueOrThrow({ where: { id } });
@@ -374,10 +547,50 @@ describe.skipIf(!ENABLED)('the daily Temix tables on Postgres', () => {
       expect(JSON.stringify(s!.detail)).not.toContain('ZZ Customer');
 
       // Run again: nothing left to empty, and no empty summary.
-      expect(
-        await withChangeContext(prisma, cause, (tx) => runPurge(tx, 'temix-daily-payload-90d', temixDailyPayloadPurgeSql(now, 2000, { runId })))
-      ).toBe(0);
+      expect(await sweep()).toBe(0);
       expect(await prisma.purgeSummary.count({ where: { runId } })).toBe(1);
+    });
+
+    it('also empties the rows of a file left unfinished before the cut-off; only a live lease keeps them', async () => {
+      // Review of stage 1: as the import rule's never-loaded batch. A STAGED and a
+      // CHECKED file uploaded before the cut-off, and one stopped APPLYING.
+      const staged = await newFile({ uploadedAt: OLD });
+      const checked = await newFile({ uploadedAt: OLD });
+      const applying = await newFile({ uploadedAt: OLD });
+      const s1 = await mk(staged.id, 1, OLD, 'PENDING');
+      const c1 = await mk(checked.id, 1, OLD, 'HELD');
+      const p1 = await mk(applying.id, 1, OLD, 'PENDING');
+      const p2 = await mk(applying.id, 2, OLD, 'APPLIED');
+      await prisma.temixDailyFile.update({ where: { id: checked.id }, data: { state: 'CHECKED' } });
+      // A load running on it at `now`: a live lease keeps every row's payload.
+      await prisma.temixDailyFile.update({
+        where: { id: applying.id },
+        data: { state: 'APPLYING', applyLeaseBy: 'zz-worker', applyLeaseUntil: new Date(now.getTime() + 60_000) },
+      });
+      expect(await sweep()).toBe(2);
+      for (const id of [s1.id, c1.id]) expect(await payloadOf(id), id).toEqual({ raw: {}, parsed: null });
+      for (const id of [p1.id, p2.id]) expect(await payloadOf(id), id).toEqual(payload);
+      // The lease lapses (the load stopped): the next run empties them too.
+      await prisma.temixDailyFile.update({ where: { id: applying.id }, data: { applyLeaseUntil: new Date(now.getTime() - 60_000) } });
+      expect(await sweep()).toBe(2);
+      for (const id of [p1.id, p2.id]) expect(await payloadOf(id), id).toEqual({ raw: {}, parsed: null });
+      await discard(applying.id);
+      // Stopped FINALIZING with no lease written down at all: the same.
+      const finalizing = await newFile({ uploadedAt: OLD });
+      const f1 = await mk(finalizing.id, 1, OLD, 'APPLIED');
+      await prisma.temixDailyFile.update({ where: { id: finalizing.id }, data: { state: 'FINALIZING' } });
+      expect(await sweep()).toBe(1);
+      expect(await payloadOf(f1.id)).toEqual({ raw: {}, parsed: null });
+      // The outcome and codes stay; only the payload went.
+      expect(await prisma.temixDailyRow.findUniqueOrThrow({ where: { id: p1.id } })).toMatchObject({ outcome: 'PENDING', custCodeKey: 'ZZ' });
+      const sums = await prisma.purgeSummary.findMany({ where: { runId }, orderBy: { id: 'asc' } });
+      expect(sums.slice(-3).map((x) => x.detail)).toEqual([
+        { byFile: { [staged.id]: { PENDING: 1 }, [checked.id]: { HELD: 1 } } },
+        { byFile: { [applying.id]: { PENDING: 1, APPLIED: 1 } } },
+        { byFile: { [finalizing.id]: { APPLIED: 1 } } },
+      ]);
+      // Release the one-in-flight slot for the rest of the suite.
+      await discard(finalizing.id);
     });
 
     it('the sweep reads the rows that still hold a payload through the partial index', async () => {
@@ -428,6 +641,33 @@ describe.skipIf(!ENABLED)('the daily Temix tables on Postgres', () => {
         await refusal(() => prisma.temixRouteMap.create({ data: { temixRouteCode: `${code()}Z`, action: 'ADD', routeId: w.route, reason: ' ', byId: w.steward } }))
       ).toMatch(/TemixRouteMap_reason_check/);
     });
+
+    it.each([Prisma.TransactionIsolationLevel.RepeatableRead, Prisma.TransactionIsolationLevel.Serializable])(
+      'a route-map row is refused under %s (the lock serialises only under READ COMMITTED)',
+      async (isolationLevel) => {
+        const c = `${code()}-I${isolationLevel === Prisma.TransactionIsolationLevel.Serializable ? 'SZ' : 'RR'}`;
+        expect(
+          await refusal(() =>
+            prisma.$transaction((tx) => tx.temixRouteMap.create({ data: { temixRouteCode: c, action: 'ADD', routeId: w.route, reason: 'iso', byId: w.steward } }), {
+              isolationLevel,
+            })
+          )
+        ).toMatch(/written under READ COMMITTED only/);
+        // Through the change context too, which takes the same option.
+        expect(
+          await refusal(() =>
+            withChangeContext(prisma, cause, (tx) => tx.temixRouteMap.create({ data: { temixRouteCode: c, action: 'ADD', routeId: w.route, reason: 'iso', byId: w.steward } }), {
+              isolationLevel,
+            })
+          )
+        ).toMatch(/written under READ COMMITTED only/);
+        expect(await prisma.temixRouteMap.count({ where: { temixRouteCode: c } })).toBe(0);
+        // READ COMMITTED (the default) writes it.
+        await withChangeContext(prisma, cause, (tx) => tx.temixRouteMap.create({ data: { temixRouteCode: c, action: 'ADD', routeId: w.route, reason: 'iso', byId: w.steward } }));
+        const add = await prisma.temixRouteMap.findFirstOrThrow({ where: { temixRouteCode: c, action: 'ADD' } });
+        await prisma.temixRouteMap.create({ data: { temixRouteCode: c, action: 'RETIRE', retiresId: add.id, reason: 'iso done', byId: w.steward } });
+      }
+    );
 
     it('two writers adding the same code at once: exactly one wins', async () => {
       const c = `${code()}-RACE`;

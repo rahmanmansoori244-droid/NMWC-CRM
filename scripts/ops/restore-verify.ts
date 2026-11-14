@@ -51,6 +51,7 @@ import {
   HISTORY_TABLES,
   HISTORY_TRIGGERS,
 } from '../../lib/history-tables';
+import { TEMIX_DAILY_LEDGERS, TEMIX_DAILY_PROTECTION_TRIGGERS, TEMIX_DAILY_STAGING } from '../../lib/temix-daily-tables';
 
 
 /**
@@ -79,6 +80,9 @@ const EXPECTED_TRIGGERS = [
   // the capture triggers, the AuditLog context stamp, the guards on every history
   // table, a sent request's evidence guard and the insert-only ledgers' guards.
   ...HISTORY_TRIGGERS,
+  // The daily Temix import (20261114100000_temix_daily_tables): its ledger guards,
+  // context stamps, the file and row guards and the route map's one-live-entry rule.
+  ...TEMIX_DAILY_PROTECTION_TRIGGERS,
 ];
 const EXPECTED_FUNCTIONS = ['nmwc_forbid_audit_mutation', 'enforce_branch_region_consistency'] as const;
 const EXPECTED_EXTENSIONS = ['pg_trgm'] as const;
@@ -735,6 +739,9 @@ async function main() {
       ...Object.fromEntries(HISTORY_TABLES.map((t) => [t, ['SELECT']])),
       // The ledgers the application writes (lossless paths): insert, never change.
       ...Object.fromEntries(APPEND_ONLY_APP_TABLES.map((t) => [t, ['SELECT', 'INSERT']])),
+      // The daily Temix import: its ledgers insert-only, its files and rows never deleted.
+      ...Object.fromEntries(TEMIX_DAILY_LEDGERS.map((t) => [t, ['SELECT', 'INSERT']])),
+      ...Object.fromEntries(TEMIX_DAILY_STAGING.map((t) => [t, ['SELECT', 'INSERT', 'UPDATE']])),
     };
 
     if (expectAppRole && Number(roleCount) > 0) {

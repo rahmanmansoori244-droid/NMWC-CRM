@@ -8,8 +8,10 @@
  * e2e clean-up, so a table added to the history is added everywhere at once.
  * tests/unit/history-migration-guard.test.ts pins it against the migrations' SQL.
  *
- * PURE: no imports, so scripts can use it.
+ * PURE: no imports but the daily Temix import's own pure list
+ * (lib/temix-daily-tables.ts), so scripts can use it.
  */
+import { TEMIX_DAILY_PROTECTION_TRIGGERS } from './temix-daily-tables';
 
 /** The migrations that create the objects named here, oldest first. */
 export const HISTORY_MIGRATIONS = [
@@ -220,8 +222,12 @@ export const GUARD_FUNCTIONS = [
   'nmwc_seal_link_guard',
 ] as const;
 
-/** Every trigger that protects the ledgers and the history, checked nightly (lib/integrity). */
-export const PROTECTION_TRIGGERS: readonly string[] = [...HISTORY_TRIGGERS, ...LEDGER_TRIGGERS];
+/**
+ * Every trigger that protects the ledgers and the history, checked nightly
+ * (lib/integrity). The daily Temix import's triggers too (review of its stage 1):
+ * watched nightly although its ledgers are not sealed yet.
+ */
+export const PROTECTION_TRIGGERS: readonly string[] = [...HISTORY_TRIGGERS, ...LEDGER_TRIGGERS, ...TEMIX_DAILY_PROTECTION_TRIGGERS];
 
 /** The sequence behind each table's BIGSERIAL id (Prisma's naming). */
 export const historySequence = (t: HistoryTable | string) => `${t}_id_seq`;

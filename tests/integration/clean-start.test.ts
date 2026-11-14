@@ -669,7 +669,9 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     // The 43rd migration (20261114100000_temix_daily_tables): a loaded daily file,
     // its staged row, ledger row, review mark and "listed once" hash, and a route-map
     // entry pointing into a kept route. All six are emptied, five through their
-    // own TRUNCATE guards; the kept Route and User stay byte-identical.
+    // own TRUNCATE guards; the kept Route and User stay byte-identical. A file is
+    // staged first and its rows added while it is STAGED; it is LOADED only from
+    // FINALIZING (nmwc_temix_daily_file_guard, nmwc_temix_daily_row_guard).
     const daily = await db.temixDailyFile.create({
       data: {
         filename: 'zz-daily.csv',
@@ -678,15 +680,14 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
         fileSha256: sha256('zz-daily'),
         fileBytes: 10,
         headings: ['cust_code'] as never,
-        state: 'LOADED',
         totalRows: 1,
-        appliedRows: 1,
-        loadedAt: t0,
       },
     });
     const dailyRow = await db.temixDailyRow.create({
       data: { fileId: daily.id, rowNumber: 1, raw: { cust_code: 'zz' } as never, custCodeKey: 'ZZ', customerId: c1, outcome: 'APPLIED' },
     });
+    await db.temixDailyFile.update({ where: { id: daily.id }, data: { state: 'FINALIZING' } });
+    await db.temixDailyFile.update({ where: { id: daily.id }, data: { state: 'LOADED', appliedRows: 1, loadedAt: t0 } });
     const change = await db.temixChange.create({
       data: { fileId: daily.id, rowId: dailyRow.id, loadDay: daily.loadDay, kind: 'ROUTE_MOVE', applied: true, customerId: c1, field: 'routeId', fromValue: 'A', toValue: 'B' },
     });
