@@ -2110,12 +2110,17 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
     // A valid Temix code no one holds: the duplicate is refused for itself.
     await typeTemixCode(page, temixCodeFor(w));
     await approveHere(page, 'Create this customer?', 'Approve and create');
+    // Follow-up 1, H4: the holder is in region R2, which ACC1 (R1) may not open, so
+    // the refusal says so without the holder's code or name.
     await expect(
       page.getByText(
-        `A customer with this CR number already exists: ${live.code} — ${live.legalName}. It cannot be created twice: reject this request and give that as the reason.`,
+        'A customer with this CR number already exists in another region. It cannot be created twice: reject this request and give that as the reason.',
         { exact: true }
       )
     ).toBeVisible();
+    const shown = await page.locator('body').innerText();
+    expect(shown, "the holder's code is not named to him").not.toContain(live.code);
+    expect(shown, "the holder's name is not named to him").not.toContain(live.legalName);
     await expect(page).toHaveURL(new RegExp(`/approvals/${d.id}$`));
     expect(await snapshot(['CustomerEdit'], { id: d.id }), 'the request is unchanged').toBe(frozen);
     expect(await db.editApproval.count({ where: { editId: d.id } })).toBe(ledger);
