@@ -28,7 +28,14 @@ import {
   type PermissionsLike,
 } from '@/lib/gps-listen';
 import { GPS_TARGET_ACCURACY_M, gpsAccuracyAdvice } from '@/lib/gps-accuracy';
-import { GpsCaptureButton, GPS_NO_START_MESSAGE, GPS_TRY_OUTSIDE_MESSAGE, type Gps } from '@/components/nmwc/GpsCaptureButton';
+import {
+  GpsCaptureButton,
+  GPS_LOOKING_MESSAGE,
+  GPS_NO_START_MESSAGE,
+  GPS_TRY_OUTSIDE_MESSAGE,
+  WIDE_TAP_AREA,
+  type Gps,
+} from '@/components/nmwc/GpsCaptureButton';
 
 type Watch = { ok: PositionCallback; fail: PositionErrorCallback; options?: PositionOptions; cleared: boolean };
 let watches: Watch[];
@@ -371,7 +378,9 @@ describe('the GPS button', () => {
     render(<GpsCaptureButton onCapture={onCapture} required />);
     fireEvent.click(screen.getByRole('button', { name: 'Capture GPS *' }));
     expect(screen.getByRole('button', { name: 'Capturing…' })).toBeDisabled();
-    expect(screen.getByRole('status').textContent).toBe('Looking for GPS… this can take up to 25 seconds.');
+    // Follow-up 1, F4: the 25 s window starts once location is allowed, not at the tap.
+    expect(screen.getByRole('status').textContent).toBe('Looking for GPS… this can take up to 25 seconds once location is allowed.');
+    expect(GPS_LOOKING_MESSAGE).toBe('Looking for GPS… this can take up to 25 seconds once location is allowed.');
     await reading(350);
     expect(screen.getByRole('status').textContent).toBe('Looking for a better fix… best so far ±350 m.');
     await reading(90);
@@ -713,5 +722,77 @@ describe('the GPS button', () => {
     await act(async () => perms.set('granted'));
     await wait(GPS_LISTEN_MS);
     expect(screen.getByRole('alert').textContent).toBe(GPS_TRY_OUTSIDE_MESSAGE);
+  });
+});
+
+// Follow-up 1, F4: the two GPS lines on the salesman's form.
+describe('follow-up 1, F4: the "Wrong place?" link and the waiting line', () => {
+  it('the waiting line stays the same while the "Allow location?" question is open, and it says the 25 s start once location is allowed', async () => {
+    perms = fakePermissions('prompt');
+    Object.defineProperty(navigator, 'permissions', { configurable: true, value: perms.api });
+    render(<GpsCaptureButton onCapture={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Capture GPS' }));
+    // Past 25 s from the tap, the question still open: the button is still
+    // looking, which the old "up to 25 seconds" from the tap did not say.
+    await wait(GPS_LISTEN_MS + 15_000);
+    expect(screen.getByRole('status').textContent).toBe(GPS_LOOKING_MESSAGE);
+    await act(async () => perms.set('granted'));
+    await wait(GPS_LISTEN_MS - 1);
+    expect(screen.getByRole('status').textContent).toBe(GPS_LOOKING_MESSAGE);
+    await wait(1);
+    expect(screen.getByRole('alert').textContent).toBe(GPS_TRY_OUTSIDE_MESSAGE);
+  });
+
+  it('the link keeps its role (a button: it opens a question on this page), gets the 44 by 44 tap area, and its neighbours stay on top of it', async () => {
+    render(<GpsCaptureButton initial={ON_FILE} saved={ON_FILE} onCapture={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    await reading(5, 23.51, 58.3);
+    const link = screen.getByRole('button', { name: 'Wrong place? Go back to the saved location…' });
+    expect(link).toBe(screen.getByTestId('gps-wrong-place'));
+    // Positioned, with an empty ::before 18 px above and 10 px below the 16 px
+    // text line: 44 px tall, as wide as the text, at least 44 by 44, and no room
+    // taken in the layout (absolute). Measured in Chromium at 375 and 768 px:
+    // the link's own box and every neighbour's box are where they were.
+    for (const c of ['relative', 'text-xs', 'underline', ...WIDE_TAP_AREA.split(' ')]) expect(link.className.split(' ')).toContain(c);
+    expect(WIDE_TAP_AREA).toContain('before:absolute');
+    expect(WIDE_TAP_AREA).toContain('before:-top-[18px]');
+    expect(WIDE_TAP_AREA).toContain('before:-bottom-2.5');
+    expect(WIDE_TAP_AREA).toContain('before:min-h-11');
+    expect(WIDE_TAP_AREA).toContain('before:min-w-11');
+    // Nothing else about it changed: no padding or margin that would move its line.
+    expect(link.className).not.toMatch(/(^|\s)-?[mp][xytblr]?-/);
+    expect(link.getAttribute('role')).toBeNull();
+    // The control below is raised over the enlarged area.
+    expect(screen.getByRole('button', { name: 'Enter coordinates manually' }).className).toContain('relative z-[1]');
+  });
+
+  it('"Try again outside", which can sit just above the link, is raised over its tap area too', async () => {
+    const better: Gps = { lat: 23.51, lng: 58.3, accuracy: 5, capturedAt: new Date() };
+    render(<GpsCaptureButton initial={better} saved={ON_FILE} onCapture={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    await wait(GPS_LISTEN_MS);
+    const outside = screen.getByRole('button', { name: 'Try again outside' });
+    const link = screen.getByRole('button', { name: 'Wrong place? Go back to the saved location…' });
+    expect(outside.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(outside.className).toContain('relative z-[1]');
+  });
+
+  it('the question it opens is not an alert: a group named by the question, and the button that leads it takes the focus', async () => {
+    render(<GpsCaptureButton initial={ON_FILE} saved={ON_FILE} onCapture={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    await reading(5, 23.51, 58.3);
+    fireEvent.click(screen.getByRole('button', { name: 'Wrong place? Go back to the saved location…' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    const question =
+      'The location on the chip is about 1,112 m (1.1 km) from the saved location (±8 m). Go back to the saved location?';
+    const group = screen.getByRole('group', { name: question });
+    expect(group.contains(screen.getByRole('button', { name: 'Keep the new location' }))).toBe(true);
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep the new location' }));
+    // The rougher-reading question, which appears by itself after a listen, is still an alert.
+    fireEvent.click(screen.getByRole('button', { name: 'Keep the new location' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    await reading(180, 23.7, 58.5);
+    await wait(GPS_LISTEN_MS);
+    expect(screen.getByRole('alert').textContent).toContain('The new reading is ±180 m');
   });
 });
