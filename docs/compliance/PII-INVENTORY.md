@@ -372,7 +372,7 @@ Every column the database stores, classified by whose personal data it is. This 
 
 | Column | Subject | Kind | Note |
 |---|---|---|---|
-| `valueHash` | Customer entity (personal if a sole establishment) | identifier | a keyed hash of the name Temix sent (the key is a server secret), never the name itself |
+| `valueHash` | Customer entity (personal if a sole establishment) | identifier | a keyed hash of the name Temix sent, never the name itself: HMAC-SHA256 under a key derived from AUTH_SECRET (lib/temix-daily-finalize.ts); a rotated AUTH_SECRET lists each name difference once more |
 
 ### TemixRouteMap
 

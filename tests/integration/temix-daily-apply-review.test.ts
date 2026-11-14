@@ -134,6 +134,7 @@ describe.skipIf(!ENABLED)('the daily Temix apply on Postgres: review 2026-11-15'
     if (!prisma) return;
     if (w) {
       await withAuditMaintenance(prisma, async (tx) => {
+        await tx.temixNoticeSeen.deleteMany({ where: { firstFileId: { in: files } } });
         await tx.temixChange.deleteMany({ where: { fileId: { in: files } } });
         await tx.temixDailyRow.deleteMany({ where: { fileId: { in: files } } });
         await tx.temixDailyFile.deleteMany({ where: { id: { in: files } } });

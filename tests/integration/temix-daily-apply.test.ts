@@ -243,6 +243,7 @@ describe.skipIf(!ENABLED)('the daily Temix apply on Postgres', () => {
     if (!prisma) return;
     if (w) {
       await withAuditMaintenance(prisma, async (tx) => {
+        await tx.temixNoticeSeen.deleteMany({ where: { firstFileId: { in: files } } });
         await tx.temixChange.deleteMany({ where: { fileId: { in: files } } });
         await tx.temixDailyRow.deleteMany({ where: { fileId: { in: files } } });
         await tx.temixDailyFile.deleteMany({ where: { id: { in: files }, sameBytesAsFileId: { not: null } } });
@@ -321,7 +322,11 @@ describe.skipIf(!ENABLED)('the daily Temix apply on Postgres', () => {
     expect(end).toMatchObject({ done: true, state: 'LOADED', stopped: null });
 
     const f = await prisma.temixDailyFile.findUniqueOrThrow({ where: { id: A } });
-    expect(f).toMatchObject({ state: 'LOADED', appliedById: w.steward, appliedRows: 2, noChangeRows: 3, heldRows: 1, rejectedRows: 0, noticeRows: 0, applyLeaseBy: null, reversalAckById: null });
+    expect(f).toMatchObject({ state: 'LOADED', appliedById: w.steward, appliedRows: 2, noChangeRows: 3, heldRows: 1, rejectedRows: 0, applyLeaseBy: null, reversalAckById: null });
+    // Stage 6: finalize's notices (customers of the database missing from this
+    // small file, and the like) are counted on the file; none names a suite customer here.
+    expect(f.noticeRows).toBe(await prisma.temixChange.count({ where: { fileId: A, applied: false } }));
+    expect(await prisma.temixChange.count({ where: { fileId: A, applied: false, kind: 'MISSING_FROM_FILE', customerId: { in: [ids.c1!, ids.c2!, ids.c4!] } } })).toBe(0);
     // Review 2026-11-15, finding 2: what the Steward confirmed as held is what the load holds.
     expect(f.heldRows).toBe(started.figures.held);
     expect(f.loadedAt).not.toBeNull();
@@ -363,7 +368,7 @@ describe.skipIf(!ENABLED)('the daily Temix apply on Postgres', () => {
     expect(hOf(ids.b41!)).toMatchObject({ routeId: w.route, regionId: w.regionA });
 
     // Audit and ledger: one each per move, joined to the history row by txId.
-    const ledger = await prisma.temixChange.findMany({ where: { fileId: A }, orderBy: { id: 'asc' } });
+    const ledger = await prisma.temixChange.findMany({ where: { fileId: A, applied: true }, orderBy: { id: 'asc' } });
     expect(ledger.map((l) => [l.kind, l.applied, l.branchId, l.field, l.fromValue, l.toValue, l.detailCode, l.source])).toEqual([
       ['ROUTE_MOVE', true, ids.b11, 'routeId', ids.R2, w.route, 'VIA_EXACT_CODE', `temix-daily:${A}:3`],
       ['ROUTE_MOVE', true, ids.b41, 'routeId', ids.R3, w.route, 'VIA_EXACT_CODE', `temix-daily:${A}:2`],
@@ -413,9 +418,12 @@ describe.skipIf(!ENABLED)('the daily Temix apply on Postgres', () => {
 
   it('a slice on a loaded file writes nothing', async () => {
     const h = (await history(A)).length;
+    const ledgerRows = await prisma.temixChange.count({ where: { fileId: A } });
     expect(ok<Slice>(await slice(A))).toMatchObject({ done: true, state: 'LOADED', applied: 0 });
     expect((await history(A)).length).toBe(h);
-    expect(await prisma.temixChange.count({ where: { fileId: A } })).toBe(2);
+    expect(await prisma.temixChange.count({ where: { fileId: A, applied: true } })).toBe(2);
+    // Nor a notice: finalize does not run again on a loaded file.
+    expect(await prisma.temixChange.count({ where: { fileId: A } })).toBe(ledgerRows);
   });
 
   it('B sets back one of A\'s moves: the start asks for the reversal tick, and keeps it', async () => {
@@ -472,7 +480,7 @@ describe.skipIf(!ENABLED)('the daily Temix apply on Postgres', () => {
         [ids.b21, `temix-daily:${B}:4`],
       ].sort()
     );
-    expect(await prisma.temixChange.count({ where: { fileId: B } })).toBe(2);
+    expect(await prisma.temixChange.count({ where: { fileId: B, applied: true } })).toBe(2);
     expect(await prisma.auditLog.count({ where: { entityType: 'Branch', source: { startsWith: `temix-daily:${B}:` } } })).toBe(2);
     // Dated the start of today: the clamp against A's row (the start of D3) is earlier.
     for (const r of h) expect(r.validFrom.toISOString()).toBe(omanDayStart(today)!.toISOString());
@@ -502,7 +510,9 @@ describe.skipIf(!ENABLED)('the daily Temix apply on Postgres', () => {
     expect(await runToEnd(B2, s.leaseToken)).toMatchObject({ done: true, applied: 0, noChange: 4 });
     expect(await Promise.all([ids.b11!, ids.b12!, ids.b21!, ids.b41!].map(shop))).toEqual(shopsBefore);
     expect(await history(B2)).toEqual([]);
-    expect(await prisma.temixChange.count({ where: { fileId: B2 } })).toBe(0);
+    expect(await prisma.temixChange.count({ where: { fileId: B2, applied: true } })).toBe(0);
+    // Stage 6: and no notice about the suite's customers (they are all in the file).
+    expect(await prisma.temixChange.count({ where: { fileId: B2, applied: false, customerId: { in: [ids.c1!, ids.c2!, ids.c4!] } } })).toBe(0);
     expect(await prisma.auditLog.count({ where: { entityType: 'Branch', source: { startsWith: `temix-daily:${B2}:` } } })).toBe(0);
     expect(await prisma.temixDailyFile.findUniqueOrThrow({ where: { id: B2 } })).toMatchObject({ state: 'LOADED', appliedRows: 0, noChangeRows: 4 });
   });

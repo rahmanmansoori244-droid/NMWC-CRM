@@ -828,7 +828,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'TemixNoticeSeen.valueHash': {
     subject: 'business-or-person',
     kind: 'identifier',
-    note: 'a keyed hash of the name Temix sent (the key is a server secret), never the name itself',
+    note: 'a keyed hash of the name Temix sent, never the name itself: HMAC-SHA256 under a key derived from AUTH_SECRET (lib/temix-daily-finalize.ts); a rotated AUTH_SECRET lists each name difference once more',
   },
   'TemixNoticeSeen.firstFileId': { subject: 'none', note: STRUCTURAL },
   'TemixNoticeSeen.firstSeenAt': { subject: 'none', note: RECORD_META },

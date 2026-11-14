@@ -167,9 +167,10 @@ export const src = {
    * load, with his ticks), 'lease' (a slice takes or hands back the load),
    * 'finalize' (the file is counted and LOADED) and 'discard'. None of them
    * writes a customer or a shop: the changes themselves are named per row with
-   * temixDaily(file, row) and dated the load day.
+   * temixDaily(file, row) and dated the load day. Stage 6 adds 'review': the
+   * Steward marks ledger rows of the file as reviewed (TemixChangeReview).
    */
-  temixDailyStep: (fileId: string, step: 'apply' | 'lease' | 'finalize' | 'discard') => join('temix-daily', fileId, step),
+  temixDailyStep: (fileId: string, step: 'apply' | 'lease' | 'finalize' | 'discard' | 'review') => join('temix-daily', fileId, step),
 } as const;
 
 /** The three values set_config receives. Throws on a malformed context, before any transaction opens. */

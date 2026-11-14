@@ -292,6 +292,13 @@ jobs:
           # the salesman's, manager's and dashboard's reads follow at once)
           # (temix-daily-apply).
           RUN_TEMIX_DAILY_APPLY: '1'
+          # The daily Temix import, stage 6: finalize's notices through the real
+          # apply (each absence, Accountant code and switched-off route listed
+          # once as an open spell and closed when it ends, names listed once
+          # under a keyed hash, nothing for a half-loaded file, nothing new for
+          # the same rows again) and the drill-down's Reviewed marks
+          # (temix-daily-finalize). Names are hashed with the AUTH_SECRET above.
+          RUN_TEMIX_DAILY_FINALIZE: '1'
 
   # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
   # person typing `npm run test:e2e`. It shows: login.spec.ts asserted

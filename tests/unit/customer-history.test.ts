@@ -583,6 +583,7 @@ describe('what caused it', () => {
     ['temix-daily:f20261020:apply', 'Daily Temix file f20261020 (apply started)', null],
     ['temix-daily:f20261020:finalize', 'Daily Temix file f20261020 (load finished)', null],
     ['temix-daily:f20261020:discard', 'Daily Temix file f20261020 (discarded)', null],
+    ['temix-daily:f20261020:review', 'Daily Temix file f20261020 (reviewed)', null],
     ['cron:photo-gc', 'Scheduled job photo-gc', null],
     ['script:reassign-route:run9', 'Operator script reassign-route (run run9)', null],
     ['migration:20261013100100_history_foundation', 'History start', null],

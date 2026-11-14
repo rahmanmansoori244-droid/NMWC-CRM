@@ -44,9 +44,10 @@
  *  a customer that kept failing kept the file from ever loading, and the order
  *  rule then stopped every later file).
  *
- *  THE END. When no row is PENDING the file goes FINALIZING, then LOADED with
- *  its counts and one AuditLog row. Stage 6 hangs its finalize (notices,
- *  summary) on the FINALIZING step; this stage writes no notice.
+ *  THE END. When no row is PENDING the file goes FINALIZING, then, in one
+ *  transaction, stage 6's notices (lib/temix-daily-notices.ts), LOADED with
+ *  its counts and one AuditLog row, and the day's summary alert, which is
+ *  switched off (lib/temix-daily-policy.ts).
  *
  *  DISCARD (discardTemixDailyFileAction). A STAGED or CHECKED file only, with a
  *  reason, audited. A part-applied file is resumed, never discarded.
@@ -54,8 +55,11 @@
  * WRITES ONLY: TemixDailyFile (state, lease, counts, ticks), TemixDailyRow
  * (outcome, customer, shop, reasons, doneAt), and through moveShopToRoute the
  * Branch's route and region, one AuditLog and one TemixChange row per move;
- * one AuditLog row per start, end, discard and failed customer transaction. No Customer, no Notification, no
- * Temix queue (tests/unit/temix-daily-write-set.test.ts). Data Steward only.
+ * through writeFinalizeNotices, finalize's notice rows (TemixChange,
+ * applied = false) and TemixNoticeSeen marks; one AuditLog row per start, end,
+ * discard and failed customer transaction. No Customer, no Notification (the
+ * summary writer is switched off), no Temix queue
+ * (tests/unit/temix-daily-write-set.test.ts). Data Steward only.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -93,6 +97,12 @@ import {
 } from '@/lib/temix-daily-apply';
 import { lockGroupCustomers, loadGroupCrm, loadGroupRows, loadLastMoves, type GroupKey } from '@/lib/temix-daily-apply-load';
 import { moveShopToRoute } from '@/lib/temix-daily-move';
+import { writeFinalizeNotices } from '@/lib/temix-daily-notices';
+import { loadDaySummaryInput } from '@/lib/temix-daily-day-load';
+import { summaryCountsOf } from '@/lib/temix-daily-finalize';
+import { notifyTemixDailySummary } from '@/lib/temix-daily-summary';
+import { TEMIX_DAILY_SUMMARY_ENABLED } from '@/lib/temix-daily-policy';
+import { omanDateISO } from '@/lib/tz';
 
 export type TemixDailyStartResult = { fileId: string; leaseToken: string; figures: ApplyFigures };
 
@@ -411,37 +421,56 @@ async function recordGroupFailure(
   });
 }
 
-/** Every row is done: FINALIZING, then LOADED with the counts. Idempotent: a second call finds the file LOADED. */
-async function finalize(me: { id: string }, env: AuditEnvelope, fileId: string, token: string): Promise<boolean> {
+/**
+ * Every row is done: FINALIZING (committed on its own), then, in ONE
+ * transaction, finalize's notices (lib/temix-daily-notices.ts: the open spells
+ * of customers missing from the file, of Accountant codes not in it and of
+ * switched-off routes still holding shops, and the names listed once), the
+ * counts, LOADED and its AuditLog row, and the day's summary alert (switched
+ * off: lib/temix-daily-policy.ts). Idempotent: a second call finds the file
+ * LOADED, and the notices planned again would be none.
+ */
+async function finalize(me: { id: string }, env: AuditEnvelope, file: { id: string; loadDay: string }, token: string): Promise<boolean> {
+  const fileId = file.id;
   await withChangeContext(prisma, { actorId: me.id, source: src.temixDailyStep(fileId, 'finalize') }, async (tx) => {
     const pending = await tx.temixDailyRow.count({ where: { fileId, outcome: 'PENDING' } });
     if (pending > 0) return;
     await tx.temixDailyFile.updateMany({ where: { id: fileId, state: 'APPLYING', applyLeaseBy: token }, data: { state: 'FINALIZING' } });
   });
-  // Stage 6 adds its notices and summary here, between FINALIZING and LOADED.
-  return withChangeContext(prisma, { actorId: me.id, source: src.temixDailyStep(fileId, 'finalize') }, async (tx) => {
-    const [f] = await tx.$queryRaw<Array<{ state: string; leaseBy: string | null }>>`
-      SELECT "state"::text AS "state", "applyLeaseBy" AS "leaseBy" FROM "TemixDailyFile" WHERE "id" = ${fileId} FOR UPDATE`;
-    if (!f || f.state !== 'FINALIZING' || f.leaseBy !== token) return false;
-    const grouped = await tx.temixDailyRow.groupBy({ by: ['outcome'], where: { fileId }, _count: { _all: true } });
-    const counts: OutcomeCounts = Object.fromEntries(grouped.map((g) => [g.outcome, g._count._all]));
-    const notices = await tx.temixChange.count({ where: { fileId, applied: false } });
-    const moved = await tx.temixChange.count({ where: { fileId, applied: true, kind: 'ROUTE_MOVE' } });
-    const c = finalCounts(counts, notices);
-    const loadedAt = new Date();
-    await tx.temixDailyFile.update({
-      where: { id: fileId },
-      data: { state: 'LOADED', loadedAt, applyLeaseBy: null, applyLeaseUntil: null, ...c },
-    });
-    await writeAudit(tx, env, {
-      action: AuditAction.UPDATE,
-      entityType: 'TemixDailyFile',
-      entityId: fileId,
-      before: { state: 'FINALIZING' },
-      after: { kind: 'TEMIX_DAILY_LOADED', state: 'LOADED', ...c, routeMoves: moved },
-    });
-    return true;
-  });
+  return withChangeContext(
+    prisma,
+    { actorId: me.id, source: src.temixDailyStep(fileId, 'finalize') },
+    async (tx) => {
+      const [f] = await tx.$queryRaw<Array<{ state: string; leaseBy: string | null }>>`
+        SELECT "state"::text AS "state", "applyLeaseBy" AS "leaseBy" FROM "TemixDailyFile" WHERE "id" = ${fileId} FOR UPDATE`;
+      if (!f || f.state !== 'FINALIZING' || f.leaseBy !== token) return false;
+      const listed = await writeFinalizeNotices(tx, file);
+      const grouped = await tx.temixDailyRow.groupBy({ by: ['outcome'], where: { fileId }, _count: { _all: true } });
+      const counts: OutcomeCounts = Object.fromEntries(grouped.map((g) => [g.outcome, g._count._all]));
+      const notices = await tx.temixChange.count({ where: { fileId, applied: false } });
+      const moved = await tx.temixChange.count({ where: { fileId, applied: true, kind: 'ROUTE_MOVE' } });
+      const c = finalCounts(counts, notices);
+      const loadedAt = new Date();
+      await tx.temixDailyFile.update({
+        where: { id: fileId },
+        data: { state: 'LOADED', loadedAt, applyLeaseBy: null, applyLeaseUntil: null, ...c },
+      });
+      await writeAudit(tx, env, {
+        action: AuditAction.UPDATE,
+        entityType: 'TemixDailyFile',
+        entityId: fileId,
+        before: { state: 'FINALIZING' },
+        after: { kind: 'TEMIX_DAILY_LOADED', state: 'LOADED', ...c, routeMoves: moved, listed: listed.byKind, namesChecked: listed.namesChecked },
+      });
+      // The Steward's one summary a day: OFF until stage 7 (the switch), so nothing is read or written for it now.
+      if (TEMIX_DAILY_SUMMARY_ENABLED) {
+        const day = await loadDaySummaryInput(tx, file.loadDay);
+        await notifyTemixDailySummary(tx, { today: omanDateISO(), loadDay: file.loadDay, counts: summaryCountsOf(day.changes, day.heldRows) });
+      }
+      return true;
+    },
+    { timeout: 60_000, maxWait: 10_000 }
+  );
 }
 
 export async function runTemixDailySliceAction(formData: FormData): SafeAction<TemixDailySliceResult> {
@@ -550,7 +579,7 @@ export async function runTemixDailySliceAction(formData: FormData): SafeAction<T
       }
       const remaining = await prisma.temixDailyRow.count({ where: { fileId, outcome: 'PENDING' } });
       if (remaining === 0) {
-        const loaded = await finalize(me, env, fileId, token);
+        const loaded = await finalize(me, env, fileInfo, token);
         revalidatePath('/temix-daily');
         revalidatePath(`/temix-daily/${fileId}`);
         if (loaded) return result({ ...tally, state: 'LOADED', done: true });

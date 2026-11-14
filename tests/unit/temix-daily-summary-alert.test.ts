@@ -100,7 +100,7 @@ describe('the writer is off', () => {
     expect(f.calls).toEqual([]);
   });
 
-  it('no source but the writer writes the kind, and nothing calls the writer yet', () => {
+  it('no source but the writer writes the kind, and only finalize calls the writer, behind the switch', () => {
     const named: string[] = [];
     const callers: string[] = [];
     const READERS = new Set([
@@ -114,7 +114,14 @@ describe('the writer is off', () => {
       if (/\bnotifyTemixDailySummary\s*\(/.test(code) && file !== 'lib/temix-daily-summary.ts') callers.push(file);
     }
     expect(named).toEqual([]);
-    expect(callers).toEqual([]);
+    // Stage 6: finalize calls it once per loaded file, inside the switch, so
+    // while the switch is off not even its counts are read.
+    expect(callers).toEqual(['services/temix-daily-apply.ts']);
+    const apply = stripComments(readFileSync('services/temix-daily-apply.ts', 'utf8'), 'services/temix-daily-apply.ts');
+    expect([...apply.matchAll(/\bnotifyTemixDailySummary\s*\(/g)]).toHaveLength(1);
+    expect(apply).toMatch(
+      /if \(TEMIX_DAILY_SUMMARY_ENABLED\) \{\s*const day = await loadDaySummaryInput\(tx, file\.loadDay\);\s*await notifyTemixDailySummary\(tx, \{ today: omanDateISO\(\), loadDay: file\.loadDay, counts: summaryCountsOf\(day\.changes, day\.heldRows\) \}\);\s*\}/
+    );
   });
 });
 

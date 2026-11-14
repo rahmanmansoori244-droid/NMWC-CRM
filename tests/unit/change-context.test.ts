@@ -67,6 +67,7 @@ describe('source builders', () => {
       [src.temixDailyStep('f1', 'lease'), 'temix-daily:f1:lease'],
       [src.temixDailyStep('f1', 'finalize'), 'temix-daily:f1:finalize'],
       [src.temixDailyStep('f1', 'discard'), 'temix-daily:f1:discard'],
+      [src.temixDailyStep('f1', 'review'), 'temix-daily:f1:review'],
       [src.temixRouteMap('add', 'C10MA'), 'temix-route-map:add:C10MA'],
       [src.temixRouteMap('retire', 'C 10/MA'), 'temix-route-map:retire:C-10/MA'],
     ];

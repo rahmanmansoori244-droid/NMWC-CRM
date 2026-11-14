@@ -515,6 +515,7 @@ function rowPart(row: string): string {
   if (row === 'lease') return ' (load progress)';
   if (row === 'finalize') return ' (load finished)';
   if (row === 'discard') return ' (discarded)';
+  if (row === 'review') return ' (reviewed)';
   return `, row ${row}`;
 }
 

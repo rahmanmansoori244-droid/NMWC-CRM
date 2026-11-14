@@ -13,14 +13,30 @@
  *    raw write. Every transaction goes through withChangeContext; a customer's
  *    is dated the load day, and each row is named before it is written.
  *  - Every action is the Data Steward's, asked first.
+ *  - Stage 6: finalize's notices (lib/temix-daily-notices.ts) are notice rows
+ *    of the ledger (applied = false, no value) and "listed once" marks, written
+ *    inside the transaction that makes the file LOADED, and nothing else; the
+ *    drill-down's marks (services/temix-daily-review.ts) are TemixChangeReview
+ *    rows only. Each ledger table has exactly these writers in the sources.
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { stripComments } from '../support/strip-comments';
 
 const read = (f: string) => stripComments(readFileSync(f, 'utf8'), f);
 const MOVER = read('lib/temix-daily-move.ts');
 const APPLY = read('services/temix-daily-apply.ts');
+const NOTICES = read('lib/temix-daily-notices.ts');
+const REVIEW = read('services/temix-daily-review.ts');
+
+function walk(dir: string): string[] {
+  return readdirSync(dir).flatMap((e) => {
+    const p = join(dir, e);
+    if (statSync(p).isDirectory()) return e === 'node_modules' || e === '.next' || e === 'migrations' ? [] : walk(p);
+    return /\.(ts|tsx)$/.test(e) && !/\.d\.ts$/.test(e) ? [p.replace(/\\/g, '/')] : [];
+  });
+}
 
 const WRITE = '(create|createMany|createManyAndReturn|update|updateMany|upsert|delete|deleteMany)';
 const MODEL_WRITE_RE = new RegExp(`\\b(?:tx|prisma|db)\\s*\\.\\s*([a-zA-Z]+)\\s*\\.\\s*${WRITE}\\s*\\(`, 'g');
@@ -217,5 +233,75 @@ describe('the apply writes the file and its rows, field by field, and nothing el
     for (const fn of ['startTemixDailyApplyAction', 'runTemixDailySliceAction', 'discardTemixDailyFileAction']) {
       expect(APPLY).toMatch(new RegExp(`export async function ${fn}[\\s\\S]*?runAction\\(async \\(\\) => \\{\\s*const me = await requireSteward\\(\\);`));
     }
+  });
+});
+
+describe("stage 6: finalize's notices, the review marks, and who writes the ledger", () => {
+  it('the notices writer writes notice rows and listed-once marks only', () => {
+    expect(models(NOTICES)).toEqual(['temixChange.createMany', 'temixNoticeSeen.createMany']);
+    // Each row written is the object the chunk is mapped to.
+    const mapped = (model: string) => {
+      const at = NOTICES.indexOf(`${model}.createMany(`);
+      const obj = NOTICES.indexOf('=> ({', at) + '=> ('.length;
+      return topKeys(balanced(NOTICES, obj));
+    };
+    expect(mapped('temixChange')).toEqual(['fileId', 'rowId', 'loadDay', 'kind', 'applied', 'customerId', 'branchId', 'field', 'fromValue', 'toValue', 'detailCode']);
+    expect(mapped('temixNoticeSeen')).toEqual(['customerId', 'kind', 'valueHash', 'firstFileId']);
+    // A notice: applied false, no shop, no "from" value.
+    expect(NOTICES).toMatch(/kind: n\.kind,\s*applied: false,\s*customerId: n\.customerId,\s*branchId: null,\s*field: n\.field,\s*fromValue: null,/);
+    expect(NOTICES).toMatch(/kind: 'NAME_DIFFERS', valueHash: s\.valueHash, firstFileId: file\.id/);
+    // Its only raw SQL that is not a read is its lock.
+    expect([...NOTICES.matchAll(/\$executeRaw`([^`]*)`/g)].map((m) => m[1])).toEqual([
+      "SELECT pg_advisory_xact_lock(hashtextextended('nmwc:temix-daily:finalize', 42))",
+    ]);
+    expect([...NOTICES.matchAll(/\$queryRaw(?:Unsafe)?[^`]*`([^`]*)`/g)].filter((m) => /(?<!FOR )\b(UPDATE|INSERT|DELETE|TRUNCATE)\b/i.test(m[1]!))).toEqual([]);
+    expect(NOTICES).not.toMatch(/notifyUsers|notification\s*\.|temixSyncState|withChangeContext|setChangeContext|writeAudit/);
+    // Only for a file FINALIZING with no row PENDING: a half-loaded file lists no one.
+    const body = NOTICES.slice(NOTICES.indexOf('export async function writeFinalizeNotices('));
+    expect(body.indexOf("f.state !== 'FINALIZING'")).toBeGreaterThan(0);
+    expect(body.indexOf('if (pending > 0) throw')).toBeGreaterThan(0);
+    expect(body.indexOf('if (pending > 0) throw')).toBeLessThan(body.indexOf('temixChange.createMany('));
+  });
+
+  it('finalize writes the notices in the transaction that makes the file LOADED, after its lock and before LOADED', () => {
+    expect([...APPLY.matchAll(/\bwriteFinalizeNotices\(/g)]).toHaveLength(1);
+    const at = APPLY.indexOf('async function finalize(');
+    const body = APPLY.slice(at, APPLY.indexOf('\n}\n', at));
+    const lock = body.indexOf('FOR UPDATE');
+    const check = body.indexOf("if (!f || f.state !== 'FINALIZING' || f.leaseBy !== token) return false;");
+    const notices = body.indexOf('await writeFinalizeNotices(tx, file)');
+    const loaded = body.indexOf("state: 'LOADED'");
+    expect(lock).toBeGreaterThan(0);
+    expect(check).toBeGreaterThan(lock);
+    expect(notices).toBeGreaterThan(check);
+    expect(loaded).toBeGreaterThan(notices);
+  });
+
+  it('the review marks: TemixChangeReview rows only, with one audit row per file, the Steward first', () => {
+    expect(models(REVIEW)).toEqual(['temixChangeReview.createMany']);
+    expect(REVIEW).toMatch(/data: ids\.slice\(i, i \+ CHUNK\)\.map\(\(changeId\) => \(\{ changeId, reviewedById: me\.id, note: REVIEW_NOTE \}\)\)/);
+    expect([...REVIEW.matchAll(/\bwriteAudit\(tx,/g)]).toHaveLength(1);
+    expect(REVIEW).not.toMatch(/\$executeRaw(Unsafe)?`\s*(UPDATE|INSERT|DELETE)/i);
+    expect(REVIEW).not.toMatch(/notifyUsers|\bcustomer\s*\.|\bbranch\s*\./);
+    expect(REVIEW).toMatch(/if \(user\.role !== Role\.STEWARD\)\s*\{\s*throw new ForbiddenError/);
+    expect(REVIEW).toMatch(/export async function reviewTemixChangesAction[\s\S]*?runAction\(async \(\) => \{\s*const me = await requireSteward\(\);/);
+  });
+
+  it('each ledger table has exactly its writers in the sources, through Prisma or a raw INSERT', () => {
+    const WRITERS: Record<string, string[]> = {
+      temixChange: ['lib/temix-daily-move.ts', 'lib/temix-daily-notices.ts'],
+      temixNoticeSeen: ['lib/temix-daily-notices.ts'],
+      temixChangeReview: ['services/temix-daily-review.ts'],
+    };
+    const found: Record<string, string[]> = { temixChange: [], temixNoticeSeen: [], temixChangeReview: [] };
+    const raw: string[] = [];
+    for (const file of ['app', 'components', 'lib', 'services', 'scripts', 'prisma'].flatMap(walk)) {
+      const src = read(file);
+      for (const m of src.matchAll(MODEL_WRITE_RE)) if (m[1]! in found && !found[m[1]!]!.includes(file)) found[m[1]!]!.push(file);
+      for (const t of ['TemixChange', 'TemixNoticeSeen', 'TemixChangeReview'])
+        if (new RegExp(`\\bINSERT\\s+INTO\\s+(?:"?public"?\\.)?"?${t}"?(?![A-Za-z0-9_])`, 'i').test(src)) raw.push(`${file}: ${t}`);
+    }
+    for (const k of Object.keys(WRITERS)) expect(found[k]!.sort(), k).toEqual(WRITERS[k]!.sort());
+    expect(raw).toEqual([]);
   });
 });
