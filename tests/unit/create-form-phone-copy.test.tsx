@@ -92,6 +92,7 @@ import {
   signedFormDraftKey,
 } from '@/lib/device-drafts';
 import { LEAVE_FORM_LOST_QUESTION, LEAVE_FORM_QUESTION, NO_PULL_REFRESH_CLASS } from '@/lib/leave-guard';
+import { UNCONFIRMED_MESSAGE } from '@/lib/submission';
 
 const NOW = new Date('2026-11-10T08:00:00.000Z').getTime();
 const MINUTE = 60_000;
@@ -1237,6 +1238,29 @@ describe('a send that got no answer, then a reload (item 22), with the whole for
     expect(box('Legal name *')).toHaveValue('');
     await tick();
     expect(stored(), 'nothing unsent, nothing to ask about: no copy').toBeNull();
+    expect(screen.getByText(DISCARDED_SEND_IN_DOUBT)).toBeTruthy();
+  });
+
+  // Review of the hunt fixes: the discarded form's own "No answer ... Tap Try
+  // again" notice stayed under the blank form, and its Try again sent the NEW
+  // form, so its words ("you will see 'Already received'") were untrue.
+  it('"Start a blank form" also takes away the discarded send’s "No answer" notice and its Try again', async () => {
+    const first = renderNew();
+    await sendUnanswered();
+    first.unmount();
+    replies.push(noAnswer);
+    renderNew();
+    await settleUntil(() => screen.queryByText(/may have arrived/) !== null);
+    chooseContinue();
+    replies.push(noAnswer);
+    saveDraft();
+    await settleUntil(() => screen.queryByText(UNCONFIRMED_MESSAGE) !== null);
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Start a blank form' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, start blank' }));
+    expect(box('Legal name *')).toHaveValue('');
+    expect(screen.queryByText(UNCONFIRMED_MESSAGE)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
     expect(screen.getByText(DISCARDED_SEND_IN_DOUBT)).toBeTruthy();
   });
 });

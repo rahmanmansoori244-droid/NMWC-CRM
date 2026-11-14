@@ -1031,6 +1031,9 @@ export function CreateCustomerForm({
       unansweredRef.current = [];
       lastSentRef.current = null;
       setInfo(inDoubt ? DISCARDED_SEND_IN_DOUBT : null);
+      // The discarded form's own notice ("No answer ... Tap Try again") goes
+      // with it: its Try again would send the new form (review of the hunt fixes).
+      setNotice(null);
     }
     applyForm(form);
     setErrors({});
