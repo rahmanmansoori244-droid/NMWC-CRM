@@ -209,7 +209,10 @@ cmd_preflight() {
 }
 
 # window: apply only between 15:30 and 23:30 UTC (19:30-03:30 Oman): no
-# scheduled job of vercel.json or the GitHub schedulers fires then (design 9).
+# scheduled job of vercel.json is due then (design 9). GitHub's own schedules
+# (sla-escalate.yml, keep-warm.yml) are due before 15:00 UTC too, but GitHub can
+# start a run hours late, so the owner's guide has both disabled for the reset
+# evening (Step 5) and enabled again the next morning (Step 6).
 cmd_window() {
   local hm
   hm="$(date -u +%H%M)"

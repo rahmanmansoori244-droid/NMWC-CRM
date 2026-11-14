@@ -262,8 +262,14 @@ start is refused safely (`the target guard refused`), but the evening is lost.
 1. **Write the entry in your private operations log first:** the date, "go-live clean
    start", that you authorise it, and why.
 2. **Tell staff not to open the CRM** until you say so. Do not sign in yourself.
-3. Actions → **DB Backup** → **Run workflow**. Wait for the green tick.
-4. Actions → **Clean start** → **Run workflow**:
+3. **Pause two automatic timers for tonight.** Actions → **SLA escalation sweep** → the
+   **…** button at the top right of its list of runs → **Disable workflow**. Do the same
+   for **Keep production warm**. They are spare timers (the live site runs the same jobs
+   itself), but GitHub sometimes starts them hours late, in the evening, and one late run
+   changes the database and stops the reset. You switch them on again in Step 6, whatever
+   tonight's result.
+4. Actions → **DB Backup** → **Run workflow**. Wait for the green tick.
+5. Actions → **Clean start** → **Run workflow**:
    - mode `apply`;
    - host box `ep-sweet-haze`;
    - phrase box `REMOVE ALL TEST DATA` and today's date in Oman, for example
@@ -271,11 +277,11 @@ start is refused safely (`the target guard refused`), but the evening is lost.
      date as year-month-day);
    - run id box empty.
    Click **Run workflow**.
-5. Wait until **Plan (read-only)** and **Rehearse on the restored backup** are green (about
+6. Wait until **Plan (read-only)** and **Rehearse on the restored backup** are green (about
    20 minutes). If either is red: stop. Send Claude the link. Nothing has changed.
-6. The run shows **Waiting for review**. Click **Review deployments** → tick
+7. The run shows **Waiting for review**. Click **Review deployments** → tick
    **production-reset** → **Approve and deploy**. **This click is your yes.**
-7. Wait about 10 minutes for **Apply (the owner's approval)**. Do not touch anything.
+8. Wait about 10 minutes for **Apply (the owner's approval)**. Do not touch anything.
 
 **Green looks like this.** The Apply job has a green tick, and its summary says:
 
@@ -334,12 +340,15 @@ from that line. Save. (The automatic backup runs at about 06:00 Oman.)
 
 ## Step 6. The next morning
 
-1. **Service status** → **Integrity**: "Tonight's seal was written" is pass. Nothing is
+1. Switch the two timers of Step 5 on again: Actions → **SLA escalation sweep** →
+   **Enable workflow**, and the same for **Keep production warm**. Do this even if the
+   reset was red or did not happen.
+2. **Service status** → **Integrity**: "Tonight's seal was written" is pass. Nothing is
    failing.
-2. Actions → **DB Backup**: last night's run has a green tick.
-3. **Requests** is empty. If a request is there, it was sent from a phone that kept a
+3. Actions → **DB Backup**: last night's run has a green tick.
+4. **Requests** is empty. If a request is there, it was sent from a phone that kept a
    test form: tell Claude before the import.
-4. Only now load the real customer file through the **Import** screen. Check the preview
+5. Only now load the real customer file through the **Import** screen. Check the preview
    first: the codes should be in capital letters, like CCT0005. Two things on the batch
    page are expected and are not faults:
    - A customer code or Temix code typed in small letters is read in capitals. The row
@@ -384,7 +393,7 @@ Find the bold **refused:** line in the summary. A red Apply after the line
 | `a DB Backup run is in progress; wait for it and start again` | a backup is running | wait for it, then start again |
 | `run DB Backup first: the newest dump is too old` | the backup is older than allowed | run DB Backup, then start again |
 | `a newer dump exists than the one the rehearsal restored; start again` | a backup ran during the run | start again |
-| `backup equals production: no` or `production unchanged since the plan: no` | someone used the CRM | make sure nobody does; DB Backup again; start again |
+| `backup equals production: no` or `production unchanged since the plan: no` | the database changed after the backup: someone used the CRM, or a late automatic timer ran (Step 5, item 3), or someone outside tried to sign in | make sure nobody uses it and both timers are disabled; DB Backup again; start again. If nobody used it, tell Claude |
 | `no green neon-rehearsal of these exact scripts in the last 14 days` | the dress rehearsal is missing or too old | do Step 3 again |
 | `the newest dump was taken before 19:00 Oman; run DB Backup again now, then start again` | the backup is from earlier today | run DB Backup, then start again |
 | `DB Backup heartbeat ok within 4 h: no` (or `6 h`) | the CRM has not seen the last backup | send Claude the link |

@@ -64,6 +64,21 @@ describe("the owner's guide quotes only lines the code prints", () => {
     expect(missing('`a line nobody prints: yes`', src)).toEqual(['a line nobody prints: yes']);
   });
 
+  it('the GitHub timers that can start late are disabled for the reset evening and enabled again, by their real names', () => {
+    for (const f of ['.github/workflows/sla-escalate.yml', '.github/workflows/keep-warm.yml']) {
+      const name = /^name: (.+)$/m.exec(read(f))![1]!.trim();
+      const step5 = guide.slice(guide.indexOf('## Step 5.'), guide.indexOf('## Step 6.'));
+      const step6 = guide.slice(guide.indexOf('## Step 6.'), guide.indexOf('## Step 7.'));
+      expect(step5, name).toContain(`**${name}**`);
+      expect(step5).toContain('**Disable workflow**');
+      expect(step5.indexOf(`**${name}**`)).toBeLessThan(step5.indexOf('Actions → **DB Backup**'));
+      expect(step6, name).toContain(`**${name}**`);
+      expect(step6).toContain('**Enable workflow**');
+    }
+    // The refusal a late run causes no longer blames only a person.
+    expect(guide).toMatch(/`production unchanged since the plan: no` \| [^|]*late automatic timer/);
+  });
+
   it('the guide no longer says the Audit page shows the reset figures', () => {
     expect(guide).not.toMatch(/figures from the Audit page/i);
     expect(guide).not.toMatch(/Copy its figures/i);
