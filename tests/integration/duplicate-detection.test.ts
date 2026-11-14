@@ -528,5 +528,36 @@ describe.skipIf(!ENABLED)('duplicate detection against Postgres (item 16)', () =
       await expect(check({ ...twin, excludeEditId: edit.id })).resolves.toBeUndefined();
       await expect(check({ ...twin, includeOpenRequests: false })).resolves.toBeUndefined();
     });
+
+    it("at finalize, a CR holder outside the Accountant's regions is not named to him (follow-up 1, H4)", async () => {
+      const { canSeeCustomer } = await import('@/lib/access');
+      const crH4 = `${tag}-H4`;
+      await mk('h4', { cr: crH4, branches: [{ region: 'r2' }] });
+      const accountant = { id: 'zz-acc', role: 'ACCOUNTANT' as const, username: 'zz-acc' };
+      const finalize = (managedRegionIds: string[]) =>
+        prisma.$transaction((tx) =>
+          guards.assertNoExactCreateDuplicate(tx, {
+            crNumberNorm: normalizeCR(crH4),
+            legalName: `ZZ Dup H4 New ${tag}`,
+            primaryPhoneNorm: null,
+            regionIds: [r.r1],
+            includeOpenRequests: false,
+            finalizerCanSee: (branches) =>
+              canSeeCustomer(accountant, { branches }, { ownedRouteId: null, teamRouteIds: [], managedRegionIds }),
+          })
+        );
+      // Region-1 Accountant: told it exists in another region, with no code or name.
+      const hidden = await finalize([r.r1]).catch((e) => e);
+      expect(hidden).toMatchObject({
+        code: 'DUPLICATE_CR',
+        message:
+          'A customer with this CR number already exists in another region. It cannot be created twice: reject this request and give that as the reason.',
+      });
+      // Region-2 Accountant: named, as before.
+      await expect(finalize([r.r2])).rejects.toMatchObject({
+        code: 'DUPLICATE_CR',
+        message: expect.stringContaining(`${P}-h4 — ZZ Dup h4 ${tag}`),
+      });
+    });
   });
 });

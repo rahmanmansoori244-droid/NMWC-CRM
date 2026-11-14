@@ -52,7 +52,11 @@ const h = vi.hoisted(() => ({
 vi.mock('@/lib/auth', () => ({ auth: async () => (h.user ? { user: h.user } : null) }));
 vi.mock('next/cache', () => ({ revalidatePath: () => {}, revalidateTag: () => {} }));
 vi.mock('next/navigation', () => ({ redirect: () => {} }));
-vi.mock('@/lib/access', () => ({ loadScope: async () => ({ managedRegionIds: h.managedRegionIds }) }));
+// canSeeCustomer: the final step asks it whether a CR holder may be named (H4).
+vi.mock('@/lib/access', () => ({
+  loadScope: async () => ({ managedRegionIds: h.managedRegionIds }),
+  canSeeCustomer: () => true,
+}));
 vi.mock('@/lib/audit', () => ({
   getAuditEnvelope: async (actorId: string) => ({ actorId, ip: null, userAgent: null }),
   writeAudit: h.writeAudit,

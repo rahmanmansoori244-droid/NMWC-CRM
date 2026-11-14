@@ -2031,6 +2031,12 @@ async function approveEditCore(formData: FormData) {
     // inside the transaction below, so it cannot read the request context
     // itself; the envelope is built out here and handed down.
     const finalizeEnv = await getAuditEnvelope(session.id);
+    // H4: a CR holder the Accountant cannot open is not named to him (read
+    // before the transaction, as the step gate's scope is).
+    const { loadScope, canSeeCustomer } = await import('@/lib/access');
+    const finalizerScope = await loadScope(session.id);
+    const approverCanSee = (branches: Array<{ routeId: string; regionId: string; deletedAt: Date | null }>) =>
+      canSeeCustomer(sessionUser, { branches }, finalizerScope);
     const result = await ownLostClaim(sessionUser, edit, expected, () => withChangeContext(
       prisma,
       { actorId: session.id, source: src.edit(editId) },
@@ -2095,7 +2101,8 @@ async function approveEditCore(formData: FormData) {
           },
           finalizeEnv,
           finalizedAt,
-          temixCode
+          temixCode,
+          approverCanSee
         );
         await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
         // Submitter learns their customer is live, under both codes (owner

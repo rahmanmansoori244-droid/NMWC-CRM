@@ -109,6 +109,51 @@ describe('a live duplicate at finalize: the approver is told to reject, with the
   });
 });
 
+describe('a live CR duplicate at finalize, held to what the Accountant may open (follow-up 1, H4)', () => {
+  // The guard asks for the holder's live shops; the stand-in answers with one
+  // shop per route, in region `reg-<route>`.
+  const withShops = (live: LiveRow) => {
+    const tx = fakeTx(live) as unknown as {
+      customer: { findFirst: ReturnType<typeof vi.fn> };
+    };
+    tx.customer.findFirst.mockImplementation(async (a: { select: { branches?: unknown } }) => ({
+      nmwcCode: live.nmwcCode,
+      legalName: live.legalName,
+      ...(a.select.branches
+        ? { branches: live.routeIds.map((r) => ({ routeId: r, regionId: `reg-${r}`, deletedAt: null })) }
+        : {}),
+    }));
+    return tx as never;
+  };
+  const inRegions = (ids: string[]) => (branches: Array<{ regionId: string }>) =>
+    branches.some((b) => ids.includes(b.regionId));
+
+  it('a holder in another region: not named, and he is told to reject', async () => {
+    const err = await assertNoExactCreateDuplicate(withShops(shop), {
+      ...cr,
+      includeOpenRequests: false,
+      finalizerCanSee: inRegions(['reg-route-mine']),
+    }).catch((e) => e);
+    expect(err.code).toBe('DUPLICATE_CR');
+    expect(err.message).toBe(
+      'A customer with this CR number already exists in another region. It cannot be created twice: reject this request and give that as the reason.'
+    );
+    expect(err.message).not.toContain('NMWC-2026-000009');
+    expect(err.message).not.toContain('Al Noor');
+  });
+
+  it('a holder he may open: named, as before', async () => {
+    const err = await assertNoExactCreateDuplicate(withShops(shop), {
+      ...cr,
+      includeOpenRequests: false,
+      finalizerCanSee: inRegions(['reg-route-other']),
+    }).catch((e) => e);
+    expect(err.message).toBe(
+      'A customer with this CR number already exists: NMWC-2026-000009 — Al Noor Shop. It cannot be created twice: reject this request and give that as the reason.'
+    );
+  });
+});
+
 describe('an open request in the way', () => {
   it("someone else's: whose, and where it stands", async () => {
     const cases = [
