@@ -729,13 +729,21 @@ apply run's summary. It refuses unless the reset row `cleanstart-<run_id>` exist
 at least 7 days old, the sha256 of the stored list (`cleanstart/<run_id>/apply/photo-keys.txt.age`)
 equals both the typed value and the reset row's value, and no production `Attachment`
 row references a listed key (one hit means a rollback happened: everything is refused).
-Then it deletes the Neon safety branch FIRST (no rollback may be left pointing at missing
-files), skips keys without the photo shape, keeps keys the test environment references
-(only when `UAT_DATABASE_URL_RO` is set; otherwise `test environment checked for shared
-photos: no (no read-only UAT connection set)`), deletes the rest in batches of at most
-1000 and HEAD-checks each, writes one AuditLog row `cleanstart-photos-<run>` and stores an
-encrypted report under `cleanstart/<run_id>/photos/`. It cannot be undone. If bucket
-versioning is on, the bytes linger up to 30 days.
+Before anything is deleted, the read-write photo token writes a throwaway object
+(`cleanstart-probe/…`), reads it back and deletes it (`photo-delete.sh probe`): a
+read-only, expired or revoked token, or a wrong bucket name, is refused there, with
+nothing deleted. Then it deletes the Neon safety branch FIRST (no rollback may be left
+pointing at missing files), skips keys without the photo shape, keeps keys the test
+environment references (only when `UAT_DATABASE_URL_RO` is set; otherwise `test
+environment checked for shared photos: no (no read-only UAT connection set)`), deletes
+the rest in batches of at most 1000 and HEAD-checks each. It then writes one AuditLog row
+per run attempt: `cleanstart-photos-<run>` for the first, `cleanstart-photos-<run>-<N>`
+for a re-run attempt N (`photos-record.sql`). The row stores `complete` and `runAttempt`
+with the counts; if the delete step was red, the row has `complete` false and its reason
+says the deletion did NOT complete. The encrypted report goes under
+`cleanstart/<run_id>/photos-<run>-<attempt>/`, one folder per photo run and attempt, so
+a re-run never overwrites an earlier report. It cannot be undone. If bucket versioning is
+on, the bytes linger up to 30 days.
 
 ### Going back
 

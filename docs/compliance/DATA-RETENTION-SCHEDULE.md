@@ -66,7 +66,7 @@ approved run.
 Where the evidence is: in the CRM, the AuditLog row `cleanstart-<run>` (the first row of
 the new log: what was removed and kept, by count, and the hashes of what was exported,
 stored in the row (not shown on the Audit page))
-and the photo run's row `cleanstart-photos-<run>`; the GitHub Actions runs of the
+and the photo run's row `cleanstart-photos-<run>` (`-<N>` added for a re-run attempt N); the GitHub Actions runs of the
 `Clean start` and `Clean start photos` workflows and their approvals; the age-encrypted
 exports, reports and the archived old seals under `cleanstart/<run>/` in the backups
 bucket (outside the 30-day `db/` rule); and the owner's private operations log. The test
