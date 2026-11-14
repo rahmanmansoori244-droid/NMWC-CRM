@@ -425,8 +425,24 @@ export async function buildChangeReport(
     return t;
   };
 
+  // The edits are kept per customer, so a chain customer's edit can hold a shop
+  // the exporter may not see (a Manager's other region, a Supervisor's other
+  // route). Owner decision 3 (2026-10-07): a scoped reviewer sees changes to his
+  // own shops only, so a field of a shop outside a restricted scope is no row,
+  // no mark and no tally, and an edit that touched only such shops is not
+  // counted for its salesman at all (bug hunt round 1, finding 2).
+  const scopeRestricted = scope.allowedRegionIds !== null || scope.allowedRouteIds !== null;
+  const visibleChange = (c: FieldChange): boolean => {
+    if (!scopeRestricted || !c.field.startsWith('branch.')) return true;
+    const rest = c.field.slice('branch.'.length);
+    const dot = rest.indexOf('.');
+    return dot >= 0 && branchById.has(rest.slice(0, dot));
+  };
+
   for (const e of scopedEdits) {
-    const changes = (Array.isArray(e.fieldChanges) ? e.fieldChanges : []) as FieldChange[];
+    const recorded = (Array.isArray(e.fieldChanges) ? e.fieldChanges : []) as FieldChange[];
+    const changes = recorded.filter(visibleChange);
+    if (recorded.length > 0 && changes.length === 0) continue;
     const state: Mark['state'] = e.state === EditState.APPROVED ? 'APPROVED' : 'PENDING';
     const by = e.submittedBy.username;
     const at = state === 'APPROVED' ? e.reviewedAt : e.submittedAt;

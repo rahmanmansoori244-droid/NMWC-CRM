@@ -18,6 +18,7 @@ vi.mock('@/lib/db', () => ({
     channel: { findMany: async () => [] },
     subChannel: { findMany: async () => [] },
     user: { findMany: async () => [], findUnique: async () => ({ isTest: false }) },
+    region: { findMany: async () => [{ id: 'reg-a' }] },
     attachment: { findMany: async () => [] },
     customerEdit: { findMany: async () => h.edits },
   },
@@ -237,6 +238,77 @@ describe('buildChangeReport — Oman days (process in UTC, as on Vercel)', () =>
     } finally {
       vi.useRealTimers();
       vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe('buildChangeReport — a chain customer with shops in two regions (bug hunt round 1, finding 2)', () => {
+  // Shop S1 is on a region-A route (the Manager's), shop S2 on a region-B route.
+  // The page query is scoped, so only S1 comes back for the region-A Manager.
+  const s1 = { ...reportBranch('0007-01', 'A1'), customerId: 'c-chain', regionId: 'reg-a' };
+  const s2Id = 'b-0007-02';
+  const at = new Date('2026-09-28T08:00:00.000Z');
+  const edit = (id: string, fieldChanges: unknown[], who: string) => ({
+    id,
+    customerId: 'c-chain',
+    state: 'APPROVED',
+    fieldChanges,
+    submittedAt: at,
+    reviewedAt: at,
+    submittedBy: { id: `u-${who}`, username: who, fullName: who },
+    reviewedBy: { username: 'mgr.b', fullName: 'Manager B' },
+  });
+  const edits = [
+    // The region-B salesman moves S2's address and point only.
+    edit('e-b', [
+      { field: `branch.${s2Id}.address`, before: 'Old B street', after: 'New B street' },
+      { field: `branch.${s2Id}.gpsLat`, before: 23.1, after: 23.2 },
+    ], 'salesman.b'),
+    // The region-A salesman changes the customer's phone and S1's hours, and the
+    // same edit also touched S2's visit day.
+    edit('e-a', [
+      { field: 'customer.primaryPhone', before: '91111111', after: '92222222' },
+      { field: `branch.${s1.id}.openingHours`, before: '8-5', after: '9-6' },
+      { field: `branch.${s2Id}.dayOfVisit`, before: 'SUN', after: 'MON' },
+    ], 'salesman.a'),
+  ];
+
+  it("a region-A Manager sees no field, value or salesman of the region-B shop", async () => {
+    h.findMany.mockReset().mockResolvedValueOnce([s1]).mockResolvedValue([]);
+    h.count.mockResolvedValueOnce(1);
+    h.edits = edits;
+    try {
+      const out = await buildChangeReport({ id: 'm1', role: 'MANAGER' as const, username: 'mgr.a' }, {});
+      const sheets = await parseWorkbook(out.bytes);
+      const changes = sheets.find((s) => s.name === 'Changes')!;
+      expect(changes.rows.map((r) => `${r.branch_code ?? ''}|${r.field}`).sort()).toEqual(
+        ['|phone', '0007-01|opening_hours'].sort()
+      );
+      const text = JSON.stringify(changes.rows);
+      expect(text).not.toContain('New B street');
+      expect(text).not.toContain('MON');
+      expect(text).not.toContain('no longer in scope');
+      const bySalesman = sheets.find((s) => s.name === 'By salesman')!;
+      expect(bySalesman.rows.map((r) => r.salesman)).toEqual(['salesman.a']);
+      expect(Number(bySalesman.rows[0]!.fields_changed)).toBe(2);
+      expect(Number(bySalesman.rows[0]!.edits_approved)).toBe(1);
+    } finally {
+      h.edits = [];
+    }
+  });
+
+  it('the Steward (org-wide) still sees every change of the customer, as before', async () => {
+    h.findMany.mockReset().mockResolvedValueOnce([s1]).mockResolvedValue([]);
+    h.count.mockResolvedValueOnce(1);
+    h.edits = edits;
+    try {
+      const out = await buildChangeReport(steward, {});
+      const sheets = await parseWorkbook(out.bytes);
+      expect(sheets.find((s) => s.name === 'Changes')!.rows).toHaveLength(5);
+      const names = sheets.find((s) => s.name === 'By salesman')!.rows.map((r) => r.salesman);
+      expect(names).toEqual(['salesman.a', 'salesman.b']);
+    } finally {
+      h.edits = [];
     }
   });
 });
