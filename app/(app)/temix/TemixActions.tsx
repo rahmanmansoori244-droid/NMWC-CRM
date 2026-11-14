@@ -96,7 +96,7 @@ export function GenerateBatchButton({ disabled, queued = 0 }: { disabled: boolea
           {saved}
         </p>
       )}
-            {held.length > 0 && (
+      {held.length > 0 && (
         <p role="status" className="max-w-md text-right text-xs font-medium text-amber-700">
           Not in this file, still queued: {held.slice(0, 10).join(', ')}
           {held.length > 10 ? ` and ${held.length - 10} more` : ''}. Deactivating these archived
