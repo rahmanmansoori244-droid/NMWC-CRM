@@ -153,6 +153,7 @@ enum NotificationKind {
   REACTIVATION_REQUESTED // F1: a reactivation waiting on a Manager; decided only on /reactivations
   SIGNED_FORM_REQUESTED // Owner decisions 2026-10-11: the salesman must upload the signed credit application
   INTEGRITY_ALERT // Gap 29: the nightly data check found a problem; to the Data Steward, in-app only (lib/integrity)
+  TEMIX_DAILY_SUMMARY // Daily Temix import: one a day per Data Steward, counts only; written only once lib/temix-daily-policy.ts switches it on
 }
 
 // ── ORG HIERARCHY ────────────────────────────────────────

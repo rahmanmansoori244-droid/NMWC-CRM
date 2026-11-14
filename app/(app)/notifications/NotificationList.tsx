@@ -24,6 +24,8 @@ const KIND_LABEL: Record<string, string> = {
   SIGNED_FORM_REQUESTED: 'Signed form',
   // Gap 29: the nightly data check (lib/integrity).
   INTEGRITY_ALERT: 'Data check',
+  // The daily Temix import's summary (lib/temix-daily-summary.ts).
+  TEMIX_DAILY_SUMMARY: 'Temix daily',
 };
 
 const KIND_TONE: Record<string, string> = {
@@ -38,6 +40,7 @@ const KIND_TONE: Record<string, string> = {
   REACTIVATION_REQUESTED: 'bg-sky-50 text-sky-700 ring-sky-200',
   SIGNED_FORM_REQUESTED: 'bg-amber-50 text-amber-800 ring-amber-200',
   INTEGRITY_ALERT: 'bg-red-50 text-red-700 ring-red-200',
+  TEMIX_DAILY_SUMMARY: 'bg-violet-50 text-violet-700 ring-violet-200',
 };
 
 export function NotificationRow({

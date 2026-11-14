@@ -56,6 +56,8 @@ export function hrefFor(
   if (n.kind === 'TEMIX_UPLOAD_READY') return '/temix';
   // Gap 29: the nightly data check's alert, to the Data Steward.
   if (n.kind === 'INTEGRITY_ALERT') return '/status/integrity';
+  // The daily Temix import's summary, to the Data Steward (lib/temix-daily-summary.ts).
+  if (n.kind === 'TEMIX_DAILY_SUMMARY') return '/temix-daily';
   // Owner decisions 2026-10-11: the salesman's signed credit application is
   // uploaded on his own request's page. A late one (SLA_BREACH to the salesman)
   // only ever arises at that step, so it goes there too.

@@ -1222,6 +1222,12 @@ COMMIT;
 
 The next night's `test-flags-changed` check reports the change (that is expected: it is how an unexpected one is caught). Whether the Steward should have a screen for this instead is an open owner question.
 
+### The daily Temix file (being built: upload and staging only)
+
+**`/temix-daily`** (Data Steward only) takes the day's Temix customer export (.xlsx or .csv, up to 4.2 MB) and **stages it only: nothing in it is applied to any customer or shop yet**; checking, applying and the summary come in later builds. The file's SHA-256 and size are recorded first. A file missing one of the agreed columns (`cust_code`, `branch_code`, `cust_name`, `route`, `payment_terms`, `credit_limit`, `payment_term_days`, `status`, `created_date`; `cr_no`, `phone` and `address` are optional) is refused, and so is a customer master (a file with `temix_code`, `channel`, `day_of_visit`, `customer_status` or `sales_region`), which belongs on `/import`. The same file is taken once per day (the load day is the Oman day of the upload); the same file on a later day is staged with a warning. Files are taken in the order of their day: the list says which file a newer one waits for. Each row's problems on its face (no customer code, `status` not A or I, a credit figure that is not a number, a shop code that only looks like another of the same customer's) are counted on the list; nothing is decided from them yet. One AuditLog row per upload (entity `TemixDailyFile`, counts and codes only).
+
+**Deploy order of its alert.** Migration `20261114110000_notification_temix_daily_summary` adds the notification kind `TEMIX_DAILY_SUMMARY` on its own. The build that ships it reads the kind but never writes it (`lib/temix-daily-policy.ts` `TEMIX_DAILY_SUMMARY_ENABLED = false`); a one-line follow-up commit turns it on once that build has served production and passed smoke, as for `INTEGRITY_ALERT` (§5k "Deploy order"). Before rolling back past the build that turned it on, delete the `TEMIX_DAILY_SUMMARY` notification rows.
+
 ### Re-import the master after a bulk fix
 
 **The rule (code review 2026-11-10, finding 1; the owner's field-ownership rule).** The CRM is

@@ -111,8 +111,17 @@ function migrationFkRules(t: Tables, fks = migrationForeignKeys()): string[] {
  * PurgeSummary (emptied) gets one more rule id in its CHECK. guards.sql CS001,
  * CS003 and CS005, selfcheck.sql CS101, the fingerprint's empty_tables, the
  * reset's LOCK and TRUNCATE lists and verify.sql CS302 name them.
+ *
+ * Re-checked 2026-11-14 against the 44th,
+ * 20261114110000_notification_temix_daily_summary (the daily Temix import,
+ * stage 2): one value, TEMIX_DAILY_SUMMARY, added to the NotificationKind enum,
+ * and nothing else. No table, column, trigger, foreign key or sequence is
+ * added or changed, so the inventory is unchanged: Notification stays EMPTY (a
+ * summary would only ever name a day's counts, which mean nothing once the
+ * customers are emptied), the enum itself is schema and is kept. tables.json,
+ * guards.sql and the fingerprint need no change.
  */
-const REVIEWED_THROUGH = { count: 43, last: '20261114100000_temix_daily_tables' };
+const REVIEWED_THROUGH = { count: 44, last: '20261114110000_notification_temix_daily_summary' };
 
 /** The rules; each returns what is wrong (empty = right). */
 function tableRules(t: Tables, schema: ParsedSchema): string[] {
