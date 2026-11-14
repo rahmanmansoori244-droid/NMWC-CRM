@@ -19,8 +19,11 @@
  *  - every spread and every `data: <name>` is one of the named values below,
  *    each proven here to carry no route or region.
  * Raw SQL that UPDATEs "Branch" naming "routeId" or "regionId" appears only in
- * the mover (it has none). Moving moveShopToRoute, or adding a second writer,
- * needs a deliberate change to this test.
+ * the mover (it has none). A nested relation write of shops from the other
+ * side (route.update({ data: { branches: { connect } } }), region ... set,
+ * customer ... update) appears nowhere (review 2026-11-15): it would move a
+ * shop without a branch.* call. Moving moveShopToRoute, or adding a second
+ * writer, needs a deliberate change to this test.
  *
  * Structural, per CLAUDE.md: comments stripped first, call arguments read by
  * balanced brackets.
@@ -136,6 +139,23 @@ export function rawRouteWrites(src: string): string[] {
   return out;
 }
 
+/**
+ * Nested writes of shops through another model's write: a `branches: { ... }`
+ * holding connect, connectOrCreate, set, disconnect, update, updateMany or
+ * upsert. `create`/`createMany` there make new shops (shop creation), and a
+ * read's `branches: { some | every | none }` is no write. Returns the start of
+ * each, for the message.
+ */
+export function nestedShopWrites(src: string): string[] {
+  const out: string[] = [];
+  const key = /\bbranches\s*:\s*\{/g;
+  for (let m = key.exec(src); m; m = key.exec(src)) {
+    const inner = balanced(src, m.index + m[0].length - 1);
+    if (/\b(connect|connectOrCreate|set|disconnect|update|updateMany|upsert)\s*:/.test(inner)) out.push(src.slice(m.index, m.index + 80));
+  }
+  return out;
+}
+
 const files = ROOTS.flatMap(walk);
 const read = (f: string) => stripComments(readFileSync(f, 'utf8'), f);
 
@@ -167,6 +187,22 @@ describe('one route writer: lib/temix-daily-move.ts', () => {
     expect(rawRouteWrites('await tx.$executeRaw`UPDATE "BranchHistory" SET "routeId" = 1`')).toEqual([]);
     expect(rawRouteWrites('await tx.$queryRaw`UPDATE "Branch" AS b SET "dayOfVisit" = v.day FROM v WHERE b."routeId" = v."routeId"`')).toEqual([]);
     expect(rawRouteWrites('await tx.$queryRaw`UPDATE "Branch" AS b\n SET "dayOfVisit" = v.day, "regionId" = v.r FROM v WHERE b."id" = v.id`')).toHaveLength(1);
+    for (const src of [
+      'await tx.route.update({ where: { id: r }, data: { branches: { connect: [{ id: b }] } } });',
+      'await tx.region.update({ where: { id: g }, data: { branches: { set: [{ id: b }] } } });',
+      'await tx.customer.update({ where: { id }, data: { branches: { update: { where: { id: b }, data: { routeId: r } } } } });',
+      'await tx.route.upsert({ where: { code }, update: { branches: { connectOrCreate: x } }, create: { code } });',
+      'await tx.customer.update({ where: { id }, data: { branches: { updateMany: { where: {}, data: { regionId: g } } } } });',
+      'await tx.route.update({ where: { id }, data: { branches: { disconnect: [{ id: b }] } } });',
+      'await tx.customer.update({ where: { id }, data: { branches: { upsert: { where: { id: b }, update: {}, create: x } } } });',
+    ])
+      expect(nestedShopWrites(src), src).toHaveLength(1);
+    for (const src of [
+      'await tx.customer.create({ data: { nmwcCode, branches: { create: [{ routeId: r, regionId: g }] } } });',
+      'await tx.customer.findMany({ where: { branches: { some: { routeId: r } } } });',
+      'await tx.customer.count({ where: { branches: { none: {} } } });',
+    ])
+      expect(nestedShopWrites(src), src).toEqual([]);
   });
 
   it('walks every source root, scripts and seeds included, and finds the mover', () => {
@@ -184,6 +220,7 @@ describe('one route writer: lib/temix-daily-move.ts', () => {
     const src = read(file);
     for (const w of branchWrites(file, src)) expect(writeProblem(w), `${file}:${w.line} (${w.kind})`).toBeNull();
     expect(rawRouteWrites(src), file).toEqual([]);
+    expect(nestedShopWrites(src), file).toEqual([]);
   });
 
   it('moveShopToRoute is called from the apply only', () => {
