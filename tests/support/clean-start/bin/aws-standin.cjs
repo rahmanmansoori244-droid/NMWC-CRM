@@ -43,6 +43,19 @@ const listAll = (dir, base = '') =>
     : [];
 
 const [svc, cmd] = argv;
+// FAKE_S3_MISSING_BUCKETS=<name,...>: those buckets do not exist (a wrong bucket name).
+// As S3 and R2 answer: a HEAD has no body, so it reads as a plain 404 "Not Found",
+// exactly as a missing key does; every other call names NoSuchBucket.
+{
+  const missing = (process.env.FAKE_S3_MISSING_BUCKETS || '').split(',').filter(Boolean);
+  const b = svc === 's3' ? (s3url(argv[2]) || s3url(argv[3]) || {}).bucket : opt('--bucket');
+  if (b && missing.includes(b)) {
+    log({ op: `${cmd}-no-bucket`, bucket: b });
+    if (cmd === 'head-object') notFound();
+    process.stderr.write(`An error occurred (NoSuchBucket) when calling the ${cmd} operation: The specified bucket does not exist\n`);
+    process.exit(svc === 's3' ? 1 : 254);
+  }
+}
 if (svc === 's3' && cmd === 'cp') {
   const src = argv[2];
   const dst = argv[3];

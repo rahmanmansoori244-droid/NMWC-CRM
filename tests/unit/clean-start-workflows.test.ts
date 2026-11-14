@@ -268,6 +268,17 @@ describe('targets', () => {
     expect(sr).toMatch(/run\.sh status-lines "\$CS_DIR\/watch-latest\.tsv" refuse/);
   });
 
+  it('the photo run probes the read-write token before it deletes the Neon safety branch (its first irreversible step)', () => {
+    const steps = PHOTOS.jobs.photos!.steps;
+    const names = steps.map((s) => s.name ?? '');
+    const probe = names.findIndex((n) => /read-write photo token can write and delete/.test(n));
+    const neon = names.findIndex((n) => /Neon safety branch/.test(n));
+    expect(probe).toBeGreaterThan(0);
+    expect(neon).toBe(probe + 1);
+    expect(steps[probe]!.if).toBeUndefined();
+    expect(steps[probe]!.run).toMatch(/photo-delete\.sh probe "\$GITHUB_RUN_ID"/);
+  });
+
   it('age is installed on its own with one retry (the universe mirror flakes; db-backup.yml), in every job that needs it', () => {
     let n = 0;
     for (const [f, id, j] of allJobs()) {

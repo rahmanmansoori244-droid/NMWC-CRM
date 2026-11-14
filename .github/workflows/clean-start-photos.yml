@@ -168,6 +168,11 @@ jobs:
           bash scripts/ops/clean-start/photo-delete.sh check "$CS_DIR/photo-keys.txt" "$CS_DIR/reset-row.txt" "$CS_DIR/prod-keys.txt"
           bash scripts/ops/clean-start/run.sh bool "the real customer file is loaded (customers exist)" "$CS_DIR/customers.out"
 
+      # Before the first irreversible step: the read-write photo token works on this
+      # bucket (a swapped, expired or revoked token, or a wrong bucket name, stops here).
+      - name: The read-write photo token can write and delete (a throwaway object)
+        run: bash scripts/ops/clean-start/photo-delete.sh probe "$GITHUB_RUN_ID"
+
       - name: Delete the reset's Neon safety branch first
         run: bash scripts/ops/clean-start/run.sh neon-delete-safety "$TARGET_RUN"
 

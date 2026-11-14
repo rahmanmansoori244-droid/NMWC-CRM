@@ -71,12 +71,55 @@ aws_rw() {
 }
 sorted() { tr -d '\r' < "$1" | grep -v '^$' | LC_ALL=C sort -u || true; }
 
+# head_rw <key>: 0 = there, 1 = definitely not found, 2 = unknown (the read-write token).
+head_rw() {
+  local rc=0
+  AWS_ACCESS_KEY_ID="${CLEANSTART_R2_RW_ACCESS_KEY_ID:?}" AWS_SECRET_ACCESS_KEY="${CLEANSTART_R2_RW_SECRET_ACCESS_KEY:?}" \
+    aws s3api head-object --bucket "$PHOTOS_BUCKET" --key "$1" --endpoint-url "https://${PHOTOS_R2_ACCOUNT_ID:?}.r2.cloudflarestorage.com" \
+    > /dev/null 2> "$CS_DIR/pd-head.err" || rc=$?
+  cat "$CS_DIR/pd-head.err" >> "$CS_DIR/aws.log" 2>/dev/null || true
+  if [ "$rc" -eq 0 ]; then rm -f "$CS_DIR/pd-head.err"; return 0; fi
+  if grep -qE '\((404|NoSuchKey|NotFound)\)|Not Found' "$CS_DIR/pd-head.err"; then rm -f "$CS_DIR/pd-head.err"; return 1; fi
+  rm -f "$CS_DIR/pd-head.err"
+  return 2
+}
+
 mode="${1:-}"
 list="${2:-}"
-case "$mode" in check | delete) ;; *)
-  echo "usage: photo-delete.sh check <list> <reset row> <production keys> [uat keys] | delete <list> [uat keys]" >&2
+case "$mode" in check | delete | probe) ;; *)
+  echo "usage: photo-delete.sh check <list> <reset row> <production keys> [uat keys] | delete <list> [uat keys] | probe <run id>" >&2
   exit 2 ;;
 esac
+
+# probe <run id>: BEFORE anything is deleted (the Neon safety branch included),
+# the read-write photo token writes a throwaway object, reads it back and deletes
+# it, and the store then says it is gone. A swapped (read-only), expired or
+# revoked token, or a wrong bucket name, is refused here, not after the
+# irreversible steps. (A HEAD has no body: a missing bucket answers it as a
+# missing key does, so "gone" alone could never prove the bucket.)
+if [ "$mode" = probe ]; then
+  [[ $list =~ ^[0-9]{1,20}$ ]] || refuse "the run id is malformed"
+  : "${PHOTOS_BUCKET:?}"
+  pk="cleanstart-probe/$list-$(date -u +%s).txt"
+  printf 'clean-start photo step: a write-and-delete check of the read-write token\n' > "$CS_DIR/pd-probe.txt"
+  ok=1
+  st=9
+  if aws_rw s3 cp "$CS_DIR/pd-probe.txt" "s3://$PHOTOS_BUCKET/$pk" --content-type text/plain > /dev/null; then
+    st=0
+    head_rw "$pk" || st=$?
+    if [ "$st" -eq 0 ] && aws_rw s3api delete-object --bucket "$PHOTOS_BUCKET" --key "$pk" > /dev/null; then
+      st=0
+      head_rw "$pk" || st=$?
+      [ "$st" -eq 1 ] && ok=0
+    fi
+  fi
+  rm -f "$CS_DIR/pd-probe.txt"
+  note "probe=$pk ok=$ok"
+  yes_no "the read-write photo token can write and delete in the photo bucket" "$ok"
+  [ "$ok" -eq 0 ] || refuse "the read-write photo token cannot write and delete in the photo bucket (a wrong, read-only or expired token, or a wrong bucket name); nothing was deleted"
+  exit 0
+fi
+
 [ -f "$list" ] || refuse "the stored key list is missing"
 
 if [ "$mode" = check ]; then

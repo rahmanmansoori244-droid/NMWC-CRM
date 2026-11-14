@@ -393,6 +393,7 @@ Find the bold **refused:** line in the summary. A red Apply after the line
 | `reset committed: unknown (no connection); run mode finish with this run id` or `reset committed: unknown (the check did not finish); run mode finish with this run id` | the answer was lost | send Claude the link, then run **finish** (below) the same evening when Claude says so |
 | a red Apply with `reset started at (UTC)` but no `reset committed:` line | the run was stopped, or ran out of time; the reset may have happened | press nothing; send Claude the link |
 | `the real customer file is loaded (customers exist): no` (photos) | the real file is not loaded yet | load it first (Step 6) |
+| `the read-write photo token cannot write and delete in the photo bucket (a wrong, read-only or expired token, or a wrong bucket name); nothing was deleted` (photos) | the token of Step 1 C does not work (it lasts 60 days), or the two tokens were swapped | nothing was deleted. Send Claude the link; Claude helps you make a new token |
 | `the old seal files are back, but a seal chain under seals/ cannot be named (the new chain's id was not recorded); nothing else is moved; tell Claude` (seal-restore) | the old seal files are back; one folder of seal files is unexplained | send Claude the link before anyone uses the CRM |
 | anything else | | send Claude the link; do not press anything |
 
@@ -431,6 +432,7 @@ green, and the summary says:
 - `the reset is at least 7 days old: yes`
 - `the stored list, the typed value and the reset row agree: yes`
 - `production references none of the listed photos: yes`
+- `the read-write photo token can write and delete in the photo bucket: yes`
 - `temporary Neon branches deleted: yes` (this is the Neon safety copy; if it was
   already gone, the line is `Neon branches to delete: no`)
 - `every photo to delete is confirmed gone: yes`

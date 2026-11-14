@@ -943,6 +943,23 @@ describe('photo-delete.sh: refuses unless it is safe, then deletes only the righ
     expect(readFileSync(join(sb.csDir, 'photo-delete.counts'), 'utf8').trim()).toBe('1 0 0 0');
   });
 
+  it('probe: the read-write token writes, reads back and deletes a throwaway object; a read-only token or a wrong bucket refuses', () => {
+    const probes = () => sb.s3Calls().filter((c) => String(c.key ?? '').startsWith('cleanstart-probe/'));
+    const ok = pd(`probe ${RUN}`);
+    expect([ok.code, ok.lines]).toEqual([0, ['the read-write photo token can write and delete in the photo bucket: yes']]);
+    expect(probes().filter((c) => c.op === 'put' || c.op === 'delete').every((c) => c.accessKeyId === 'rw-key' && c.bucket === 'photos')).toBe(true);
+    expect(existsSync(join(sb.s3, 'photos', 'cleanstart-probe')) ? readdirSync(join(sb.s3, 'photos', 'cleanstart-probe')) : []).toEqual([]);
+    // The read-only token pasted into the read-write secret (Step 1 B and C are easy to swap).
+    const ro = pd(`probe ${RUN}`, { CLEANSTART_R2_RW_ACCESS_KEY_ID: 'ro-key' });
+    expect(ro.code).toBe(1);
+    expect(ro.lines).toContain('the read-write photo token can write and delete in the photo bucket: no');
+    // A wrong bucket name: every HEAD would read "Not Found", so only the write proves the bucket.
+    const nb = pd(`probe ${RUN}`, { FAKE_S3_MISSING_BUCKETS: 'photos' });
+    expect(nb.code).toBe(1);
+    expect(nb.out).toMatch(/nothing was deleted/);
+    expect(pd('probe x').code).toBe(1);
+  });
+
   it('a batch size can only be made smaller, never above 1000', () => {
     const src = readFileSync('scripts/ops/clean-start/photo-delete.sh', 'utf8');
     expect(src).toMatch(/\[ "\$BATCH" -le 1000 \] \|\| BATCH=1000/);
