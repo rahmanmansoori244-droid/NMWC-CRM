@@ -632,6 +632,11 @@ describe('run.sh encrypt-upload / fetch-decrypt / dump-gates / watch-lines / cou
     expect(sb.has('backups', `cleanstart/${RUN}/plan/plan.json.age`)).toBe(true);
     expect(sb.read('backups', `cleanstart/${RUN}/plan/plan.json.age`).toString('latin1')).not.toContain('Customer');
     expect(run(`encrypt-upload elsewhere/${RUN} "$CS_DIR/plan.json"`, { BACKUP_AGE_RECIPIENTS: recipient }).code).toBe(1);
+    // One folder per photo run and attempt (a re-run never overwrites the earlier report).
+    expect(run(`encrypt-upload cleanstart/${RUN}/photos-5551-2 "$CS_DIR/plan.json"`, { BACKUP_AGE_RECIPIENTS: recipient }).code).toBe(0);
+    expect(sb.has('backups', `cleanstart/${RUN}/photos-5551-2/plan.json.age`)).toBe(true);
+    for (const bad of ['photos-5551', '9photos', 'photos-x-1', 'photos/5551', 'photos-5551-2-3'])
+      expect(run(`encrypt-upload cleanstart/${RUN}/${bad} "$CS_DIR/plan.json"`, { BACKUP_AGE_RECIPIENTS: recipient }).code, bad).toBe(1);
     expect(run(`encrypt-upload cleanstart/${RUN}/plan "$CS_DIR/plan.json"`, { BACKUP_AGE_RECIPIENTS: '' }).code).toBe(1);
     const back = run(`fetch-decrypt cleanstart/${RUN}/plan/plan.json.age "$CS_DIR/back.json"`, { BACKUP_AGE_IDENTITY: identity });
     expect(back.code).toBe(0);

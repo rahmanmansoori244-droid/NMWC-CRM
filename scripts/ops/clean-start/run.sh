@@ -706,7 +706,7 @@ cmd_encrypt_upload() {
   local prefix="$1" f name ok=0
   shift
   need BACKUP_R2_BUCKET BACKUP_R2_ACCOUNT_ID
-  [[ $prefix =~ ^cleanstart/[0-9]{1,20}/[a-z-]+$ ]] || refuse "the report prefix is malformed"
+  [[ $prefix =~ ^cleanstart/[0-9]{1,20}/[a-z][a-z-]*(-[0-9]{1,20}-[0-9]{1,4})?$ ]] || refuse "the report prefix is malformed"
   age_args
   for f in "$@"; do
     [ -f "$f" ] || { ok=1; continue; }

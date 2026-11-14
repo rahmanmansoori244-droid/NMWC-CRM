@@ -201,7 +201,8 @@ jobs:
           psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/photos-record.sql \
             -v run_id="$GITHUB_RUN_ID" -v reset_run_id="$TARGET_RUN" -v actor_username="$CLEANSTART_ACTOR_USERNAME" \
             -v list_sha256="$LIST_SHA256" -v listed="$LISTED" -v skipped_shape="$SKIP_SHAPE" \
-            -v skipped_uat="$SKIP_UAT" -v deleted="$DELETED" -v complete="$COMPLETE" > "$CS_DIR/record.out" 2>&1 || rc=$?
+            -v skipped_uat="$SKIP_UAT" -v deleted="$DELETED" -v complete="$COMPLETE" \
+            -v attempt="${GITHUB_RUN_ATTEMPT:-1}" > "$CS_DIR/record.out" 2>&1 || rc=$?
           bash scripts/ops/clean-start/run.sh sql "photo deletion recorded in the audit log" "$rc" "$CS_DIR/record.out"
 
       - name: The encrypted report
@@ -215,7 +216,8 @@ jobs:
             if [ -f "$CS_DIR/$f" ]; then FILES+=("$CS_DIR/$f"); fi
           done
           if [ "${#FILES[@]}" -gt 0 ] && [[ ${TARGET_RUN:-} =~ ^[0-9]{1,20}$ ]]; then
-            bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$TARGET_RUN/photos" "${FILES[@]}"
+            # One folder per photo run and attempt: a re-run never overwrites an earlier report.
+            bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$TARGET_RUN/photos-$GITHUB_RUN_ID-${GITHUB_RUN_ATTEMPT:-1}" "${FILES[@]}"
           fi
 
       - name: Remove the plaintext

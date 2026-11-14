@@ -279,6 +279,16 @@ describe('targets', () => {
     expect(steps[probe]!.run).toMatch(/photo-delete\.sh probe "\$GITHUB_RUN_ID"/);
   });
 
+  it('the photo record: complete only on a green delete step, its own row and report folder per run attempt', () => {
+    const steps = PHOTOS.jobs.photos!.steps;
+    const rec = steps.find((s) => /Record it in production's audit log/.test(s.name ?? ''))!;
+    expect(rec.env?.DELETE_OUTCOME).toBe('${{ steps.delete.outcome }}');
+    expect(rec.run).toMatch(/COMPLETE=no\n\s*if \[ "\$DELETE_OUTCOME" = success \]; then COMPLETE=yes; fi/);
+    expect(commands(rec.run!).join('\n')).toMatch(/-v complete="\$COMPLETE"\s+-v attempt="\$\{GITHUB_RUN_ATTEMPT:-1\}"/);
+    const report = steps.find((s) => s.name === 'The encrypted report')!;
+    expect(report.run).toMatch(/encrypt-upload "cleanstart\/\$TARGET_RUN\/photos-\$GITHUB_RUN_ID-\$\{GITHUB_RUN_ATTEMPT:-1\}"/);
+  });
+
   it('age is installed on its own with one retry (the universe mirror flakes; db-backup.yml), in every job that needs it', () => {
     let n = 0;
     for (const [f, id, j] of allJobs()) {
