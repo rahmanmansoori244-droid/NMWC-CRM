@@ -318,13 +318,19 @@ function TemixCard({ s }: { s: ServiceStatus }) {
 
 function ImportsCard({ s }: { s: ServiceStatus }) {
   const i = s.imports;
-  const stuck = i.stuckPromotes + i.stuckUploads;
+  const stuck = i.stuckPromotes + i.stuckUploads + i.stuckDailyLoads;
   return (
     <SloCard id="imports" status={i.status} value={stuck === 0 ? 'None stuck' : `${stuck} stuck`}>
       {i.stuckPromotes > 0 && (
         <p>
           {i.stuckPromotes} promote{i.stuckPromotes === 1 ? '' : 's'} interrupted — the Data Steward resumes it from
           Work items.
+        </p>
+      )}
+      {i.stuckDailyLoads > 0 && (
+        <p>
+          {i.stuckDailyLoads} daily Temix load{i.stuckDailyLoads === 1 ? '' : 's'} interrupted — the Data Steward resumes it
+          from Work items.
         </p>
       )}
       {i.stuckUploads > 0 && (

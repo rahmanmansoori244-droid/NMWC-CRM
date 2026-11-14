@@ -70,7 +70,7 @@ function status(over: Partial<ServiceStatus> = {}): ServiceStatus {
       { role: 'MANAGER', open: 0, pastDue: 0, oldestWorkingMinutes: null },
     ],
     temix: { status: 'met', waiting: 0, oldestWaitingSince: null, uploadedAwaitingTemix: 0 },
-    imports: { status: 'breached', stuckPromotes: 1, stuckUploads: 0 },
+    imports: { status: 'breached', stuckPromotes: 1, stuckUploads: 0, stuckDailyLoads: 0 },
     jobs: [
       {
         key: 'keep-warm', label: 'Keep-warm ping', severity: 'warning', state: 'failed', alarm: true,

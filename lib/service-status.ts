@@ -32,6 +32,7 @@ import { EditState, ImportBatchStatus, Prisma } from '@prisma/client';
 import { prisma } from './db';
 import { loadHeartbeatReport, type HeartbeatReport } from './heartbeat';
 import { TEMIX_QUEUE_WHERE } from './temix';
+import { stalledDailyLoadWhere } from './temix-daily-apply';
 import { realRequestSql } from './test-records';
 import { workingMinutesBetween } from './working-hours';
 import {
@@ -153,7 +154,8 @@ export type ServiceStatus = {
     oldestWaitingSince: Date | null;
     uploadedAwaitingTemix: number;
   };
-  imports: { status: SloStatus; stuckPromotes: number; stuckUploads: number };
+  /** stuckDailyLoads: daily Temix loads interrupted (lib/temix-daily-apply.ts stalledDailyLoadWhere). */
+  imports: { status: SloStatus; stuckPromotes: number; stuckUploads: number; stuckDailyLoads: number };
   jobs: JobState[];
 };
 
@@ -401,7 +403,7 @@ async function imports(now: Date): Promise<ServiceStatus['imports']> {
   const promoteCutoff = new Date(now.getTime() - PROMOTE_STUCK_AFTER_MIN * MIN);
   const parsingCutoff = new Date(now.getTime() - PARSING_STUCK_AFTER_MIN * MIN);
   const parsingLookback = new Date(now.getTime() - PARSING_LOOKBACK_HOURS * 60 * MIN);
-  const [stuckPromotes, stuckUploads] = await Promise.all([
+  const [stuckPromotes, stuckUploads, stuckDailyLoads] = await Promise.all([
     // Exactly what the Steward's Work list shows as interrupted: a promote whose
     // lease was released (an error, or a second promote refused while another
     // ran) is waiting for someone to resume it and counts at once, since nothing
@@ -422,8 +424,17 @@ async function imports(now: Date): Promise<ServiceStatus['imports']> {
     prisma.importBatch.count({
       where: { status: ImportBatchStatus.PARSING, uploadedAt: { lt: parsingCutoff, gte: parsingLookback } },
     }),
+    // The daily Temix import (stage 5), counted as the promote is: a load whose
+    // lease was released (a stop, an error) at once, one whose lease ran out
+    // after the same hour.
+    prisma.temixDailyFile.count({ where: stalledDailyLoadWhere(promoteCutoff) }),
   ]);
-  return { status: importsStatus(stuckPromotes, stuckUploads), stuckPromotes, stuckUploads };
+  return {
+    status: importsStatus(stuckPromotes, stuckUploads, stuckDailyLoads),
+    stuckPromotes,
+    stuckUploads,
+    stuckDailyLoads,
+  };
 }
 
 /**
