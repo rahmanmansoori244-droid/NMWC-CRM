@@ -311,6 +311,8 @@ async function recheck(
   // Rows accepted as excluded are not going into the master, so they no longer
   // collide with anything; nor do rows still held back for a cell holding an
   // Excel error (lib/import-row-check.ts excelErrorCells), as at the upload.
+  // (COALESCE: for a row without the flag the test must be false, not NULL —
+  // NOT (… AND NULL) is NULL, which left out every other held-back row.)
   const others = await tx.$queryRaw<
     Array<{
       id: string;
@@ -327,7 +329,7 @@ async function recheck(
            "parsed"->>'branchCode' AS "branch", ("parsed"->>'shopCodeReleased') = 'true' AS "released", "state"::text AS "state"
       FROM "ImportRow"
      WHERE "batchId" = ${batch.id} AND "excludedAt" IS NULL AND "parsed" IS NOT NULL
-       AND NOT ("state" = 'QUARANTINED' AND ("parsed"->>'excelError') = 'true')`;
+       AND NOT ("state" = 'QUARANTINED' AND COALESCE("parsed"->>'excelError', '') = 'true')`;
   const phonesInFile = new Map<string, FileDup[]>();
   const crsInFile = new Map<string, FileDup[]>();
   const add = (m: Map<string, FileDup[]>, k: string | null, d: FileDup) => {
