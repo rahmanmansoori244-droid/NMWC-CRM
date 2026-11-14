@@ -10,7 +10,8 @@
  *    write.
  *  - services/temix-daily-routes.ts writes TemixRouteMap only, each write in
  *    withChangeContext under src.temixRouteMap with one AuditLog row, and is the
- *    Data Steward's only. No other source writes TemixRouteMap through Prisma.
+ *    Data Steward's only. No other source writes TemixRouteMap, through Prisma
+ *    or a raw INSERT.
  *  - The two pages are the Data Steward's only, checked before any read.
  */
 import { describe, expect, it } from 'vitest';
@@ -31,6 +32,16 @@ const READ_ONLY = [
   'app/(app)/temix-daily/pilot-banner.tsx',
 ];
 const ROUTES_SERVICE = 'services/temix-daily-routes.ts';
+
+/**
+ * Raw SQL anywhere in a source (outside comments) that INSERTs INTO
+ * TemixRouteMap: a $executeRaw or $queryRaw template, Prisma.sql, or a string
+ * passed to an Unsafe call. The database refuses UPDATE, DELETE and TRUNCATE
+ * of the table, but the app role may INSERT, so only the service may.
+ */
+function rawRouteMapWrites(src: string): string[] {
+  return [...src.matchAll(/\bINSERT\s+INTO\s+(?:"?public"?\.)?"?TemixRouteMap"?(?![A-Za-z0-9_])/gi)].map((m) => m[0]);
+}
 
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((e) => {
@@ -89,11 +100,23 @@ describe('the route map has one writer', () => {
     }
   });
 
-  it('no other source writes the route map through Prisma', () => {
+  it('the raw-SQL detector still matches the shape it exists to catch', () => {
+    expect(rawRouteMapWrites('await tx.$executeRaw`INSERT INTO "TemixRouteMap" ("x") VALUES (1)`')).toHaveLength(1);
+    expect(rawRouteMapWrites("await db.$executeRawUnsafe('insert into \"TemixRouteMap\" values (1)')")).toHaveLength(1);
+    expect(rawRouteMapWrites('await db.$queryRaw`\n  INSERT INTO\n public."TemixRouteMap" (a) VALUES (1) RETURNING id`')).toHaveLength(1);
+    expect(rawRouteMapWrites('Prisma.sql`INSERT INTO TemixRouteMap (a) VALUES (1)`')).toHaveLength(1);
+    expect(rawRouteMapWrites('await db.$queryRaw`SELECT * FROM "TemixRouteMap"`')).toEqual([]);
+    expect(rawRouteMapWrites('await db.$executeRaw`INSERT INTO "TemixRouteMapX" (a) VALUES (1)`')).toEqual([]);
+    expect(rawRouteMapWrites('await db.$executeRaw`INSERT INTO "TemixChange" (a) VALUES (1)`')).toEqual([]);
+  });
+
+  it('no other source writes the route map, through Prisma or raw SQL', () => {
     const found: string[] = [];
-    for (const file of ['app', 'components', 'lib', 'services', 'scripts'].flatMap(walk)) {
+    for (const file of ['app', 'components', 'lib', 'services', 'scripts', 'prisma'].flatMap(walk)) {
       if (file === ROUTES_SERVICE) continue;
-      for (const m of read(file).matchAll(MODEL_WRITE_RE)) if (m[1] === 'temixRouteMap') found.push(`${file}: ${m[0]}`);
+      const src = read(file);
+      for (const m of src.matchAll(MODEL_WRITE_RE)) if (m[1] === 'temixRouteMap') found.push(`${file}: ${m[0]}`);
+      for (const w of rawRouteMapWrites(src)) found.push(`${file}: ${w}`);
     }
     expect(found).toEqual([]);
   });
