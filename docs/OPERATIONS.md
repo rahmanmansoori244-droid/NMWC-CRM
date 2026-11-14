@@ -632,7 +632,10 @@ next customer number (`next customer code would be number 000001: yes`).
 ### The Neon dress rehearsal (mode `neon-rehearsal`; once, approval-gated)
 
 Plan, then (after Approve) a temporary branch `cleanstart-rehearsal-<run>` of the
-default branch with a compute; its host must not be production. Its fingerprint is taken
+default branch with a compute; its host must not be production. The default branch
+itself must be production's: one of its endpoints has the host of the first line of
+`config/production-hosts.txt` (`Neon default branch is production: yes`), checked
+before this branch and before apply's safety branch are made. Its fingerprint is taken
 and the time noted; the reset and verify run on it, then the watch; then Neon makes a
 new branch `cleanstart-rehearsal-<run>-at` from the rehearsal branch's history at the
 noted time (a branch create with `parent_timestamp`: Neon's own point-in-time

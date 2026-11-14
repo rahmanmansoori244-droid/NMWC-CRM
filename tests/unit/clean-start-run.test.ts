@@ -26,7 +26,9 @@ import { foreignSignature, loadExpected } from '../../scripts/ops/clean-start/re
 const sha = (b: string | Buffer) => createHash('sha256').update(b).digest('hex');
 const MARKER = 'csprodsim-zq7';
 const PROD_URL = `postgresql://owner_zq:pw-zq-secret@${MARKER}-pooler.example.invalid/neondb?sslmode=require`;
-const COPY_URL = 'postgresql://ci:ci@localhost:5432/cs_restore';
+/** The host of production's Neon endpoint (the default branch's), as Neon lists it. */
+const PROD_HOST = `${MARKER}-ab12cd.example.invalid`;
+const COPY_URL ='postgresql://ci:ci@localhost:5432/cs_restore';
 const RUN = '987654321';
 const ALL_LINES: string[] = [];
 const FORBIDDEN = ['pw-zq-secret', 'owner_zq', 'bk-secret-zq', 'ro-secret-zq', 'rw-secret-zq', 'example.invalid', 'secret-name-zq'];
@@ -359,7 +361,7 @@ describe('run.sh started / safety-cleanup: the safety branch survives a cancelle
   };
   const names = () => (JSON.parse(readFileSync(join(sb.state, 'neon.json'), 'utf8')) as { branches: Array<{ name: string }> }).branches.map((b) => b.name);
   const fresh = (files: Record<string, string>) => {
-    neonState({ seq: 0, branches: [{ id: 'br-main-1', name: 'main', default: true }, { id: 'br-s-9', name: 'pre-clean-start-2026-11-18-1' }] });
+    neonState({ seq: 0, branches: [{ id: 'br-main-1', name: 'main', default: true, host: PROD_HOST }, { id: 'br-s-9', name: 'pre-clean-start-2026-11-18-1' }] });
     for (const f of ['reset-started', 'reset-rc', 'committed', 'neon-branches']) rmSync(join(sb.csDir, f), { force: true });
     writeFileSync(join(sb.csDir, 'neon-branches'), '- pre-clean-start-2026-11-18-1\n');
     for (const [k, v] of Object.entries(files)) writeFileSync(join(sb.csDir, k), v);
@@ -479,7 +481,7 @@ describe('run.sh neon: a timeout after the create, and old failures elsewhere, d
   };
   const names = () => (JSON.parse(readFileSync(join(sb.state, 'neon.json'), 'utf8')) as { branches: Array<{ name: string }> }).branches.map((b) => b.name);
   it('Neon made the branch but the answer was lost: the cleanup still finds it by name', () => {
-    neonState({ seq: 0, branches: [{ id: 'br-main-1', name: 'main', default: true }] });
+    neonState({ seq: 0, branches: [{ id: 'br-main-1', name: 'main', default: true, host: PROD_HOST }] });
     rmSync(join(sb.csDir, 'neon-branches'), { force: true });
     const r = run('neon-create pre-clean-start-2026-11-18-77 none', { ...neon, FAKE_NEON_CREATE_TIMEOUT: '1' });
     expect(r.code).toBe(1);
@@ -489,11 +491,11 @@ describe('run.sh neon: a timeout after the create, and old failures elsewhere, d
     expect(names()).toEqual(['main']);
   });
   it('a failed operation of ANOTHER branch blocks neither a create nor the cleanup; one of this branch refuses', () => {
-    neonState({ seq: 0, branches: [{ id: 'br-main-1', name: 'main', default: true }], pending: [{ id: 'op-old', branch_id: 'br-gone-1', status: 'failed' }] });
+    neonState({ seq: 0, branches: [{ id: 'br-main-1', name: 'main', default: true, host: PROD_HOST }], pending: [{ id: 'op-old', branch_id: 'br-gone-1', status: 'failed' }] });
     rmSync(join(sb.csDir, 'neon-branches'), { force: true });
     expect(run('neon-create pre-clean-start-2026-11-18-78 none', neon).code).toBe(0);
     expect(run('neon-cleanup', neon).lines).toContain('temporary Neon branches deleted: yes');
-    neonState({ seq: 4, branches: [{ id: 'br-main-1', name: 'main', default: true }], pending: [{ id: 'op-x', branch_id: 'br-fake-5', status: 'failed' }] });
+    neonState({ seq: 4, branches: [{ id: 'br-main-1', name: 'main', default: true, host: PROD_HOST }], pending: [{ id: 'op-x', branch_id: 'br-fake-5', status: 'failed' }] });
     rmSync(join(sb.csDir, 'neon-branches'), { force: true });
     const r = run('neon-create pre-clean-start-2026-11-18-79 none', neon);
     expect(r.code).toBe(1);
@@ -513,7 +515,7 @@ describe('run.sh neon: branches of production, never production, always cleaned 
     FAKE_NEON_URI_BASE: 'postgresql://postgres@localhost:5432',
     GITHUB_ENV: '',
   };
-  const fresh = () => neonState({ seq: 0, retention: 604800, branches: [{ id: 'br-main-1', name: 'main', default: true }] });
+  const fresh = () => neonState({ seq: 0, retention: 604800, branches: [{ id: 'br-main-1', name: 'main', default: true, host: PROD_HOST }] });
   const names = () => (JSON.parse(readFileSync(join(sb.state, 'neon.json'), 'utf8')) as { branches: Array<{ name: string }> }).branches.map((b) => b.name);
 
   it('a safety branch without compute is created, confirmed, and deleted only by cleanup', () => {
@@ -521,12 +523,27 @@ describe('run.sh neon: branches of production, never production, always cleaned 
     const env = { ...neon, GITHUB_ENV: envFile() };
     const r = run('neon-create pre-clean-start-2026-11-18-42 none', env);
     expect(r.code).toBe(0);
-    expect(r.lines).toEqual(['Neon branch created and confirmed: yes']);
+    expect(r.lines).toEqual(['Neon default branch is production: yes', 'Neon branch created and confirmed: yes']);
     expect(run('neon-retention', env).lines).toEqual(['Neon history kept at least 7 days: yes']);
     const st = () => JSON.parse(readFileSync(join(sb.state, 'neon.json'), 'utf8')) as { branches: Array<{ name: string }> };
     expect(st().branches.map((b) => b.name)).toContain('pre-clean-start-2026-11-18-42');
     expect(run('neon-cleanup', env).lines).toContain('temporary Neon branches deleted: yes');
     expect(st().branches.map((b) => b.name)).toEqual(['main']);
+  });
+
+  it('no branch is made of a default branch that is not production (another branch set as default, another project)', () => {
+    for (const main of [
+      { id: 'br-main-1', name: 'uat-testing', default: true, host: 'ep-other-words-zz11.example.invalid' },
+      { id: 'br-main-1', name: 'main', default: true }, // no endpoint at all
+    ]) {
+      neonState({ seq: 0, retention: 604800, branches: [main, { id: 'br-prod-2', name: 'production', host: PROD_HOST }] });
+      rmSync(join(sb.csDir, 'neon-branches'), { force: true });
+      const r = run('neon-create pre-clean-start-2026-11-18-43 none', { ...neon, GITHUB_ENV: envFile() });
+      expect(r.code).toBe(1);
+      expect(r.lines).toContain('Neon default branch is production: no');
+      expect(r.out).toMatch(/the Neon default branch is not production/);
+      expect(names()).toEqual([main.name, 'production']);
+    }
   });
 
   it('neon-uri refuses a branch whose connection string names production', () => {
@@ -590,7 +607,7 @@ describe('run.sh neon: branches of production, never production, always cleaned 
     neonState({
       seq: 5,
       branches: [
-        { id: 'br-main-1', name: 'main', default: true },
+        { id: 'br-main-1', name: 'main', default: true, host: PROD_HOST },
         { id: 'br-s-2', name: `pre-clean-start-2026-11-18-${RUN}` },
         { id: 'br-s-3', name: 'pre-clean-start-2026-11-18-1' },
       ],

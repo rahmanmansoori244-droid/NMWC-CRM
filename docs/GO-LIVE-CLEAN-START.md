@@ -229,6 +229,7 @@ changes the clean-start scripts after it, you do it again.
 **Green looks like this.** **Plan (read-only)** and **Neon rehearsal** are green, and the
 summary has:
 
+- `Neon default branch is production: yes`
 - `Neon branch host is not production: yes`
 - `reset on the Neon branch: ok`
 - `first integrity checks as expected: yes`
@@ -279,6 +280,7 @@ start is refused safely (`the target guard refused`), but the evening is lost.
 **Green looks like this.** The Apply job has a green tick, and its summary says:
 
 - `production unchanged since the plan: yes`
+- `Neon default branch is production: yes`
 - `Neon branch created and confirmed: yes`
 - `old seals archived, re-read and chained: yes`
 - `reset started at (UTC): …` and `reset started at (Oman time): …` (write both in your

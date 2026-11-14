@@ -824,13 +824,34 @@ neon_default() {
   printf '%s' "$id"
 }
 
-# neon-create <name> <compute|none>: a branch of the default branch, now.
+# neon_default_is_production <branch id>: one of that branch's endpoints has
+# production's host (the first line of config/production-hosts.txt, the rule
+# prod-target holds DIRECT_URL to). The default branch is only a flag in Neon:
+# after a console "Set as default" (UAT lives in the same project) or with
+# NEON_PROJECT_ID of another project, a copy of it would not be production.
+neon_default_is_production() {
+  local id="$1" f="$CS_DIR/neon.json" code host ok=1
+  code="$(neon GET "$f" "/branches/$id/endpoints")"
+  [ "$code" = 200 ] || { rm -f "$f"; refuse "the Neon default branch's endpoints could not be read"; }
+  production_hosts_load || exit 2
+  while IFS= read -r host; do
+    host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+    case "$host" in "${PRODUCTION_HOSTS[0]}"*) ok=0 ;; esac
+  done < <(jq -r '.endpoints[]? | .host // empty' "$f")
+  rm -f "$f"
+  yes_no "Neon default branch is production" "$ok"
+  [ "$ok" -eq 0 ] || refuse "the Neon default branch is not production (no endpoint has the host of the first line of config/production-hosts.txt)"
+}
+
+# neon-create <name> <compute|none>: a branch of the default branch, now,
+# once that branch is confirmed to be production's.
 # Records its id in $CS_DIR/neon-branches BEFORE anything else can fail, so
 # the always() cleanup finds it (restore-drill.yml's rule).
 cmd_neon_create() {
   local name="$1" compute="$2" parent f="$CS_DIR/neon-create.json" code body id
   [[ $name =~ ^[a-z0-9-]{3,90}$ ]] || refuse "the branch name is malformed"
   parent="$(neon_default)"
+  neon_default_is_production "$parent"
   if [ "$compute" = compute ]; then
     body="{\"branch\":{\"name\":\"$name\",\"parent_id\":\"$parent\"},\"endpoints\":[{\"type\":\"read_write\"}]}"
   else

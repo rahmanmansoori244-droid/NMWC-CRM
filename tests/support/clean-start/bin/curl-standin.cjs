@@ -171,6 +171,15 @@ if (u.host === 'console.neon.tech') {
     if (!b.db) reply(400, { code: '', message: 'no compute' });
     reply(200, { uri: `${process.env.FAKE_NEON_URI_BASE}/${b.db}` });
   }
+  // A branch's endpoints: a state branch may name its host; the default branch is
+  // otherwise FAKE_NEON_DEFAULT_URI's host, a branch with a compute 'localhost'.
+  const ep = /^\/branches\/([^/]+)\/endpoints$/.exec(sub);
+  if (ep && method === 'GET') {
+    const b = st.branches.find((x) => x.id === ep[1]);
+    if (!b) reply(404, { code: '', message: 'not found' });
+    const host = b.host || (b.default && process.env.FAKE_NEON_DEFAULT_URI ? new URL(process.env.FAKE_NEON_DEFAULT_URI).hostname : null) || (b.db ? 'localhost' : null);
+    reply(200, { endpoints: host ? [{ id: `ep-${b.id}`, host, type: 'read_write' }] : [] });
+  }
   let mm = /^\/branches\/([^/]+)\/restore$/.exec(sub);
   if (mm && method === 'POST') {
     const req = JSON.parse(body || '{}');
