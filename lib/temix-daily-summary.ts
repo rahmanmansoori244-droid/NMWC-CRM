@@ -4,8 +4,11 @@
  *
  * SWITCHED OFF: while lib/temix-daily-policy.ts TEMIX_DAILY_SUMMARY_ENABLED is
  * false this writes nothing and reads nothing (the two-step rollout of a new
- * notification kind; see that file). Nothing calls it yet either: finalize is
- * stage 6.
+ * notification kind; see that file). Stage 6's finalize calls it once per
+ * loaded file (services/temix-daily-apply.ts), with the load day's counts
+ * (lib/temix-daily-finalize.ts summaryCountsOf); switched off, the call
+ * returns 0 before it touches the database. The same words are shown on the
+ * day's drill-down page (/temix-daily/day/<day>), whether the switch is on or not.
  *
  * When on (the plan's finalize and alerts): ONE summary per active, non-test
  * Data Steward per Oman day, whatever number of files are loaded that day; a
@@ -24,10 +27,19 @@ import type { TemixChangeKind } from './temix-daily-tables';
 
 type Tx = Prisma.TransactionClient;
 
-/** What a summary may count: ledger kinds, and rows held back. Never a value. */
-export type SummaryCounts = Partial<Record<TemixChangeKind | 'HELD_ROWS', number>>;
+/**
+ * What a summary may count: ledger kinds (for a spell kind, the spells that
+ * started), the spells that ended, and rows held back. Never a value.
+ */
+export type SummaryKey =
+  | TemixChangeKind
+  | 'MISSING_FROM_FILE_ENDED'
+  | 'ACCOUNTANT_CODE_SEEN'
+  | 'ROUTE_INACTIVE_ENDED'
+  | 'HELD_ROWS';
+export type SummaryCounts = Partial<Record<SummaryKey, number>>;
 
-const LABEL: Record<TemixChangeKind | 'HELD_ROWS', string> = {
+const LABEL: Record<SummaryKey, string> = {
   ROUTE_MOVE: 'shops moved to another route',
   TERMS_CHANGED: 'payment terms changed',
   CREDIT_LIMIT_CHANGED: 'credit limits changed',
@@ -38,19 +50,22 @@ const LABEL: Record<TemixChangeKind | 'HELD_ROWS', string> = {
   STATUS_DIFFERS: 'status differences',
   NAME_DIFFERS: 'name differences',
   ROUTE_NOT_MATCHED: 'route codes not matched',
-  ROUTE_INACTIVE: 'rows naming a switched-off route',
+  ROUTE_INACTIVE: 'switched-off routes still holding shops',
+  ROUTE_INACTIVE_ENDED: 'switched-off routes no longer holding shops',
   SHOP_CODE_LOOKALIKE: 'look-alike shop codes',
   SHOP_NOT_LINKED: 'shops not linked',
   DUPLICATE_SUSPECT: 'possible duplicates',
   CODE_HELD_BY_OTHER: 'codes held by another customer',
-  MISSING_FROM_FILE: 'customers missing from the file',
-  ACCOUNTANT_CODE_NOT_SEEN: "Accountant's Temix codes not seen",
+  MISSING_FROM_FILE: 'customers newly missing from the file',
+  MISSING_FROM_FILE_ENDED: 'customers no longer missing from the file',
+  ACCOUNTANT_CODE_NOT_SEEN: "Accountant's Temix codes not in the file",
+  ACCOUNTANT_CODE_SEEN: "Accountant's Temix codes now in the file",
   DAUGHTER_TERMS_IGNORED: 'shop credit figures ignored',
   HELD_ROWS: 'rows held back',
 };
 
 /** The same words for a count of one. */
-const LABEL_ONE: Record<TemixChangeKind | 'HELD_ROWS', string> = {
+const LABEL_ONE: Record<SummaryKey, string> = {
   ROUTE_MOVE: 'shop moved to another route',
   TERMS_CHANGED: 'payment terms changed',
   CREDIT_LIMIT_CHANGED: 'credit limit changed',
@@ -61,22 +76,28 @@ const LABEL_ONE: Record<TemixChangeKind | 'HELD_ROWS', string> = {
   STATUS_DIFFERS: 'status difference',
   NAME_DIFFERS: 'name difference',
   ROUTE_NOT_MATCHED: 'route code not matched',
-  ROUTE_INACTIVE: 'row naming a switched-off route',
+  ROUTE_INACTIVE: 'switched-off route still holding shops',
+  ROUTE_INACTIVE_ENDED: 'switched-off route no longer holding shops',
   SHOP_CODE_LOOKALIKE: 'look-alike shop code',
   SHOP_NOT_LINKED: 'shop not linked',
   DUPLICATE_SUSPECT: 'possible duplicate',
   CODE_HELD_BY_OTHER: 'code held by another customer',
-  MISSING_FROM_FILE: 'customer missing from the file',
-  ACCOUNTANT_CODE_NOT_SEEN: "Accountant's Temix code not seen",
+  MISSING_FROM_FILE: 'customer newly missing from the file',
+  MISSING_FROM_FILE_ENDED: 'customer no longer missing from the file',
+  ACCOUNTANT_CODE_NOT_SEEN: "Accountant's Temix code not in the file",
+  ACCOUNTANT_CODE_SEEN: "Accountant's Temix code now in the file",
   DAUGHTER_TERMS_IGNORED: 'shop credit figure ignored',
   HELD_ROWS: 'row held back',
 };
 
 /**
  * The summary's words: counts by kind, in the ledger's order; nothing else.
- * STAGE 6 RE-CHECK: written ahead of finalize (stage 2 shipped it switched
- * off, uncalled); finalize must re-check these kinds and words against the
- * counts it really has before stage 7 switches it on.
+ * Re-checked in stage 6 against what finalize really counts
+ * (summaryCountsOf): a spell kind counts the spells that STARTED that day,
+ * the *_ENDED keys those that ended; ROUTE_INACTIVE is a switched-off route
+ * still holding shops (not a row). Kinds nothing writes yet (credit and terms,
+ * created customers and shops, status) keep their words for the stages that
+ * wait for the owner.
  */
 export function summaryText(loadDay: string, counts: SummaryCounts): { title: string; body: string } {
   const parts = (Object.keys(LABEL) as Array<keyof typeof LABEL>)

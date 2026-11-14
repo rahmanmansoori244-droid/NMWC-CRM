@@ -57,7 +57,9 @@
  *    or a shop's. The Check counts each pair (Temix A/I beside the CRM's
  *    status) and calls none of them a difference.
  *  - customers missing from the file: whether the file is the full list. The
- *    Check counts the live customers no row names, and flags nobody.
+ *    Check counts the live customers no row names (customersNotNamed); once a
+ *    file is loaded, finalize lists each as an open spell for the Steward
+ *    (lib/temix-daily-finalize.ts), and nothing more is done about them.
  *  - creating customers and shops; route-code variants (the map is empty until
  *    the Steward enters the owner's route master); shop codes of customers made
  *    in the CRM; thresholds; the end of the pilot rule.
@@ -509,14 +511,7 @@ export function checkDailyFile(input: CheckInput): CheckPlan {
 
   // Customers no row names: the codes of every row, against both codes.
   const named = new Set(input.rows.map((r) => r.custCodeKey).filter((k): k is string => !!k));
-  const missing = input.customers.filter(
-    (c) =>
-      c.live &&
-      !c.isTest &&
-      !matched.has(c.id) &&
-      !named.has(normalizeTemixCode(c.nmwcCode)) &&
-      !(c.temixCode && named.has(normalizeTemixCode(c.temixCode)))
-  );
+  const missing = customersNotNamed(input.customers, named).filter((c) => !matched.has(c.id));
 
   const unmatched = new Map<string, { rows: number; shopFound: number }>();
   for (const p of plans)
@@ -550,6 +545,25 @@ export function checkDailyFile(input: CheckInput): CheckPlan {
     unmatchedRoutes: [...unmatched].map(([code, u]) => ({ code, ...u })).sort((a, b) => b.rows - a.rows || a.code.localeCompare(b.code)),
     mainRow: mainRowOf([]),
   };
+}
+
+/**
+ * The live, non-test customers that no code in `named` names, by NMWC code or
+ * Temix code (both normalised). The Check counts these as missing from the
+ * file, and finalize (lib/temix-daily-finalize.ts) opens a spell for each: one
+ * rule for both, so the preview's figure is the spells finalize writes.
+ */
+export function customersNotNamed<C extends Pick<CrmCustomer, 'nmwcCode' | 'temixCode' | 'live' | 'isTest'>>(
+  customers: readonly C[],
+  named: ReadonlySet<string>
+): C[] {
+  return customers.filter(
+    (c) =>
+      c.live &&
+      !c.isTest &&
+      !named.has(normalizeTemixCode(c.nmwcCode)) &&
+      !(c.temixCode && named.has(normalizeTemixCode(c.temixCode)))
+  );
 }
 
 /**
