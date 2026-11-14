@@ -60,6 +60,7 @@ import { recordExport } from '@/lib/export-record';
 import { lockTemixQueue } from '@/lib/locks';
 import { brokenChecks, checkColumnsOf } from '@/lib/db-rules';
 import { omanDateISO } from '@/lib/tz';
+import { TEMIX_FILE_NOT_RETURNED } from '@/lib/temix-messages';
 
 const NOTHING_PENDING = 'Nothing is pending for Temix upload.';
 
@@ -170,18 +171,9 @@ export type TemixBatchResult = {
 };
 
 /**
- * Follow-up 1, H11 (bug hunt round 2, F4): what Generate answers when its batch
- * committed but the file could not be built or recorded afterwards (a database
- * blip in the guarantee count or in the file's record). The batch is saved and
- * its customers are marked uploaded, so it must never read as a failure (it
- * said "Nothing was saved", and a retry then found nothing pending). No file
- * goes back: a file is handed over only once it is recorded (gap 14), and the
- * batch's Download builds and records its own.
+ * Generate's answer: the batch with its file, or the saved batch without one
+ * (H11; the sentence is TEMIX_FILE_NOT_RETURNED in lib/temix-messages.ts).
  */
-export const TEMIX_FILE_NOT_RETURNED =
-  'The batch was saved and its customers are marked uploaded, but the file could not be made just now. Download it from Batch history below.';
-
-/** Generate's answer: the batch with its file, or the saved batch without one (H11). */
 export type TemixGenerateResult =
   | TemixBatchResult
   | (Omit<TemixBatchResult, 'base64' | 'filename' | 'rowCount'> & { fileNotReturned: string });

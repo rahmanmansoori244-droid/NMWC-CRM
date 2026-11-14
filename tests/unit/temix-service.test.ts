@@ -189,8 +189,8 @@ import {
   generateTemixBatchAction as generateRaw,
   downloadTemixBatchAction,
   markTemixBatchLoadedAction,
-  TEMIX_FILE_NOT_RETURNED,
 } from '@/services/temix';
+import { TEMIX_FILE_NOT_RETURNED } from '@/lib/temix-messages';
 
 /**
  * Generate where its file is expected back, typed as the file answer. H11 added
