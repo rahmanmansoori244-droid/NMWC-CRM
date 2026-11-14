@@ -421,6 +421,37 @@ function addNote(r: StagedDailyRow, note: TemixDailyUploadNote) {
   if (!r.notes.includes(note)) r.notes.push(note);
 }
 
+/**
+ * The notes found at upload, counted once and kept on the file (its headings
+ * JSON, written at create and never changed), so the file list reads them
+ * without scanning the rows. Code words and numbers only.
+ */
+export type NotesAtUpload = { rows: number; byNote: Partial<Record<TemixDailyUploadNote, number>> };
+
+export function notesAtUpload(staged: readonly StagedDailyRow[]): NotesAtUpload {
+  const byNote: NotesAtUpload['byNote'] = {};
+  let rows = 0;
+  for (const r of staged) {
+    if (r.notes.length > 0) rows++;
+    for (const n of r.notes) byNote[n] = (byNote[n] ?? 0) + 1;
+  }
+  return { rows, byNote };
+}
+
+/** The notes counted at upload, from a file's headings JSON; null when it has none. */
+export function readNotesAtUpload(headings: unknown): NotesAtUpload | null {
+  const v = (headings as { notesAtUpload?: unknown } | null)?.notesAtUpload as
+    | { rows?: unknown; byNote?: unknown }
+    | undefined;
+  if (!v || typeof v.rows !== 'number' || typeof v.byNote !== 'object' || v.byNote === null) return null;
+  const byNote: NotesAtUpload['byNote'] = {};
+  for (const note of TEMIX_DAILY_UPLOAD_NOTES) {
+    const n = (v.byNote as Record<string, unknown>)[note];
+    if (typeof n === 'number' && n > 0) byNote[note] = n;
+  }
+  return { rows: v.rows, byNote };
+}
+
 /** The order the notes are stored in (TEMIX_DAILY_UPLOAD_NOTES order). */
 export function sortedNotes(notes: readonly TemixDailyUploadNote[]): TemixDailyUploadNote[] {
   return TEMIX_DAILY_UPLOAD_NOTES.filter((n) => notes.includes(n));

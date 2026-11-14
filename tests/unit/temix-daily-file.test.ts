@@ -14,6 +14,8 @@ import {
   TEMIX_DAILY_REQUIRED,
   TEMIX_DAILY_UPLOAD_NOTES,
   dailyHeadingRefusal,
+  notesAtUpload,
+  readNotesAtUpload,
   readCreatedDay,
   readCreditDays,
   readCreditLimit,
@@ -269,6 +271,17 @@ describe('rows', () => {
     // An error in a column that is not read is not this row's note.
     const [e] = stageDailyRows({ ...s, rows: [{ ...s.rows[0]!, owner_mobile: '#N/A' }] }, report);
     expect(e!.notes).toEqual([]);
+  });
+
+  it('the notes are counted once at upload, and read back from the file as code words and numbers only', () => {
+    const rows = stage([{ ...base }, { ...base }, { ...base, branch_code: 'ZZD0001-02', status: 'X', route: '' }, { ...base, branch_code: 'ZZD0001-03' }]);
+    const counted = notesAtUpload(rows);
+    expect(counted).toEqual({ rows: 3, byNote: { DUPLICATE_ROW: 2, STATUS_NOT_A_OR_I: 1, ROUTE_MISSING: 1 } });
+    expect(readNotesAtUpload({ kind: 'csv', notesAtUpload: JSON.parse(JSON.stringify(counted)) })).toEqual(counted);
+    // A file without the counts, or with words that are not notes, reads safely.
+    expect(readNotesAtUpload({})).toBeNull();
+    expect(readNotesAtUpload(null)).toBeNull();
+    expect(readNotesAtUpload({ notesAtUpload: { rows: 1, byNote: { 'Customer 1': 4, ROUTE_MISSING: 1 } } })).toEqual({ rows: 1, byNote: { ROUTE_MISSING: 1 } });
   });
 
   it('optional cells are kept when present and null when the column is absent', () => {

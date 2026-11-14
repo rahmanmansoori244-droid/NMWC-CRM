@@ -33,6 +33,7 @@ import { src, withChangeContext } from '@/lib/change-context';
 import { CsvReadError, parseCsv } from '@/lib/temix-daily-csv';
 import {
   dailyHeadingRefusal,
+  notesAtUpload,
   reportDailyHeadings,
   sortedNotes,
   stageDailyRows,
@@ -130,9 +131,16 @@ async function uploadTemixDailyFileCore(formData: FormData): Promise<TemixDailyU
       async (tx) => {
         // One upload at a time decides the same-file and order rules.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended('nmwc:temix-daily:upload', 42))`;
-        // The load day is the database's Oman day, the one its guard checks.
-        const [{ day }] = await tx.$queryRaw<Array<{ day: string }>>`SELECT to_char((clock_timestamp() AT TIME ZONE 'Asia/Muscat')::date, 'YYYY-MM-DD') AS "day"`;
+        // The load day is the database's Oman day, the one its guard checks, and
+        // the upload time is the same instant, read AFTER the lock: the order
+        // rule ranks files by uploadedAt, so it must follow the lock's order (the
+        // column's default is the transaction's start, which may come before
+        // another upload that took the lock first) and fall on the load day.
+        const [{ day, at }] = await tx.$queryRaw<Array<{ day: string; at: Date }>>`
+          SELECT to_char((t.at AT TIME ZONE 'Asia/Muscat')::date, 'YYYY-MM-DD') AS "day", t.at AS "at"
+            FROM (SELECT clock_timestamp() AS at) t`;
         const loadDay = day;
+        const uploadedAt = at;
         const others: DailyFileForOrder[] = (
           await tx.temixDailyFile.findMany({
             where: {
@@ -156,6 +164,7 @@ async function uploadTemixDailyFileCore(formData: FormData): Promise<TemixDailyU
             id: fileId,
             filename,
             loadDay: new Date(`${loadDay}T00:00:00Z`),
+            uploadedAt,
             uploadedById: me.id,
             fileSha256: sha256,
             fileBytes: bytes,
@@ -165,6 +174,9 @@ async function uploadTemixDailyFileCore(formData: FormData): Promise<TemixDailyU
               read: report.read,
               notRead: report.notRead,
               otherSheets,
+              // The notes found at upload, counted once here so the list never
+              // scans the rows: code words and numbers only.
+              notesAtUpload: notesAtUpload(staged),
             } as Prisma.InputJsonValue,
             totalRows: staged.length,
             sameBytesAsFileId: same?.id ?? null,
@@ -188,20 +200,20 @@ async function uploadTemixDailyFileCore(formData: FormData): Promise<TemixDailyU
           id: fileId,
           filename,
           loadDay,
-          uploadedAt: (await tx.temixDailyFile.findUniqueOrThrow({ where: { id: fileId }, select: { uploadedAt: true } }))
-            .uploadedAt,
+          uploadedAt,
           state: 'STAGED',
           fileSha256: sha256,
         };
         const waits = applyBlockedBy(self, others);
-        // Codes, counts and the file's identity only: never a value from a row.
+        // Codes, counts and the file's identity only: never a value from a row,
+        // and not the file's name (free text the uploader chose; it is kept on
+        // the TemixDailyFile row that entityId names).
         await writeAudit(tx, env, {
           action: AuditAction.IMPORT,
           entityType: 'TemixDailyFile',
           entityId: fileId,
           after: {
             kind: 'TEMIX_DAILY_UPLOAD',
-            filename,
             loadDay,
             fileSha256: sha256,
             fileBytes: bytes,

@@ -755,7 +755,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'TemixDailyFile.uploadedAt': { subject: 'employee', kind: 'behaviour' },
   'TemixDailyFile.fileSha256': { subject: 'none', note: 'fingerprint of the uploaded file; the file itself is not kept' },
   'TemixDailyFile.fileBytes': { subject: 'none', note: 'size of the uploaded file' },
-  'TemixDailyFile.headings': { subject: 'none', note: 'the file headings (column names only)' },
+  'TemixDailyFile.headings': { subject: 'none', note: 'the file headings (column names only) and the counts of the notes found at upload (code words and numbers)' },
   'TemixDailyFile.state': { subject: 'none' },
   'TemixDailyFile.totalRows': { subject: 'none' },
   'TemixDailyFile.appliedRows': { subject: 'none' },

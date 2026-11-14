@@ -141,6 +141,11 @@ describe.skipIf(!ENABLED)('the daily Temix upload on Postgres', () => {
     expect(f).toMatchObject({ state: 'STAGED', fileSha256: sha(firstBytes), fileBytes: firstBytes.length, totalRows: 4, uploadedById: w.steward, filename: `${T}-daily.xlsx`, heldRows: 0, appliedRows: 0 });
     expect(f.loadDay.toISOString().slice(0, 10)).toBe(today);
     expect(f.headings).toMatchObject({ kind: 'xlsx', sheet: 'Daily', notRead: [] });
+    // The notes are counted once here, so the file list never scans the rows.
+    expect((f.headings as { notesAtUpload: unknown }).notesAtUpload).toEqual({
+      rows: 3,
+      byNote: { SHOP_CODE_LOOKALIKE: 2, ROUTE_MISSING: 1, STATUS_NOT_A_OR_I: 1, CREDIT_LIMIT_NOT_A_NUMBER: 1, CREDIT_DAYS_NOT_WHOLE_DAYS: 1, CREATED_DATE_UNREADABLE: 1 },
+    });
 
     const rows = await prisma.temixDailyRow.findMany({ where: { fileId: firstId }, orderBy: { rowNumber: 'asc' } });
     expect(rows.map((r) => [r.rowNumber, r.custCodeKey, r.branchCodeKey, r.outcome, r.holdReasons, r.isMainRow, r.customerId, r.branchId])).toEqual([
@@ -158,8 +163,11 @@ describe.skipIf(!ENABLED)('the daily Temix upload on Postgres', () => {
     expect(audit[0]).toMatchObject({ action: 'IMPORT', actorId: w.steward, source: `temix-daily:${firstId}:upload` });
     expect(audit[0]!.txId).not.toBeNull();
     expect(audit[0]!.after).toMatchObject({ kind: 'TEMIX_DAILY_UPLOAD', rows: 4, rowsWithNotes: 3, fileSha256: sha(firstBytes), loadDay: today });
-    // Counts and codes only: no value from a row is in the audit row.
+    // Counts and codes only: no value from a row is in the audit row, nor the
+    // file's name (free text the uploader chose).
     expect(JSON.stringify(audit[0]!.after)).not.toMatch(/Customer \d|90000000|1234567|Street/);
+    expect(audit[0]!.after).not.toHaveProperty('filename');
+    expect(JSON.stringify(audit[0]!.after)).not.toContain('-daily.xlsx');
   });
 
   it('refuses the same bytes again on the same day, writing nothing', async () => {
@@ -178,6 +186,57 @@ describe.skipIf(!ENABLED)('the daily Temix upload on Postgres', () => {
     expect(r).toMatchObject({ custCodeKey: `${T}9`, branchCodeKey: '0012', holdReasons: [] });
     expect((r!.parsed as { custName: string }).custName).toBe('Customer, Nine');
     expect((await prisma.temixDailyFile.findUniqueOrThrow({ where: { id: res.fileId } })).headings).toMatchObject({ kind: 'csv' });
+  });
+
+  it('a column that is not agreed is not stored; a CSV row is numbered by the line it starts on', async () => {
+    const head = [...HEAD, 'owner_mobile'];
+    const bytes = csv(
+      [
+        [`${T}M`, '', 'Customer M', 'ZR10', 'CASH', '0', '0', 'A', '', '', '', 'Line 1\nLine 2', '91234567'],
+        [`${T}N`, '', 'Customer N', 'ZR10', 'CASH', '0', '0', 'A', '', '', '', '', '#N/A'],
+        [`${T}O`, '#N/A', 'Customer O', 'ZR10', 'CASH', '0', '0', 'A', '', '', '', '', ''],
+      ],
+      head
+    );
+    const res = okData(await upload(bytes, `${T}-extra.csv`, 'text/csv'));
+    expect(res.notRead).toEqual(['owner_mobile']);
+    const rows = await prisma.temixDailyRow.findMany({ where: { fileId: res.fileId }, orderBy: { rowNumber: 'asc' } });
+    // The first row spans lines 2 and 3 (a line break in its address).
+    expect(rows.map((r) => [r.rowNumber, r.custCodeKey, r.holdReasons])).toEqual([
+      [2, `${T}M`, []],
+      [4, `${T}N`, []],
+      [5, `${T}O`, ['CELL_ERROR']],
+    ]);
+    for (const r of rows) expect(Object.keys(r.raw as object)).not.toContain('owner_mobile');
+    expect(JSON.stringify(rows.map((r) => r.raw))).not.toContain('91234567');
+  });
+
+  it('the upload time is taken after the lock, so files rank in the order they took it', async () => {
+    const bytes = csv([[`${T}L`, '', 'Customer L', 'ZR10', 'CASH', '0', '0', 'A', '', '', '', '']]);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let releasedAt = new Date(0);
+    let held!: () => void;
+    const isHeld = new Promise<void>((r) => (held = r));
+    // Another upload holds the lock while this one's transaction has begun.
+    const holder = prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended('nmwc:temix-daily:upload', 42))`;
+        held();
+        await gate;
+        [{ at: releasedAt }] = await tx.$queryRaw<Array<{ at: Date }>>`SELECT clock_timestamp() AS at`;
+      },
+      { timeout: 30_000 }
+    );
+    await isHeld;
+    const pending = upload(bytes, `${T}-locked.csv`, 'text/csv');
+    await new Promise((r) => setTimeout(r, 1500));
+    release();
+    await holder;
+    const res = okData(await pending);
+    const f = await prisma.temixDailyFile.findUniqueOrThrow({ where: { id: res.fileId } });
+    expect(f.uploadedAt.getTime()).toBeGreaterThanOrEqual(releasedAt.getTime());
+    expect(omanDay(f.uploadedAt)).toBe(res.loadDay);
   });
 
   it('refuses a customer master, a missing heading, a file that is not what it is named, writing nothing', async () => {

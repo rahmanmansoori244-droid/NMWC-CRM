@@ -12,8 +12,6 @@ const h = vi.hoisted(() => ({
   files: [] as unknown[],
   unfinished: [] as unknown[],
   applied: [] as unknown[],
-  noteCounts: [] as unknown[],
-  withNotes: [] as unknown[],
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => (h.user ? { user: h.user } : null) }));
@@ -34,8 +32,21 @@ vi.mock('@/lib/db', () => ({
         return h.files;
       },
     },
-    temixDailyRow: { groupBy: async () => h.withNotes },
-    $queryRaw: async () => h.noteCounts,
+    // The list reads the notes counted at upload: it never scans the rows.
+    temixDailyRow: {
+      groupBy: async () => {
+        throw new Error('the page scanned TemixDailyRow');
+      },
+      findMany: async () => {
+        throw new Error('the page scanned TemixDailyRow');
+      },
+      count: async () => {
+        throw new Error('the page scanned TemixDailyRow');
+      },
+    },
+    $queryRaw: async () => {
+      throw new Error('the page ran raw SQL');
+    },
   },
 }));
 
@@ -51,6 +62,7 @@ const file = (id: string, loadDay: string, state: string, over: Record<string, u
   state,
   fileSha256: SHA,
   totalRows: 3200,
+  headings: { kind: 'xlsx', sheet: 'Daily', read: {}, notRead: [], otherSheets: [], notesAtUpload: { rows: 0, byNote: {} } },
   uploadedBy: { fullName: 'ZZ Steward' },
   sameBytesAs: null,
   ...over,
@@ -59,15 +71,13 @@ const file = (id: string, loadDay: string, state: string, over: Record<string, u
 beforeEach(() => {
   h.user = { id: 'stw-1', role: 'STEWARD' };
   const older = file('f-old', '2026-11-12', 'STAGED');
-  const newer = file('f-new', '2026-11-14', 'STAGED', { sameBytesAs: { loadDay: new Date('2026-11-12T00:00:00Z'), filename: 'f-old.xlsx' } });
+  const newer = file('f-new', '2026-11-14', 'STAGED', {
+    sameBytesAs: { loadDay: new Date('2026-11-12T00:00:00Z'), filename: 'f-old.xlsx' },
+    headings: { kind: 'xlsx', sheet: 'Daily', read: {}, notRead: [], otherSheets: [], notesAtUpload: { rows: 3, byNote: { SHOP_CODE_LOOKALIKE: 2, STATUS_NOT_A_OR_I: 1 } } },
+  });
   h.files = [newer, older];
   h.unfinished = [older, newer];
   h.applied = [];
-  h.noteCounts = [
-    { fileId: 'f-new', note: 'SHOP_CODE_LOOKALIKE', n: 2n },
-    { fileId: 'f-new', note: 'STATUS_NOT_A_OR_I', n: 1n },
-  ];
-  h.withNotes = [{ fileId: 'f-new', _count: { _all: 3 } }];
 });
 afterEach(cleanup);
 
@@ -81,6 +91,7 @@ describe('/temix-daily', () => {
     expect(within(row).getByText('3,200')).toBeTruthy();
     expect(within(row).getByText(/2: a shop code that looks like another/)).toBeTruthy();
     expect(within(row).getByText(/1: status is not A or I/)).toBeTruthy();
+    expect(within(row).getByText('3')).toBeTruthy();
     const old = screen.getByText('f-old.xlsx').closest('tr')!;
     expect(within(old).queryByText(/Waits for/)).toBeNull();
   });

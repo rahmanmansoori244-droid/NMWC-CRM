@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation';
-import { Prisma, Role } from '@prisma/client';
+import { Role } from '@prisma/client';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { omanDateTime } from '@/lib/tz';
@@ -10,7 +10,7 @@ import {
   TEMIX_DAILY_OPTIONAL,
   TEMIX_DAILY_REQUIRED,
   TEMIX_DAILY_UPLOAD_NOTES,
-  type TemixDailyUploadNote,
+  readNotesAtUpload,
 } from '@/lib/temix-daily-file';
 import { applyBlockedBy, dateColumnDay, overtakenBy, type DailyFileForOrder } from '@/lib/temix-daily-order';
 import { TemixDailyUploadForm } from './upload-form';
@@ -61,29 +61,12 @@ export default async function TemixDailyPage() {
   });
   const order: DailyFileForOrder[] = [...unfinished, ...inFlightOrLoaded].map((f) => ({ ...f, loadDay: dateColumnDay(f.loadDay) }));
 
-  const ids = files.map((f) => f.id);
-  const noteCounts =
-    ids.length === 0
-      ? []
-      : await prisma.$queryRaw<Array<{ fileId: string; note: string; n: bigint }>>`
-          SELECT r."fileId", x.note, count(*) AS n
-            FROM "TemixDailyRow" r, unnest(r."holdReasons") AS x(note)
-           WHERE r."fileId" IN (${Prisma.join(ids)}) AND r."outcome" = 'PENDING'
-           GROUP BY r."fileId", x.note`;
-  const rowsWithNotes =
-    ids.length === 0
-      ? []
-      : await prisma.temixDailyRow.groupBy({
-          by: ['fileId'],
-          where: { fileId: { in: ids }, outcome: 'PENDING', NOT: { holdReasons: { isEmpty: true } } },
-          _count: { _all: true },
-        });
+  // The notes were counted once at upload and kept on the file: the list never
+  // scans the rows.
+  const counted = new Map(files.map((f) => [f.id, readNotesAtUpload(f.headings)]));
   const notesOf = (fileId: string) =>
-    TEMIX_DAILY_UPLOAD_NOTES.map((note) => ({
-      note,
-      n: Number(noteCounts.find((c) => c.fileId === fileId && c.note === note)?.n ?? 0),
-    })).filter((x) => x.n > 0);
-  const withNotes = (fileId: string) => rowsWithNotes.find((r) => r.fileId === fileId)?._count._all ?? 0;
+    TEMIX_DAILY_UPLOAD_NOTES.map((note) => ({ note, n: counted.get(fileId)?.byNote[note] ?? 0 })).filter((x) => x.n > 0);
+  const withNotes = (fileId: string) => counted.get(fileId)?.rows ?? 0;
 
   return (
     <main>
@@ -189,7 +172,7 @@ export default async function TemixDailyPage() {
                         ? '-'
                         : notes.map((x) => (
                             <p key={x.note}>
-                              {x.n.toLocaleString('en-US')}: {TEMIX_DAILY_NOTE_LABEL[x.note as TemixDailyUploadNote]}
+                              {x.n.toLocaleString('en-US')}: {TEMIX_DAILY_NOTE_LABEL[x.note]}
                             </p>
                           ))}
                     </td>

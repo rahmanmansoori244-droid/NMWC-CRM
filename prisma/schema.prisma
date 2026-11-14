@@ -1527,7 +1527,8 @@ model TemixDailyFile {
   uploadedAt        DateTime            @default(now())
   fileSha256        String
   fileBytes         Int
-  // The folded headings of the file, in file order (heading names only).
+  // The folded headings of the file, in file order (heading names only), and
+  // the notes counted at upload (notesAtUpload: code words and numbers).
   headings          Json
   state             TemixDailyFileState @default(STAGED)
   totalRows         Int                 @default(0)

@@ -60,6 +60,27 @@ describe('the daily upload writes only the staged file, its rows and its audit r
     expect(code).toMatch(/entityType: 'TemixDailyFile'/);
   });
 
+  it('the audit row carries no file name (free text the uploader chose), only the file\'s identity and counts', () => {
+    const after = /writeAudit\(tx, env, \{[\s\S]*?after: \{([\s\S]*?)\n {10}\},/.exec(code);
+    expect(after, 'the audit call').not.toBeNull();
+    const keys = [...after![1]!.matchAll(/^\s*([a-zA-Z][a-zA-Z0-9]*)\s*[:,]/gm)].map((m) => m[1]);
+    expect(keys).toContain('fileSha256');
+    expect(keys).not.toContain('filename');
+  });
+
+  it('the upload time is read with the load day, after the lock, and written on the file', () => {
+    const lock = code.indexOf('pg_advisory_xact_lock');
+    const clock = code.indexOf('SELECT clock_timestamp() AS at');
+    expect(lock).toBeGreaterThan(0);
+    expect(clock).toBeGreaterThan(lock);
+    // One query gives both: the day is the Oman day of that same instant.
+    expect(code).toMatch(/const \[\{ day, at \}\] = await tx\.\$queryRaw/);
+    expect(code).toMatch(/temixDailyFile\.create\(\{\s*data: \{[\s\S]*?\buploadedAt,/);
+    // The order rule ranks this file by that instant, not by a re-read default.
+    expect(code).toMatch(/const self: DailyFileForOrder = \{[\s\S]*?\buploadedAt,/);
+    expect(code).not.toMatch(/select: \{ uploadedAt: true \}/);
+  });
+
   it('no other source writes the daily file or its rows through Prisma', () => {
     const found: string[] = [];
     for (const file of ['app', 'components', 'lib', 'services'].flatMap(walk)) {
@@ -70,6 +91,24 @@ describe('the daily upload writes only the staged file, its rows and its audit r
       }
     }
     expect(found).toEqual([]);
+  });
+
+  it('every gated integration suite of the daily import runs in CI\'s db-tests job', () => {
+    const ci = readFileSync('.github/workflows/ci.yml', 'utf8')
+      .replace(/\r\n/g, '\n')
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('#'))
+      .join('\n');
+    const start = ci.indexOf('\n  db-tests:\n');
+    expect(start, 'the db-tests job').toBeGreaterThan(0);
+    const rest = ci.slice(start + 1);
+    const next = rest.slice(1).search(/\n {2}[a-z][a-z0-9-]*:\n/);
+    const job = next === -1 ? rest : rest.slice(0, next + 1);
+    const gates = readdirSync('tests/integration')
+      .filter((f) => f.startsWith('temix-daily'))
+      .flatMap((f) => [...readFileSync(join('tests/integration', f), 'utf8').matchAll(/process\.env\.(RUN_[A-Z_]+)/g)].map((m) => m[1]!));
+    expect(gates).toEqual(expect.arrayContaining(['RUN_TEMIX_DAILY', 'RUN_TEMIX_DAILY_UPLOAD']));
+    for (const g of new Set(gates)) expect(job, g).toMatch(new RegExp(`^\\s+${g}: '1'$`, 'm'));
   });
 
   it('the action and the page are the Data Steward\'s only', () => {
