@@ -78,7 +78,12 @@ vi.mock('@/components/nmwc/GpsCaptureButton', () => ({
 const nav = vi.hoisted(() => ({ hardReplace: vi.fn() }));
 vi.mock('@/lib/navigate', () => nav);
 
-import { CreateCustomerForm, type CreateFormInitial } from '@/app/(app)/customers/new/CreateCustomerForm';
+import {
+  CreateCustomerForm,
+  DISCARDED_SEND_IN_DOUBT,
+  SEND_CHECK_WAIT,
+  type CreateFormInitial,
+} from '@/app/(app)/customers/new/CreateCustomerForm';
 import {
   announceRequestClosed,
   announceSignOut,
@@ -1216,9 +1221,12 @@ describe('a send that got no answer, then a reload (item 22), with the whole for
     expect(screen.getByRole('button', { name: 'Sent ✓' })).toBeTruthy();
   });
 
-  it('"Start a blank form" keeps the send that still has to be asked about', async () => {
+  // H2 (bug hunt round 1, finding 3) changed this: the send was kept, on the
+  // phone too, and the next reload asked about it with the NEXT shop's form on
+  // screen (tests below). A discard now forgets it, and says it may have arrived.
+  it('"Start a blank form" forgets the discarded form’s send, and says it may have arrived', async () => {
     const first = renderNew();
-    const id = await sendUnanswered();
+    await sendUnanswered();
     first.unmount();
     replies.push(noAnswer);
     renderNew();
@@ -1227,7 +1235,126 @@ describe('a send that got no answer, then a reload (item 22), with the whole for
     fireEvent.click(screen.getByRole('button', { name: 'Start a blank form' }));
     fireEvent.click(screen.getByRole('button', { name: 'Yes, start blank' }));
     expect(box('Legal name *')).toHaveValue('');
-    expect(stored()).toMatchObject({ legalName: '', unanswered: [id] });
+    await tick();
+    expect(stored(), 'nothing unsent, nothing to ask about: no copy').toBeNull();
+    expect(screen.getByText(DISCARDED_SEND_IN_DOUBT)).toBeTruthy();
+  });
+});
+
+/**
+ * H2 (bug hunt round 1, finding 3). Shop A was saved on weak signal and got no
+ * answer; the tab reloaded and held A ("Continue" or "Start a new customer")
+ * while the reload check asked the server about A's send. "Start a new customer"
+ * then kept A's unanswered send, and the check (answering late, or at the next
+ * reload) took the NEW shop's form for it: a landed draft opened with shop B laid
+ * over request A, so the next save sent B as request A; a landed submit locked
+ * B's form as "arrived after all" and deleted B's copy.
+ */
+describe('H2: "Start a new customer" while a send of the old one is in doubt', () => {
+  const sendUnanswered = async (name = 'Shop A') => {
+    type('Legal name *', name);
+    take(slots('SHOP')[0]!, 'att-shop-a');
+    replies.push(noAnswer);
+    saveDraft();
+    await settleUntil(() => screen.queryByRole('button', { name: 'Try again' }) !== null);
+    return sent[0]!.body.submissionId as string;
+  };
+  const receipt = (data: unknown) => answer({ ok: true, data });
+  /** A reply that arrives only when the test lets it. */
+  const later = (reply: () => Promise<Response>) => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    replies.push(async () => {
+      await gate;
+      return reply();
+    });
+    return () => act(async () => release());
+  };
+
+  it('the hold waits for the check: "Start a new customer" is off until it answers, and the landed draft opens as sent', async () => {
+    const first = renderNew();
+    const id = await sendUnanswered();
+    first.unmount();
+
+    const release = later(receipt({ editId: 'd9', state: 'DRAFT', submittedAt: null, replayed: true }));
+    renderNew();
+    await tick(0);
+    expect(sent.at(-1)!.url).toBe(`/api/forms/customer-create?submissionId=${id}`);
+    const start = screen.getByRole('button', { name: 'Start a new customer' }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    expect(screen.getByText(SEND_CHECK_WAIT)).toBeTruthy();
+    fireEvent.click(start);
+    expect(screen.queryByRole('button', { name: 'Yes, discard it' })).toBeNull();
+
+    await release();
+    await settleUntil(() => nav.hardReplace.mock.calls.length > 0);
+    expect(nav.hardReplace).toHaveBeenCalledWith('/customers/new?edit=d9');
+    // Shop A as it was sent: nothing of another shop goes under its draft.
+    expect(createKeys()).toEqual([]);
+  });
+
+  it('once the check has answered "no signal", he may start a new customer: shop B is never taken for A’s draft', async () => {
+    const first = renderNew();
+    await sendUnanswered();
+    first.unmount();
+    replies.push(noAnswer);
+    const second = renderNew();
+    await settleUntil(() => screen.queryByText(SEND_CHECK_WAIT) === null);
+    fireEvent.click(screen.getByRole('button', { name: 'Start a new customer' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, discard it' }));
+    expect(screen.getByText(DISCARDED_SEND_IN_DOUBT)).toBeTruthy();
+    type('Legal name *', 'Shop B');
+    take(slots('SHOP')[0]!, 'att-shop-b');
+    await tick();
+    expect(stored()).toMatchObject({ legalName: 'Shop B', unanswered: [] });
+    expect(stored()!.lastSent ?? null).toBeNull();
+    second.unmount();
+
+    // A had landed as a draft. The next reload, with signal, does not ask about it.
+    const asked = sent.length;
+    replies.push(receipt({ editId: 'd9', state: 'DRAFT', submittedAt: null, replayed: true }));
+    renderNew();
+    await tick();
+    expect(sent.length, 'no receipt check for the discarded send').toBe(asked);
+    expect(nav.hardReplace).not.toHaveBeenCalled();
+    expect(stored(keyOf('d9'))).toBeNull();
+    chooseContinue();
+    expect(box('Legal name *')).toHaveValue('Shop B');
+    expect(shows('SHOP')).toEqual(['att-shop-b']);
+  });
+
+  it('…and if A had been submitted, shop B is not locked and its copy is not deleted', async () => {
+    const first = renderNew();
+    await sendUnanswered();
+    first.unmount();
+    replies.push(noAnswer);
+    const second = renderNew();
+    await settleUntil(() => screen.queryByText(SEND_CHECK_WAIT) === null);
+    fireEvent.click(screen.getByRole('button', { name: 'Start a new customer' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, discard it' }));
+    type('Legal name *', 'Shop B');
+    take(slots('SHOP')[0]!, 'att-shop-b');
+    await tick();
+    second.unmount();
+
+    replies.push(receipt({ editId: 'e1', state: 'SUBMITTED', submittedAt: '2026-11-10T07:42:00.000Z', replayed: true }));
+    renderNew();
+    await tick();
+    expect(screen.queryByText(/arrived after all/)).toBeNull();
+    chooseContinue();
+    expect(box('Legal name *')).toHaveValue('Shop B');
+    expect(screen.queryByRole('button', { name: 'Sent ✓' })).toBeNull();
+    expect(stored()).toMatchObject({ legalName: 'Shop B' });
+  });
+
+  it('a normal resend is unchanged: Try again on the same form keeps its send and its id', async () => {
+    renderNew();
+    const id = await sendUnanswered();
+    expect(stored()).toMatchObject({ unanswered: [id], lastSent: { id } });
+    replies.push(saved('d9'));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await settleUntil(() => sent.length === 2);
+    expect(sent[1]!.body.submissionId).toBe(id);
   });
 });
 
