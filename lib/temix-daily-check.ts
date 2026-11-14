@@ -22,6 +22,11 @@
  *    - blank branch_code                                -> held, BRANCH_CODE_BLANK
  *      (how the file marks the main account row is the owner's question; see
  *      mainRowOf below);
+ *    - branch_code that is the customer's own code       -> held, BRANCH_CODE_IS_CUSTOMER_CODE
+ *      ("CA1" under CA1). The owner may answer that this marks the main account
+ *      row, so until he does such a row is not read as the CRM shop coded CA1
+ *      (CRM shops coded exactly as their customer exist: composeBranchCode keeps
+ *      them), and moves nothing;
  *    - exactly a live shop of the matched customer      -> matched;
  *    - exactly an archived shop of it                   -> held, SHOP_ARCHIVED;
  *    - exactly a shop of ANOTHER customer               -> held, SHOP_OF_ANOTHER_CUSTOMER;
@@ -136,6 +141,7 @@ export const CHECK_HOLDS = [
   'CUSTOMER_ARCHIVED',
   'DUPLICATE_SUSPECT',
   'BRANCH_CODE_BLANK',
+  'BRANCH_CODE_IS_CUSTOMER_CODE',
   'SHOP_UNKNOWN',
   'SHOP_ARCHIVED',
   'SHOP_OF_ANOTHER_CUSTOMER',
@@ -155,6 +161,8 @@ export const CHECK_HOLD_LABEL: Record<CheckHold, string> = {
   CUSTOMER_ARCHIVED: 'only an archived or merged customer has this code',
   DUPLICATE_SUSPECT: 'two different live customers have this code (one by its NMWC code, one by its Temix code, or both by Temix codes)',
   BRANCH_CODE_BLANK: 'no shop code (how the file marks the main account row waits for the owner)',
+  BRANCH_CODE_IS_CUSTOMER_CODE:
+    "the shop code is the customer's own code, which may mark the main account row (how the file marks it waits for the owner)",
   SHOP_UNKNOWN: 'the customer has no shop with this code (creating shops from the file waits for the owner)',
   SHOP_ARCHIVED: 'the shop with this code is archived',
   SHOP_OF_ANOTHER_CUSTOMER: 'this shop code belongs to another customer',
@@ -231,6 +239,8 @@ export type RowPlan = {
   rowNumber: number;
   custCodeKey: string | null;
   branchCodeKey: string | null;
+  /** The branch_code as written (letters kept): what to correct in Temix. */
+  branchCodeWritten: string | null;
   customerId: string | null;
   /** How the customer was found. */
   matchedBy: 'NMWC_CODE' | 'TEMIX_CODE' | 'BOTH' | null;
@@ -271,7 +281,12 @@ export type CheckPlan = {
       /** Moves whose route came from a route-map entry. */
       viaMap: number;
     };
-    /** Rows of a matched customer whose terms, limit or days differ as written. */
+    /**
+     * Rows of a matched customer whose terms, limit or days differ as written.
+     * customersWithRowsDisagreeing: customers whose rows in the file carry two
+     * different values of one field; a blank cell is no value, so a main row
+     * with terms beside shop rows left blank agrees.
+     */
     terms: { rows: number; customers: number; byField: Record<TermsField, number>; customersWithRowsDisagreeing: number };
     customersMatched: number;
     unknownCustomers: { codes: number; rows: number };
@@ -281,8 +296,12 @@ export type CheckPlan = {
   };
   /** Live, non-test customers no row of the file names (ids). */
   missingCustomerIds: string[];
-  /** Route codes not matched, with their rows. */
-  unmatchedRoutes: Array<{ code: string; rows: number }>;
+  /**
+   * Route codes not matched, over EVERY row of the file, held rows included
+   * (rows), and of those the rows of a shop found and not held (shopFound),
+   * which are the ones counts.routeHolds.ROUTE_NOT_MATCHED counts.
+   */
+  unmatchedRoutes: Array<{ code: string; rows: number; shopFound: number }>;
   mainRow: MainRow;
 };
 
@@ -358,6 +377,8 @@ export function checkDailyFile(input: CheckInput): CheckPlan {
       const written = (row.branchCodeWritten ?? '').trim();
       if (!written) {
         holds.push('BRANCH_CODE_BLANK');
+      } else if (rowShopCode(row.custCodeKey, written) === row.custCodeKey.trim().toUpperCase()) {
+        holds.push('BRANCH_CODE_IS_CUSTOMER_CODE');
       } else {
         const composed = rowShopCode(row.custCodeKey, written);
         const exact = branchByCode.get(composed);
@@ -418,6 +439,7 @@ export function checkDailyFile(input: CheckInput): CheckPlan {
       rowNumber: row.rowNumber,
       custCodeKey: row.custCodeKey,
       branchCodeKey: row.branchCodeKey,
+      branchCodeWritten: row.branchCodeWritten,
       customerId,
       matchedBy,
       branchId: branch?.id ?? null,
@@ -478,10 +500,11 @@ export function checkDailyFile(input: CheckInput): CheckPlan {
 
   // A customer whose rows in the file do not agree on terms, limit or days:
   // which of them would count is the owner's main-row question.
+  // Field by field, over the cells that hold a value: a blank is not a value.
   let disagreeing = 0;
   for (const rows of rowsOfCustomer.values()) {
-    const sig = new Set(rows.map((r) => JSON.stringify([r.paymentTerms, r.creditLimit, r.paymentTermDays])));
-    if (sig.size > 1) disagreeing++;
+    const fields: Array<(r: CheckRow) => string | number | null> = [(r) => r.paymentTerms, (r) => r.creditLimit, (r) => r.paymentTermDays];
+    if (fields.some((f) => new Set(rows.map(f).filter((v) => v != null)).size > 1)) disagreeing++;
   }
 
   // Customers no row names: the codes of every row, against both codes.
@@ -495,8 +518,14 @@ export function checkDailyFile(input: CheckInput): CheckPlan {
       !(c.temixCode && named.has(normalizeTemixCode(c.temixCode)))
   );
 
-  const unmatched = new Map<string, number>();
-  for (const p of plans) if (p.route.kind === 'NOT_MATCHED') unmatched.set(p.route.code, (unmatched.get(p.route.code) ?? 0) + 1);
+  const unmatched = new Map<string, { rows: number; shopFound: number }>();
+  for (const p of plans)
+    if (p.route.kind === 'NOT_MATCHED') {
+      const u = unmatched.get(p.route.code) ?? { rows: 0, shopFound: 0 };
+      u.rows++;
+      if (p.routeHold === 'ROUTE_NOT_MATCHED') u.shopFound++;
+      unmatched.set(p.route.code, u);
+    }
 
   const held = plans.filter((p) => p.verdict === 'HELD').length;
   const wouldMove = plans.filter((p) => p.verdict === 'WOULD_MOVE').length;
@@ -518,7 +547,7 @@ export function checkDailyFile(input: CheckInput): CheckPlan {
       statusByShop: pairs(byShop),
     },
     missingCustomerIds: missing.map((c) => c.id),
-    unmatchedRoutes: [...unmatched].map(([code, rows]) => ({ code, rows })).sort((a, b) => b.rows - a.rows || a.code.localeCompare(b.code)),
+    unmatchedRoutes: [...unmatched].map(([code, u]) => ({ code, ...u })).sort((a, b) => b.rows - a.rows || a.code.localeCompare(b.code)),
     mainRow: mainRowOf([]),
   };
 }

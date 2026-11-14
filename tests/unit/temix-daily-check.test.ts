@@ -100,7 +100,7 @@ describe('the Check of the synthetic file, with the route map empty', () => {
       DUPLICATE_ROW: 2,
     });
     expect(plan.counts.routeHolds).toEqual({ ROUTE_NOT_MATCHED: 1, ROUTE_SWITCHED_OFF: 1, ROUTE_MISSING: 1 });
-    expect(plan.unmatchedRoutes).toEqual([{ code: 'C10MA', rows: 1 }]);
+    expect(plan.unmatchedRoutes).toEqual([{ code: 'C10MA', rows: 1, shopFound: 1 }]);
   });
 
   it('credit and terms: listed as written, per row, for the customer found, and never applied', () => {
@@ -135,6 +135,60 @@ describe('the Check of the synthetic file, with the route map empty', () => {
   it('customers not in the file: live, not test, named by no row by either code', () => {
     expect(plan.missingCustomerIds.sort()).toEqual(['cH', 'cM', 'cP']);
     expect(plan.counts.missing).toEqual({ customers: 3, withoutTemixCode: 2 });
+  });
+});
+
+// A row built by hand, for the cases the synthetic file does not hold.
+const row = (id: string, over: Partial<CheckRow>): CheckRow => ({
+  id,
+  rowNumber: Number(id.replace(/\D/g, '')) || 2,
+  custCodeKey: 'CQ1',
+  branchCodeKey: null,
+  branchCodeWritten: null,
+  route: 'C10',
+  paymentTerms: null,
+  creditLimit: null,
+  paymentTermDays: null,
+  status: 'A',
+  notes: [],
+  ...over,
+});
+const CQ = { ...CUSTOMERS[0]!, id: 'cQ', nmwcCode: 'CQ1', temixCode: null, paymentTerms: 'CREDIT' as const, creditLimit: 500, paymentTermDays: 30 };
+const shopOfCQ = (id: string, branchCode: string) => ({ id, customerId: 'cQ', branchCode, routeId: 'rt-c11', regionId: 'rg-1', live: true, status: 'ACTIVE' as const });
+const only = (rows: CheckRow[], branches = [shopOfCQ('bQ1', 'CQ1-01'), shopOfCQ('bQ2', 'CQ1-02')]) =>
+  checkDailyFile({ rows, customers: [CQ], branches, routes: ROUTES, routeMap: [] });
+
+describe('cases beside the synthetic file', () => {
+  it('a main row with terms beside shop rows left blank: no row disagrees', () => {
+    const plan = only([
+      row('r2', { branchCodeWritten: null, paymentTerms: 'CREDIT', creditLimit: 500, paymentTermDays: 30 }),
+      row('r3', { branchCodeWritten: '01', branchCodeKey: '01' }),
+      row('r4', { branchCodeWritten: '02', branchCodeKey: '02' }),
+    ]);
+    expect(plan.counts.terms).toEqual({ rows: 0, customers: 0, byField: { paymentTerms: 0, creditLimit: 0, paymentTermDays: 0 }, customersWithRowsDisagreeing: 0 });
+    // Two values of one field do disagree, blanks or not.
+    const two = only([row('r2', { creditLimit: 500 }), row('r3', { branchCodeWritten: '01', creditLimit: 900 }), row('r4', { branchCodeWritten: '02' })]);
+    expect(two.counts.terms.customersWithRowsDisagreeing).toBe(1);
+  });
+
+  it("a shop code that is the customer's own code is held until the owner says how the main row is marked", () => {
+    const plan = only([row('r2', { branchCodeWritten: 'cq1', branchCodeKey: 'CQ1' }), row('r3', { branchCodeWritten: 'CQ1', branchCodeKey: 'CQ1' })], [shopOfCQ('bQ0', 'CQ1')]);
+    for (const p of plan.rows) expect(p, p.rowId).toMatchObject({ verdict: 'HELD', holds: ['BRANCH_CODE_IS_CUSTOMER_CODE'], move: null, branchId: null });
+    expect(plan.counts.wouldMove).toBe(0);
+    // "CQ1-01" is not the customer's own code: it still moves.
+    expect(only([row('r2', { branchCodeWritten: 'CQ1-01' })]).rows[0]!.verdict).toBe('WOULD_MOVE');
+  });
+
+  it('a row keeps its shop code as written, for the Steward to correct in Temix', () => {
+    const plan = only([row('r2', { branchCodeWritten: 'ma', branchCodeKey: 'MA' })], [shopOfCQ('bQ1', 'CQ1-MA')]);
+    expect(plan.rows[0]).toMatchObject({ branchCodeWritten: 'ma', branchCodeKey: 'MA', verdict: 'HELD', holds: ['SHOP_CODE_LOOKALIKE'] });
+  });
+
+  it('route codes not matched are counted over every row, and apart over the rows of a shop found', () => {
+    const plan = only([row('r2', { branchCodeWritten: '09', route: 'C10MA' }), row('r3', { branchCodeWritten: '01', route: 'C10MA' })]);
+    expect(plan.rows.map((p) => p.verdict)).toEqual(['HELD', 'NO_CHANGE']);
+    expect(plan.counts.routeHolds).toEqual({ ROUTE_NOT_MATCHED: 1 });
+    expect(plan.unmatchedRoutes).toEqual([{ code: 'C10MA', rows: 2, shopFound: 1 }]);
   });
 });
 

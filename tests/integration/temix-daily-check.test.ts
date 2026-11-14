@@ -237,7 +237,7 @@ describe.skipIf(!ENABLED)('the daily Temix Check and route map on Postgres', () 
       { temix: 'A', crm: 'ACTIVE', rows: 5 },
       { temix: 'I', crm: 'ACTIVE', rows: 1 },
     ]);
-    expect(plan.unmatchedRoutes).toEqual([{ code: `${S}R2MA`, rows: 1 }]);
+    expect(plan.unmatchedRoutes).toEqual([{ code: `${S}R2MA`, rows: 1, shopFound: 1 }]);
     // Customers not in the file are counted over the whole CRM: this world's
     // customer named by no row is among them, its test customer is not, and
     // none the file names is.

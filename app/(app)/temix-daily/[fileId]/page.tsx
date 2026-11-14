@@ -51,10 +51,20 @@ export default async function TemixDailyCheckPage({ params }: { params: Promise<
 
   const file = await prisma.temixDailyFile.findUnique({
     where: { id: fileId },
-    select: { id: true, filename: true, loadDay: true, uploadedAt: true, state: true, fileSha256: true, totalRows: true },
+    select: {
+      id: true,
+      filename: true,
+      loadDay: true,
+      uploadedAt: true,
+      state: true,
+      fileSha256: true,
+      totalRows: true,
+      sameBytesAs: { select: { loadDay: true, filename: true } },
+    },
   });
   if (!file) notFound();
-  const me: DailyFileForOrder = { ...file, loadDay: dateColumnDay(file.loadDay) };
+  const { sameBytesAs, ...fileForOrder } = file;
+  const me: DailyFileForOrder = { ...fileForOrder, loadDay: dateColumnDay(file.loadDay) };
   const finished = file.state === 'LOADED' || file.state === 'DISCARDED';
 
   const [waiting, orderFiles] = await Promise.all([
@@ -114,6 +124,11 @@ export default async function TemixDailyCheckPage({ params }: { params: Promise<
               This file waits for the file of {waits.loadDay} (&quot;{waits.filename}&quot;): that one must be applied or discarded first.
             </p>
           )
+        )}
+        {sameBytesAs && (
+          <p role="status" className="rounded-md bg-amber-50 p-3 text-sm text-amber-900 ring-1 ring-amber-200">
+            Exactly the same file as {dateColumnDay(sameBytesAs.loadDay)} (&quot;{sameBytesAs.filename}&quot;).
+          </p>
         )}
         {finished && (
           <p role="status" className="rounded-md bg-slate-50 p-3 text-sm text-slate-700 ring-1 ring-slate-200">
@@ -243,7 +258,9 @@ function Preview({
                 <tr key={p.rowId} className="align-top">
                   <td className="px-4 py-2 font-mono text-xs">{p.rowNumber}</td>
                   <td className="px-4 py-2 font-mono text-xs">{p.custCodeKey ?? '-'}</td>
-                  <td className="px-4 py-2 font-mono text-xs">{p.branchCodeKey ?? '-'}</td>
+                  <td className="px-4 py-2 font-mono text-xs">
+                    <ShopCode p={p} />
+                  </td>
                   <td className="px-4 py-2 text-xs text-slate-600">{p.holds.map((h) => CHECK_HOLD_LABEL[h]).join('; ')}</td>
                 </tr>
               ))}
@@ -273,11 +290,12 @@ function Preview({
         </ul>
         {plan.unmatchedRoutes.length > 0 && (
           <p className="mt-2 text-xs text-slate-700">
-            Route codes not matched (rows):{' '}
+            Route codes not matched, in all rows of the file, held rows included (rows; of them, rows of a shop found and
+            not held):{' '}
             {plan.unmatchedRoutes.slice(0, 50).map((u, i) => (
               <span key={u.code}>
                 {i > 0 && ', '}
-                <code>{u.code}</code> ({n(u.rows)})
+                <code>{u.code}</code> ({n(u.rows)}; {n(u.shopFound)})
               </span>
             ))}
             . A code is matched only once the owner&apos;s route master is entered on the{' '}
@@ -317,7 +335,9 @@ function Preview({
                 <tr key={p.rowId} className="align-top">
                   <td className="px-4 py-2 font-mono text-xs">{p.rowNumber}</td>
                   <td className="px-4 py-2 font-mono text-xs">{codes.customer.get(p.customerId!)}</td>
-                  <td className="px-4 py-2 font-mono text-xs">{p.branchCodeKey ?? '-'}</td>
+                  <td className="px-4 py-2 font-mono text-xs">
+                    <ShopCode p={p} />
+                  </td>
                   <td className="px-4 py-2 text-xs">
                     {p.terms.map((d) => (
                       <p key={d.field}>
@@ -394,6 +414,18 @@ function Preview({
           )}
         </p>
       </section>
+    </>
+  );
+}
+
+/** The shop code as written in the file, with its capitals form beside it when the two differ. */
+function ShopCode({ p }: { p: { branchCodeWritten: string | null; branchCodeKey: string | null } }) {
+  const written = p.branchCodeWritten?.trim() || null;
+  if (!written) return <>{p.branchCodeKey ?? '-'}</>;
+  return (
+    <>
+      {written}
+      {p.branchCodeKey && p.branchCodeKey !== written && <span className="text-slate-500"> ({p.branchCodeKey})</span>}
     </>
   );
 }

@@ -18,6 +18,8 @@ const h = vi.hoisted(() => ({
   entries: [] as unknown[],
   codeCounts: [] as unknown[],
   offRoutes: [] as unknown[],
+  /** Replaces the synthetic file's input, for cases it does not hold. */
+  input: null as unknown,
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => (h.user ? { user: h.user } : null) }));
@@ -38,7 +40,7 @@ vi.mock('@/services/temix-daily-routes', () => ({
 vi.mock('@/lib/temix-daily-check-load', async () => {
   const { checkInput: input, ROUTES } = await import('../support/temix-daily-check-fixture');
   return {
-    loadCheckInput: async () => ({ input: input(h.routeMap), emptied: h.emptied }),
+    loadCheckInput: async () => ({ input: h.input ?? input(h.routeMap), emptied: h.emptied }),
     loadPilotWaiting: async () => h.waiting,
     loadRoutes: async () => ROUTES.map((r) => ({ ...r, name: `Route ${r.code}` })),
     loadLiveRouteMap: async () => h.routeMap,
@@ -88,6 +90,7 @@ beforeEach(() => {
   h.entries = [];
   h.codeCounts = [];
   h.offRoutes = [];
+  h.input = null;
 });
 afterEach(cleanup);
 
@@ -132,6 +135,38 @@ describe('/temix-daily/<fileId>: the Check', () => {
     expect(within(route).getByText(/^1: the CRM route it names is switched off/)).toBeTruthy();
     expect(within(route).getByText(/^1: no route in the file/)).toBeTruthy();
     expect(within(route).getByText('C10MA')).toBeTruthy();
+    // The codes are counted over every row, held rows included, and apart over the shops found.
+    expect(within(route).getByText(/in all rows of the file, held rows included/).textContent).toContain('C10MA (1; 1)');
+  });
+
+  it('a row held for a code only in small letters shows the code as written', async () => {
+    const { ROUTES } = await import('../support/temix-daily-check-fixture');
+    const customer = { id: 'cQ', nmwcCode: 'CQ1', temixCode: null, live: true, isTest: false, status: 'ACTIVE', paymentTerms: 'CASH', creditLimit: null, paymentTermDays: null };
+    h.input = {
+      rows: [
+        { id: 'r2', rowNumber: 2, custCodeKey: 'CQ1', branchCodeKey: 'MA', branchCodeWritten: 'ma', route: 'C10', paymentTerms: 'CREDIT', creditLimit: null, paymentTermDays: null, status: 'A', notes: [] },
+      ],
+      customers: [customer],
+      branches: [{ id: 'bQ1', customerId: 'cQ', branchCode: 'CQ1-MA', routeId: 'rt-c11', regionId: 'rg-1', live: true, status: 'ACTIVE' }],
+      routes: ROUTES,
+      routeMap: [],
+    };
+    render(await open());
+    const held = within(section(/Held: 1 rows change nothing/)).getAllByRole('row')[1]!;
+    expect([...held.querySelectorAll('td')].map((td) => td.textContent).slice(0, 3)).toEqual(['2', 'CQ1', 'ma (MA)']);
+    expect(held.textContent).toMatch(/only looks like another/);
+    const terms = within(section(/Credit and terms that differ: 1 rows of 1 customers/)).getAllByRole('row')[1]!;
+    expect(terms.querySelectorAll('td')[2]!.textContent).toBe('ma (MA)');
+  });
+
+  it('a file of the same bytes as an earlier day says so on its Check', async () => {
+    h.file = { ...file('f1', '2026-11-14', 'STAGED'), sameBytesAs: { loadDay: new Date('2026-11-12T00:00:00Z'), filename: 'monday.xlsx' } };
+    render(await open());
+    expect(screen.getByText(/Exactly the same file as 2026-11-12/).textContent).toContain('"monday.xlsx"');
+    cleanup();
+    h.file = file('f1', '2026-11-14', 'STAGED');
+    render(await open());
+    expect(screen.queryByText(/Exactly the same file as/)).toBeNull();
   });
 
   it('credit and terms differences, not applied', async () => {
