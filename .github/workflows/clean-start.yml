@@ -748,7 +748,13 @@ jobs:
           fi
           bash scripts/ops/clean-start/run.sh sql "reset" "$rc" "$CS_DIR/reset.out"
 
+      # Also after a reset Postgres refused (exit 3: rolled back, e.g. CS013 when
+      # someone used the CRM during the approval wait), so the summary says
+      # "reset committed: no (nothing changed)" as the owner's guide promises.
+      # Not after a cancel, a timeout or another failure: the transaction may
+      # still be ending then, and only mode finish, later, settles it.
       - name: e-f. Did it commit? Verify (read-only)
+        if: success() || (failure() && env.CS_RESET_RC == '3')
         env:
           PGOPTIONS: -c default_transaction_read_only=on
         run: |

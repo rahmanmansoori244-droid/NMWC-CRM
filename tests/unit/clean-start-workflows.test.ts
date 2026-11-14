@@ -268,6 +268,17 @@ describe('targets', () => {
     expect(sr).toMatch(/run\.sh status-lines "\$CS_DIR\/watch-latest\.tsv" refuse/);
   });
 
+  it('apply settles "reset committed" also after a reset Postgres refused (exit 3), never after a cancel or another failure', () => {
+    const steps = MAIN.jobs.apply!.steps;
+    const d = steps.findIndex((s) => (s.name ?? '').startsWith('d. THE RESET'));
+    const ef = steps.findIndex((s) => (s.name ?? '').startsWith('e-f.'));
+    expect(d).toBeGreaterThan(0);
+    expect(ef).toBe(d + 1);
+    expect(steps[d]!.run).toMatch(/echo "CS_RESET_RC=\$rc" >> "\$GITHUB_ENV"\n[\s\S]*run\.sh sql "reset"/);
+    expect(steps[ef]!.if).toBe("success() || (failure() && env.CS_RESET_RC == '3')");
+    expect(steps[ef]!.run).toMatch(/run\.sh settle/);
+  });
+
   it('every verify-seals call names its host (it refuses with exit 2 without --expect-host, so the recorded line could never say yes)', () => {
     const calls = allJobs().flatMap(([f, id, j]) =>
       j.steps.flatMap((s) => commands(s.run ?? '').filter((l) => /scripts\/ops\/verify-seals\.ts/.test(l)).map((l) => [`${f} ${id}`, l] as const))

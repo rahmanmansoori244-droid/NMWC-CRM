@@ -303,8 +303,10 @@ integrity alert tonight** because of it. Note it in your log; do nothing about i
 
 **If it is red:** do not press anything again. Send Claude the link. The summary says
 whether the reset happened: `reset committed: yes`, or `reset committed: no (nothing
-changed)`, or `reset committed: unknown`. For `unknown`, see "When something is red".
-When Claude says to run **finish**, run it **the same evening, before 06:00 Oman time**
+changed)`, or `reset committed: unknown`. For `unknown`, see "When something is red". If
+the summary has `reset started at (UTC)` but none of these three lines (the run was
+stopped, or ran out of time), the reset may have happened: press nothing and send Claude
+the link. When Claude says to run **finish**, run it **the same evening, before 06:00 Oman time**
 (the nightly integrity check runs at 06:30). If that time has passed, tell Claude before
 you press anything: the night's check will then have reported the old seal files as one
 unexplained critical alert.
@@ -366,7 +368,9 @@ you are unsure, send Claude the link and Claude confirms.
 
 ## Step 7. When something is red
 
-Find the bold **refused:** line in the summary.
+Find the bold **refused:** line in the summary. A red Apply after the line
+`reset started at (UTC)` may have none: then find the line that starts with
+`reset committed:` instead.
 
 | The line says | What it means | What you do |
 |---|---|---|
@@ -385,7 +389,9 @@ Find the bold **refused:** line in the summary.
 | `the newest dump was taken before 19:00 Oman; run DB Backup again now, then start again` | the backup is from earlier today | run DB Backup, then start again |
 | `DB Backup heartbeat ok within 4 h: no` (or `6 h`) | the CRM has not seen the last backup | send Claude the link |
 | `runtime role privileges not failing on production (latest watch): no` | the nightly check found a wrong database permission | send Claude the link; it must be fixed before the reset |
-| `reset committed: unknown (no connection); run mode finish with this run id` or `reset committed: unknown (the check did not finish); run mode finish with this run id` | the answer was lost | run **finish** (below), the same evening |
+| `reset committed: no (nothing changed)` (Apply) | the database refused the reset and undid it, usually because someone used the CRM while the run waited for your Approve | nothing changed. Send Claude the link. Do not start apply again tonight |
+| `reset committed: unknown (no connection); run mode finish with this run id` or `reset committed: unknown (the check did not finish); run mode finish with this run id` | the answer was lost | send Claude the link, then run **finish** (below) the same evening when Claude says so |
+| a red Apply with `reset started at (UTC)` but no `reset committed:` line | the run was stopped, or ran out of time; the reset may have happened | press nothing; send Claude the link |
 | `the real customer file is loaded (customers exist): no` (photos) | the real file is not loaded yet | load it first (Step 6) |
 | `the old seal files are back, but a seal chain under seals/ cannot be named (the new chain's id was not recorded); nothing else is moved; tell Claude` (seal-restore) | the old seal files are back; one folder of seal files is unexplained | send Claude the link before anyone uses the CRM |
 | anything else | | send Claude the link; do not press anything |
