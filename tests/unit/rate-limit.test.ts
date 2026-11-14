@@ -135,7 +135,11 @@ describe('refundLimit on the durable backend', () => {
     h.executeRaw.mockRejectedValue(new Error('connect ECONNREFUSED'));
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
     await expect(refundLimit('login:ip:10.0.0.9', { capacity: 5, refillPerSec: 5 / 60 })).resolves.toBeUndefined();
-    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ key: 'login:ip:10.0.0.9' }), 'rate-limit.refund.failed');
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ keyKind: 'login:ip' }), 'rate-limit.refund.failed');
+    // The IP is not in the log line: the key's kind only, as the store-unavailable line.
+    const [fields] = warn.mock.calls.find((c) => c[1] === 'rate-limit.refund.failed')! as [Record<string, unknown>];
+    expect(fields).not.toHaveProperty('key');
+    expect(JSON.stringify(fields)).not.toContain('10.0.0.9');
   });
 });
 
