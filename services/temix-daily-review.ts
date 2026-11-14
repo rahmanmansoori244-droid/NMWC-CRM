@@ -4,7 +4,8 @@
  * The daily Temix import, stage 6: the drill-down's "Reviewed" button. The
  * Data Steward marks a line of a day's ledger (a route move, a missing
  * customer, a name difference, ...) as looked at, one line or every line of
- * the day not marked yet.
+ * the day not marked yet. Only lines of the day's LOADED files, the lines the
+ * page lists (lib/temix-daily-review.ts LOADED_FILE_LINES).
  *
  * The ledger is never updated: a mark is a new TemixChangeReview row
  * (INSERT-only, note REVIEWED), stamped with its source and transaction by the
@@ -22,7 +23,7 @@ import { ForbiddenError, RateLimitError, ValidationError, runAction, type SafeAc
 import { checkLimit } from '@/lib/rate-limit';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { omanDayStart, setChangeContext, src, withChangeContext } from '@/lib/change-context';
-import { REVIEW_FIELDS, REVIEW_NOTE } from '@/lib/temix-daily-review';
+import { LOADED_FILE_LINES, MARK_ALL_MAX, REVIEW_FIELDS, REVIEW_NOTE } from '@/lib/temix-daily-review';
 
 async function requireSteward() {
   const user = await requireActor();
@@ -34,8 +35,6 @@ async function requireSteward() {
 
 const str = (v: FormDataEntryValue | null) => (typeof v === 'string' ? v : '');
 
-/** At most this many lines are marked by one press of "mark all" (the page says so and the Steward presses again). */
-const MARK_ALL_MAX = 5000;
 const CHUNK = 1000;
 
 export async function reviewTemixChangesAction(formData: FormData): SafeAction<{ reviewed: number }> {
@@ -54,13 +53,13 @@ export async function reviewTemixChangesAction(formData: FormData): SafeAction<{
       // One review at a time per Steward, so a double press marks a line once.
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`nmwc:temix-daily-review:${me.id}`}, 42))`;
       const lines = await tx.temixChange.findMany({
-        where: { loadDay: day, reviews: { none: {} }, ...(changeRaw ? { id: BigInt(changeRaw) } : {}) },
+        where: { loadDay: day, ...LOADED_FILE_LINES, reviews: { none: {} }, ...(changeRaw ? { id: BigInt(changeRaw) } : {}) },
         select: { id: true, fileId: true },
         orderBy: { id: 'asc' },
         take: MARK_ALL_MAX,
       });
       if (changeRaw && lines.length === 0) {
-        const exists = await tx.temixChange.count({ where: { id: BigInt(changeRaw), loadDay: day } });
+        const exists = await tx.temixChange.count({ where: { id: BigInt(changeRaw), loadDay: day, ...LOADED_FILE_LINES } });
         if (exists === 0) throw new ValidationError({ changeId: 'No such line on this day.' });
         return 0; // already reviewed
       }

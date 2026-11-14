@@ -28,6 +28,8 @@ type L = {
   loadDay: Date;
   createdAt: Date;
   reviews: Array<{ reviewedAt: Date; reviewedBy: { fullName: string } }>;
+  /** The state of the line's file (the stub's join): LOADED unless a test says otherwise. */
+  fileState?: string;
 };
 
 const h = vi.hoisted(() => ({
@@ -57,7 +59,8 @@ const matches = (l: L, w: Record<string, unknown>) =>
   (w.applied === undefined || l.applied === w.applied) &&
   (w.loadDay === undefined || l.loadDay.getTime() === (w.loadDay as Date).getTime()) &&
   (!(w.id as { in?: bigint[] })?.in || (w.id as { in: bigint[] }).in.includes(l.id)) &&
-  (!(w.reviews as object) || l.reviews.length === 0);
+  (!(w.reviews as object) || l.reviews.length === 0) &&
+  (!(w.file as { state?: string })?.state || (l.fileState ?? 'LOADED') === (w.file as { state: string }).state);
 
 vi.mock('@/lib/db', () => ({
   prisma: {
@@ -75,7 +78,7 @@ vi.mock('@/lib/db', () => ({
         { kind: 'NAME_DIFFERS', applied: false, detailCode: null, _count: { _all: 2 } },
       ],
       count: async (q: { where: Record<string, unknown> }) => h.lines.filter((l) => matches(l, q.where)).length,
-      findMany: async (q: { where: Record<string, unknown> }) => h.lines.filter((l) => matches(l, q.where)),
+      findMany: async (q: { where: Record<string, unknown>; take?: number }) => h.lines.filter((l) => matches(l, q.where)).slice(0, q.take ?? Infinity),
     },
     customer: {
       findMany: async () => [
@@ -134,6 +137,7 @@ beforeEach(() => {
     line(5, { kind: 'NAME_DIFFERS', customerId: 'c2', rowId: 'row-gone' }),
     line(6, { kind: 'ROUTE_INACTIVE', toValue: 'rtx', detailCode: 'SPELL_OPENED' }),
     line(7, { customerId: 'c1', detailCode: 'SPELL_OPENED', loadDay: D_EARLY }),
+    line(8, { kind: 'TEMIX_CODE_CONFIRMED', applied: true, customerId: 'c3', rowId: 'row-8', fromValue: 'UPLOADED', toValue: 'SYNCED' }),
   ];
   h.latest = [{ id: 7n, kind: 'MISSING_FROM_FILE', customerId: 'c1', toValue: null, detailCode: 'SPELL_OPENED', loadDay: D_EARLY, fileId: 'f1' }];
 });
@@ -179,7 +183,30 @@ describe('/temix-daily/day/<day>', () => {
     expect(within(routes).getByText('ZRX')).toBeTruthy();
     expect(within(routes).getByText(/4 live shops on it now/)).toBeTruthy();
 
-    expect(screen.getByRole('button', { name: /Mark all \d+ not yet reviewed/ })).toBeTruthy();
+    const confirmed = section(/Temix codes confirmed \(1\)/);
+    expect(within(confirmed).getByRole('link', { name: 'NMWC-2026-000009' }).getAttribute('href')).toBe('/customers/c3/history');
+    expect(within(confirmed).getByText('Temix code confirmed: Uploaded to Synced')).toBeTruthy();
+
+    // Lines 2 to 6 and 8 of this day (1 is reviewed, 7 is an earlier day's).
+    expect(screen.getByRole('button', { name: 'Mark all 6 not yet reviewed' })).toBeTruthy();
+  });
+
+  it("lists and counts only the lines of the day's LOADED files (review 2026-11-15)", async () => {
+    // A second file of the day still applying: its move is neither listed nor counted on the button.
+    h.lines.push(line(9, { kind: 'ROUTE_MOVE', applied: true, customerId: 'c2', branchId: 'b1', fromValue: 'rt2', toValue: 'rt1', fileId: 'f2', fileState: 'APPLYING' }));
+    render(await page());
+    expect(section(/Shops moved to another route \(1\)/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Mark all 6 not yet reviewed' })).toBeTruthy();
+  });
+
+  it('says how many one press of "mark all" marks when there are more than 5,000', async () => {
+    const { markAllLabel, MARK_ALL_MAX } = await import('@/lib/temix-daily-review');
+    expect(MARK_ALL_MAX).toBe(5000);
+    expect(markAllLabel(7200)).toBe('Mark the next 5,000 of 7,200 not yet reviewed');
+    expect(markAllLabel(5000)).toBe('Mark all 5,000 not yet reviewed');
+    h.lines = Array.from({ length: 5001 }, (_, i) => line(100 + i, { customerId: 'c2', detailCode: 'SPELL_OPENED' }));
+    render(await page());
+    expect(screen.getByRole('button', { name: 'Mark the next 5,000 of 5,001 not yet reviewed' })).toBeTruthy();
   });
 
   it('the second view lists the spells still open that started on an earlier day', async () => {

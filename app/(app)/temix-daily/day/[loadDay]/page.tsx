@@ -13,6 +13,7 @@ import { loadSwitchedOffRoutesHoldingShops } from '@/lib/temix-daily-check-load'
 import { summaryText } from '@/lib/temix-daily-summary';
 import { TEMIX_DAILY_SUMMARY_ENABLED } from '@/lib/temix-daily-policy';
 import { dateColumnDay } from '@/lib/temix-daily-order';
+import { LOADED_FILE_LINES, markAllLabel } from '@/lib/temix-daily-review';
 import { TemixDailyReviewButton } from './review-form';
 
 export const metadata = { title: 'Temix daily: the day · NMWC' };
@@ -22,7 +23,7 @@ const LIST_MAX = 200;
 
 const n = (x: number) => x.toLocaleString('en-US');
 
-type SectionKey = 'moves' | 'missing' | 'accountant' | 'names' | 'routes';
+type SectionKey = 'moves' | 'confirmed' | 'missing' | 'accountant' | 'names' | 'routes';
 
 const SECTIONS: ReadonlyArray<{ key: SectionKey; title: string; note: string; where: Prisma.TemixChangeWhereInput }> = [
   {
@@ -30,6 +31,12 @@ const SECTIONS: ReadonlyArray<{ key: SectionKey; title: string; note: string; wh
     title: 'Shops moved to another route',
     note: 'Applied, dated the load day. Each customer’s History page shows the route it was on before.',
     where: { kind: 'ROUTE_MOVE', applied: true },
+  },
+  {
+    key: 'confirmed',
+    title: 'Temix codes confirmed',
+    note: 'Customers made in the CRM whose Temix code, typed by the Accountant, a row of the file carries as theirs: the Temix queue went from Uploaded to Synced, and the salesman was told the customer is in Temix.',
+    where: { kind: 'TEMIX_CODE_CONFIRMED', applied: true },
   },
   {
     key: 'missing',
@@ -41,7 +48,7 @@ const SECTIONS: ReadonlyArray<{ key: SectionKey; title: string; note: string; wh
   {
     key: 'accountant',
     title: 'Temix codes the Accountant typed, not in the file',
-    note: 'Customers made in the CRM whose Temix code no row carries yet. Listed when it starts and when the code appears.',
+    note: 'Customers made in the CRM whose Temix code no row of the file carries as theirs yet (a held row, or one found as another customer, does not count). Listed when it starts and when the code appears.',
     where: { kind: 'ACCOUNTANT_CODE_NOT_SEEN' },
   },
   {
@@ -119,7 +126,7 @@ export default async function TemixDailyDayPage({
   });
   const summaryInput = await loadDaySummaryInput(prisma, loadDay);
   const summary = summaryText(loadDay, summaryCountsOf(summaryInput.changes, summaryInput.heldRows));
-  const unreviewed = await prisma.temixChange.count({ where: { loadDay: day, reviews: { none: {} } } });
+  const unreviewed = await prisma.temixChange.count({ where: { loadDay: day, ...LOADED_FILE_LINES, reviews: { none: {} } } });
 
   // The lines: of this day, or the spells still open that started before it.
   let sections: Array<{ key: SectionKey; title: string; note: string; total: number; lines: Line[] }> = [];
@@ -136,7 +143,7 @@ export default async function TemixDailyDayPage({
   } else {
     sections = await Promise.all(
       SECTIONS.map(async (s) => {
-        const where = { ...s.where, loadDay: day };
+        const where = { ...s.where, loadDay: day, ...LOADED_FILE_LINES };
         const [total, lines] = await Promise.all([
           prisma.temixChange.count({ where }),
           prisma.temixChange.findMany({ where, orderBy: { id: 'asc' }, take: LIST_MAX, select: LINE_SELECT }),
@@ -201,7 +208,7 @@ export default async function TemixDailyDayPage({
           </Link>
           {!showOpen && unreviewed > 0 && (
             <span className="ml-auto">
-              <TemixDailyReviewButton loadDay={loadDay} label={`Mark all ${n(unreviewed)} not yet reviewed`} />
+              <TemixDailyReviewButton loadDay={loadDay} label={markAllLabel(unreviewed)} />
             </span>
           )}
         </nav>
@@ -352,6 +359,8 @@ function What({ l, L }: { l: Line; L: Lookups }) {
           {l.detailCode === 'VIA_ROUTE_MAP' ? ' (through the route map)' : ''}
         </span>
       );
+    case 'TEMIX_CODE_CONFIRMED':
+      return <span>Temix code confirmed: Uploaded to Synced</span>;
     case 'MISSING_FROM_FILE':
       return <span>Missing from the file: {spell}</span>;
     case 'ACCOUNTANT_CODE_NOT_SEEN':

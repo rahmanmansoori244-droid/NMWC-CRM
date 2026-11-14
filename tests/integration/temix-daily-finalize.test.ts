@@ -14,12 +14,19 @@
  *    shop (ROUTE_INACTIVE), one name difference (keyed hash, no name stored);
  *    a name that differs only in capitals and spaces is not listed. The file
  *    counts its notices; its LOADED audit row counts them by kind. No customer,
- *    shop or history row is written by finalize, no queue state flips, no
- *    alert is sent (the switch is off).
+ *    shop or history row is written by finalize, no queue state flips (the
+ *    Accountant's code is not in A), no alert is sent (the switch is off).
  *  - B, the same rows: finalize writes nothing new about the suite's customers.
  *  - C: the missing customers and the Accountant's code are back (closed,
  *    pointing at their row), the shop leaves the switched-off route (cleared),
  *    another name is listed, and a customer now absent opens its own spell.
+ *    The Accountant's code on its customer's own row is confirmed (review
+ *    2026-11-15): UPLOADED to SYNCED, one audit row, one applied
+ *    TEMIX_CODE_CONFIRMED ledger row and the salesman's TEMIX_SYNC_ACKED; a
+ *    customer whose correction waits for the next batch (PENDING_UPLOAD) is
+ *    left as it is. A file loaded again confirms no one twice.
+ *  - A file of the day still applying: its lines are neither marked by "mark
+ *    all" nor counted in the day's summary until it is loaded (review 2026-11-15).
  *  - The writer refuses a file that is not FINALIZING; the ledger stays INSERT-only.
  *  - Reviewed: one line, then all the day's others; a second press marks
  *    nothing; anyone but the Steward is refused.
@@ -58,6 +65,7 @@ describe.skipIf(!ENABLED)('the daily Temix finalize and drill-down on Postgres',
   let w: World;
   let S = '';
   let APP = '';
+  let APP2 = '';
   const ids: Record<string, string> = {};
   const files: string[] = [];
   const D3 = omanDay(new Date(Date.now() - 3 * DAY));
@@ -103,7 +111,7 @@ describe.skipIf(!ENABLED)('the daily Temix finalize and drill-down on Postgres',
     }
     throw new Error('the load never finished');
   };
-  const mine = () => [ids.c1!, ids.c2!, ids.c3!, ids.c4!, ids.cN!, w.customer];
+  const mine = () => [ids.c1!, ids.c2!, ids.c3!, ids.c4!, ids.cN!, ids.cQ!, w.customer];
   /** The suite's notices of a file, as [kind, customer key, detail, row number]. */
   const notices = async (fileId: string) => {
     const key = new Map(Object.entries(ids).map(([k, v]) => [v, k]));
@@ -176,7 +184,10 @@ describe.skipIf(!ENABLED)('the daily Temix finalize and drill-down on Postgres',
     const rx = await db.route.create({ data: { code: `${S}RX`, name: `ZZ ${S}RX`, regionId: w.regionA, isActive: true } });
     w.routes.push(rx.id);
     ids.RX = rx.id;
-    const customer = async (key: string, data: { nmwcCode: string; legalName: string; temixCode?: string; temixSyncState?: 'UPLOADED' }) => {
+    const customer = async (
+      key: string,
+      data: { nmwcCode: string; legalName: string; temixCode?: string; temixSyncState?: 'UPLOADED' | 'PENDING_UPLOAD'; createdById?: string }
+    ) => {
       const c = await db.customer.create({ data: { paymentTerms: 'CASH', ...data } });
       w.customers.push(c.id);
       ids[key] = c.id;
@@ -197,8 +208,16 @@ describe.skipIf(!ENABLED)('the daily Temix finalize and drill-down on Postgres',
     await customer('c4', { nmwcCode: `${S}4`, legalName: 'ZZ Customer Four' });
     await branch('b41', 'c4', `${S}4-01`, w.route);
     // Made in the CRM: the Accountant typed its Temix code at the final approval.
-    await customer('cN', { nmwcCode: APP, legalName: 'ZZ Customer New', temixCode: `${S}TX`, temixSyncState: 'UPLOADED' });
+    await customer('cN', { nmwcCode: APP, legalName: 'ZZ Customer New', temixCode: `${S}TX`, temixSyncState: 'UPLOADED', createdById: w.salesman });
     await branch('bN1', 'cN', `${APP}-01`, w.route);
+    // Made in the CRM too, but a correction was approved after the last batch: it waits in the queue.
+    APP2 = `NMWC-2099-${String((Date.now() + 1) % 1_000_000).padStart(6, '0')}`;
+    await customer('cQ', { nmwcCode: APP2, legalName: 'ZZ Customer Queued', temixCode: `${S}TQ`, temixSyncState: 'PENDING_UPLOAD', createdById: w.salesman });
+    await branch('bQ1', 'cQ', `${APP2}-01`, w.route);
+    // An active route for the file still applying (the last test).
+    const ry = await db.route.create({ data: { code: `${S}RY`, name: `ZZ ${S}RY`, regionId: w.regionA, isActive: true } });
+    w.routes.push(ry.id);
+    ids.RY = ry.id;
     // The route is switched off after the shop was put on it.
     await db.route.update({ where: { id: rx.id }, data: { isActive: false } });
   });
@@ -212,6 +231,7 @@ describe.skipIf(!ENABLED)('the daily Temix finalize and drill-down on Postgres',
     delete process.env.TEMIX_DAILY_SLICE_MAX_GROUPS;
     if (!prisma) return;
     if (w) {
+      await prisma.notification.deleteMany({ where: { customerId: { in: w.customers } } });
       await withAuditMaintenance(prisma, async (tx) => {
         await tx.temixChangeReview.deleteMany({ where: { change: { fileId: { in: files } } } });
         await tx.temixNoticeSeen.deleteMany({ where: { firstFileId: { in: files } } });
@@ -257,8 +277,10 @@ describe.skipIf(!ENABLED)('the daily Temix finalize and drill-down on Postgres',
     expect(await notices(A)).toEqual([
       ['MISSING_FROM_FILE', 'c3', SPELL_OPENED, null, null],
       ['MISSING_FROM_FILE', 'cN', SPELL_OPENED, null, null],
+      ['MISSING_FROM_FILE', 'cQ', SPELL_OPENED, null, null],
       ['MISSING_FROM_FILE', 'cW', SPELL_OPENED, null, null],
       ['ACCOUNTANT_CODE_NOT_SEEN', 'cN', SPELL_OPENED, null, `${S}TX`],
+      ['ACCOUNTANT_CODE_NOT_SEEN', 'cQ', SPELL_OPENED, null, `${S}TQ`],
       ['ROUTE_INACTIVE', 'RX', SPELL_OPENED, null, null],
       ['NAME_DIFFERS', 'c1', null, 2, null],
     ].sort(byText));
@@ -279,8 +301,10 @@ describe.skipIf(!ENABLED)('the daily Temix finalize and drill-down on Postgres',
     const loaded = await prisma.auditLog.findFirstOrThrow({ where: { entityType: 'TemixDailyFile', entityId: A, after: { path: ['kind'], equals: 'TEMIX_DAILY_LOADED' } } });
     expect(loaded.after).toMatchObject({ namesChecked: true, listed: { NAME_DIFFERS: 1, ROUTE_INACTIVE: expect.any(Number), MISSING_FROM_FILE: expect.any(Number), ACCOUNTANT_CODE_NOT_SEEN: expect.any(Number) } });
 
-    // Finalize changed no customer, shop or history: the queue state stands, the shop stays on the switched-off route.
+    // Finalize changed no customer, shop or history: the queue state stands (the code is not in A), the shop stays on the switched-off route.
     expect((await prisma.customer.findUniqueOrThrow({ where: { id: ids.cN! } })).temixSyncState).toBe('UPLOADED');
+    expect(await prisma.temixChange.count({ where: { fileId: A, kind: 'TEMIX_CODE_CONFIRMED' } })).toBe(0);
+    expect(await prisma.notification.count({ where: { kind: 'TEMIX_SYNC_ACKED', customerId: { in: mine() } } })).toBe(0);
     expect((await prisma.branch.findUniqueOrThrow({ where: { id: ids.b21! } })).routeId).toBe(ids.RX);
     expect(await prisma.customerHistory.count({ where: { source: { startsWith: `temix-daily:${A}:` } } })).toBe(0);
     expect(await prisma.branchHistory.count({ where: { source: `temix-daily:${A}:finalize` } })).toBe(0);
@@ -314,6 +338,7 @@ describe.skipIf(!ENABLED)('the daily Temix finalize and drill-down on Postgres',
         [`${S}3`, '01', 'ZZ Customer Three', `${S}R`, 'CASH', '', '', 'A', ''], // 4: back in the file
         [`${S}TX`, '01', 'ZZ Customer New', `${S}R`, 'CASH', '', '', 'A', ''], // 5: the Accountant's code (shop not linked)
         [w.sfx.toUpperCase() + '-C', '01', `ZZ Part C ${w.sfx}`, `${S}R`, 'CASH', '', '', 'A', ''], // 6: the world's customer
+        [`${S}TQ`, '01', 'ZZ Customer Queued', `${S}R`, 'CASH', '', '', 'A', ''], // 7: the queued customer's code
         // c4 is not in the file now.
       ],
       `${S}-C.csv`
@@ -325,12 +350,41 @@ describe.skipIf(!ENABLED)('the daily Temix finalize and drill-down on Postgres',
       ['MISSING_FROM_FILE', 'c3', SPELL_CLOSED_SEEN, 4, null],
       ['MISSING_FROM_FILE', 'cN', SPELL_CLOSED_SEEN, 5, null],
       ['MISSING_FROM_FILE', 'cW', SPELL_CLOSED_SEEN, 6, null],
+      ['MISSING_FROM_FILE', 'cQ', SPELL_CLOSED_SEEN, 7, null],
       ['ACCOUNTANT_CODE_NOT_SEEN', 'cN', SPELL_CLOSED_SEEN, 5, `${S}TX`],
+      ['ACCOUNTANT_CODE_NOT_SEEN', 'cQ', SPELL_CLOSED_SEEN, 7, `${S}TQ`],
       ['ROUTE_INACTIVE', 'RX', SPELL_CLOSED_CLEARED, null, null],
       ['NAME_DIFFERS', 'c1', null, 2, null],
     ].sort(byText));
-    // Still nothing flips the Accountant customer's queue state.
-    expect((await prisma.customer.findUniqueOrThrow({ where: { id: ids.cN! } })).temixSyncState).toBe('UPLOADED');
+    // The Accountant's code on its own row: confirmed, UPLOADED to SYNCED, under the row's source.
+    const cN = await prisma.customer.findUniqueOrThrow({ where: { id: ids.cN! } });
+    expect(cN.temixSyncState).toBe('SYNCED');
+    expect(cN.temixCode).toBe(`${S}TX`);
+    const confirmed = await prisma.temixChange.findMany({ where: { fileId: C, kind: 'TEMIX_CODE_CONFIRMED' }, include: { row: { select: { rowNumber: true } } } });
+    expect(confirmed.map((c) => [c.customerId, c.applied, c.field, c.fromValue, c.toValue, c.row?.rowNumber, c.source])).toEqual([
+      [ids.cN, true, 'temixSyncState', 'UPLOADED', 'SYNCED', 5, `temix-daily:${C}:5`],
+    ]);
+    expect(confirmed[0]!.txId).not.toBeNull();
+    const audit = await prisma.auditLog.findMany({ where: { entityType: 'Customer', entityId: ids.cN! } });
+    expect(audit.map((a) => [a.action, a.before, (a.after as { temixSyncState?: string }).temixSyncState])).toEqual([['UPDATE', { temixSyncState: 'UPLOADED' }, 'SYNCED']]);
+    expect(audit[0]!.after).toMatchObject({ lineage: { fileId: C, rowNumber: 5, loadDay: today } });
+    // The salesman who sent the request is told, once; nobody else.
+    const acks = await prisma.notification.findMany({ where: { kind: 'TEMIX_SYNC_ACKED', customerId: { in: mine() } } });
+    expect(acks.map((a) => [a.userId, a.customerId])).toEqual([[w.salesman, ids.cN]]);
+    // A correction waiting for the next batch keeps its place: the code is seen, nothing is confirmed.
+    expect((await prisma.customer.findUniqueOrThrow({ where: { id: ids.cQ! } })).temixSyncState).toBe('PENDING_UPLOAD');
+    // The LOADED audit row counts it; the file's notice count does not.
+    const loaded = await prisma.auditLog.findFirstOrThrow({ where: { entityType: 'TemixDailyFile', entityId: C, after: { path: ['kind'], equals: 'TEMIX_DAILY_LOADED' } } });
+    expect(loaded.after).toMatchObject({ codesConfirmed: 1 });
+    expect((await prisma.temixDailyFile.findUniqueOrThrow({ where: { id: C } })).noticeRows).toBe(await prisma.temixChange.count({ where: { fileId: C, applied: false } }));
+  });
+
+  it('the same code loaded again confirms no one twice', async () => {
+    const again = await stageDirect(today, [[`${S}TX`, '01', 'ZZ Customer New', `${S}R`, 'CASH', '', '', 'A', '']], `${S}-C2.csv`);
+    expect(await runToEnd(again, await start(again))).toMatchObject({ done: true, state: 'LOADED' });
+    expect(await prisma.temixChange.count({ where: { fileId: again, kind: 'TEMIX_CODE_CONFIRMED' } })).toBe(0);
+    expect(await prisma.notification.count({ where: { kind: 'TEMIX_SYNC_ACKED', customerId: { in: mine() } } })).toBe(1);
+    expect(await prisma.auditLog.count({ where: { entityType: 'Customer', entityId: ids.cN! } })).toBe(1);
   });
 
   it('Reviewed: one line, then the rest of the day; a second press marks nothing; the Steward only', async () => {
@@ -352,12 +406,54 @@ describe.skipIf(!ENABLED)('the daily Temix finalize and drill-down on Postgres',
     // One audit row per press that marked something (A's lines are of one file).
     expect(await prisma.auditLog.count({ where: { entityType: 'TemixDailyFile', entityId: A, after: { path: ['kind'], equals: 'TEMIX_DAILY_REVIEWED' } } })).toBe(2);
     // A review is a mark beside the ledger: the spells stay as they were.
-    expect(await notices(A)).toHaveLength(6);
+    expect(await notices(A)).toHaveLength(8);
 
     current = { id: w.manager, role: 'MANAGER', username: `${w.sfx}.m` };
     const refused = await review.reviewTemixChangesAction(form({ loadDay: today }));
     expect(refused.ok).toBe(false);
     expect((refused as unknown as { code: string }).code).toBe('FORBIDDEN');
+  });
+
+  it('a file of the day still applying: "mark all" leaves its lines, and the summary leaves them out, until it is loaded', async () => {
+    // Today's lines so far first, so only the new file's are left.
+    await fresh();
+    ok(await review.reviewTemixChangesAction(form({ loadDay: today })));
+    const D = await stageDirect(
+      today,
+      [
+        [`${S}1`, '01', 'Customer 1 Renamed', `${S}RY`, 'CASH', '', '', 'A', ''],
+        [`${S}3`, '01', 'ZZ Customer Three', `${S}RY`, 'CASH', '', '', 'A', ''],
+      ],
+      `${S}-D.csv`
+    );
+    const token = await start(D);
+    process.env.TEMIX_DAILY_SLICE_MAX_GROUPS = '1';
+    const first = await slice(D, token);
+    expect(first).toMatchObject({ done: false, state: 'APPLYING' });
+    const moves = await prisma.temixChange.findMany({ where: { fileId: D, kind: 'ROUTE_MOVE' } });
+    expect(moves).toHaveLength(1);
+    const dayMoves = () => prisma.temixChange.count({ where: { loadDay: new Date(`${today}T00:00:00Z`), kind: 'ROUTE_MOVE' } });
+    const summaryMoves = async () => {
+      const day = await loadDaySummaryInput(prisma, today);
+      return summaryCountsOf(day.changes, day.heldRows).ROUTE_MOVE ?? 0;
+    };
+    // The applying file's move is in the ledger, not in the summary.
+    expect(await summaryMoves()).toBe((await dayMoves()) - 1);
+    await fresh();
+    expect(ok<{ reviewed: number }>(await review.reviewTemixChangesAction(form({ loadDay: today })))).toEqual({ reviewed: 0 });
+    // Named by id: not a line of the day's page yet.
+    await fresh();
+    const one = await review.reviewTemixChangesAction(form({ loadDay: today, changeId: moves[0]!.id.toString() }));
+    expect(one.ok).toBe(false);
+    expect(await prisma.temixChangeReview.count({ where: { change: { fileId: D } } })).toBe(0);
+
+    delete process.env.TEMIX_DAILY_SLICE_MAX_GROUPS;
+    expect(await runToEnd(D, first.leaseToken)).toMatchObject({ done: true, state: 'LOADED' });
+    expect(await prisma.temixChange.count({ where: { fileId: D, kind: 'ROUTE_MOVE' } })).toBe(2);
+    expect(await summaryMoves()).toBe(await dayMoves());
+    const lines = await prisma.temixChange.count({ where: { fileId: D } });
+    await fresh();
+    expect(ok<{ reviewed: number }>(await review.reviewTemixChangesAction(form({ loadDay: today })))).toEqual({ reviewed: lines });
   });
 });
 

@@ -41,7 +41,8 @@ export async function loadDaySummaryInput(
 ): Promise<{ changes: Array<{ kind: string; applied: boolean; detailCode: string | null; n: number }>; heldRows: number }> {
   const day = loadDayDate(loadDay);
   const [grouped, held] = await Promise.all([
-    db.temixChange.groupBy({ by: ['kind', 'applied', 'detailCode'], where: { loadDay: day }, _count: { _all: true } }),
+    // The lines of the day's LOADED files only, as the day's page lists them (a file still applying lists nothing yet).
+    db.temixChange.groupBy({ by: ['kind', 'applied', 'detailCode'], where: { loadDay: day, file: { state: 'LOADED' } }, _count: { _all: true } }),
     db.temixDailyFile.aggregate({ where: { loadDay: day, state: 'LOADED' }, _sum: { heldRows: true } }),
   ]);
   return {
