@@ -19,7 +19,9 @@
  *    as in the workbook reader, and a heading repeated (ignoring capitals) is
  *    recorded so the caller refuses the file;
  *  - a record whose cells are all blank is skipped, and every other record
- *    keeps its own number (the heading line is 1), as the workbook reader does.
+ *    keeps the number of the line it starts on (the heading line is 1; a line
+ *    break inside a quoted cell counts), so the row named is the line the
+ *    Steward finds in the file.
  *
  * PURE: no imports, no database.
  */
@@ -69,12 +71,26 @@ export function csvDelimiter(text: string): ',' | ';' | '\t' {
 
 /** Every record of the text, each a list of fields as written (quotes removed). */
 export function csvRecords(text: string, delimiter: string = csvDelimiter(text)): string[][] {
-  const records: string[][] = [];
+  return csvRecordLines(text, delimiter).map((r) => r.fields);
+}
+
+/**
+ * Every record of the text with the number of the line it starts on (1 for the
+ * first). A line break inside a quoted cell counts as a line, as an editor shows
+ * the file, so a row is named by the line the Steward will find it on.
+ */
+export function csvRecordLines(
+  text: string,
+  delimiter: string = csvDelimiter(text)
+): Array<{ fields: string[]; line: number }> {
+  const records: Array<{ fields: string[]; line: number }> = [];
   let record: string[] = [];
   let field = '';
   let inQuotes = false;
   let quotedField = false;
   let i = 0;
+  let line = 1;
+  let recordLine = 1;
   const endField = () => {
     record.push(field);
     field = '';
@@ -82,7 +98,7 @@ export function csvRecords(text: string, delimiter: string = csvDelimiter(text))
   };
   const endRecord = () => {
     endField();
-    records.push(record);
+    records.push({ fields: record, line: recordLine });
     record = [];
   };
   while (i < text.length) {
@@ -98,6 +114,14 @@ export function csvRecords(text: string, delimiter: string = csvDelimiter(text))
         i++;
         continue;
       }
+      // CRLF, LF or CR inside the cell: one line each, kept in the cell as written.
+      if (ch === '\r' && text[i + 1] === '\n') {
+        field += '\r\n';
+        i += 2;
+        line++;
+        continue;
+      }
+      if (ch === '\r' || ch === '\n') line++;
       field += ch;
       i++;
       continue;
@@ -116,6 +140,8 @@ export function csvRecords(text: string, delimiter: string = csvDelimiter(text))
     if (ch === '\r' || ch === '\n') {
       endRecord();
       i += ch === '\r' && text[i + 1] === '\n' ? 2 : 1;
+      line++;
+      recordLine = line;
       continue;
     }
     field += ch;
@@ -136,8 +162,8 @@ function columnLetter(n: number): string {
 
 /** A CSV file as the sheet the daily import reads (one sheet, named after the file). */
 export function parseCsv(bytes: Uint8Array, name = 'CSV'): CsvSheet {
-  const records = csvRecords(decodeUtf8(bytes));
-  const head = records[0] ?? [];
+  const records = csvRecordLines(decodeUtf8(bytes));
+  const head = records[0]?.fields ?? [];
   const columns: Array<{ index: number; name: string; letter: string }> = [];
   const duplicateHeadings: CsvSheet['duplicateHeadings'] = [];
   head.forEach((cell, index) => {
@@ -153,7 +179,7 @@ export function parseCsv(bytes: Uint8Array, name = 'CSV'): CsvSheet {
   });
   const rows: CsvSheet['rows'] = [];
   const rowNumbers: number[] = [];
-  for (const [r, record] of records.entries()) {
+  for (const [r, { fields: record, line }] of records.entries()) {
     if (r === 0) continue;
     if (record.every((c) => c.trim() === '')) continue;
     const row: Record<string, string | null> = {};
@@ -162,7 +188,7 @@ export function parseCsv(bytes: Uint8Array, name = 'CSV'): CsvSheet {
       row[c.name] = v === '' ? null : v;
     }
     rows.push(row);
-    rowNumbers.push(r + 1);
+    rowNumbers.push(line);
     if (rows.length > MAX_DAILY_ROWS) {
       throw new CsvReadError(
         `The file has too many rows (more than ${MAX_DAILY_ROWS.toLocaleString('en-US')}).`

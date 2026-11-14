@@ -780,7 +780,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'TemixDailyRow.raw': {
     subject: 'customer',
     kind: 'snapshot',
-    note: 'the daily file row verbatim (name, phone, address, CR number as Temix sends them); emptied by temix-daily-payload-90d',
+    note: 'the daily file row verbatim, agreed columns only (name, phone, address, CR number as Temix sends them); emptied by temix-daily-payload-90d',
   },
   'TemixDailyRow.parsed': { subject: 'customer', kind: 'snapshot', note: 'emptied with raw by temix-daily-payload-90d' },
   'TemixDailyRow.custCodeKey': { subject: 'business-or-person', kind: 'identifier', note: 'the normalised customer code' },

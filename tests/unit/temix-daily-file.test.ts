@@ -213,6 +213,64 @@ describe('rows', () => {
     expect(rows.map((r) => r.notes.includes('DUPLICATE_ROW'))).toEqual([true, true, true, true, false]);
   });
 
+  it('one shop written apart only in the capitals of the customer prefix is a case-only look-alike, never two clean rows', () => {
+    // rowShopCode puts the prefix in capitals, so both compose to one code and
+    // the Import screen's sibling rule alone passes them; both rows would carry
+    // the same branchCodeKey with no note.
+    for (const [a, b] of [
+      ['C1-01', 'c1-01'],
+      ['C1', 'c1'],
+    ]) {
+      const rows = stage([
+        { ...base, cust_code: 'C1', branch_code: a },
+        { ...base, cust_code: 'C1', branch_code: b },
+      ]);
+      expect(rows.map((r) => r.branchCodeKey), a).toEqual([a, a]);
+      expect(rows.map((r) => r.notes), a).toEqual([['SHOP_CODE_LOOKALIKE'], ['SHOP_CODE_LOOKALIKE']]);
+      expect(rows[0]!.parsed.shopLookalike, a).toEqual({ other: b, row: 3, caseOnly: true });
+      expect(rows[1]!.parsed.shopLookalike, a).toEqual({ other: a, row: 2, caseOnly: true });
+    }
+  });
+
+  it('one shop written with and without the customer prefix is a duplicate row', () => {
+    const rows = stage([
+      { ...base, cust_code: 'C1', branch_code: '01' },
+      { ...base, cust_code: 'C1', branch_code: 'C1-01' },
+      { ...base, cust_code: 'C1', branch_code: 'C1-02' },
+    ]);
+    expect(rows.map((r) => r.notes)).toEqual([['DUPLICATE_ROW'], ['DUPLICATE_ROW'], []]);
+  });
+
+  it('a spreadsheet error word in a cell is a cell error, written bare (CSV) or marked (workbook)', () => {
+    for (const w of ['#N/A', '#REF!', '#VALUE!', '#DIV/0!', '#NAME?', '#NUM!', '#NULL!', ' #n/a ']) {
+      const [r] = stage([{ ...base, branch_code: w }]);
+      expect(r!.notes, w).toContain('CELL_ERROR');
+    }
+    const s = parseCsv(new TextEncoder().encode(`${HEAD.join(',')}\n#N/A,01,X,R1,CASH,0,0,A,,,,\n`));
+    const report = reportDailyHeadings(s.headers);
+    const [r] = stageDailyRows(s, report);
+    expect(r!.notes).toContain('CELL_ERROR');
+    // Text that only starts with # is not an error word.
+    expect(stage([{ ...base, cust_name: '#1 Shop' }])[0]!.notes).toEqual([]);
+  });
+
+  it('only the agreed columns are kept: a column that is not read has no cell in raw', () => {
+    const headers = [...HEAD, 'owner_mobile'];
+    const s = {
+      headers,
+      rows: [{ ...(base as DailySheetRow), cr_no: null, phone: null, address: null, owner_mobile: '99999999' }],
+      rowNumbers: [2],
+    };
+    const report = reportDailyHeadings(headers);
+    expect(report.notRead).toEqual(['owner_mobile']);
+    const [r] = stageDailyRows(s, report);
+    expect(Object.keys(r!.raw).sort()).toEqual([...HEAD].sort());
+    expect(JSON.stringify(r)).not.toContain('99999999');
+    // An error in a column that is not read is not this row's note.
+    const [e] = stageDailyRows({ ...s, rows: [{ ...s.rows[0]!, owner_mobile: '#N/A' }] }, report);
+    expect(e!.notes).toEqual([]);
+  });
+
   it('optional cells are kept when present and null when the column is absent', () => {
     const withOpt = stage([{ ...base, cr_no: ' 1234567 ', phone: '90000000', address: 'Street 1' }]);
     expect(withOpt[0]!.parsed).toMatchObject({ crNo: '1234567', phone: '90000000', address: 'Street 1' });
@@ -236,6 +294,15 @@ describe('CSV', () => {
     expect(s.headers[0]).toBe('cust_code');
     expect(s.rows.map((r) => r.cust_code)).toEqual(['A1', 'A2']);
     expect(s.rowNumbers).toEqual([2, 5]);
+  });
+
+  it('a row keeps the number of the line it starts on, after a quoted cell holding line breaks', () => {
+    const s = parseCsv(
+      enc(`${HEAD.join(',')}\r\nA1,,,,,,,,,,,"Line 1\r\nLine 2\nLine 3\rLine 4"\r\nA2,,,,,,,,\n\nA3,"x\ny",,,,,,,\nA4,,,,,,,,\n`)
+    );
+    expect(s.rows.map((r) => r.cust_code)).toEqual(['A1', 'A2', 'A3', 'A4']);
+    // A1 spans lines 2-5; A2 is line 6; line 7 is blank; A3 spans 8-9; A4 is 10.
+    expect(s.rowNumbers).toEqual([2, 6, 8, 10]);
   });
 
   it('semicolon and tab files; quotes inside quotes', () => {

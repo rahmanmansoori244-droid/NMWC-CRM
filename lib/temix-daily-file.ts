@@ -12,12 +12,14 @@
  * (lib/import-headings.ts foldHeading: capitals, spaces and underscores do not
  * matter). A missing required heading refuses the file, naming it. A column
  * under two spellings refuses it (the import could not say which it read).
- * Headings that are not agreed are listed, not read. A heading only the
+ * Headings that are not agreed are listed, not read: their names are kept on
+ * the file, their cells are not kept anywhere. A heading only the
  * customer master has (channel, day_of_visit, customer_status, temix_code,
  * sales_region) refuses the file: that is a customer master, and it is loaded
  * on the Import screen, never here.
  *
- * ROWS. Each row is kept as sent (raw) and as read (parsed):
+ * ROWS. Each row is kept as sent (raw: the cells of the agreed columns only)
+ * and as read (parsed):
  *  - cust_code: folded like a Temix code (lib/temix-code.ts normalizeTemixCode:
  *    ASCII digits, invisible characters removed, trimmed, capitals) into the
  *    row's custCodeKey; a code typed in small letters is noted as such.
@@ -27,6 +29,12 @@
  *    look-alike rule (lib/import-shop-code.ts shopLookalike) is reused on the
  *    codes AS WRITTEN among the customer's rows in this file: two codes that
  *    differ only in their zeros or only in capital and small letters are noted.
+ *    Two rows naming one shop are found by the shop code each names composed
+ *    under its customer (rowShopCode) in capitals, so "01" and "C1-01" name the
+ *    same shop. Written apart only in capitals ("C1-01" and "c1-01", "C1" and
+ *    "c1") they are a case-only SHOP_CODE_LOOKALIKE, held as the Import screen
+ *    holds one; otherwise (the same code twice, two blanks, "01" beside
+ *    "C1-01") a DUPLICATE_ROW.
  *    The comparison with the customer's shops in the CRM is the Check's job.
  *  - route: folded the same way; it is not looked up here.
  *  - payment_terms: kept as written, trimmed and in capitals. It is NOT checked
@@ -48,7 +56,7 @@
  * PURE: no database; scripts and tests use it as is.
  */
 import { foldHeading } from './import-headings';
-import { shopLookalike, type SiblingShop } from './import-shop-code';
+import { rowShopCode, shopLookalike, type SiblingShop } from './import-shop-code';
 import { INVISIBLE_FORMAT, asciiDigits } from './digits';
 import { normalizeTemixCode } from './temix-code';
 
@@ -275,7 +283,16 @@ export function readCreatedDay(v: DailyCell | undefined): string | null {
   return `${m[1]}-${m[2]}-${m[3]}`;
 }
 
-const isCellError = (v: DailyCell | undefined) => typeof v === 'string' && v.startsWith('#ERROR:');
+/**
+ * The words a spreadsheet writes for a formula's error. The workbook reader
+ * marks an error cell '#ERROR:<word>' (lib/excel.ts); a CSV saved from a
+ * spreadsheet carries the bare word, so both are read as a cell error.
+ */
+export const SHEET_ERROR_WORDS = ['#N/A', '#REF!', '#VALUE!', '#DIV/0!', '#NAME?', '#NUM!', '#NULL!', '#SPILL!', '#CALC!', '#GETTING_DATA'] as const;
+const SHEET_ERRORS = new Set<string>(SHEET_ERROR_WORDS);
+
+export const isCellError = (v: DailyCell | undefined) =>
+  typeof v === 'string' && (v.startsWith('#ERROR:') || SHEET_ERRORS.has(v.trim().toUpperCase()));
 
 const plain = (v: DailyCell | undefined): string | null => {
   const s = text(v).trim();
@@ -294,7 +311,11 @@ export function stageDailyRows(
     const h = report.read[c];
     return h === undefined ? undefined : row[h];
   };
+  // The file's headings of the agreed columns: only their cells are kept.
+  const readHeadings = Object.values(report.read).filter((h): h is string => h !== undefined);
   const staged: StagedDailyRow[] = sheet.rows.map((row, i) => {
+    const raw: DailySheetRow = {};
+    for (const h of readHeadings) raw[h] = row[h] ?? null;
     const notes = new Set<TemixDailyUploadNote>();
     const capitalised: DailyParsed['capitalised'] = [];
     const custWritten = writtenCode(cell(row, 'cust_code'));
@@ -318,11 +339,11 @@ export function stageDailyRows(
     const createdWritten = plain(cell(row, 'created_date'));
     const createdDay = createdWritten ? readCreatedDay(createdWritten) : null;
     if (createdWritten && !createdDay) notes.add('CREATED_DATE_UNREADABLE');
-    if (Object.values(row).some(isCellError)) notes.add('CELL_ERROR');
+    if (Object.values(raw).some(isCellError)) notes.add('CELL_ERROR');
     const terms = plain(cell(row, 'payment_terms'));
     return {
       rowNumber: sheet.rowNumbers[i]!,
-      raw: row,
+      raw,
       custCodeKey,
       branchCodeKey,
       notes: [...notes],
@@ -354,14 +375,25 @@ export function stageDailyRows(
   }
   for (const [cust, rows] of byCustomer) {
     if (rows.length < 2) continue;
-    const count = new Map<string, number>();
-    // Exactly the same code as written (two blanks included); codes that differ
-    // only in capitals are the look-alike below, not a duplicate.
-    const same = (r: StagedDailyRow) => r.parsed.branchCodeWritten ?? '';
-    for (const r of rows) count.set(same(r), (count.get(same(r)) ?? 0) + 1);
+    // The shop a row names: its code composed under the customer as the promote
+    // composes it, letters kept ('' for a blank code). Two rows whose composed
+    // codes are equal in capitals name one shop.
+    const shopOf = (r: StagedDailyRow) => (r.parsed.branchCodeWritten ? rowShopCode(cust, r.parsed.branchCodeWritten) : '');
+    const byShop = new Map<string, StagedDailyRow[]>();
     for (const r of rows) {
-      if ((count.get(same(r)) ?? 0) > 1) addNote(r, 'DUPLICATE_ROW');
+      const k = shopOf(r).toUpperCase();
+      byShop.set(k, [...(byShop.get(k) ?? []), r]);
+    }
+    const written = (r: StagedDailyRow) => r.parsed.branchCodeWritten ?? '';
+    // Two codes of one shop written apart ONLY in capitals ("C1-01" and "c1-01",
+    // "C1" and "c1"). Every other pair naming one shop (the same code twice, two
+    // blanks, "01" beside "C1-01") is a duplicate row.
+    const caseOnlyPair = (a: StagedDailyRow, b: StagedDailyRow) =>
+      written(a) !== written(b) && written(a).toUpperCase() === written(b).toUpperCase();
+    for (const r of rows) {
       const mine = r.parsed.branchCodeWritten;
+      const mates = byShop.get(shopOf(r).toUpperCase())!.filter((o) => o !== r);
+      if (mates.some((o) => !caseOnlyPair(r, o))) addNote(r, 'DUPLICATE_ROW');
       if (!mine) continue;
       const siblings: SiblingShop[] = rows
         .filter((o) => o !== r && o.parsed.branchCodeWritten)
@@ -370,6 +402,15 @@ export function stageDailyRows(
       if (hit && hit.kind === 'row') {
         addNote(r, 'SHOP_CODE_LOOKALIKE');
         r.parsed.shopLookalike = { other: hit.other, row: Number(hit.row), caseOnly: hit.caseOnly };
+        continue;
+      }
+      // The same shop written apart only in capitals: shopLookalike passes it,
+      // as rowShopCode puts the customer's prefix in capitals and both compose
+      // to one code; it is held as a case-only look-alike.
+      const caseMate = mates.find((o) => caseOnlyPair(r, o));
+      if (caseMate) {
+        addNote(r, 'SHOP_CODE_LOOKALIKE');
+        r.parsed.shopLookalike = { other: caseMate.parsed.branchCodeWritten!, row: caseMate.rowNumber, caseOnly: true };
       }
     }
   }
