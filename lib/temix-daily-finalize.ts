@@ -21,14 +21,29 @@
  *    (customersNotNamed in lib/temix-daily-check.ts). Whether the daily file is
  *    the full list is the owner's question: until he answers, a spell is a
  *    line to look at, never an action, and nobody but the Steward sees it.
+ *    A spell of a customer no longer expected (archived, merged, made a test
+ *    customer) ends NOT_EXPECTED even when a row still names its old code
+ *    (Temix keeps a merged customer's code).
  *  - ACCOUNTANT_CODE_NOT_SEEN (key: the customer and the code): a customer
  *    made in the CRM (an NMWC-YYYY-NNNNNN code) carrying the Temix code the
- *    Accountant typed at its final approval, and no row of the file has that
- *    code as its customer code. Such a customer is usually also missing; both
- *    are listed, each under its own rule (whether to list it once is the
- *    owner's question). When the code appears the spell is closed. The Temix
- *    queue state (UPLOADED to SYNCED) and the salesman's TEMIX_SYNC_ACKED are
- *    NOT written here: no customer is changed and no one is told.
+ *    Accountant typed at its final approval, and no row of the file carries
+ *    that code as its customer code AND was found by the apply as this
+ *    customer. A row with the code that was held (two customers, a code held
+ *    by another) or found as someone else is not this customer's: it neither
+ *    keeps such a spell from opening nor closes it (review 2026-11-15). Such a
+ *    customer is usually also missing; both are listed, each under its own
+ *    rule (whether to list it once is the owner's question). When the code
+ *    appears on the customer's own row the spell is closed.
+ *
+ * THE CODE CONFIRMED (the plan's finalize item 2). For the same customers, a
+ * row of the file found as this customer and carrying its Accountant code is
+ * Temix's word that the customer is in Temix: the plan lists it in `confirms`,
+ * and lib/temix-daily-confirm.ts, the one writer of it, flips the customer's
+ * Temix queue state UPLOADED to SYNCED (as the Import screen's refresh lane
+ * does), and only when it flipped writes the applied TEMIX_CODE_CONFIRMED
+ * ledger row and tells the salesman (TEMIX_SYNC_ACKED). A customer in any
+ * other queue state is left as it is (a correction waiting for the next batch
+ * keeps its place; one already SYNCED is not confirmed twice).
  *  - ROUTE_INACTIVE (key: the route): a CRM route that is switched off and
  *    still holds live shops, whoever put them there.
  *
@@ -117,8 +132,13 @@ export type Notice = {
   detailCode: SpellCode | null;
 };
 
+/** A customer whose Accountant code the file confirms, on its own row. temixCode: as stored (the writer's guard). */
+export type Confirm = { customerId: string; temixCode: string; rowId: string; rowNumber: number };
+
 export type FinalizePlan = {
   notices: Notice[];
+  /** Customers whose Accountant code a row found as them carries (lib/temix-daily-confirm.ts writes them). */
+  confirms: Confirm[];
   /** The "listed once" marks to add with the NAME_DIFFERS notices. */
   seen: Array<{ customerId: string; valueHash: string }>;
   namesChecked: boolean;
@@ -187,6 +207,15 @@ export function planFinalize(input: FinalizeInput): FinalizePlan {
   for (const r of [...input.rows].sort((a, b) => a.rowNumber - b.rowNumber))
     if (r.custCodeKey && !firstRow.has(r.custCodeKey)) firstRow.set(r.custCodeKey, r);
   const byId = new Map(input.customers.map((c) => [c.id, c]));
+  /** The first row (by row number) carrying `code` that the apply found as customer `id`. */
+  const owned = new Map<string, FinalizeRow>();
+  for (const r of input.rows) {
+    if (!r.custCodeKey || !r.customerId) continue;
+    const k = `${r.custCodeKey}|${r.customerId}`;
+    const had = owned.get(k);
+    if (!had || r.rowNumber < had.rowNumber) owned.set(k, r);
+  }
+  const ownRow = (id: string, code: string): FinalizeRow | null => owned.get(`${code}|${id}`) ?? null;
   const open = new Map(input.open.map((s) => [spellKey(s.kind, s.customerId, s.value), s]));
   const rowNaming = (c: FinalizeCustomer | undefined): FinalizeRow | null => {
     if (!c) return null;
@@ -211,7 +240,9 @@ export function planFinalize(input: FinalizeInput): FinalizePlan {
       notices.push({ kind: 'MISSING_FROM_FILE', customerId: c.id, rowId: null, field: null, toValue: null, detailCode: SPELL_OPENED });
   for (const s of openOf('MISSING_FROM_FILE')) {
     if (!s.customerId || missingIds.has(s.customerId)) continue;
-    const row = rowNaming(byId.get(s.customerId));
+    // Still expected (live, not a test customer)? Only then can a row bring it back.
+    const c = byId.get(s.customerId);
+    const row = c && c.live && !c.isTest ? rowNaming(c) : null;
     notices.push({
       kind: 'MISSING_FROM_FILE',
       customerId: s.customerId,
@@ -222,24 +253,32 @@ export function planFinalize(input: FinalizeInput): FinalizePlan {
     });
   }
 
-  // Temix codes the Accountant typed that the file does not carry.
+  // Temix codes the Accountant typed that the file does not carry on the customer's own row,
+  // and those it does (confirmed).
+  const confirms: Confirm[] = [];
+  const own = new Map<string, FinalizeRow | null>();
   for (const c of sortById(input.customers)) {
     const code = accountantCodeOf(c);
-    if (code && !named.has(code) && !open.has(spellKey('ACCOUNTANT_CODE_NOT_SEEN', c.id, code)))
+    if (!code) continue;
+    const row = ownRow(c.id, code);
+    own.set(c.id, row);
+    if (row) confirms.push({ customerId: c.id, temixCode: c.temixCode!, rowId: row.id, rowNumber: row.rowNumber });
+    else if (!open.has(spellKey('ACCOUNTANT_CODE_NOT_SEEN', c.id, code)))
       notices.push({ kind: 'ACCOUNTANT_CODE_NOT_SEEN', customerId: c.id, rowId: null, field: 'temixCode', toValue: code, detailCode: SPELL_OPENED });
   }
   for (const s of openOf('ACCOUNTANT_CODE_NOT_SEEN')) {
     const c = s.customerId ? byId.get(s.customerId) : undefined;
     const code = c ? accountantCodeOf(c) : null;
     if (code && code === s.value) {
-      if (!named.has(code)) continue; // still not seen: the spell stays open
-      notices.push({ ...base(s), rowId: firstRow.get(code)?.id ?? null, detailCode: SPELL_CLOSED_SEEN });
+      const row = own.get(c!.id) ?? null;
+      if (!row) continue; // not on the customer's own row: the spell stays open
+      notices.push({ ...base(s), rowId: row.id, detailCode: SPELL_CLOSED_SEEN });
     } else {
       notices.push({ ...base(s), rowId: null, detailCode: SPELL_CLOSED_NOT_EXPECTED });
     }
   }
 
-  // Switched-off routes still holding shops.
+  // Switched-off routes holding shops.
   const inactive = new Set(input.inactiveRoutes.filter((r) => r.shops > 0).map((r) => r.id));
   for (const id of [...inactive].sort())
     if (!open.has(spellKey('ROUTE_INACTIVE', null, id)))
@@ -266,7 +305,7 @@ export function planFinalize(input: FinalizeInput): FinalizePlan {
       notices.push({ kind: 'NAME_DIFFERS', customerId: r.customerId, rowId: r.rowId, field: 'legalName', toValue: null, detailCode: null });
     }
   }
-  return { notices, seen, namesChecked: key !== null };
+  return { notices, confirms, seen, namesChecked: key !== null };
 }
 
 function base(s: OpenSpell): Omit<Notice, 'rowId' | 'detailCode'> {

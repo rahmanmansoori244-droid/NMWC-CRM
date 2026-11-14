@@ -50,7 +50,7 @@ const LABEL: Record<SummaryKey, string> = {
   STATUS_DIFFERS: 'status differences',
   NAME_DIFFERS: 'name differences',
   ROUTE_NOT_MATCHED: 'route codes not matched',
-  ROUTE_INACTIVE: 'switched-off routes still holding shops',
+  ROUTE_INACTIVE: 'switched-off routes newly holding shops',
   ROUTE_INACTIVE_ENDED: 'switched-off routes no longer holding shops',
   SHOP_CODE_LOOKALIKE: 'look-alike shop codes',
   SHOP_NOT_LINKED: 'shops not linked',
@@ -58,7 +58,7 @@ const LABEL: Record<SummaryKey, string> = {
   CODE_HELD_BY_OTHER: 'codes held by another customer',
   MISSING_FROM_FILE: 'customers newly missing from the file',
   MISSING_FROM_FILE_ENDED: 'customers no longer missing from the file',
-  ACCOUNTANT_CODE_NOT_SEEN: "Accountant's Temix codes not in the file",
+  ACCOUNTANT_CODE_NOT_SEEN: "Accountant's Temix codes newly not found in the file",
   ACCOUNTANT_CODE_SEEN: "Accountant's Temix codes now in the file",
   DAUGHTER_TERMS_IGNORED: 'shop credit figures ignored',
   HELD_ROWS: 'rows held back',
@@ -76,7 +76,7 @@ const LABEL_ONE: Record<SummaryKey, string> = {
   STATUS_DIFFERS: 'status difference',
   NAME_DIFFERS: 'name difference',
   ROUTE_NOT_MATCHED: 'route code not matched',
-  ROUTE_INACTIVE: 'switched-off route still holding shops',
+  ROUTE_INACTIVE: 'switched-off route newly holding shops',
   ROUTE_INACTIVE_ENDED: 'switched-off route no longer holding shops',
   SHOP_CODE_LOOKALIKE: 'look-alike shop code',
   SHOP_NOT_LINKED: 'shop not linked',
@@ -84,7 +84,7 @@ const LABEL_ONE: Record<SummaryKey, string> = {
   CODE_HELD_BY_OTHER: 'code held by another customer',
   MISSING_FROM_FILE: 'customer newly missing from the file',
   MISSING_FROM_FILE_ENDED: 'customer no longer missing from the file',
-  ACCOUNTANT_CODE_NOT_SEEN: "Accountant's Temix code not in the file",
+  ACCOUNTANT_CODE_NOT_SEEN: "Accountant's Temix code newly not found in the file",
   ACCOUNTANT_CODE_SEEN: "Accountant's Temix code now in the file",
   DAUGHTER_TERMS_IGNORED: 'shop credit figure ignored',
   HELD_ROWS: 'row held back',
@@ -95,7 +95,9 @@ const LABEL_ONE: Record<SummaryKey, string> = {
  * Re-checked in stage 6 against what finalize really counts
  * (summaryCountsOf): a spell kind counts the spells that STARTED that day,
  * the *_ENDED keys those that ended; ROUTE_INACTIVE is a switched-off route
- * still holding shops (not a row). Kinds nothing writes yet (credit and terms,
+ * holding shops (not a row); the words of a spell kind say "newly" for that
+ * reason (review 2026-11-15: a spell still open from an earlier day is not
+ * counted again). Kinds nothing writes yet (credit and terms,
  * created customers and shops, status) keep their words for the stages that
  * wait for the owner.
  */
