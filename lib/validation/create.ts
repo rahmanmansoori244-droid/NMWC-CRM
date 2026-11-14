@@ -17,7 +17,8 @@ import { z } from 'zod';
 import { submissionIdSchema } from '../submission';
 import { DayOfWeek, PaymentTerms } from '@prisma/client';
 import { gpsManualReasonSchema } from '../gps-manual';
-import { isGpsTooInaccurate, gpsTooInaccurateMessage } from '../gps-accuracy';
+import { isGpsTooInaccurate, gpsTooInaccurateMessage, GPS_READING_TOO_ROUGH_MESSAGE } from '../gps-accuracy';
+import { GPS_ACCURACY_MAX } from '../db-rules';
 // stripHtml / strippedStr moved to ./fields so the UPDATE payload strips before it
 // validates too (N02); the optional text fields below moved to optionalText there
 // (review of phase 2), because they checked the raw length and stripped after.
@@ -133,7 +134,12 @@ export const createBranchDraftSchema = z.object({
     .min(51, 'Longitude must be inside Oman (≥51°E).')
     .max(61, 'Longitude must be inside Oman (≤61°E).')
     .optional(),
-  gpsAccuracy: z.number().min(0).max(10000).optional(),
+  // H14: the database's range; a reading outside it is named on the GPS field.
+  gpsAccuracy: z
+    .number()
+    .min(0, GPS_READING_TOO_ROUGH_MESSAGE)
+    .max(GPS_ACCURACY_MAX, GPS_READING_TOO_ROUGH_MESSAGE)
+    .optional(),
   gpsCapturedAt: z.coerce.date().optional(),
   // Item 41: present only when the point was typed in. Not an EditBranchDraft
   // column — services/creates.ts stores it as a marker in fieldChanges.

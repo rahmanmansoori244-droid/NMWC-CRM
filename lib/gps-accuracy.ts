@@ -35,6 +35,18 @@ export function isGpsTooInaccurate(accuracy: unknown, typedReason: unknown): boo
   return !typed && typeof accuracy === 'number' && gpsAccuracyBand(accuracy) === 'poor';
 }
 
+/**
+ * H14 (bug hunt round 1, finding 7): a reported accuracy outside 0 to ±10,000 m
+ * (GPS_ACCURACY_MAX, lib/db-rules.ts; the database refuses it too) cannot be
+ * stored, on a draft as on a submit. Capture GPS keeps its best reading whatever
+ * its accuracy, so a tablet with only an approximate location could send one,
+ * and Save draft then failed with zod's "Number must be less than or equal to
+ * 10000" at the top of the form. Both schemas give this sentence instead, and it
+ * shows on the shop's GPS field. The rule itself is unchanged.
+ */
+export const GPS_READING_TOO_ROUGH_MESSAGE =
+  'This GPS reading is too rough to keep (worse than ±10 km). Step outside and capture GPS again, or enter the location by hand with a reason.';
+
 export function gpsTooInaccurateMessage(tag: string, accuracy: number): string {
   return `${tag}: the GPS reading is ±${Math.round(accuracy)} m, over the ${GPS_MAX_ACCURACY_M} m limit. Step outside and recapture, or enter the location by hand with a reason.`;
 }
