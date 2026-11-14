@@ -1316,7 +1316,8 @@ not built yet (item D).
      says so and names both rows ("The branch_code on row 2 is blank, so it is numbered "X-01" by
      its place …, and that is the code row 3 gives ("01"). … Give row 2 a branch_code."); "Before
      you promote" counts these customers on a line of their own, naming the first pairs of rows (it
-     used to call it "a branch_code repeated in the file"). If the coded row was held back and the
+     used to call it "a branch_code repeated in the file"). When two coded rows of the customer also
+     really repeat that code, the reason is the repeated code, as before. If the coded row was held back and the
      blank row loaded alone as `X-01`, correcting the coded row no longer changes that shop: the
      re-check holds it back on its `branch_code` cell, naming the row whose shop it is ("Shop code
      "01" is "X-01", the code row 2 was given by its place when it loaded …"). Give it a code the

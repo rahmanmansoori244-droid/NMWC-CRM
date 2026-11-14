@@ -463,6 +463,15 @@ export function branchCodeClash(
   shops: ReadonlyArray<{ sheetCode: string | null; branchCode: string }>,
   rowNumbers: ReadonlyArray<number | string | undefined>
 ): BranchCodeClash | null {
+  // A code really repeated by two coded rows comes first: the "numbered" words
+  // say "No code is repeated in the file", which would then be untrue, and fixing
+  // only the blank row would leave the repeat for the next Promote.
+  const coded = new Set<string>();
+  for (const s of shops) {
+    if (!s.sheetCode) continue;
+    if (coded.has(s.branchCode)) return { kind: 'repeated', code: s.branchCode };
+    coded.add(s.branchCode);
+  }
   const firstAt = new Map<string, number>();
   for (const [j, s] of shops.entries()) {
     const i = firstAt.get(s.branchCode);

@@ -82,6 +82,28 @@ describe('a blank branch_code numbered like another row', () => {
     expect(branchCodeClash([{ sheetCode: null, branchCode: 'C1-01' }, { sheetCode: '02', branchCode: 'C1-02' }], [2, 3])).toBeNull();
   });
 
+  it('a code really repeated by two coded rows wins over a blank row numbered like them', () => {
+    // Review of the hunt fixes: [blank -> C1-01, "01", "01"] used to say
+    // "No code is repeated in the file", which is untrue.
+    expect(
+      branchCodeClash(
+        [
+          { sheetCode: null, branchCode: 'C1-01' },
+          { sheetCode: '01', branchCode: 'C1-01' },
+          { sheetCode: '01', branchCode: 'C1-01' },
+        ],
+        [2, 3, 4]
+      )
+    ).toEqual({ kind: 'repeated', code: 'C1-01' });
+    const p = plan([
+      prow({ branchCode: null, rowNumber: 2 }),
+      prow({ branchCode: '01', rowNumber: 3 }),
+      prow({ branchCode: '01', rowNumber: 4 }),
+    ]);
+    expect(p.rejected).toBe(REJECT_REASONS.REPEATED_CODE);
+    expect(p.numberedClash).toBeUndefined();
+  });
+
   it('the promote’s reason names both rows and says nothing is repeated', () => {
     expect(branchCodeClashMessage({ kind: 'numbered', code: 'C1-01', sheetCode: '01', blankRow: 2, codedRow: 3 })).toBe(
       'The branch_code on row 2 is blank, so it is numbered "C1-01" by its place among this customer\'s rows, and that is the code row 3 gives ("01"). No code is repeated in the file: the two rows would be loaded as one shop. Give row 2 a branch_code.'
