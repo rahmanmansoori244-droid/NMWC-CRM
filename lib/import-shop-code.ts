@@ -103,7 +103,19 @@ export type SiblingShop = { row: number | string; code: string; released?: boole
  * the promote gives a NEW customer's row whose branch_code is blank.
  */
 export type ShopLookalike =
-  | { kind: 'shop'; sheetCode: string; other: string; caseOnly: boolean; numbered?: boolean }
+  | {
+      kind: 'shop';
+      sheetCode: string;
+      other: string;
+      caseOnly: boolean;
+      numbered?: boolean;
+      /**
+       * The row whose code looks like the shop (groupShopLookalike). The promote
+       * writes one reason to every row of the customer, so it says which row
+       * holds the code (review of follow-up 1, as F5 did for two rows).
+       */
+      selfRow?: number | string;
+    }
   | {
       kind: 'row';
       sheetCode: string;
@@ -208,7 +220,9 @@ export function shopLookalikeMessage(hit: ShopLookalike): string {
   // code "01" looks like shop code "1" on row 3" did not say where "01" is. A
   // sentence of its own after the bracket, so the start and the bracket are as
   // before (SHOP_LOOKALIKE, SHOP_LOOKALIKE_RELEASABLE).
-  const where = hit.kind === 'row' && hit.selfRow !== undefined ? ` "${hit.sheetCode}" is on row ${hit.selfRow}.` : '';
+  // Review of follow-up 1: a code that looks like a shop already in the CRM is
+  // written to every row of the customer too, so it says which row holds it.
+  const where = hit.selfRow !== undefined ? ` "${hit.sheetCode}" is on row ${hit.selfRow}.` : '';
   return hit.caseOnly
     ? `Shop code "${hit.sheetCode}" looks like ${like} (only capital and small letters differ).${where} Correct the code: shop codes are kept in capital letters, so if it is the same shop write it as that shop's code, and if it is a different shop give it a different code.`
     : `Shop code "${hit.sheetCode}" looks like ${like} (Excel may have dropped a zero).${where} Correct the code if it is the same shop; if it is a different shop, release the row with a reason.`;
@@ -251,9 +265,10 @@ export function groupShopLookalike(
     const mine = codeOf(r);
     const hit = shopLookalike(custCode, mine.code, shops, siblings, r.shopCodeReleased === true);
     if (!hit) continue;
-    // Every row-to-row hit names the row compared: the reason goes to every row
-    // of the customer (follow-up 1, F5: coded rows too, not only numbered ones).
-    const withRow = hit.kind === 'row' ? { ...hit, selfRow: r.rowNumber } : hit;
+    // Every hit names the row compared: the reason goes to every row of the
+    // customer (follow-up 1, F5: coded rows too, not only numbered ones; its
+    // review: a code that looks like a shop already in the CRM too).
+    const withRow = { ...hit, selfRow: r.rowNumber };
     return mine.numbered ? { ...withRow, numbered: true } : withRow;
   }
   return null;

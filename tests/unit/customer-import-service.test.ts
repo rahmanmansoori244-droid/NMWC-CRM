@@ -2495,7 +2495,7 @@ describe('owner’s answers 2026-11-11 (A5) — codes in small letters and looka
     const out = await promote();
     expect(out).toMatchObject({ promoted: 0, failed: 1 });
     expect(rejected[0].data.issues[0].message).toBe(
-      "branch_code: Shop code \"ARC1-2\" looks like this customer's existing shop \"ARC1-02\" (Excel may have dropped a zero). Correct the code if it is the same shop; if it is a different shop, release the row with a reason."
+      "branch_code: Shop code \"ARC1-2\" looks like this customer's existing shop \"ARC1-02\" (Excel may have dropped a zero). \"ARC1-2\" is on row 2. Correct the code if it is the same shop; if it is a different shop, release the row with a reason."
     );
     for (const wr of WRITES) expect(order).not.toContain(wr);
   });

@@ -324,9 +324,35 @@ describe('groupShopLookalike — two coded rows that look alike name both rows',
     );
   });
 
-  it('a shop already in the CRM: one row, so nothing more to name', () => {
+  // Review of follow-up 1: the promote writes this reason to every row of the
+  // customer too, so on row 2 (which holds "02") it says where "1" is.
+  it('a shop already in the CRM: the reason says which row holds the code', () => {
     const hit = groupShopLookalike('C2', [{ branchCode: '02', rowNumber: 2 }, { branchCode: '1', rowNumber: 3 }], ['C2-01']);
-    expect(hit).toEqual({ kind: 'shop', sheetCode: '1', other: 'C2-01', caseOnly: false });
+    expect(hit).toEqual({ kind: 'shop', sheetCode: '1', other: 'C2-01', caseOnly: false, selfRow: 3 });
+    const msg = shopLookalikeMessage(hit!);
+    expect(msg).toBe(
+      'Shop code "1" looks like this customer\'s existing shop "C2-01" (Excel may have dropped a zero). "1" is on row 3. Correct the code if it is the same shop; if it is a different shop, release the row with a reason.'
+    );
+    expect(SHOP_LOOKALIKE.test(msg)).toBe(true);
+    expect(SHOP_LOOKALIKE_RELEASABLE.test(msg)).toBe(true);
+    expect(canReleaseShopCode([{ field: 'branch_code', message: msg }])).toBe(true);
+    expect(editableColumns([{ field: '_promote', message: `branch_code: ${msg}` }])).toEqual(['branch_code']);
+    // Only capital and small letters differ: still corrected, never released.
+    const ab = groupShopLookalike('C2', [{ branchCode: 'ab', rowNumber: 4 }], ['C2-AB']);
+    expect(ab).toMatchObject({ kind: 'shop', caseOnly: true, selfRow: 4 });
+    const abMsg = shopLookalikeMessage(ab!);
+    expect(abMsg).toBe(
+      'Shop code "ab" looks like this customer\'s existing shop "C2-AB" (only capital and small letters differ). "ab" is on row 4. Correct the code: shop codes are kept in capital letters, so if it is the same shop write it as that shop\'s code, and if it is a different shop give it a different code.'
+    );
+    expect(canReleaseShopCode([{ field: 'branch_code', message: abMsg }])).toBe(false);
+  });
+
+  it('the upload reason for a shop already in the CRM, which each row gets for itself, is unchanged', () => {
+    const hit = shopLookalike('C2', '1', ['C2-01'], []);
+    expect(hit).not.toHaveProperty('selfRow');
+    expect(shopLookalikeMessage(hit!)).toBe(
+      'Shop code "1" looks like this customer\'s existing shop "C2-01" (Excel may have dropped a zero). Correct the code if it is the same shop; if it is a different shop, release the row with a reason.'
+    );
   });
 });
 

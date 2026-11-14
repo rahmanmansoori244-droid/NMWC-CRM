@@ -402,7 +402,7 @@ describe.skipIf(!ENABLED)('A5: code spellings on the customer import', () => {
     const [r] = await rowsOf(batchId);
     expect(r!.state).toBe('REJECTED');
     expect(issuesOf(r!)[0]!.message).toBe(
-      `branch_code: Shop code "02" looks like this customer's existing shop "${G}-002" (Excel may have dropped a zero). Correct the code if it is the same shop; if it is a different shop, release the row with a reason.`
+      `branch_code: Shop code "02" looks like this customer's existing shop "${G}-002" (Excel may have dropped a zero). "02" is on row ${r!.rowNumber}. Correct the code if it is the same shop; if it is a different shop, release the row with a reason.`
     );
     expect(await shopsOf(G)).toEqual([`${G}-002`, `${G}-01`]);
     const res = await fixes.recheckImportRowAction(fd({ rowId: r!.id }));

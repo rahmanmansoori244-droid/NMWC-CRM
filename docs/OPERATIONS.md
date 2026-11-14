@@ -1294,8 +1294,11 @@ not built yet (item D).
      row 2 is blank, … looks like shop code "1" on row 3 … Give row 2 a branch_code"). The same
      holds when two rows with codes look alike: Promote's reason names both rows ("Shop code "01"
      looks like shop code "1" on row 3 … (Excel may have dropped a zero). "01" is on row 2. …"),
-     so the row that holds "1" says where "01" is. The reason at upload, which each row gets for
-     itself, is unchanged.
+     so the row that holds "1" says where "01" is. So does Promote's reason for a code that looks
+     like a shop already in the CRM ("Shop code "1" looks like this customer's existing shop
+     "X-01" (Excel may have dropped a zero). "1" is on row 3. …"), so every other row of that
+     customer says which row to correct. The reason at upload, which each row gets for itself, is
+     unchanged.
    - **Promote opens "Before you promote".** It counts, against the CRM as it is at that moment:
      customers and shops that will be created; Temix-owned fields refreshed; rows naming a route
      that will NOT be applied; rows whose codes were read in capitals; blank CRM fields filled; customers and shops where the sheet differs
