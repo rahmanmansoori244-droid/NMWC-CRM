@@ -110,7 +110,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Preflight, production named with the phrase, the stored list
@@ -165,6 +168,11 @@ jobs:
           bash scripts/ops/clean-start/photo-delete.sh check "$CS_DIR/photo-keys.txt" "$CS_DIR/reset-row.txt" "$CS_DIR/prod-keys.txt"
           bash scripts/ops/clean-start/run.sh bool "the real customer file is loaded (customers exist)" "$CS_DIR/customers.out"
 
+      # Before the first irreversible step: the read-write photo token works on this
+      # bucket (a swapped, expired or revoked token, or a wrong bucket name, stops here).
+      - name: The read-write photo token can write and delete (a throwaway object)
+        run: bash scripts/ops/clean-start/photo-delete.sh probe "$GITHUB_RUN_ID"
+
       - name: Delete the reset's Neon safety branch first
         run: bash scripts/ops/clean-start/run.sh neon-delete-safety "$TARGET_RUN"
 
@@ -180,15 +188,21 @@ jobs:
 
       - name: Record it in production's audit log
         if: always() && (steps.delete.outcome == 'success' || steps.delete.outcome == 'failure')
+        env:
+          DELETE_OUTCOME: ${{ steps.delete.outcome }}
         run: |
           set -euo pipefail
           [ -f "$CS_DIR/photo-delete.counts" ] || { bash scripts/ops/clean-start/run.sh record "photo deletion recorded" 1; exit 1; }
           read -r LISTED SKIP_SHAPE SKIP_UAT DELETED < "$CS_DIR/photo-delete.counts"
+          # A red delete step is recorded as NOT complete: the row never says "deleted" then.
+          COMPLETE=no
+          if [ "$DELETE_OUTCOME" = success ]; then COMPLETE=yes; fi
           rc=0
           psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/photos-record.sql \
             -v run_id="$GITHUB_RUN_ID" -v reset_run_id="$TARGET_RUN" -v actor_username="$CLEANSTART_ACTOR_USERNAME" \
             -v list_sha256="$LIST_SHA256" -v listed="$LISTED" -v skipped_shape="$SKIP_SHAPE" \
-            -v skipped_uat="$SKIP_UAT" -v deleted="$DELETED" > "$CS_DIR/record.out" 2>&1 || rc=$?
+            -v skipped_uat="$SKIP_UAT" -v deleted="$DELETED" -v complete="$COMPLETE" \
+            -v attempt="${GITHUB_RUN_ATTEMPT:-1}" > "$CS_DIR/record.out" 2>&1 || rc=$?
           bash scripts/ops/clean-start/run.sh sql "photo deletion recorded in the audit log" "$rc" "$CS_DIR/record.out"
 
       - name: The encrypted report
@@ -202,7 +216,8 @@ jobs:
             if [ -f "$CS_DIR/$f" ]; then FILES+=("$CS_DIR/$f"); fi
           done
           if [ "${#FILES[@]}" -gt 0 ] && [[ ${TARGET_RUN:-} =~ ^[0-9]{1,20}$ ]]; then
-            bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$TARGET_RUN/photos" "${FILES[@]}"
+            # One folder per photo run and attempt: a re-run never overwrites an earlier report.
+            bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$TARGET_RUN/photos-$GITHUB_RUN_ID-${GITHUB_RUN_ATTEMPT:-1}" "${FILES[@]}"
           fi
 
       - name: Remove the plaintext

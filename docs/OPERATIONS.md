@@ -635,13 +635,20 @@ next customer number (`next customer code would be number 000001: yes`).
 ### The Neon dress rehearsal (mode `neon-rehearsal`; once, approval-gated)
 
 Plan, then (after Approve) a temporary branch `cleanstart-rehearsal-<run>` of the
-default branch with a compute; its host must not be production. Its fingerprint is taken
-and the time noted; the reset and verify run on it, then the watch; then the branch is
-restored through the Neon API to the noted time (`preserve_under_name`
-`cleanstart-rehearsal-<run>-after`), the reset row must be gone and the plan id must
-return exactly (`the Neon restore returned the exact fingerprint: yes`). Both branches
-are deleted in an `always()` step; if one is left, the run says so and the owner deletes
-it by hand. `branch equals production's plan` is only recorded: the proof is that the
+default branch with a compute; its host must not be production. The default branch
+itself must be production's: one of its endpoints has the host of the first line of
+`config/production-hosts.txt` (`Neon default branch is production: yes`), checked
+before this branch and before apply's safety branch are made. Its fingerprint is taken
+and the time noted; the reset and verify run on it, then the watch; then Neon makes a
+new branch `cleanstart-rehearsal-<run>-at` from the rehearsal branch's history at the
+noted time (a branch create with `parent_timestamp`: Neon's own point-in-time
+`/restore` works on root branches only, and the rehearsal branch is a child), the reset
+row must be gone there and the plan id must return exactly
+(`the Neon restore returned the exact fingerprint: yes`). Both branches are deleted in an `always()` step, the newer
+first (Neon refuses to delete a branch with a child); if one is left, the run says so and
+the owner deletes it by hand. This proves Neon's history holds the noted time on a
+branch of production; it does not exercise the console Restore of the production (root)
+branch itself, rollback route 1. `branch equals production's plan` is only recorded: the proof is that the
 restore returns the branch's own fingerprint. Apply needs a green run of this mode with
 the same scripts within 14 days, so it is repeated after any change to
 `scripts/ops/clean-start/`.
@@ -725,13 +732,21 @@ apply run's summary. It refuses unless the reset row `cleanstart-<run_id>` exist
 at least 7 days old, the sha256 of the stored list (`cleanstart/<run_id>/apply/photo-keys.txt.age`)
 equals both the typed value and the reset row's value, and no production `Attachment`
 row references a listed key (one hit means a rollback happened: everything is refused).
-Then it deletes the Neon safety branch FIRST (no rollback may be left pointing at missing
-files), skips keys without the photo shape, keeps keys the test environment references
-(only when `UAT_DATABASE_URL_RO` is set; otherwise `test environment checked for shared
-photos: no (no read-only UAT connection set)`), deletes the rest in batches of at most
-1000 and HEAD-checks each, writes one AuditLog row `cleanstart-photos-<run>` and stores an
-encrypted report under `cleanstart/<run_id>/photos/`. It cannot be undone. If bucket
-versioning is on, the bytes linger up to 30 days.
+Before anything is deleted, the read-write photo token writes a throwaway object
+(`cleanstart-probe/…`), reads it back and deletes it (`photo-delete.sh probe`): a
+read-only, expired or revoked token, or a wrong bucket name, is refused there, with
+nothing deleted. Then it deletes the Neon safety branch FIRST (no rollback may be left
+pointing at missing files), skips keys without the photo shape, keeps keys the test
+environment references (only when `UAT_DATABASE_URL_RO` is set; otherwise `test
+environment checked for shared photos: no (no read-only UAT connection set)`), deletes
+the rest in batches of at most 1000 and HEAD-checks each. It then writes one AuditLog row
+per run attempt: `cleanstart-photos-<run>` for the first, `cleanstart-photos-<run>-<N>`
+for a re-run attempt N (`photos-record.sql`). The row stores `complete` and `runAttempt`
+with the counts; if the delete step was red, the row has `complete` false and its reason
+says the deletion did NOT complete. The encrypted report goes under
+`cleanstart/<run_id>/photos-<run>-<attempt>/`, one folder per photo run and attempt, so
+a re-run never overwrites an earlier report. It cannot be undone. If bucket versioning is
+on, the bytes linger up to 30 days.
 
 ### Going back
 
@@ -755,7 +770,10 @@ watch once (`a check failing or in error: no`; a failing check makes the job red
 Only the recorded new chain's folder `seals/v1/<new chain>/` is moved: the photo bucket is
 shared with the test environment, whose own chain keeps growing under `seals/`, so every
 other object is left where it is (`other objects under seals/ left where they are`), and
-without the recorded id nothing is moved. Run it straight after the restore, the same
+without the recorded id nothing is moved: when apply stopped at step g or h before
+recording it, the archived old files still go back, and the run refuses only if a chain
+folder `seals/v1/<id>/` is there that is neither the old chain nor in the apply's list of
+other objects at the reset (`every seal chain under seals/ is the old one or was there at the reset: yes`). Run it straight after the restore, the same
 evening: a 02:30 UTC watch between the two reports the new chain's files as a critical
 alert. Then delete `MIN_DUMP_BYTES` if it was set, and, once the rollback is confirmed,
 delete the safety branch and Neon's preserved pre-restore copy (Claude names them; the

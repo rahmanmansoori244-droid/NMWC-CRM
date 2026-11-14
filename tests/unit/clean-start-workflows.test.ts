@@ -264,8 +264,56 @@ describe('targets', () => {
     const sr = run('seal_restore');
     expect(sr.indexOf('run.sh chain-id-fetch')).toBeGreaterThan(-1);
     expect(sr.indexOf('run.sh chain-id-fetch')).toBeLessThan(sr.indexOf('seal-archive.sh restore'));
-    expect(sr).toMatch(/seal-archive\.sh restore "\$CS_DIR\/exports\/seals\.jsonl" "\$OLD_CHAIN" "\$TARGET_RUN" "\$NEW_CHAIN"/);
+    expect(sr).toMatch(/seal-archive\.sh restore "\$CS_DIR\/exports\/seals\.jsonl" "\$OLD_CHAIN" "\$TARGET_RUN" "\$NEW_CHAIN" \\\s+"\$CS_DIR\/exports\/seal-keys-foreign\.txt"/);
     expect(sr).toMatch(/run\.sh status-lines "\$CS_DIR\/watch-latest\.tsv" refuse/);
+  });
+
+  it('the photo run probes the read-write token before it deletes the Neon safety branch (its first irreversible step)', () => {
+    const steps = PHOTOS.jobs.photos!.steps;
+    const names = steps.map((s) => s.name ?? '');
+    const probe = names.findIndex((n) => /read-write photo token can write and delete/.test(n));
+    const neon = names.findIndex((n) => /Neon safety branch/.test(n));
+    expect(probe).toBeGreaterThan(0);
+    expect(neon).toBe(probe + 1);
+    expect(steps[probe]!.if).toBeUndefined();
+    expect(steps[probe]!.run).toMatch(/photo-delete\.sh probe "\$GITHUB_RUN_ID"/);
+  });
+
+  it('the photo record: complete only on a green delete step, its own row and report folder per run attempt', () => {
+    const steps = PHOTOS.jobs.photos!.steps;
+    const rec = steps.find((s) => /Record it in production's audit log/.test(s.name ?? ''))!;
+    expect(rec.env?.DELETE_OUTCOME).toBe('${{ steps.delete.outcome }}');
+    expect(rec.run).toMatch(/COMPLETE=no\n\s*if \[ "\$DELETE_OUTCOME" = success \]; then COMPLETE=yes; fi/);
+    expect(commands(rec.run!).join('\n')).toMatch(/-v complete="\$COMPLETE"\s+-v attempt="\$\{GITHUB_RUN_ATTEMPT:-1\}"/);
+    const report = steps.find((s) => s.name === 'The encrypted report')!;
+    expect(report.run).toMatch(/encrypt-upload "cleanstart\/\$TARGET_RUN\/photos-\$GITHUB_RUN_ID-\$\{GITHUB_RUN_ATTEMPT:-1\}"/);
+  });
+
+  it('age is installed on its own with one retry (the universe mirror flakes; db-backup.yml), in every job that needs it', () => {
+    let n = 0;
+    for (const [f, id, j] of allJobs()) {
+      for (const s of j.steps) {
+        const lines = commands(s.run ?? '').filter((l) => /apt-get install/.test(l));
+        if (!lines.some((l) => /\bage\b/.test(l))) continue;
+        n++;
+        const ages = lines.filter((l) => /\bage\b/.test(l));
+        expect(ages, `${f} ${id}`).toHaveLength(1);
+        expect(ages[0], `${f} ${id}`).toMatch(/install -y --no-install-recommends age > \/dev\/null\s+\|\| \{ sleep \d+; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > \/dev\/null; \}$/);
+        expect(ages[0]).not.toMatch(/postgresql-client/);
+      }
+    }
+    expect(n).toBe(6);
+  });
+
+  it('apply settles "reset committed" also after a reset Postgres refused (exit 3), never after a cancel or another failure', () => {
+    const steps = MAIN.jobs.apply!.steps;
+    const d = steps.findIndex((s) => (s.name ?? '').startsWith('d. THE RESET'));
+    const ef = steps.findIndex((s) => (s.name ?? '').startsWith('e-f.'));
+    expect(d).toBeGreaterThan(0);
+    expect(ef).toBe(d + 1);
+    expect(steps[d]!.run).toMatch(/echo "CS_RESET_RC=\$rc" >> "\$GITHUB_ENV"\n[\s\S]*run\.sh sql "reset"/);
+    expect(steps[ef]!.if).toBe("success() || (failure() && env.CS_RESET_RC == '3')");
+    expect(steps[ef]!.run).toMatch(/run\.sh settle/);
   });
 
   it('every verify-seals call names its host (it refuses with exit 2 without --expect-host, so the recorded line could never say yes)', () => {

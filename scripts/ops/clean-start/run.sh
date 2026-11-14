@@ -209,7 +209,10 @@ cmd_preflight() {
 }
 
 # window: apply only between 15:30 and 23:30 UTC (19:30-03:30 Oman): no
-# scheduled job of vercel.json or the GitHub schedulers fires then (design 9).
+# scheduled job of vercel.json is due then (design 9). GitHub's own schedules
+# (sla-escalate.yml, keep-warm.yml) are due before 15:00 UTC too, but GitHub can
+# start a run hours late, so the owner's guide has both disabled for the reset
+# evening (Step 5) and enabled again the next morning (Step 6).
 cmd_window() {
   local hm
   hm="$(date -u +%H%M)"
@@ -506,14 +509,22 @@ cmd_chain_id() {
 }
 
 # chain-id-fetch <run id>: the new chain id the apply (or finish) of that run
-# recorded. Refuses without it: seal-restore never guesses which objects under
-# seals/ are production's new chain (the bucket is shared with other
-# environments, whose own chains must never be touched).
+# recorded. seal-restore never guesses which objects under seals/ are
+# production's new chain (the bucket is shared with other environments, whose
+# own chains must never be touched). When none was recorded (apply stopped at
+# step g or h, before a new first seal was written or before its id was read),
+# NEW_CHAIN is "none": seal-archive.sh restore then still puts the old seal
+# files back, moves nothing, and refuses if any chain folder under seals/ is
+# one it cannot name.
 cmd_chain_id_fetch() {
   local r v out="$CS_DIR/new-chain.txt"
   r="$(typed_run_id "${1:-}")"
-  aws_backups s3 cp "s3://$BACKUP_R2_BUCKET/cleanstart/$r/chain/new-chain.txt.age" "$out.age" > /dev/null \
-    || refuse "the new seal chain's id of that run was not recorded, so no seal file is moved; tell Claude"
+  if ! aws_backups s3 cp "s3://$BACKUP_R2_BUCKET/cleanstart/$r/chain/new-chain.txt.age" "$out.age" > /dev/null; then
+    rm -f "$out.age"
+    set_env NEW_CHAIN none
+    say "new seal chain id of that run recorded: no"
+    return 0
+  fi
   with_identity _decrypt "$out.age" "$out" || refuse "an encrypted export could not be decrypted"
   rm -f "$out.age"
   v="$(sed -n 's/^new_chain=//p' "$out" | tr -d '\r')"
@@ -695,7 +706,7 @@ cmd_encrypt_upload() {
   local prefix="$1" f name ok=0
   shift
   need BACKUP_R2_BUCKET BACKUP_R2_ACCOUNT_ID
-  [[ $prefix =~ ^cleanstart/[0-9]{1,20}/[a-z-]+$ ]] || refuse "the report prefix is malformed"
+  [[ $prefix =~ ^cleanstart/[0-9]{1,20}/[a-z][a-z-]*(-[0-9]{1,20}-[0-9]{1,4})?$ ]] || refuse "the report prefix is malformed"
   age_args
   for f in "$@"; do
     [ -f "$f" ] || { ok=1; continue; }
@@ -824,13 +835,34 @@ neon_default() {
   printf '%s' "$id"
 }
 
-# neon-create <name> <compute|none>: a branch of the default branch, now.
+# neon_default_is_production <branch id>: one of that branch's endpoints has
+# production's host (the first line of config/production-hosts.txt, the rule
+# prod-target holds DIRECT_URL to). The default branch is only a flag in Neon:
+# after a console "Set as default" (UAT lives in the same project) or with
+# NEON_PROJECT_ID of another project, a copy of it would not be production.
+neon_default_is_production() {
+  local id="$1" f="$CS_DIR/neon.json" code host ok=1
+  code="$(neon GET "$f" "/branches/$id/endpoints")"
+  [ "$code" = 200 ] || { rm -f "$f"; refuse "the Neon default branch's endpoints could not be read"; }
+  production_hosts_load || exit 2
+  while IFS= read -r host; do
+    host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+    case "$host" in "${PRODUCTION_HOSTS[0]}"*) ok=0 ;; esac
+  done < <(jq -r '.endpoints[]? | .host // empty' "$f")
+  rm -f "$f"
+  yes_no "Neon default branch is production" "$ok"
+  [ "$ok" -eq 0 ] || refuse "the Neon default branch is not production (no endpoint has the host of the first line of config/production-hosts.txt)"
+}
+
+# neon-create <name> <compute|none>: a branch of the default branch, now,
+# once that branch is confirmed to be production's.
 # Records its id in $CS_DIR/neon-branches BEFORE anything else can fail, so
 # the always() cleanup finds it (restore-drill.yml's rule).
 cmd_neon_create() {
   local name="$1" compute="$2" parent f="$CS_DIR/neon-create.json" code body id
   [[ $name =~ ^[a-z0-9-]{3,90}$ ]] || refuse "the branch name is malformed"
   parent="$(neon_default)"
+  neon_default_is_production "$parent"
   if [ "$compute" = compute ]; then
     body="{\"branch\":{\"name\":\"$name\",\"parent_id\":\"$parent\"},\"endpoints\":[{\"type\":\"read_write\"}]}"
   else
@@ -859,9 +891,14 @@ cmd_neon_create() {
   say "Neon branch created and confirmed: yes"
 }
 
-# The branch this job created (the step that created it, or a later one).
+# The branch this job created last (the step that created it, or a later one).
+# The file first: neon-create and neon-restore both write it at once, while a
+# CS_NEON_BRANCH_ID written to GITHUB_ENV reaches only the LATER steps (in the
+# step of neon-restore it still names the rehearsal branch).
 neon_current() {
-  local id="${CS_NEON_BRANCH_ID:-$(cat "$CS_DIR/neon-current-id" 2>/dev/null || true)}"
+  local id
+  id="$(cat "$CS_DIR/neon-current-id" 2>/dev/null || true)"
+  [ -n "$id" ] || id="${CS_NEON_BRANCH_ID:-}"
   if ! [[ $id =~ ^br-[a-z0-9-]+$ ]]; then
     echo "::error::clean start refused: no Neon branch of this job is known" >&2
     exit 1
@@ -918,29 +955,51 @@ cmd_neon_wait() {
   esac
 }
 
-# neon-restore <RFC 3339 time> <preserve name>: the rehearsal branch back to
-# that time, on its own history (POST .../branches/{id}/restore).
+# neon-restore <RFC 3339 time> <name>: Neon's copy of the rehearsal branch AS
+# IT WAS at that time: a NEW branch <name>, child of the rehearsal branch, made
+# from its history (POST /branches with parent_timestamp), with a compute. It
+# becomes the branch this job reads from the NEXT step on (CS_NEON_BRANCH_ID;
+# the connection string is read again there by neon-uri).
+# Not Neon's "restore" endpoint: a point-in-time restore works on ROOT branches
+# only (neon.com/docs/guides/branch-restore), and the rehearsal branch is a
+# child of production. Both branches are deleted by neon-cleanup (the newest
+# first: Neon refuses to delete a branch that still has a child).
 cmd_neon_restore() {
-  local at="$1" keep="$2" id f="$CS_DIR/neon.json" code
-  id="$(neon_current)"
+  local at="$1" name="$2" src def f="$CS_DIR/neon-create.json" code id
+  src="$(neon_current)"
   [[ $at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || refuse "the restore time is malformed"
-  [[ $keep =~ ^[a-z0-9-]{3,90}$ ]] || refuse "the preserve name is malformed"
-  [ "$id" != "$(neon_default)" ] || refuse "refusing to restore the default branch"
-  printf '%s %s\n' "-" "$keep" >> "$CS_DIR/neon-branches"
-  code="$(neon POST "$f" "/branches/$id/restore" -d "{\"source_branch_id\":\"$id\",\"source_timestamp\":\"$at\",\"preserve_under_name\":\"$keep\"}")"
+  [[ $name =~ ^[a-z0-9-]{3,90}$ ]] || refuse "the branch name is malformed"
+  def="$(neon_default)"
+  [ "$src" != "$def" ] || refuse "refusing to restore the default branch"
+  # The NAME is recorded before the request (see neon-create).
+  printf -- '- %s\n' "$name" >> "$CS_DIR/neon-branches"
+  code="$(neon POST "$f" /branches -d "{\"branch\":{\"name\":\"$name\",\"parent_id\":\"$src\",\"parent_timestamp\":\"$at\"},\"endpoints\":[{\"type\":\"read_write\"}]}")"
+  case "$code" in 200 | 201) ;; *) rm -f "$f"; refuse "Neon did not make the copy of the branch at the noted time" ;; esac
+  id="$(jq -r '.branch.id // empty' "$f")"
   rm -f "$f"
-  case "$code" in 200 | 201) ;; *) refuse "Neon did not restore the branch" ;; esac
+  [[ $id =~ ^br-[a-z0-9-]+$ ]] || refuse "Neon's answer has no branch id"
+  [ "$id" != "$src" ] && [ "$id" != "$def" ] || refuse "Neon answered with an existing branch"
   cmd_neon_wait "$id"
-  say "Neon restored the branch to the noted time: yes"
+  f="$CS_DIR/neon.json"
+  [ "$(neon GET "$f" "/branches?search=$name")" = 200 ] || refuse "the new branch could not be read back"
+  [ "$(jq -r --arg n "$name" --arg p "$src" '[.branches[]? | select(.name == $n and .parent_id == $p)] | length' "$f")" = 1 ] \
+    || refuse "the copy at the noted time is not there"
+  rm -f "$f"
+  # The same database and role as the rehearsal branch (neon-db, neon-role are kept).
+  set_env CS_NEON_BRANCH_ID "$id"
+  printf '%s' "$id" > "$CS_DIR/neon-current-id"
+  say "Neon made a copy of the branch as it was at the noted time: yes"
 }
 
-# neon-cleanup: delete every branch this job created (and the preserved copy a
-# restore made), never the default branch. Repeated, since a branch with a
-# child cannot be deleted before the child.
+# neon-cleanup: delete every branch this job created (the copy at the noted
+# time too), never the default branch. The newest first, and repeated, since
+# Neon refuses to delete a branch that still has a child.
 cmd_neon_cleanup() {
-  local f="$CS_DIR/neon.json" pass id name left def names=()
+  local f="$CS_DIR/neon.json" pass id name left def i names=() order=()
   [ -s "$CS_DIR/neon-branches" ] || { say "Neon branches to delete: no"; return 0; }
   while read -r id name; do names+=("$name"); done < "$CS_DIR/neon-branches"
+  for ((i = ${#names[@]} - 1; i >= 0; i--)); do order+=("${names[i]}"); done
+  names=("${order[@]}")
   def="$(neon_default)"
   for pass in 1 2 3; do
     left=0

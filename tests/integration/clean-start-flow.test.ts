@@ -435,12 +435,13 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     neonRun = run('clean-start.yml', { mode: 'neon-rehearsal', confirm_host: '127.0.0.1', confirm_phrase: '', run_id: '' });
     expect(results(neonRun), describeJob(neonRun, 'neon_rehearsal')).toMatchObject({ plan: 'success', neon_rehearsal: 'success', rehearse: 'skipped', apply: 'skipped' });
     for (const l of [
+      'Neon default branch is production: yes',
       'Neon branch created and confirmed: yes',
       'Neon branch host is not production: yes',
       "branch equals production's plan: yes",
       'reset on the Neon branch: ok',
       'first integrity checks as expected: yes',
-      'Neon restored the branch to the noted time: yes',
+      'Neon made a copy of the branch as it was at the noted time: yes',
       'the reset row is gone after the restore: yes',
       'the Neon restore returned the exact fingerprint: yes',
       'temporary Neon branches deleted: yes',

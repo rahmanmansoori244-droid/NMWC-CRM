@@ -127,7 +127,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Preflight
@@ -290,7 +293,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
@@ -550,11 +556,19 @@ jobs:
             npx vitest run tests/integration/clean-start-watch.test.ts > "$CS_DIR/watch.out" 2>&1 || rc=$?
           bash scripts/ops/clean-start/run.sh watch-lines "$CS_DIR/watch.out" "$rc"
 
-      - name: Neon restores the branch to the noted time, and the fingerprint returns
+      # Neon's own point-in-time restore works on root branches only, and this
+      # branch is a child of production: Neon makes a NEW branch from this one's
+      # history at the noted time instead. neon-uri then hands its connection
+      # string to the next step (a GITHUB_ENV value reaches only later steps).
+      - name: Neon makes a copy of the branch as it was at the noted time
         run: |
           set -euo pipefail
-          bash scripts/ops/clean-start/run.sh neon-restore "$CS_RESTORE_TO" "cleanstart-rehearsal-$GITHUB_RUN_ID-after"
+          bash scripts/ops/clean-start/run.sh neon-restore "$CS_RESTORE_TO" "cleanstart-rehearsal-$GITHUB_RUN_ID-at"
           bash scripts/ops/clean-start/run.sh neon-uri
+
+      - name: The copy at the noted time has the exact fingerprint again
+        run: |
+          set -euo pipefail
           bash scripts/ops/clean-start/run.sh rehearse-target CS_BRANCH_URL
           mkdir -p "$CS_DIR/nplan1"
           rc=0
@@ -641,7 +655,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
@@ -740,7 +757,13 @@ jobs:
           fi
           bash scripts/ops/clean-start/run.sh sql "reset" "$rc" "$CS_DIR/reset.out"
 
+      # Also after a reset Postgres refused (exit 3: rolled back, e.g. CS013 when
+      # someone used the CRM during the approval wait), so the summary says
+      # "reset committed: no (nothing changed)" as the owner's guide promises.
+      # Not after a cancel, a timeout or another failure: the transaction may
+      # still be ending then, and only mode finish, later, settles it.
       - name: e-f. Did it commit? Verify (read-only)
+        if: success() || (failure() && env.CS_RESET_RC == '3')
         env:
           PGOPTIONS: -c default_transaction_read_only=on
         run: |
@@ -868,7 +891,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
@@ -1033,7 +1059,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Preflight, production named, the apply run's exports
@@ -1051,7 +1080,8 @@ jobs:
           done
           echo "OLD_CHAIN=$(sed -n 's/^old_chain=//p' "$CS_DIR/exports/plan-id.txt" | tr -d '\r')" >> "$GITHUB_ENV"
 
-          # Which folder under seals/ is production's NEW chain (recorded by apply step h or finish).
+          # Which folder under seals/ is production's NEW chain (recorded by apply step h or finish);
+          # "none" when nothing was recorded (the old files then go back, nothing is moved).
           bash scripts/ops/clean-start/run.sh chain-id-fetch "$TARGET_RUN"
 
       - name: Production is back to before the reset (read-only)
@@ -1067,7 +1097,8 @@ jobs:
 
       - name: The old seal files back, the abandoned chain moved aside
         run: |
-          bash scripts/ops/clean-start/seal-archive.sh restore "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN" "$TARGET_RUN" "$NEW_CHAIN"
+          bash scripts/ops/clean-start/seal-archive.sh restore "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN" "$TARGET_RUN" "$NEW_CHAIN" \
+            "$CS_DIR/exports/seal-keys-foreign.txt"
 
       - name: The integrity watch, once
         run: |
