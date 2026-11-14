@@ -268,6 +268,9 @@ jobs:
           # actions, including the refused route sign-in rename to a reserved name
           # (account-edit).
           RUN_ACCOUNT_EDIT: '1'
+          # Code review 2026-11-10, finding 25 (third round): the go-live bootstrap
+          # stops on a reserved name it would create and skips one that already
+          # exists, through the real script (bootstrap-reserved).
           RUN_BOOTSTRAP_RESERVED: '1'
 
   # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
