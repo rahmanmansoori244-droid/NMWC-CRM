@@ -558,17 +558,17 @@ jobs:
 
       # Neon's own point-in-time restore works on root branches only, and this
       # branch is a child of production: Neon makes a NEW branch from this one's
-      # history at the noted time instead. It is the branch the next step reads
-      # (its id and connection string reach later steps only, through GITHUB_ENV).
+      # history at the noted time instead. neon-uri then hands its connection
+      # string to the next step (a GITHUB_ENV value reaches only later steps).
       - name: Neon makes a copy of the branch as it was at the noted time
         run: |
           set -euo pipefail
           bash scripts/ops/clean-start/run.sh neon-restore "$CS_RESTORE_TO" "cleanstart-rehearsal-$GITHUB_RUN_ID-at"
+          bash scripts/ops/clean-start/run.sh neon-uri
 
       - name: The copy at the noted time has the exact fingerprint again
         run: |
           set -euo pipefail
-          bash scripts/ops/clean-start/run.sh neon-uri
           bash scripts/ops/clean-start/run.sh rehearse-target CS_BRANCH_URL
           mkdir -p "$CS_DIR/nplan1"
           rc=0

@@ -578,6 +578,13 @@ describe('run.sh neon: branches of production, never production, always cleaned 
     // The later steps read the copy, never the rehearsal branch.
     expect(ids().at(-1)).toBe(copy.id);
     expect(readFileSync(join(sb.csDir, 'neon-current-id'), 'utf8')).toBe(copy.id);
+    // In the SAME step (CS_NEON_BRANCH_ID there still names the rehearsal branch), neon-uri
+    // hands on the copy's connection string, never the rehearsal branch's.
+    const u = run('neon-uri', { ...env, CS_NEON_BRANCH_ID: rehearsal });
+    expect(u.code, u.out).toBe(0);
+    const urls = [...readEnvFile().matchAll(/CS_BRANCH_URL=(\S+)/g)].map((m) => m[1]!);
+    const st2 = JSON.parse(readFileSync(join(sb.state, 'neon.json'), 'utf8')) as { branches: Array<{ id: string; db: string }> };
+    expect(urls.at(-1)).toBe(`postgresql://postgres@localhost:5432/${st2.branches.find((b) => b.id === copy.id)!.db}`);
     // Neither branch is restored in place: no /restore call at all.
     expect(readFileSync(sb.logs.http, 'utf8')).not.toContain('/restore"');
     const c = run('neon-cleanup', env);
@@ -600,8 +607,10 @@ describe('run.sh neon: branches of production, never production, always cleaned 
 
   it('never restores or deletes the default branch', () => {
     fresh();
+    writeFileSync(join(sb.csDir, 'neon-current-id'), 'br-main-1');
     const r = run('neon-restore 2026-11-18T16:00:00Z keep-me', { ...neon, CS_NEON_BRANCH_ID: 'br-main-1' });
     expect(r.code).toBe(1);
+    expect(r.out).toMatch(/refusing to restore the default branch/);
     writeFileSync(join(sb.csDir, 'neon-branches'), 'br-main-1 main\n');
     expect(run('neon-cleanup', neon).code).toBe(1);
   });

@@ -891,9 +891,14 @@ cmd_neon_create() {
   say "Neon branch created and confirmed: yes"
 }
 
-# The branch this job created (the step that created it, or a later one).
+# The branch this job created last (the step that created it, or a later one).
+# The file first: neon-create and neon-restore both write it at once, while a
+# CS_NEON_BRANCH_ID written to GITHUB_ENV reaches only the LATER steps (in the
+# step of neon-restore it still names the rehearsal branch).
 neon_current() {
-  local id="${CS_NEON_BRANCH_ID:-$(cat "$CS_DIR/neon-current-id" 2>/dev/null || true)}"
+  local id
+  id="$(cat "$CS_DIR/neon-current-id" 2>/dev/null || true)"
+  [ -n "$id" ] || id="${CS_NEON_BRANCH_ID:-}"
   if ! [[ $id =~ ^br-[a-z0-9-]+$ ]]; then
     echo "::error::clean start refused: no Neon branch of this job is known" >&2
     exit 1
