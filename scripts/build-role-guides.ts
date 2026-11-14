@@ -1129,7 +1129,7 @@ const STEWARD_EN: Guide = {
   filename: 'NMWC-Steward-Guide-EN',
   welcome: {
     heading: 'Welcome',
-    body: "You own the integrity of the customer master from head office. Your work is heavier than the field roles — you bulk-import lists from the ERP, merge duplicates that the field can't see across regions, monitor the entire audit trail, and export the cleaned master back to downstream systems. This guide covers every screen you will use, with a focus on the safety rules: every steward action is high-trust, immediately visible across the company, and logged forever.",
+    body: "You own the integrity of the customer master from head office. Your work is heavier than the field roles — you load the customer master and the daily Temix file, merge duplicates that the field can't see across regions, monitor the entire audit trail, and export the cleaned master back to downstream systems. This guide covers every screen you will use, with a focus on the safety rules: every steward action is high-trust, immediately visible across the company, and logged forever.",
   },
   sections: [
     {
@@ -1198,8 +1198,8 @@ const STEWARD_EN: Guide = {
       callouts: [
         {
           kind: 'tip',
-          title: 'Recommended monthly cadence',
-          body: 'Import account master changes (new salesman, retired route) within 24h of HR notifying you. Import customer master refreshes from the ERP at month-end after the ERP team confirms their export is final.',
+          title: 'Which file goes where',
+          body: 'Import account master changes (new salesman, retired route) within 24h of HR notifying you. The customer master upload is for the go-live load and for a bulk fix: for a customer already in the CRM it only fills blank fields, and it never moves a shop to another route. The day’s customer export from Temix does NOT go here: upload it on Temix daily file, check it on its page, then Apply. It moves shops to the route Temix gives them, dated that day; credit, terms and status are not taken from it yet.',
         },
         {
           kind: 'warn',
@@ -1528,6 +1528,10 @@ const STEWARD_EN: Guide = {
           ],
           ['<strong>Promote batch</strong>', 'Apply CLEAN rows to the live master.'],
           [
+            '<strong>Temix daily file</strong>',
+            'Upload the day’s Temix export, check it, Apply its route moves. The day’s page lists customers missing from the file, Accountant codes not yet in it, name differences (each once) and switched-off routes still holding shops.',
+          ],
+          [
             '<strong>Mark distinct</strong>',
             'A pair the detector flagged is actually two different customers.',
           ],
@@ -1545,7 +1549,11 @@ const STEWARD_EN: Guide = {
         rows: [
           ['HR sends new org-chart', 'Edit account-master xlsx → Upload account master.'],
           [
-            'ERP team sends month-end customer list',
+            'Temix sends the day’s customer export',
+            'Temix daily file → Upload → open the file (the check) → Apply → open the day’s page and mark the lines Reviewed.',
+          ],
+          [
+            'A bulk fix of the customer master',
             'Upload customer master → review staged batch → fix QUARANTINED → Promote.',
           ],
           [

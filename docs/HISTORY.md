@@ -82,7 +82,7 @@ every script and seed that writes a master table name its run.
 | `seed:<name>` | a development or pilot seed |
 | `migration:<name>` | a migration's own writes (the baseline) |
 | `e2e:<runId>`, `test:<suite>`, `verify:<probe>` | test harnesses and rolled-back verification probes |
-| `temix-daily:<fileId>:<row>` | reserved for the daily Temix file (item D) |
+| `temix-daily:<fileId>:<row>` | the daily Temix file (item D): one row of a file, dated the load day; also `temix-daily:<fileId>:<step>` for its own steps (`upload`, `apply`, `lease`, `finalize`, `discard`, `review`), which write no customer or shop |
 | `sql` | **nobody said**: see §5 |
 
 `AuditLog` rows carry the same `source` and the transaction id `txId`, stamped by
@@ -293,15 +293,26 @@ follow the region now): switching either is the owner's open question A6
 (04-PENDING-WORK), and changes what a Manager sees. The history and the columns
 above make the "at the time" answer possible with no further schema change.
 
-## 7. How the daily Temix file plugs in (item D, later)
+## 7. How the daily Temix file plugs in (item D)
 
-Nothing in the history needs to change. Each file row runs in its own transaction:
+Built (route moves only; `/temix-daily`, OPERATIONS §7 "The daily Temix file").
+Nothing in the history needed to change. Each customer of a file runs in its own
+transaction, and each of its rows is named before it is written:
 
 ```ts
 await withChangeContext(prisma,
   { actorId: null /* or the Steward who loaded it */, source: src.temixDaily(fileId, row), effectiveFrom: loadDay /* 'YYYY-MM-DD' */ },
-  async (tx) => { /* route, cash/credit, limit, days; skip a row that changes nothing */ });
+  async (tx) => { /* the route move through lib/temix-daily-move.ts; skip a row that changes nothing */ });
 ```
+
+Today the move of a shop the CRM already has is the only change a file applies
+(`Branch.routeId` and `regionId`, so BranchHistory gets one UPDATE row per move).
+Cash/credit, limit and days wait for the owner's answer on the main account row;
+when they are built they are dated the same way. Beside the history, the module
+keeps its own INSERT-only ledger (`TemixChange`), joined to the history and
+AuditLog rows by `txId`. Finalize's notices (customers missing from the file,
+Accountant codes not in it, switched-off routes, name differences) are ledger rows
+only, under source `temix-daily:<fileId>:finalize`: they write no history.
 
 The move is then valid from the start of the load day in Oman (clamped after any
 CRM change already recorded that day), which is the owner's rule: a change brought
