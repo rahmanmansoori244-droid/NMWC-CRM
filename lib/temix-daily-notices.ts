@@ -11,7 +11,9 @@
  * listed), then writes what the plan returns:
  *   - TemixChange notice rows (applied = false), codes and ids only;
  *   - TemixNoticeSeen marks (a keyed hash, never the name).
- * Nothing else: no customer, shop, route, history row or notification. Under
+ * Nothing else: no customer, shop, route, history row or notification (the
+ * Accountant codes the file confirms are returned to the caller, whose
+ * lib/temix-daily-confirm.ts writes them). Under
  * an advisory lock of its own, and only for a FINALIZING file with no row
  * PENDING, so a half-loaded file lists no one as missing. Running it again
  * for the same file, or for another file with the same rows, writes nothing:
@@ -20,7 +22,7 @@
 import { Prisma } from '@prisma/client';
 import { loadSwitchedOffRoutesHoldingShops } from './temix-daily-check-load';
 import { loadDayDate, loadLatestSpellRows } from './temix-daily-day-load';
-import { FINALIZE_KINDS, nameKey, openSpellsOf, planFinalize, type FinalizeKind } from './temix-daily-finalize';
+import { FINALIZE_KINDS, nameKey, openSpellsOf, planFinalize, type Confirm, type FinalizeKind } from './temix-daily-finalize';
 
 type Tx = Prisma.TransactionClient;
 
@@ -29,6 +31,8 @@ export type FinalizeNoticesResult = {
   byKind: Partial<Record<FinalizeKind, number>>;
   /** False when there is no key to hash names with: no name was compared. */
   namesChecked: boolean;
+  /** The Accountant codes the file confirms: written by lib/temix-daily-confirm.ts, not here. */
+  confirms: Confirm[];
 };
 
 const CHUNK = 1000;
@@ -113,5 +117,5 @@ export async function writeFinalizeNotices(
   const byKind: FinalizeNoticesResult['byKind'] = {};
   for (const n of plan.notices) byKind[n.kind] = (byKind[n.kind] ?? 0) + 1;
   for (const k of FINALIZE_KINDS) if (!byKind[k]) delete byKind[k];
-  return { written: plan.notices.length, byKind, namesChecked: plan.namesChecked };
+  return { written: plan.notices.length, byKind, namesChecked: plan.namesChecked, confirms: plan.confirms };
 }

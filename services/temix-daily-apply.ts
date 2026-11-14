@@ -45,7 +45,9 @@
  *  rule then stopped every later file).
  *
  *  THE END. When no row is PENDING the file goes FINALIZING, then, in one
- *  transaction, stage 6's notices (lib/temix-daily-notices.ts), LOADED with
+ *  transaction, stage 6's notices (lib/temix-daily-notices.ts), the Accountant
+ *  codes the file confirms (lib/temix-daily-confirm.ts: UPLOADED to SYNCED,
+ *  its audit and ledger rows, the salesman's TEMIX_SYNC_ACKED), LOADED with
  *  its counts and one AuditLog row, and the day's summary alert, which is
  *  switched off (lib/temix-daily-policy.ts).
  *
@@ -56,10 +58,12 @@
  * (outcome, customer, shop, reasons, doneAt), and through moveShopToRoute the
  * Branch's route and region, one AuditLog and one TemixChange row per move;
  * through writeFinalizeNotices, finalize's notice rows (TemixChange,
- * applied = false) and TemixNoticeSeen marks; one AuditLog row per start, end,
- * discard and failed customer transaction. No Customer, no Notification (the
- * summary writer is switched off), no Temix queue
- * (tests/unit/temix-daily-write-set.test.ts). Data Steward only.
+ * applied = false) and TemixNoticeSeen marks; through confirmAccountantCodes,
+ * a confirmed customer's temixSyncState (UPLOADED to SYNCED only), its audit
+ * and ledger rows and its TEMIX_SYNC_ACKED; one AuditLog row per start, end,
+ * discard and failed customer transaction. No other Customer write, no other
+ * Notification (the summary writer is switched off), nothing put in the Temix
+ * queue (tests/unit/temix-daily-write-set.test.ts). Data Steward only.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -98,6 +102,7 @@ import {
 import { lockGroupCustomers, loadGroupCrm, loadGroupRows, loadLastMoves, type GroupKey } from '@/lib/temix-daily-apply-load';
 import { moveShopToRoute } from '@/lib/temix-daily-move';
 import { writeFinalizeNotices } from '@/lib/temix-daily-notices';
+import { confirmAccountantCodes } from '@/lib/temix-daily-confirm';
 import { loadDaySummaryInput } from '@/lib/temix-daily-day-load';
 import { summaryCountsOf } from '@/lib/temix-daily-finalize';
 import { notifyTemixDailySummary } from '@/lib/temix-daily-summary';
@@ -426,6 +431,7 @@ async function recordGroupFailure(
  * transaction, finalize's notices (lib/temix-daily-notices.ts: the open spells
  * of customers missing from the file, of Accountant codes not in it and of
  * switched-off routes still holding shops, and the names listed once), the
+ * Accountant codes the file confirms (lib/temix-daily-confirm.ts), the
  * counts, LOADED and its AuditLog row, and the day's summary alert (switched
  * off: lib/temix-daily-policy.ts). Idempotent: a second call finds the file
  * LOADED, and the notices planned again would be none.
@@ -445,6 +451,9 @@ async function finalize(me: { id: string }, env: AuditEnvelope, file: { id: stri
         SELECT "state"::text AS "state", "applyLeaseBy" AS "leaseBy" FROM "TemixDailyFile" WHERE "id" = ${fileId} FOR UPDATE`;
       if (!f || f.state !== 'FINALIZING' || f.leaseBy !== token) return false;
       const listed = await writeFinalizeNotices(tx, file);
+      // The Accountant codes the file confirms: UPLOADED to SYNCED, each under its row's context.
+      const confirmed = await confirmAccountantCodes(tx, env, file, listed.confirms);
+      await setChangeContext(tx, { actorId: me.id, source: src.temixDailyStep(fileId, 'finalize') });
       const grouped = await tx.temixDailyRow.groupBy({ by: ['outcome'], where: { fileId }, _count: { _all: true } });
       const counts: OutcomeCounts = Object.fromEntries(grouped.map((g) => [g.outcome, g._count._all]));
       const notices = await tx.temixChange.count({ where: { fileId, applied: false } });
@@ -460,7 +469,7 @@ async function finalize(me: { id: string }, env: AuditEnvelope, file: { id: stri
         entityType: 'TemixDailyFile',
         entityId: fileId,
         before: { state: 'FINALIZING' },
-        after: { kind: 'TEMIX_DAILY_LOADED', state: 'LOADED', ...c, routeMoves: moved, listed: listed.byKind, namesChecked: listed.namesChecked },
+        after: { kind: 'TEMIX_DAILY_LOADED', state: 'LOADED', ...c, routeMoves: moved, codesConfirmed: confirmed, listed: listed.byKind, namesChecked: listed.namesChecked },
       });
       // The Steward's one summary a day: OFF until stage 7 (the switch), so nothing is read or written for it now.
       if (TEMIX_DAILY_SUMMARY_ENABLED) {

@@ -18,6 +18,11 @@
  *    inside the transaction that makes the file LOADED, and nothing else; the
  *    drill-down's marks (services/temix-daily-review.ts) are TemixChangeReview
  *    rows only. Each ledger table has exactly these writers in the sources.
+ *  - Review 2026-11-15: the Accountant codes a file confirms
+ *    (lib/temix-daily-confirm.ts) flip Customer.temixSyncState UPLOADED to
+ *    SYNCED and nothing else of the customer; only a flip writes its audit
+ *    row, its applied ledger row and the salesman's TEMIX_SYNC_ACKED. No other
+ *    file of the daily module names the queue state or a notification.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -29,6 +34,7 @@ const MOVER = read('lib/temix-daily-move.ts');
 const APPLY = read('services/temix-daily-apply.ts');
 const NOTICES = read('lib/temix-daily-notices.ts');
 const REVIEW = read('services/temix-daily-review.ts');
+const CONFIRM = read('lib/temix-daily-confirm.ts');
 
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((e) => {
@@ -289,7 +295,7 @@ describe("stage 6: finalize's notices, the review marks, and who writes the ledg
 
   it('each ledger table has exactly its writers in the sources, through Prisma or a raw INSERT', () => {
     const WRITERS: Record<string, string[]> = {
-      temixChange: ['lib/temix-daily-move.ts', 'lib/temix-daily-notices.ts'],
+      temixChange: ['lib/temix-daily-confirm.ts', 'lib/temix-daily-move.ts', 'lib/temix-daily-notices.ts'],
       temixNoticeSeen: ['lib/temix-daily-notices.ts'],
       temixChangeReview: ['services/temix-daily-review.ts'],
     };
@@ -303,5 +309,58 @@ describe("stage 6: finalize's notices, the review marks, and who writes the ledg
     }
     for (const k of Object.keys(WRITERS)) expect(found[k]!.sort(), k).toEqual(WRITERS[k]!.sort());
     expect(raw).toEqual([]);
+  });
+});
+
+describe('stage 6 review: the Accountant codes a file confirms', () => {
+  it('the confirm writer writes the queue state, one ledger row, one audit row and the salesman\'s alert, nothing else', () => {
+    expect(models(CONFIRM)).toEqual(['customer.updateMany', 'temixChange.create']);
+    expect(dataKeys(CONFIRM, 'customer')).toEqual([['temixSyncState']]);
+    expect(CONFIRM).toMatch(/data: \{ temixSyncState: 'SYNCED' \}/);
+    // Only a customer still UPLOADED, live, not a test customer, holding the confirmed code.
+    expect(CONFIRM).toMatch(
+      /customer\.updateMany\(\{\s*where: \{ id: c\.id, temixSyncState: 'UPLOADED', temixCode: k\.temixCode, deletedAt: null, mergedIntoId: null, isTest: false \}/
+    );
+    expect(CONFIRM).not.toMatch(/PENDING_UPLOAD|DEACTIVATE_PENDING|\$executeRaw`\s*(UPDATE|INSERT|DELETE)|\$queryRaw/i);
+    expect(dataKeys(CONFIRM, 'temixChange')).toEqual([
+      ['fileId', 'rowId', 'loadDay', 'kind', 'applied', 'customerId', 'branchId', 'field', 'fromValue', 'toValue', 'detailCode'],
+    ]);
+    expect(CONFIRM).toMatch(/kind: 'TEMIX_CODE_CONFIRMED',\s*applied: true,/);
+    expect([...CONFIRM.matchAll(/\bwriteAudit\(/g)]).toHaveLength(1);
+    expect([...CONFIRM.matchAll(/\bnotifyUsers\(/g)]).toHaveLength(1);
+    expect(CONFIRM).toMatch(/kind: 'TEMIX_SYNC_ACKED'/);
+    // Audit, ledger and alert only after the flip, and the row named before the write.
+    const name = CONFIRM.indexOf('await setChangeContext(tx, { actorId: env.actorId, source: src.temixDaily(file.id, k.rowNumber), effectiveFrom: file.loadDay });');
+    const write = CONFIRM.indexOf('tx.customer.updateMany(');
+    const gate = CONFIRM.indexOf('if (written.count !== 1) continue;');
+    expect(name).toBeGreaterThan(0);
+    expect(write).toBeGreaterThan(name);
+    expect(gate).toBeGreaterThan(write);
+    for (const after of ['writeAudit(', 'tx.temixChange.create(', 'notifyUsers(']) expect(CONFIRM.indexOf(after)).toBeGreaterThan(gate);
+  });
+
+  it('finalize calls it once, after the notices and before LOADED, and sets its own context back', () => {
+    expect([...APPLY.matchAll(/\bconfirmAccountantCodes\(/g)]).toHaveLength(1);
+    const at = APPLY.indexOf('async function finalize(');
+    const body = APPLY.slice(at, APPLY.indexOf('\n}\n', at));
+    const notices = body.indexOf('await writeFinalizeNotices(tx, file)');
+    const confirm = body.indexOf('await confirmAccountantCodes(tx, env, file, listed.confirms)');
+    const back = body.indexOf("await setChangeContext(tx, { actorId: me.id, source: src.temixDailyStep(fileId, 'finalize') });");
+    const loaded = body.indexOf("state: 'LOADED'");
+    expect(notices).toBeGreaterThan(0);
+    expect(confirm).toBeGreaterThan(notices);
+    expect(back).toBeGreaterThan(confirm);
+    expect(loaded).toBeGreaterThan(back);
+  });
+
+  it('no other file of the daily module names the Temix queue state, and only the summary writes another notification', () => {
+    const files = [...walk('lib'), ...walk('services'), ...walk('app/(app)/temix-daily')].filter((f) => /temix-daily/.test(f) && f !== 'lib/temix-daily-confirm.ts');
+    expect(files.length).toBeGreaterThan(10);
+    for (const f of files) {
+      const s = read(f);
+      expect(s, f).not.toMatch(/temixSyncState|PENDING_UPLOAD|TEMIX_SYNC_ACKED/);
+      // The day's summary (lib/temix-daily-summary.ts, switched off) is the module's one other notification.
+      if (f !== 'lib/temix-daily-summary.ts') expect(s, f).not.toMatch(/\bnotifyUsers\(|\bnotification\s*\.\s*create/);
+    }
   });
 });
