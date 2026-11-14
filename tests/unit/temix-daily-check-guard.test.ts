@@ -30,6 +30,10 @@ const READ_ONLY = [
   'app/(app)/temix-daily/[fileId]/page.tsx',
   'app/(app)/temix-daily/routes/page.tsx',
   'app/(app)/temix-daily/pilot-banner.tsx',
+  // Stage 6: finalize's plan, the day's reads and the drill-down page.
+  'lib/temix-daily-finalize.ts',
+  'lib/temix-daily-day-load.ts',
+  'app/(app)/temix-daily/day/[loadDay]/page.tsx',
 ];
 const ROUTES_SERVICE = 'services/temix-daily-routes.ts';
 
@@ -126,6 +130,7 @@ describe('the pages are the Data Steward\'s only', () => {
   for (const [file, firstRead] of [
     ['app/(app)/temix-daily/[fileId]/page.tsx', 'prisma.temixDailyFile.findUnique'],
     ['app/(app)/temix-daily/routes/page.tsx', 'loadRoutes(prisma)'],
+    ['app/(app)/temix-daily/day/[loadDay]/page.tsx', 'prisma.temixDailyFile.findMany'],
   ] as const) {
     it(file, () => {
       const page = read(file);

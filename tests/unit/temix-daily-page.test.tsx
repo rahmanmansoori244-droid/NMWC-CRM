@@ -123,6 +123,15 @@ describe('/temix-daily', () => {
     expect(screen.getByText(/The file of 2026-11-13/).textContent).toMatch(/is being applied now/);
   });
 
+  it("stage 6: a loaded file's day links to the day's drill-down; an unfinished one's does not", async () => {
+    h.files = [file('f-done', '2026-11-11', 'LOADED'), ...h.files];
+    render(await TemixDailyPage());
+    const done = screen.getByText('f-done.xlsx').closest('tr')!;
+    expect(within(done).getByRole('link', { name: '2026-11-11' }).getAttribute('href')).toBe('/temix-daily/day/2026-11-11');
+    const old = screen.getByText('f-old.xlsx').closest('tr')!;
+    expect(within(old).queryByRole('link', { name: '2026-11-12' })).toBeNull();
+  });
+
   it('is the Data Steward\'s only', async () => {
     for (const role of ['MANAGER', 'SALESMAN', 'ACCOUNTANT', 'GM', 'VIEWER']) {
       h.user = { id: 'u', role };

@@ -37,7 +37,8 @@ const STATE_LABEL: Record<DailyFileForOrder['state'], string> = {
  * The daily Temix import, stage 3: the Data Steward's list of daily files and
  * the upload. Data Steward only (the plan: every action of the daily import is
  * his; the others see only its effects). Upload stages a file; nothing on this
- * page changes a customer.
+ * page changes a customer. Stage 6: a loaded file's day links to that day's
+ * drill-down (/temix-daily/day/<day>).
  */
 export default async function TemixDailyPage() {
   const session = await auth();
@@ -172,7 +173,15 @@ export default async function TemixDailyPage() {
                 const notes = notesOf(f.id);
                 return (
                   <tr key={f.id} className="align-top hover:bg-slate-50">
-                    <td className="px-4 py-2 font-mono text-xs">{me.loadDay}</td>
+                    <td className="px-4 py-2 font-mono text-xs">
+                      {f.state === 'LOADED' ? (
+                        <Link href={`/temix-daily/day/${me.loadDay}`} className="text-brand-700 hover:underline" title="What the day changed and listed">
+                          {me.loadDay}
+                        </Link>
+                      ) : (
+                        me.loadDay
+                      )}
+                    </td>
                     <td className="px-4 py-2 text-xs text-slate-500">{omanDateTime(f.uploadedAt)}</td>
                     <td className="px-4 py-2 font-medium">
                       <Link href={`/temix-daily/${f.id}`} className="text-brand-700 hover:underline">

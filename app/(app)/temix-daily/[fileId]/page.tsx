@@ -184,6 +184,15 @@ export default async function TemixDailyCheckPage({ params }: { params: Promise<
           <p role="status" className="rounded-md bg-slate-50 p-3 text-sm text-slate-700 ring-1 ring-slate-200">
             This file is {file.state === 'LOADED' ? `loaded${loadedAt ? ` (${omanDateTime(loadedAt)})` : ''}` : 'discarded'}. There
             is nothing to check.
+            {file.state === 'LOADED' && (
+              <>
+                {' '}
+                <Link href={`/temix-daily/day/${me.loadDay}`} className="font-medium text-brand-700 hover:underline">
+                  See what the day changed and listed
+                </Link>
+                .
+              </>
+            )}
           </p>
         )}
         {applying && (
