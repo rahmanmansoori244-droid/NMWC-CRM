@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   files: [] as unknown[],
   unfinished: [] as unknown[],
   applied: [] as unknown[],
+  inLoad: [] as unknown[],
   waiting: [] as unknown[],
 }));
 
@@ -29,7 +30,9 @@ vi.mock('@/lib/db', () => ({
     temixDailyFile: {
       findMany: async (q: { take?: number; where?: { state?: { in?: string[]; notIn?: string[] } } }) => {
         if (q.where?.state?.notIn) return h.unfinished;
-        if (q.where?.state?.in) return h.applied;
+        if (q.where?.state?.in?.includes('LOADED')) return h.applied;
+        // Stage 5: the load in progress or interrupted (APPLYING, FINALIZING).
+        if (q.where?.state?.in) return h.inLoad;
         return h.files;
       },
     },
@@ -81,6 +84,7 @@ beforeEach(() => {
   h.files = [newer, older];
   h.unfinished = [older, newer];
   h.applied = [];
+  h.inLoad = [];
   h.waiting = [];
 });
 afterEach(cleanup);
@@ -88,7 +92,7 @@ afterEach(cleanup);
 describe('/temix-daily', () => {
   it('lists each file with its notes, the same-bytes warning and what it waits for', async () => {
     render(await TemixDailyPage());
-    expect(screen.getByText(/nothing in it is applied to customers yet/i)).toBeTruthy();
+    expect(screen.getByText(/Upload stages the file only; open it to check it, then apply its route moves/i)).toBeTruthy();
     const row = screen.getByText('f-new.xlsx').closest('tr')!;
     expect(within(row).getByText(/Exactly the same file as 2026-11-12/)).toBeTruthy();
     expect(within(row).getByText(/Waits for the file of 2026-11-12/)).toBeTruthy();
@@ -105,6 +109,18 @@ describe('/temix-daily', () => {
     render(await TemixDailyPage());
     const old = screen.getByText('f-old.xlsx').closest('tr')!;
     expect(within(old).getByText(/Can never be applied: the file of 2026-11-13 is already applied/)).toBeTruthy();
+  });
+
+  it('stage 5: a load interrupted or in progress is named, with a link to resume it', async () => {
+    h.inLoad = [{ id: 'f-run', filename: 'f-run.xlsx', loadDay: new Date('2026-11-13T00:00:00Z'), applyLeaseUntil: null }];
+    render(await TemixDailyPage());
+    const banner = screen.getByText(/The file of 2026-11-13/);
+    expect(banner.textContent).toMatch(/part-applied: the load was interrupted/);
+    expect(within(banner).getByRole('link', { name: 'Open it to resume' }).getAttribute('href')).toBe('/temix-daily/f-run');
+    cleanup();
+    h.inLoad = [{ id: 'f-run', filename: 'f-run.xlsx', loadDay: new Date('2026-11-13T00:00:00Z'), applyLeaseUntil: new Date(Date.now() + 60_000) }];
+    render(await TemixDailyPage());
+    expect(screen.getByText(/The file of 2026-11-13/).textContent).toMatch(/is being applied now/);
   });
 
   it('is the Data Steward\'s only', async () => {

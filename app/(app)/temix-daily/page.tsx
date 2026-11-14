@@ -64,6 +64,11 @@ export default async function TemixDailyPage() {
     select: { id: true, filename: true, loadDay: true, uploadedAt: true, state: true, fileSha256: true },
   });
   const gate = pilotGate(await loadPilotWaiting(prisma));
+  // Stage 5: a load in progress or interrupted (one at a time, by the database's rule).
+  const inLoad = await prisma.temixDailyFile.findMany({
+    where: { state: { in: ['APPLYING', 'FINALIZING'] } },
+    select: { id: true, filename: true, loadDay: true, applyLeaseUntil: true },
+  });
   const order: DailyFileForOrder[] = [...unfinished, ...inFlightOrLoaded].map((f) => ({ ...f, loadDay: dateColumnDay(f.loadDay) }));
 
   // The notes were counted once at upload and kept on the file: the list never
@@ -77,7 +82,7 @@ export default async function TemixDailyPage() {
     <main>
       <PageHeader
         title="Temix daily file"
-        subtitle="Upload the day's customer export from Temix (.xlsx or .csv). Upload stages the file only: nothing in it is applied to customers yet."
+        subtitle="Upload the day's customer export from Temix (.xlsx or .csv). Upload stages the file only; open it to check it, then apply its route moves."
         actions={
           <Link href="/temix-daily/routes" className="text-sm font-medium text-brand-700 hover:underline">
             Route map
@@ -89,6 +94,18 @@ export default async function TemixDailyPage() {
           <PilotBanner gate={gate} />
         </div>
       )}
+      {inLoad.map((f) => (
+        <div key={f.id} className="px-4 pt-4 sm:px-6">
+          <p role="status" className="rounded-md bg-amber-50 p-3 text-sm text-amber-900 ring-1 ring-amber-200">
+            The file of {dateColumnDay(f.loadDay)} (&quot;{f.filename}&quot;) is{' '}
+            {f.applyLeaseUntil && f.applyLeaseUntil > new Date() ? 'being applied now' : 'part-applied: the load was interrupted'}.{' '}
+            <Link href={`/temix-daily/${f.id}`} className="font-medium text-brand-700 hover:underline">
+              Open it to resume
+            </Link>
+            .
+          </p>
+        </div>
+      ))}
 
       <div className="grid gap-4 p-4 sm:p-6 lg:grid-cols-2">
         <section className="rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
@@ -158,13 +175,9 @@ export default async function TemixDailyPage() {
                     <td className="px-4 py-2 font-mono text-xs">{me.loadDay}</td>
                     <td className="px-4 py-2 text-xs text-slate-500">{omanDateTime(f.uploadedAt)}</td>
                     <td className="px-4 py-2 font-medium">
-                      {finished ? (
-                        f.filename
-                      ) : (
-                        <Link href={`/temix-daily/${f.id}`} className="text-brand-700 hover:underline">
-                          {f.filename}
-                        </Link>
-                      )}
+                      <Link href={`/temix-daily/${f.id}`} className="text-brand-700 hover:underline">
+                        {f.filename}
+                      </Link>
                       {f.sameBytesAs && (
                         <p className="mt-1 text-xs font-normal text-amber-700">
                           Exactly the same file as {dateColumnDay(f.sameBytesAs.loadDay)} (&quot;{f.sameBytesAs.filename}&quot;).

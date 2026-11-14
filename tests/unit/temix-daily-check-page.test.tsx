@@ -4,6 +4,10 @@
  * preview is fed the synthetic file of tests/support/temix-daily-check-fixture.ts
  * through a stubbed loader, so each figure it shows is the one
  * tests/unit/temix-daily-check.test.ts proves; this checks they reach the page.
+ *
+ * Stage 5: the same page carries the Apply (the figures to confirm, the
+ * reversal tick when a move sets back an earlier file's), Discard, Resume for an
+ * interrupted load and the rows' outcomes once applying.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, within } from '@testing-library/react';
@@ -20,6 +24,9 @@ const h = vi.hoisted(() => ({
   offRoutes: [] as unknown[],
   /** Replaces the synthetic file's input, for cases it does not hold. */
   input: null as unknown,
+  lastMoves: new Map() as Map<string, unknown>,
+  outcomes: [] as Array<{ outcome: string; _count: { _all: number } }>,
+  heldRows: [] as unknown[],
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => (h.user ? { user: h.user } : null) }));
@@ -37,6 +44,12 @@ vi.mock('@/services/temix-daily-routes', () => ({
   addTemixRouteMapAction: async () => ({ ok: false, message: 'x' }),
   retireTemixRouteMapAction: async () => ({ ok: false, message: 'x' }),
 }));
+vi.mock('@/services/temix-daily-apply', () => ({
+  startTemixDailyApplyAction: async () => ({ ok: false, message: 'x' }),
+  runTemixDailySliceAction: async () => ({ ok: false, message: 'x' }),
+  discardTemixDailyFileAction: async () => ({ ok: false, message: 'x' }),
+}));
+vi.mock('@/lib/temix-daily-apply-load', () => ({ loadLastMoves: async () => h.lastMoves }));
 vi.mock('@/lib/temix-daily-check-load', async () => {
   const { checkInput: input, ROUTES } = await import('../support/temix-daily-check-fixture');
   return {
@@ -56,6 +69,10 @@ vi.mock('@/lib/db', () => ({
     },
     temixRouteMap: {
       findMany: async (q: { where?: unknown }) => (q.where ? h.entries.filter((e) => (e as { live?: boolean }).live) : h.entries),
+    },
+    temixDailyRow: {
+      groupBy: async () => h.outcomes,
+      findMany: async () => h.heldRows,
     },
     $queryRaw: async () => {
       throw new Error('the page ran raw SQL of its own');
@@ -91,13 +108,16 @@ beforeEach(() => {
   h.codeCounts = [];
   h.offRoutes = [];
   h.input = null;
+  h.lastMoves = new Map();
+  h.outcomes = [];
+  h.heldRows = [];
 });
 afterEach(cleanup);
 
 describe('/temix-daily/<fileId>: the Check', () => {
   it('shows the summary figures of the synthetic file', async () => {
     render(await open());
-    expect(screen.getByText(/Nothing is applied from here/)).toBeTruthy();
+    expect(screen.getByText(/Apply is at the foot of the page/)).toBeTruthy();
     expect(figure('Rows')).toBe('19');
     expect(figure('Would move a shop')).toBe('2');
     expect(figure('Would change nothing')).toBe('4');
@@ -234,6 +254,75 @@ describe('/temix-daily/<fileId>: the Check', () => {
     render(await open());
     expect(screen.getByText(/The contents of 4 of this file's rows were cleared/)).toBeTruthy();
     expect(screen.queryByText('Summary')).toBeNull();
+  });
+
+  it('Apply: the figures to confirm, no reversal tick when no move sets one back, and Discard', async () => {
+    render(await open());
+    const apply = section(/^Apply$/);
+    expect(within(apply).getByText(/2 shops move \(1 into another region\), 13 rows are held, 3 customers are not in the file/)).toBeTruthy();
+    expect(within(apply).getByRole('button', { name: 'Apply the route moves' })).toBeTruthy();
+    expect(within(apply).queryByText(/put shops back on the route an earlier file moved/)).toBeNull();
+    const hidden = (name: string) => apply.querySelector(`input[name="${name}"]`)!.getAttribute('value');
+    expect([hidden('seenMoves'), hidden('seenCrossRegion'), hidden('seenReversals')]).toEqual(['2', '1', '0']);
+    expect(within(section(/^Discard$/)).getByRole('button', { name: 'Discard this file' })).toBeTruthy();
+  });
+
+  it('Apply asks for the reversal tick when a move puts a shop back where an earlier file moved it from', async () => {
+    // An earlier file moved CA1-02 from C10 to C11; this file moves it back.
+    h.lastMoves = new Map([['bA2', { branchId: 'bA2', fileId: 'f0', fromRouteId: 'rt-c10', toRouteId: 'rt-c11' }]]);
+    render(await open());
+    const apply = section(/^Apply$/);
+    expect(within(apply).getByText(/1 move put shops back on the route an earlier file moved them from/)).toBeTruthy();
+    expect(apply.querySelector('input[name="seenReversals"]')!.getAttribute('value')).toBe('1');
+  });
+
+  it('Apply is not offered while the file waits, the pilot rule stops it, or it can never be applied', async () => {
+    h.orderFiles = [file('f0', '2026-11-12', 'STAGED'), h.file];
+    render(await open());
+    expect(within(section(/^Apply$/)).queryByRole('button')).toBeNull();
+    expect(within(section(/^Apply$/)).getByText(/not offered while the notices above stand/)).toBeTruthy();
+    cleanup();
+    h.orderFiles = [h.file];
+    h.waiting = [{ id: 'edit-1', submittedAt: null }];
+    render(await open());
+    expect(within(section(/^Apply$/)).queryByRole('button')).toBeNull();
+  });
+
+  it('an interrupted load: Resume, the rows by outcome and why each held row is held; no Check, no Apply', async () => {
+    h.file = { ...file('f1', '2026-11-14', 'APPLYING'), applyLeaseUntil: null };
+    h.outcomes = [
+      { outcome: 'APPLIED', _count: { _all: 2 } },
+      { outcome: 'HELD', _count: { _all: 1 } },
+      { outcome: 'PENDING', _count: { _all: 16 } },
+    ];
+    h.heldRows = [{ id: 'r14', rowNumber: 14, custCodeKey: 'CE4', branchCodeKey: '01', holdReasons: ['ROUTE_NOT_MATCHED'] }];
+    render(await open());
+    expect(screen.getByRole('heading', { name: 'Load interrupted' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeTruthy();
+    const rows = section(/^Rows$/);
+    expect(within(rows).getByText('Shop moved: 2')).toBeTruthy();
+    expect(within(rows).getByText('Waiting: 16')).toBeTruthy();
+    expect(within(rows).getByText(/the route code is not a CRM route and has no route-map entry; the shop keeps its route/)).toBeTruthy();
+    expect(screen.queryByText('Summary')).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Apply' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Discard' })).toBeNull();
+    cleanup();
+    // A live lease: someone is applying it now, so no Resume.
+    h.file = { ...file('f1', '2026-11-14', 'APPLYING'), applyLeaseUntil: new Date(Date.now() + 60_000) };
+    render(await open());
+    expect(screen.getByRole('heading', { name: 'Being applied now' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
+  });
+
+  it('a loaded file shows its rows by outcome', async () => {
+    h.file = { ...file('f1', '2026-11-14', 'LOADED'), loadedAt: new Date('2026-11-14T08:00:00Z') };
+    h.outcomes = [
+      { outcome: 'APPLIED', _count: { _all: 2 } },
+      { outcome: 'NO_CHANGE', _count: { _all: 4 } },
+    ];
+    render(await open());
+    expect(screen.getByText(/This file is loaded/)).toBeTruthy();
+    expect(within(section(/^Rows$/)).getByText('Changed nothing: 4')).toBeTruthy();
   });
 
   it('is the Data Steward\'s only; an unknown file is not found', async () => {

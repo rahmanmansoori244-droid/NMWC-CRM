@@ -18,7 +18,10 @@ import {
 } from '@/lib/temix-daily-check';
 import { loadCheckInput, loadPilotWaiting } from '@/lib/temix-daily-check-load';
 import { applyBlockedBy, dateColumnDay, overtakenBy, type DailyFileForOrder } from '@/lib/temix-daily-order';
+import { APPLY_HOLD_LABEL, applyFigures, reversalsOf, type ApplyFigures } from '@/lib/temix-daily-apply';
+import { loadLastMoves } from '@/lib/temix-daily-apply-load';
 import { PilotBanner } from '../pilot-banner';
+import { TemixDailyApplyForm, TemixDailyDiscardForm, TemixDailyResumeButton } from './apply-form';
 
 export const metadata = { title: 'Temix daily file: check · NMWC' };
 
@@ -34,6 +37,15 @@ const ROUTE_HOLDS: readonly RouteHold[] = ['ROUTE_MISSING', 'ROUTE_NOT_MATCHED',
 
 const n = (x: number) => x.toLocaleString('en-US');
 
+const OUTCOME_LABEL: Record<string, string> = {
+  PENDING: 'Waiting',
+  APPLIED: 'Shop moved',
+  PARTLY_APPLIED: 'Partly applied',
+  NO_CHANGE: 'Changed nothing',
+  HELD: 'Held',
+  REJECTED: 'Rejected',
+};
+
 /**
  * The daily Temix import, stage 4: the Check of one staged file. What the file
  * WOULD change if it were applied now (route moves), what it would not
@@ -42,6 +54,12 @@ const n = (x: number) => x.toLocaleString('en-US');
  * figure is from lib/temix-daily-check.ts checkDailyFile, made on each visit
  * from the staged rows and the CRM as it is now. NOTHING IS WRITTEN: opening
  * this page again after a route-map entry is the re-check.
+ *
+ * Stage 5: the page also carries the Apply (the figures to confirm, the
+ * reversal and same-bytes ticks), Resume for an interrupted load, Discard for a
+ * file nothing was applied from, and the rows' outcomes once applying. The
+ * writes are the actions' (services/temix-daily-apply.ts); the page itself
+ * still reads only.
  */
 export default async function TemixDailyCheckPage({ params }: { params: Promise<{ fileId: string }> }) {
   const session = await auth();
@@ -59,13 +77,18 @@ export default async function TemixDailyCheckPage({ params }: { params: Promise<
       state: true,
       fileSha256: true,
       totalRows: true,
+      applyLeaseUntil: true,
+      loadedAt: true,
+      reversalAckAt: true,
       sameBytesAs: { select: { loadDay: true, filename: true } },
     },
   });
   if (!file) notFound();
-  const { sameBytesAs, ...fileForOrder } = file;
+  const { sameBytesAs, applyLeaseUntil, loadedAt, reversalAckAt, ...fileForOrder } = file;
   const me: DailyFileForOrder = { ...fileForOrder, loadDay: dateColumnDay(file.loadDay) };
   const finished = file.state === 'LOADED' || file.state === 'DISCARDED';
+  const applying = file.state === 'APPLYING' || file.state === 'FINALIZING';
+  const notStarted = !finished && !applying;
 
   const [waiting, orderFiles] = await Promise.all([
     loadPilotWaiting(prisma),
@@ -80,13 +103,16 @@ export default async function TemixDailyCheckPage({ params }: { params: Promise<
   const gate = pilotGate(waiting);
 
   let plan: CheckPlan | null = null;
+  let figures: ApplyFigures | null = null;
   let emptied = 0;
   let codes = { customer: new Map<string, string>(), branch: new Map<string, string>(), route: new Map<string, string>() };
-  if (!finished) {
+  if (notStarted) {
     const loaded = await loadCheckInput(prisma, file.id);
     emptied = loaded.emptied;
     if (emptied === 0) {
       plan = checkDailyFile(loaded.input);
+      const last = await loadLastMoves(prisma, plan.rows.flatMap((p) => (p.move ? [p.move.branchId] : [])));
+      figures = applyFigures(plan, reversalsOf(plan.rows, last, file.id).length);
       codes = {
         customer: new Map(loaded.input.customers.map((c) => [c.id, c.nmwcCode])),
         branch: new Map(loaded.input.branches.map((b) => [b.id, b.branchCode])),
@@ -94,12 +120,29 @@ export default async function TemixDailyCheckPage({ params }: { params: Promise<
       };
     }
   }
+  // Once applying or finished: what became of the rows (the outcome the apply wrote).
+  const outcomes = notStarted
+    ? []
+    : (await prisma.temixDailyRow.groupBy({ by: ['outcome'], where: { fileId: file.id }, _count: { _all: true } })).map((g) => ({
+        outcome: g.outcome as string,
+        rows: g._count._all,
+      }));
+  const heldRows = notStarted
+    ? []
+    : await prisma.temixDailyRow.findMany({
+        where: { fileId: file.id, outcome: 'HELD' },
+        orderBy: { rowNumber: 'asc' },
+        take: LIST_MAX,
+        select: { id: true, rowNumber: true, custCodeKey: true, branchCodeKey: true, holdReasons: true },
+      });
+  const leaseLive = !!applyLeaseUntil && applyLeaseUntil > new Date();
+  const canApply = notStarted && !!figures && !waits && !overtaken && !gate.stopped;
 
   return (
     <main>
       <PageHeader
         title={`Check: ${file.filename}`}
-        subtitle={`Load day ${me.loadDay}, uploaded ${omanDateTime(file.uploadedAt)}. This page shows what the file would do if it were applied now. Nothing is applied from here.`}
+        subtitle={`Load day ${me.loadDay}, uploaded ${omanDateTime(file.uploadedAt)}. This page shows what the file would do if it were applied now. Apply is at the foot of the page.`}
         actions={
           <>
             <Link href="/temix-daily/routes" className="text-sm font-medium text-brand-700 hover:underline">
@@ -132,8 +175,58 @@ export default async function TemixDailyCheckPage({ params }: { params: Promise<
         )}
         {finished && (
           <p role="status" className="rounded-md bg-slate-50 p-3 text-sm text-slate-700 ring-1 ring-slate-200">
-            This file is {file.state === 'LOADED' ? 'loaded' : 'discarded'}. There is nothing to check.
+            This file is {file.state === 'LOADED' ? `loaded${loadedAt ? ` (${omanDateTime(loadedAt)})` : ''}` : 'discarded'}. There
+            is nothing to check.
           </p>
+        )}
+        {applying && (
+          <section aria-labelledby="progress-h" className="rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
+            <h2 id="progress-h" className="text-sm font-semibold text-slate-800">
+              {leaseLive ? 'Being applied now' : 'Load interrupted'}
+            </h2>
+            <p className="mt-1 text-xs text-slate-600">
+              {leaseLive
+                ? 'Another tab or Steward is applying this file. Open the page again in a minute.'
+                : 'Every customer is either fully applied or untouched. Resume carries on with the rows still waiting; nothing is applied twice.'}
+              {reversalAckAt ? ' The reversal warning was ticked at the start.' : ''}
+            </p>
+            {!leaseLive && (
+              <div className="mt-3">
+                <TemixDailyResumeButton fileId={file.id} />
+              </div>
+            )}
+          </section>
+        )}
+        {!notStarted && <Outcomes outcomes={outcomes} held={heldRows} />}
+        {notStarted && figures && (
+          <section aria-labelledby="apply-h" className="rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
+            <h2 id="apply-h" className="text-sm font-semibold text-slate-800">
+              Apply
+            </h2>
+            <p className="mt-1 text-xs text-slate-600">
+              Moves the shops listed under &quot;Will change&quot; to their Temix route, dated the load day {me.loadDay}. Nothing
+              else is applied: credit, terms and status wait for the owner. One customer at a time; an interrupted load is
+              resumed.
+            </p>
+            <div className="mt-3">
+              {canApply ? (
+                <TemixDailyApplyForm fileId={file.id} figures={figures} sameBytes={!!sameBytesAs} />
+              ) : (
+                <p className="text-xs text-slate-700">Apply is not offered while the notices above stand.</p>
+              )}
+            </div>
+          </section>
+        )}
+        {notStarted && (
+          <section aria-labelledby="discard-h" className="rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
+            <h2 id="discard-h" className="text-sm font-semibold text-slate-800">
+              Discard
+            </h2>
+            <p className="mb-3 mt-1 text-xs text-slate-600">
+              A discarded file is never applied, and no longer holds back later files.
+            </p>
+            <TemixDailyDiscardForm fileId={file.id} />
+          </section>
         )}
         {emptied > 0 && (
           <p role="status" className="rounded-md bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-200">
@@ -415,6 +508,67 @@ function Preview({
         </p>
       </section>
     </>
+  );
+}
+
+function Outcomes({
+  outcomes,
+  held,
+}: {
+  outcomes: Array<{ outcome: string; rows: number }>;
+  held: Array<{ id: string; rowNumber: number; custCodeKey: string | null; branchCodeKey: string | null; holdReasons: string[] }>;
+}) {
+  const label = (h: string): string | null =>
+    (CHECK_HOLD_LABEL as Record<string, string>)[h] ?? (APPLY_HOLD_LABEL as Record<string, string>)[h] ?? null;
+  return (
+    <section aria-labelledby="outcomes-h" className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
+      <header className="p-5 pb-2">
+        <h2 id="outcomes-h" className="text-sm font-semibold text-slate-800">
+          Rows
+        </h2>
+        <ul className="mt-2 space-y-0.5 text-xs text-slate-700">
+          {outcomes.map((o) => (
+            <li key={o.outcome}>
+              {OUTCOME_LABEL[o.outcome] ?? o.outcome}: {n(o.rows)}
+            </li>
+          ))}
+        </ul>
+      </header>
+      <TableScroll label="Held rows of the load" className="border-t border-slate-100">
+        <table className="min-w-full divide-y divide-slate-200 text-sm">
+          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+            <tr>
+              <th scope="col" className="px-4 py-2 font-medium">Row</th>
+              <th scope="col" className="px-4 py-2 font-medium">Customer code</th>
+              <th scope="col" className="px-4 py-2 font-medium">Shop code</th>
+              <th scope="col" className="px-4 py-2 font-medium">Why held</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {held.map((r) => (
+              <tr key={r.id} className="align-top">
+                <td className="px-4 py-2 font-mono text-xs">{r.rowNumber}</td>
+                <td className="px-4 py-2 font-mono text-xs">{r.custCodeKey ?? '-'}</td>
+                <td className="px-4 py-2 font-mono text-xs">{r.branchCodeKey ?? '-'}</td>
+                <td className="px-4 py-2 text-xs text-slate-600">
+                  {r.holdReasons
+                    .map(label)
+                    .filter(Boolean)
+                    .join('; ') || '-'}
+                </td>
+              </tr>
+            ))}
+            {held.length === 0 && (
+              <tr>
+                <td colSpan={4} className="px-4 py-4 text-center text-xs text-slate-500">
+                  No row is held.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </TableScroll>
+    </section>
   );
 }
 
