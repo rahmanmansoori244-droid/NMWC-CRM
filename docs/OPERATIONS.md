@@ -759,7 +759,10 @@ watch once (`a check failing or in error: no`; a failing check makes the job red
 Only the recorded new chain's folder `seals/v1/<new chain>/` is moved: the photo bucket is
 shared with the test environment, whose own chain keeps growing under `seals/`, so every
 other object is left where it is (`other objects under seals/ left where they are`), and
-without the recorded id nothing is moved. Run it straight after the restore, the same
+without the recorded id nothing is moved: when apply stopped at step g or h before
+recording it, the archived old files still go back, and the run refuses only if a chain
+folder `seals/v1/<id>/` is there that is neither the old chain nor in the apply's list of
+other objects at the reset (`every seal chain under seals/ is the old one or was there at the reset: yes`). Run it straight after the restore, the same
 evening: a 02:30 UTC watch between the two reports the new chain's files as a critical
 alert. Then delete `MIN_DUMP_BYTES` if it was set, and, once the rollback is confirmed,
 delete the safety branch and Neon's preserved pre-restore copy (Claude names them; the

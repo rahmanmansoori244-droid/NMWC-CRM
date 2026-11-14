@@ -415,12 +415,15 @@ describe('run.sh chain-id / chain-id-fetch / finish-may: production\'s new chain
     expect([back.code, back.lines]).toEqual([0, ['new seal chain id of that run found: yes']]);
     expect(readFileSync(join(sb.csDir, 'new-chain'), 'utf8')).toBe('0f1e2d3c4b5a6978');
   });
-  it('no genesis yet: recorded as no; a run with nothing recorded refuses seal-restore', () => {
+  it('no genesis yet: recorded as no; seal-restore of a run with nothing recorded goes on with NEW_CHAIN=none', () => {
     writeFileSync(join(sb.csDir, 'chain-id.out'), 'none\n');
     expect(run(`chain-id "$CS_DIR/chain-id.out" ${RUN}`, { BACKUP_AGE_RECIPIENTS: recipient }).lines).toEqual(['new seal chain id recorded: no']);
-    const r = run('chain-id-fetch 1234', { BACKUP_AGE_IDENTITY: identity });
-    expect(r.code).toBe(1);
-    expect(r.out).toMatch(/the new seal chain's id of that run was not recorded, so no seal file is moved; tell Claude/);
+    // Apply stopped at step g or h: the old seal files must still go back (seal-archive.sh
+    // restore with "none", which moves nothing and refuses a chain it cannot name).
+    rmSync(envFile(), { force: true });
+    const r = run('chain-id-fetch 1234', { BACKUP_AGE_IDENTITY: identity, GITHUB_ENV: envFile() });
+    expect([r.code, r.lines]).toEqual([0, ['new seal chain id of that run recorded: no']]);
+    expect(readEnvFile()).toContain('NEW_CHAIN=none');
   });
   it('finish-may: everything under seals/ that verify listed now, minus the new chain', () => {
     writeFileSync(join(sb.csDir, 'seal-keys-foreign.txt'), 'seals/v1/0f1e2d3c4b5a6978/00000000.json\nseals/v1/8888888888888888/00000003.json\n');
@@ -805,6 +808,35 @@ describe('seal-archive.sh: the old chain archived, retired, restored — against
     for (const k of [...FOREIGN, ...LATER]) expect(sb.has('photos', k), k).toBe(true);
     const deleted = sb.s3Calls().slice(before).filter((c) => c.op === 'delete').map((c) => c.key as string);
     expect(deleted.every((k) => k.startsWith(`seals/v1/${NEW}/`))).toBe(true);
+  });
+
+  it('restore with no recorded new chain: the old files back, nothing moved; a chain nobody can name refuses', () => {
+    // Apply stopped after step g (old live copies removed) and before a new chain was recorded.
+    const live = (k: string) => join(sb.s3, 'photos', ...k.split('/'));
+    for (const s of seals) rmSync(live(s.r2Key), { force: true });
+    rmSync(live(`seals/v1/${'8'.repeat(16)}/00000003.json`), { force: true }); // (a chain begun after the reset: below)
+    writeFileSync(join(sb.csDir, 'then.txt'), FOREIGN.join('\n') + '\n'); // the apply's seal-keys-foreign.txt
+    expect(sa(`restore ${writeSeals(seals)} ${OLD} ${RUN} none`).code).toBe(1); // that list is required
+    const before = sb.s3Calls().length;
+    const r = sa(`restore ${writeSeals(seals)} ${OLD} ${RUN} none "$CS_DIR/then.txt"`);
+    expect(r.code, r.out).toBe(0);
+    expect(r.lines).toEqual([
+      'old seal files back in the live folder, hash-checked: yes',
+      'every seal chain under seals/ is the old one or was there at the reset: yes',
+      'no new seal chain to move out of the live folder: yes',
+    ]);
+    for (const s of seals) expect(sha(sb.read('photos', s.r2Key))).toBe(s.hash);
+    expect(sb.s3Calls().slice(before).filter((c) => c.op === 'delete')).toEqual([]);
+    // A chain folder that is neither the old chain nor there at the reset: never guessed at.
+    sb.put('photos', `seals/v1/${NEW}/00000000.json`, '{"new":true}');
+    const after = sb.s3Calls().length;
+    const u = sa(`restore ${writeSeals(seals)} ${OLD} ${RUN} none "$CS_DIR/then.txt"`);
+    expect(u.code).toBe(1);
+    expect(u.lines).toContain('every seal chain under seals/ is the old one or was there at the reset: no');
+    expect(u.out).toMatch(/a seal chain under seals\/ cannot be named/);
+    expect(sb.has('photos', `seals/v1/${NEW}/00000000.json`)).toBe(true);
+    expect(sb.s3Calls().slice(after).filter((c) => c.op === 'delete')).toEqual([]);
+    rmSync(live(`seals/v1/${NEW}/00000000.json`), { force: true });
   });
 
   it('a HEAD that fails for another reason than "not found" never counts as removed', () => {

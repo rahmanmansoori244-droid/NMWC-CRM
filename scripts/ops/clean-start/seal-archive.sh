@@ -13,7 +13,7 @@
 #   bash scripts/ops/clean-start/seal-archive.sh verify  <seals.jsonl> <old16|none>
 #   bash scripts/ops/clean-start/seal-archive.sh archive <seals.jsonl> <old16|none> <run id>
 #   bash scripts/ops/clean-start/seal-archive.sh retire  <seals.jsonl> <old16|none> <run id>
-#   bash scripts/ops/clean-start/seal-archive.sh restore <seals.jsonl> <old16|none> <run id> <new16>
+#   bash scripts/ops/clean-start/seal-archive.sh restore <seals.jsonl> <old16|none> <run id> <new16|none> [foreign keys at the reset]
 #
 # seals.jsonl is the PLAN export (one SealRecord per line: seq, day, hash,
 # r2Key, bodyText), bound to the plan id. Every seal's hash is the SHA-256 of
@@ -42,7 +42,10 @@
 #            every other object under seals/ is left alone, since the bucket is
 #            shared with other environments) to
 #            <backups>/cleanstart/<run>/abandoned-chain/, checked byte for byte
-#            before each live copy is deleted.
+#            before each live copy is deleted. With new = none (no new chain
+#            was recorded) only the old files go back, and it refuses if a
+#            chain folder is there that is neither the old chain nor listed in
+#            the apply's foreign keys at the reset.
 #
 # "Gone" is decided only by a definite not-found answer of the store; any other
 # failed HEAD (403, network, throttling) counts as "still there".
@@ -270,9 +273,19 @@ restore)
   # the apply or finish run. The photo bucket is shared with other
   # environments, whose own chains keep growing under seals/v1/<their id>/:
   # anything outside seals/v1/<new>/ is left exactly where it is.
+  # "none": the apply recorded no new chain (it stopped at step g or h). The old
+  # files still go back; nothing is moved; and every chain folder seals/v1/<id>/
+  # now under seals/ must be the old chain's or one listed at the reset
+  # (<foreign keys at the reset>, the apply's seal-keys-foreign.txt), else a
+  # chain nobody can name is there: refused, for Claude.
   new="${5:-}"
-  [[ $new =~ ^[0-9a-f]{16}$ ]] || refuse "the new seal chain's id is missing or malformed"
-  [ "$new" != "$old" ] || refuse "the new seal chain's id is the old chain's"
+  then_foreign="${6:-}"
+  if [ "$new" = none ]; then
+    [ -f "$then_foreign" ] || refuse "the list of other objects under seals/ at the reset is missing"
+  else
+    [[ $new =~ ^[0-9a-f]{16}$ ]] || refuse "the new seal chain's id is missing or malformed"
+    [ "$new" != "$old" ] || refuse "the new seal chain's id is the old chain's"
+  fi
   : "${BACKUP_R2_BUCKET:?}"
   ok=0
   while read -r s h k; do
@@ -293,8 +306,19 @@ restore)
   done < "$WORK/index"
   yes_no "old seal files back in the live folder, hash-checked" "$ok"
   [ "$ok" -eq 0 ] || refuse "an old seal file could not be put back"
-  # The new chain: exactly the seal keys under seals/v1/<new>/.
   list_keys ro "$PHOTOS" seals/ > "$CS_DIR/seal-keys-now.txt" || refuse "seals/ could not be listed"
+  if [ "$new" = none ]; then
+    chains() { tr -d '\r' < "$1" | grep -oE '^seals/v1/[0-9a-f]{16}/' | LC_ALL=C sort -u || true; }
+    chains "$CS_DIR/seal-keys-now.txt" > "$WORK/chains-now"
+    { chains "$then_foreign"; [ "$old" = none ] || printf 'seals/v1/%s/\n' "$old"; } | LC_ALL=C sort -u > "$WORK/chains-known"
+    unknown="$(LC_ALL=C comm -23 "$WORK/chains-now" "$WORK/chains-known" | grep -c . || true)"
+    note "restored=$n new_chain=none unknown_chains=$unknown"
+    yes_no "every seal chain under seals/ is the old one or was there at the reset" "$([ "${unknown:-0}" -eq 0 ]; echo $?)"
+    [ "${unknown:-0}" -eq 0 ] || refuse "the old seal files are back, but a seal chain under seals/ cannot be named (the new chain's id was not recorded); nothing else is moved; tell Claude"
+    say "no new seal chain to move out of the live folder: yes"
+    exit 0
+  fi
+  # The new chain: exactly the seal keys under seals/v1/<new>/.
   grep -F "seals/v1/$new/" "$CS_DIR/seal-keys-now.txt" > "$CS_DIR/seal-keys-new.txt" || true
   others="$(grep -v -F -e "seals/v1/$new/" -e "seals/v1/$old/" "$CS_DIR/seal-keys-now.txt" | grep -c . || true)"
   note "left_alone=$others"

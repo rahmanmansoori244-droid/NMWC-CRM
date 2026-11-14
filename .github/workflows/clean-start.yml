@@ -1059,7 +1059,8 @@ jobs:
           done
           echo "OLD_CHAIN=$(sed -n 's/^old_chain=//p' "$CS_DIR/exports/plan-id.txt" | tr -d '\r')" >> "$GITHUB_ENV"
 
-          # Which folder under seals/ is production's NEW chain (recorded by apply step h or finish).
+          # Which folder under seals/ is production's NEW chain (recorded by apply step h or finish);
+          # "none" when nothing was recorded (the old files then go back, nothing is moved).
           bash scripts/ops/clean-start/run.sh chain-id-fetch "$TARGET_RUN"
 
       - name: Production is back to before the reset (read-only)
@@ -1075,7 +1076,8 @@ jobs:
 
       - name: The old seal files back, the abandoned chain moved aside
         run: |
-          bash scripts/ops/clean-start/seal-archive.sh restore "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN" "$TARGET_RUN" "$NEW_CHAIN"
+          bash scripts/ops/clean-start/seal-archive.sh restore "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN" "$TARGET_RUN" "$NEW_CHAIN" \
+            "$CS_DIR/exports/seal-keys-foreign.txt"
 
       - name: The integrity watch, once
         run: |

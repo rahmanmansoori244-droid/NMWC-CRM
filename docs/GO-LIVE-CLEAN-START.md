@@ -387,7 +387,7 @@ Find the bold **refused:** line in the summary.
 | `runtime role privileges not failing on production (latest watch): no` | the nightly check found a wrong database permission | send Claude the link; it must be fixed before the reset |
 | `reset committed: unknown (no connection); run mode finish with this run id` or `reset committed: unknown (the check did not finish); run mode finish with this run id` | the answer was lost | run **finish** (below), the same evening |
 | `the real customer file is loaded (customers exist): no` (photos) | the real file is not loaded yet | load it first (Step 6) |
-| `the new seal chain's id of that run was not recorded, so no seal file is moved; tell Claude` (seal-restore) | | send Claude the link |
+| `the old seal files are back, but a seal chain under seals/ cannot be named (the new chain's id was not recorded); nothing else is moved; tell Claude` (seal-restore) | the old seal files are back; one folder of seal files is unexplained | send Claude the link before anyone uses the CRM |
 | anything else | | send Claude the link; do not press anything |
 
 Every refusal before the line `reset started at (UTC)` means nothing changed.
@@ -476,7 +476,10 @@ alert about the new seal files.
    `production is back to before the reset (old chain, no reset row): yes`,
    `old seal files back in the live folder, hash-checked: yes`,
    `the abandoned new chain moved out of the live folder: yes` and
-   `a check failing or in error: no`. If a check is failing, the job is red: send Claude
+   `a check failing or in error: no`. (If the apply stopped before it recorded the new
+   chain, the summary says `new seal chain id of that run recorded: no` and, instead of
+   the "moved" line, `no new seal chain to move out of the live folder: yes`. That is
+   green too.) If a check is failing, the job is red: send Claude
    the link before anyone uses the CRM. One exception keeps it green: when the test
    environment's files sit in the seal folder, the summary shows
    `seal-offsite-copies: fail` and

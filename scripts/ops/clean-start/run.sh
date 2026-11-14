@@ -506,14 +506,22 @@ cmd_chain_id() {
 }
 
 # chain-id-fetch <run id>: the new chain id the apply (or finish) of that run
-# recorded. Refuses without it: seal-restore never guesses which objects under
-# seals/ are production's new chain (the bucket is shared with other
-# environments, whose own chains must never be touched).
+# recorded. seal-restore never guesses which objects under seals/ are
+# production's new chain (the bucket is shared with other environments, whose
+# own chains must never be touched). When none was recorded (apply stopped at
+# step g or h, before a new first seal was written or before its id was read),
+# NEW_CHAIN is "none": seal-archive.sh restore then still puts the old seal
+# files back, moves nothing, and refuses if any chain folder under seals/ is
+# one it cannot name.
 cmd_chain_id_fetch() {
   local r v out="$CS_DIR/new-chain.txt"
   r="$(typed_run_id "${1:-}")"
-  aws_backups s3 cp "s3://$BACKUP_R2_BUCKET/cleanstart/$r/chain/new-chain.txt.age" "$out.age" > /dev/null \
-    || refuse "the new seal chain's id of that run was not recorded, so no seal file is moved; tell Claude"
+  if ! aws_backups s3 cp "s3://$BACKUP_R2_BUCKET/cleanstart/$r/chain/new-chain.txt.age" "$out.age" > /dev/null; then
+    rm -f "$out.age"
+    set_env NEW_CHAIN none
+    say "new seal chain id of that run recorded: no"
+    return 0
+  fi
   with_identity _decrypt "$out.age" "$out" || refuse "an encrypted export could not be decrypted"
   rm -f "$out.age"
   v="$(sed -n 's/^new_chain=//p' "$out" | tr -d '\r')"

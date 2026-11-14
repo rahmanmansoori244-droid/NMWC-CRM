@@ -264,7 +264,7 @@ describe('targets', () => {
     const sr = run('seal_restore');
     expect(sr.indexOf('run.sh chain-id-fetch')).toBeGreaterThan(-1);
     expect(sr.indexOf('run.sh chain-id-fetch')).toBeLessThan(sr.indexOf('seal-archive.sh restore'));
-    expect(sr).toMatch(/seal-archive\.sh restore "\$CS_DIR\/exports\/seals\.jsonl" "\$OLD_CHAIN" "\$TARGET_RUN" "\$NEW_CHAIN"/);
+    expect(sr).toMatch(/seal-archive\.sh restore "\$CS_DIR\/exports\/seals\.jsonl" "\$OLD_CHAIN" "\$TARGET_RUN" "\$NEW_CHAIN" \\\s+"\$CS_DIR\/exports\/seal-keys-foreign\.txt"/);
     expect(sr).toMatch(/run\.sh status-lines "\$CS_DIR\/watch-latest\.tsv" refuse/);
   });
 
