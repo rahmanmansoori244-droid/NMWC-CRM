@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyBlockedBy,
   comesBefore,
+  dateColumnDay,
   isFinished,
   overtakenBy,
   sameBytesEarlier,
@@ -92,5 +93,12 @@ describe('the order rule', () => {
       expect(overtakenBy(early, [file('2026-11-13', s)]), s).toBeNull();
     }
     expect(overtakenBy(early, [file('2026-11-12', 'LOADED')])).toBeNull();
+  });
+});
+
+describe('the day of a DATE column', () => {
+  it('is its UTC parts (Prisma returns midnight UTC), whatever the clock zone', () => {
+    expect(dateColumnDay(new Date('2026-11-14T00:00:00Z'))).toBe('2026-11-14');
+    expect(dateColumnDay(new Date('2026-01-05T00:00:00Z'))).toBe('2026-01-05');
   });
 });

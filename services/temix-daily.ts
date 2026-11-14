@@ -40,6 +40,7 @@ import {
 } from '@/lib/temix-daily-file';
 import {
   applyBlockedBy,
+  dateColumnDay,
   sameBytesEarlier,
   stagingRefusal,
   type DailyFileForOrder,
@@ -76,8 +77,6 @@ async function requireSteward() {
 export async function uploadTemixDailyFileAction(formData: FormData): SafeAction<TemixDailyUploadResult> {
   return runAction(() => uploadTemixDailyFileCore(formData));
 }
-
-const asDay = (d: Date) => d.toISOString().slice(0, 10);
 
 async function uploadTemixDailyFileCore(formData: FormData): Promise<TemixDailyUploadResult> {
   const me = await requireSteward();
@@ -146,7 +145,7 @@ async function uploadTemixDailyFileCore(formData: FormData): Promise<TemixDailyU
             },
             select: { id: true, filename: true, loadDay: true, uploadedAt: true, state: true, fileSha256: true },
           })
-        ).map((f) => ({ ...f, loadDay: asDay(f.loadDay) }));
+        ).map((f) => ({ ...f, loadDay: dateColumnDay(f.loadDay) }));
         const upload = { loadDay, sha256 };
         const refused = stagingRefusal(upload, others);
         if (refused) throw new ValidationError({ file: refused });

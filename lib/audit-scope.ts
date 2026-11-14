@@ -338,6 +338,8 @@ export const AUDIT_ENTITY_TYPES = [
   'ImportRow',
   'TemixSyncBatch',
   'TemixRequeue',
+  // The daily Temix import (stage 3): one row per uploaded daily file.
+  'TemixDailyFile',
   'CustomerPair',
   // Lossless paths (gap 27): a new-customer submit refused as a duplicate.
   'CustomerCreateAttempt',

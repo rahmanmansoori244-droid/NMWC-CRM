@@ -12,7 +12,7 @@ import {
   TEMIX_DAILY_UPLOAD_NOTES,
   type TemixDailyUploadNote,
 } from '@/lib/temix-daily-file';
-import { applyBlockedBy, overtakenBy, type DailyFileForOrder } from '@/lib/temix-daily-order';
+import { applyBlockedBy, dateColumnDay, overtakenBy, type DailyFileForOrder } from '@/lib/temix-daily-order';
 import { TemixDailyUploadForm } from './upload-form';
 
 export const metadata = { title: 'Temix daily file · NMWC' };
@@ -28,8 +28,6 @@ const STATE_LABEL: Record<DailyFileForOrder['state'], string> = {
   LOADED: 'Loaded',
   DISCARDED: 'Discarded',
 };
-
-const asDay = (d: Date) => d.toISOString().slice(0, 10);
 
 /**
  * The daily Temix import, stage 3: the Data Steward's list of daily files and
@@ -61,7 +59,7 @@ export default async function TemixDailyPage() {
     take: 1,
     select: { id: true, filename: true, loadDay: true, uploadedAt: true, state: true, fileSha256: true },
   });
-  const order: DailyFileForOrder[] = [...unfinished, ...inFlightOrLoaded].map((f) => ({ ...f, loadDay: asDay(f.loadDay) }));
+  const order: DailyFileForOrder[] = [...unfinished, ...inFlightOrLoaded].map((f) => ({ ...f, loadDay: dateColumnDay(f.loadDay) }));
 
   const ids = files.map((f) => f.id);
   const noteCounts =
@@ -152,7 +150,7 @@ export default async function TemixDailyPage() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {files.map((f) => {
-                const me: DailyFileForOrder = { ...f, loadDay: asDay(f.loadDay) };
+                const me: DailyFileForOrder = { ...f, loadDay: dateColumnDay(f.loadDay) };
                 const finished = f.state === 'LOADED' || f.state === 'DISCARDED';
                 const waits = finished ? null : applyBlockedBy(me, order);
                 const overtaken = finished ? null : overtakenBy(me, order);
@@ -165,7 +163,7 @@ export default async function TemixDailyPage() {
                       {f.filename}
                       {f.sameBytesAs && (
                         <p className="mt-1 text-xs font-normal text-amber-700">
-                          Exactly the same file as {asDay(f.sameBytesAs.loadDay)} (&quot;{f.sameBytesAs.filename}&quot;).
+                          Exactly the same file as {dateColumnDay(f.sameBytesAs.loadDay)} (&quot;{f.sameBytesAs.filename}&quot;).
                         </p>
                       )}
                     </td>

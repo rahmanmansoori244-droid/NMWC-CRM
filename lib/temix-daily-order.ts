@@ -34,6 +34,16 @@ export type DailyFileForOrder = {
   fileSha256: string;
 };
 
+/**
+ * The calendar day of a DATE column (TemixDailyFile.loadDay) as Prisma returns
+ * it: midnight UTC of that day, so its day is its UTC parts. Not for an instant
+ * (an upload time): that is lib/tz.ts omanDateISO.
+ */
+export function dateColumnDay(d: Date): string {
+  const two = (n: number) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${two(d.getUTCMonth() + 1)}-${two(d.getUTCDate())}`;
+}
+
 const FINISHED: readonly DailyFileState[] = ['LOADED', 'DISCARDED'];
 const APPLIED_OR_APPLYING: readonly DailyFileState[] = ['APPLYING', 'FINALIZING', 'LOADED'];
 
