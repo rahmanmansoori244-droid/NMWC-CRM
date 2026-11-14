@@ -15,30 +15,42 @@ export default async function NotificationsPage() {
   const session = await auth();
   if (!session?.user) redirect('/login');
 
-  const notifications = await prisma.notification.findMany({
-    where: { userId: session.user.id },
-    orderBy: { createdAt: 'desc' },
-    take: 100,
-    // Named columns: the e-mail outbox columns are no business of the inbox.
-    select: {
-      id: true,
-      kind: true,
-      title: true,
-      body: true,
-      editId: true,
-      customerId: true,
-      readAt: true,
-      createdAt: true,
-      edit: { select: { isReactivation: true } },
-    },
-  });
-  const unread = notifications.filter((n) => !n.readAt).length;
+  const [notifications, unreadByKind] = await Promise.all([
+    prisma.notification.findMany({
+      where: { userId: session.user.id },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+      // Named columns: the e-mail outbox columns are no business of the inbox.
+      select: {
+        id: true,
+        kind: true,
+        title: true,
+        body: true,
+        editId: true,
+        customerId: true,
+        readAt: true,
+        createdAt: true,
+        edit: { select: { isReactivation: true } },
+      },
+    }),
+    // Follow-up 1, H16 (bug hunt round 1, finding 9): the unread state, the
+    // subtitle and the bulk buttons come from EVERY unread row, counted as the
+    // bell counts them (app/(app)/layout.tsx). Read from the 100 rows shown, a
+    // person with older unread rows saw "All caught up" and no "Mark all read"
+    // while the bell still showed a number, and could not clear it.
+    prisma.notification.groupBy({
+      by: ['kind'],
+      where: { userId: session.user.id, readAt: null },
+      _count: { _all: true },
+    }),
+  ]);
   // F1: the same split as the bell — rows that may ask for action, and rows
   // that only inform (lib/notification-bell.ts).
   const counts = splitBellCounts(
-    notifications.filter((n) => !n.readAt).map((n) => ({ kind: n.kind, count: 1 })),
+    unreadByKind.map((g) => ({ kind: g.kind, count: g._count._all })),
     session.user.role
   );
+  const unread = unreadByKind.reduce((sum, g) => sum + g._count._all, 0);
   const subtitle =
     unread === 0
       ? 'All caught up'
