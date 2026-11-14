@@ -458,7 +458,14 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     expect(cust).toBeNull();
     const rows = await prisma.importRow.findMany({ where: { batchId: b } });
     expect(rows.every((r) => r.state === 'REJECTED')).toBe(true);
-    expect((rows[0].issues as { message: string }[])[0].message).toMatch(/duplicate branch_code/i);
+    // Bug hunt round 1, finding 1: nothing in the file is repeated — the blank
+    // sheet row 3 is the customer's second row, so it is numbered -02 by its
+    // place, which is the code sheet row 2 gives (the comment above counts the
+    // rows otherwise). The reason said "duplicate branch_code"; it now says what
+    // happened and names both rows.
+    expect((rows[0].issues as { message: string }[])[0].message).toMatch(
+      /^The branch_code on row 3 is blank, so it is numbered "[^"]*-DUP-02" by its place among this customer's rows, and that is the code row 2 gives \("02"\)\. No code is repeated in the file/
+    );
     // cleanup this ad-hoc batch
     await prisma.importRow.deleteMany({ where: { batchId: b } });
     await prisma.importBatch.deleteMany({ where: { id: b } });

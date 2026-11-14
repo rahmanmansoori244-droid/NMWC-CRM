@@ -111,6 +111,8 @@ import { branchCrmRule, customerCrmRule, keptNote, type CrmOutcome } from '@/lib
 import {
   creditReason,
   decideLane,
+  branchCodeClash,
+  branchCodeClashMessage,
   differingBranchCells,
   rowCreditNote,
   shopNotChangedNote,
@@ -2623,20 +2625,22 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
       // (overwrite) the first branch — one physical branch lost, both rows marked
       // PROMOTED. There is no way to know which row is authoritative, so reject the
       // whole group to steward review rather than drop data silently.
-      const seenBranchCodes = new Set<string>();
-      let dupBranchCode: string | null = null;
-      for (const r of resolvedBranches) {
-        if (seenBranchCodes.has(r.branchCode)) {
-          dupBranchCode = r.branchCode;
-          break;
-        }
-        seenBranchCodes.add(r.branchCode);
-      }
-      if (dupBranchCode) {
+      // Bug hunt round 1, finding 1: when one of the two rows has a blank
+      // branch_code, numbered by its place, nothing in the file is repeated; the
+      // reason says so and names both rows (lib/import-plan.ts branchCodeClash).
+      // The numbering itself is unchanged (an open owner question).
+      const clash = branchCodeClash(
+        resolvedBranches,
+        g.rowIds.map((id) => rowMeta.get(id)?.rowNumber)
+      );
+      if (clash) {
         failures.push({
           custCode,
           rowIds: g.rowIds,
-          reason: `branch_code ${dupBranchCode} appears on more than one row for this customer — steward review`,
+          reason:
+            clash.kind === 'repeated'
+              ? `branch_code ${clash.code} appears on more than one row for this customer — steward review`
+              : `${branchCodeClashMessage(clash)} — steward review`,
         });
         await prisma.importRow
           .updateMany({
@@ -2646,7 +2650,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               issues: [
                 {
                   field: '_promote',
-                  message: `duplicate branch_code ${dupBranchCode} within this customer`,
+                  message: branchCodeClashMessage(clash),
                 },
               ] as Prisma.InputJsonValue,
               reviewedById: me.id,

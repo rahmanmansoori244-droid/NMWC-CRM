@@ -1308,10 +1308,25 @@ not built yet (item D).
      "X-01" (Excel may have dropped a zero). "1" is on row 3. …"), so every other row of that
      customer says which row to correct. The reason at upload, which each row gets for itself, is
      unchanged.
+   - **A blank `branch_code` numbered like another row** (bug hunt round 1, finding 1). A NEW
+     customer's row with no `branch_code` is numbered by its place among the customer's rows
+     (`-01`, `-02`, …). When that number is exactly the code another row of the same customer gives
+     (a head-office row with no code, and the customer's own shop `01`), nothing in the file is
+     repeated, but the two rows would be one shop: Promote rejects the customer, and the reason
+     says so and names both rows ("The branch_code on row 2 is blank, so it is numbered "X-01" by
+     its place …, and that is the code row 3 gives ("01"). … Give row 2 a branch_code."); "Before
+     you promote" counts these customers on a line of their own, naming the first pairs of rows (it
+     used to call it "a branch_code repeated in the file"). If the coded row was held back and the
+     blank row loaded alone as `X-01`, correcting the coded row no longer changes that shop: the
+     re-check holds it back on its `branch_code` cell, naming the row whose shop it is ("Shop code
+     "01" is "X-01", the code row 2 was given by its place when it loaded …"). Give it a code the
+     customer does not have yet, or exclude it. Only rows of the same batch are compared this way.
+     How a head-office row with no code should be numbered is an open owner question; the
+     numbering is unchanged.
    - **Promote opens "Before you promote".** It counts, against the CRM as it is at that moment:
      customers and shops that will be created; Temix-owned fields refreshed; rows naming a route
      that will NOT be applied; rows whose codes were read in capitals; rows held back for an Excel
-     error in a cell; blank CRM fields filled; customers and shops where the sheet differs
+     error in a cell; customers with a blank shop code numbered like another row; blank CRM fields filled; customers and shops where the sheet differs
      from the record (kept); rows whose credit cells will not be applied, and why; and rows
      expected to be rejected. It is a check, not a lock. Resume and Finish skip it.
    - **"Overwrite CRM fields from this sheet"** is in that dialog. Steward only, off by default,

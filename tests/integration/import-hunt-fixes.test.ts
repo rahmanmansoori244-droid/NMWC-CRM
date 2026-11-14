@@ -8,6 +8,10 @@
  *     other row back; the rest of the file loads; corrected, it loads.
  *   - round 1, finding 6: a NEW customer created from [CLOSED, blank status]
  *     rows ends ACTIVE, and its own audit trail and history now say how.
+ *   - round 1, finding 1: a blank branch_code numbered by its place (-01) that
+ *     is the code another row of the customer gives: the reasons say so and
+ *     name both rows; and correcting the held-back coded row after the blank
+ *     row loaded never changes the blank row's shop in place of creating its own.
  *
  *   RUN_IMPORT_TESTS=1 npx vitest run tests/integration/import-hunt-fixes.test.ts
  */
@@ -218,5 +222,68 @@ describe.skipIf(!ENABLED)('bug hunt fixes on the customer import', () => {
     const h = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: H } });
     expect(h.status).toBe('CLOSED');
     expect((await prisma.auditLog.findMany({ where: { entityType: 'Customer', entityId: h.id } })).map((a) => a.action)).toEqual(['CREATE']);
+  });
+  it('round 1, finding 1: a blank row numbered -01 beside a row coded 01 — the reasons say what happened', async () => {
+    const X = `${P}-X`;
+    const batchId = await upload([
+      row({ cust_code: X, branch_code: '', phone: phone(7), address: 'Head office, Way 1' }),
+      row({ cust_code: X, branch_code: '01', phone: phone(7), address: 'Shop one, Way 2' }),
+    ]);
+    expect((await rowsOf(batchId)).map((r) => r.state)).toEqual(['CLEAN', 'CLEAN']);
+    const told = await check(batchId);
+    expect(told.summary.expectRejected.reasons).toEqual([
+      { reason: "a blank branch_code whose number by place is the code another row of the customer gives", customers: 1 },
+    ]);
+    expect(told.summary.numberedClash).toEqual({ customers: 1, examples: [{ blankRow: 2, codedRow: 3 }] });
+    expect(told.lines.some((l) => l.text.includes('row 2 (blank) and row 3'))).toBe(true);
+    expect(told.lines.some((l) => l.text.includes('a branch_code repeated in the file'))).toBe(false);
+
+    await promoteFully(imports, batchId);
+    const after = await rowsOf(batchId);
+    expect(after.map((r) => r.state)).toEqual(['REJECTED', 'REJECTED']);
+    const reason = `The branch_code on row 2 is blank, so it is numbered "${X}-01" by its place among this customer's rows, and that is the code row 3 gives ("01"). No code is repeated in the file: the two rows would be loaded as one shop. Give row 2 a branch_code.`;
+    for (const r of after) expect(issuesOf(r)).toEqual([{ field: '_promote', message: reason }]);
+    expect(await prisma.customer.count({ where: { nmwcCode: X } })).toBe(0);
+  });
+
+  it('round 1, finding 1: correcting the held-back 01 row never changes the shop the blank row loaded as -01', async () => {
+    const Y = `${P}-Y`;
+    const batchId = await upload([
+      row({ cust_code: Y, branch_code: '', phone: phone(8), address: 'Head office, Way 1' }),
+      // Held back for its phone: the head office alone loads, numbered -01 by its place.
+      row({ cust_code: Y, branch_code: '01', phone: '12', address: 'Shop one, Way 2' }),
+    ]);
+    const staged = await rowsOf(batchId);
+    expect(staged.map((r) => r.state)).toEqual(['CLEAN', 'QUARANTINED']);
+    expect(await promoteFully(imports, batchId)).toMatchObject({ promoted: 1 });
+    expect(await shopsOf(Y)).toEqual([`${Y}-01`]);
+    const headOffice = await prisma.branch.findUniqueOrThrow({ where: { branchCode: `${Y}-01` } });
+
+    // The Steward corrects the phone. Before, the row came back CLEAN and the
+    // load then changed the head office (Y-01) instead of creating shop 01.
+    await prisma.rateLimit.deleteMany({ where: { key: { contains: steward } } });
+    const fixed = await fixes.correctImportRowAction(fd({ rowId: staged[1]!.id, cells: JSON.stringify({ phone: phone(8) }) }));
+    expect(fixed.ok, JSON.stringify(fixed)).toBe(true);
+    const held = await prisma.importRow.findUniqueOrThrow({ where: { id: staged[1]!.id } });
+    expect(held.state).toBe('QUARANTINED');
+    expect(issuesOf(held)).toEqual([
+      {
+        field: 'branch_code',
+        message: `Shop code "01" is "${Y}-01", the code row 2 was given by its place when it loaded (its branch_code was blank). This is another row of the same file, so loading it would change row 2's shop instead of creating its own. Give this row a branch_code this customer does not have yet, or exclude the row.`,
+      },
+    ]);
+    // Nothing of the batch is left to load; the head office is as it was.
+    expect((await prisma.importBatch.findUniqueOrThrow({ where: { id: batchId } })).status).toBe('PROMOTED');
+    const still = await prisma.branch.findUniqueOrThrow({ where: { branchCode: `${Y}-01` } });
+    expect({ address: still.address, version: still.version }).toEqual({ address: headOffice.address, version: headOffice.version });
+
+    // Given a code the customer does not have, it loads as its own shop.
+    await prisma.rateLimit.deleteMany({ where: { key: { contains: steward } } });
+    const recoded = await fixes.correctImportRowAction(fd({ rowId: staged[1]!.id, cells: JSON.stringify({ branch_code: '02' }) }));
+    expect(recoded.ok, JSON.stringify(recoded)).toBe(true);
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: staged[1]!.id } })).state).toBe('CLEAN');
+    await promoteFully(imports, batchId);
+    expect(await shopsOf(Y)).toEqual([`${Y}-01`, `${Y}-02`]);
+    expect((await prisma.branch.findUniqueOrThrow({ where: { branchCode: `${Y}-01` } })).address).toBe(headOffice.address);
   });
 });

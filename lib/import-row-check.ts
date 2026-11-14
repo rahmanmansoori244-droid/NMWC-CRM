@@ -15,6 +15,7 @@ import { normalizeCR } from '@/lib/cr';
 import { normalizeTemixCode } from '@/lib/temix-code';
 import { stripHtml as stripTags } from '@/lib/validation/fields';
 import { CUSTOMER_COLUMNS, readCell, readLooseCell, type CustomerColumn } from '@/lib/import-headings';
+import { composeBranchCode } from '@/lib/import-row-fix';
 import {
   capitalCode,
   shopLookalike,
@@ -77,7 +78,25 @@ export type RowCheckContext = {
   masterShops?: ReadonlyMap<string, readonly string[]>;
   /** Customer code (capitals) -> every row of it in the file, with its branch_code as written. */
   shopsInFile?: ReadonlyMap<string, readonly SiblingShop[]>;
+  /**
+   * Bug hunt round 1, finding 1: customer code (capitals) -> the shops of that
+   * customer that a row of THIS batch with a blank branch_code created, numbered
+   * by its place (-01, -02, …), with that row's number. Only the Steward's fix
+   * passes it (services/import-fixes.ts): at upload nothing is loaded yet.
+   */
+  numberedShops?: ReadonlyMap<string, ReadonlyArray<{ code: string; row: number }>>;
 };
+
+/**
+ * The reason a corrected row is held back when its shop code is the number a
+ * blank row of the same file was given by its place when it loaded: two rows of
+ * one file are two shops, so loading it would change that row's shop instead of
+ * creating its own (bug hunt round 1, finding 1). How a head office with no code
+ * should be numbered is an open owner question; this says only what happened.
+ */
+export function numberedShopMessage(sheetCode: string, code: string, row: number): string {
+  return `Shop code "${sheetCode}" is "${code}", the code row ${row} was given by its place when it loaded (its branch_code was blank). This is another row of the same file, so loading it would change row ${row}'s shop instead of creating its own. Give this row a branch_code this customer does not have yet, or exclude the row.`;
+}
 
 export type RowCheckOptions = {
   /**
@@ -447,6 +466,11 @@ export function checkCustomerRow(
       !!opts.shopCodeReleased
     );
     if (hit) issues.push({ field: 'branch_code', message: shopLookalikeMessage(hit) });
+    const composed = composeBranchCode(custCode, branchCode);
+    const numbered = ctx.numberedShops?.get(custCode)?.find((s) => s.code === composed);
+    if (numbered) {
+      issues.push({ field: 'branch_code', message: numberedShopMessage(branchCode.trim(), composed, numbered.row) });
+    }
   }
 
   // Owner's answer 2026-11-11 (A5): which codes were read in capital letters.

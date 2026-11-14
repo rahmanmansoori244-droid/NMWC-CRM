@@ -45,7 +45,7 @@ export async function loadPromoteSummary(db: Db, batchId: string, overwrite: boo
   const [cleanRows, routes, channels] = await Promise.all([
     db.importRow.findMany({
       where: { batchId, state: ImportRowState.CLEAN },
-      select: { parsed: true },
+      select: { parsed: true, rowNumber: true },
       orderBy: { rowNumber: 'asc' },
     }),
     db.route.findMany({ select: { id: true, code: true, regionId: true } }),
@@ -61,6 +61,8 @@ export async function loadPromoteSummary(db: Db, batchId: string, overwrite: boo
   for (const row of cleanRows) {
     const p = row.parsed as unknown as PlanRow | null;
     if (!p?.custCode) continue;
+    // Bug hunt round 1, finding 1: the row's number, for a reason that names rows.
+    p.rowNumber = row.rowNumber;
     if (capitalisedOf(p).length > 0) codesCapitalised += 1;
     if (p.temixCode) p.temixCode = normalizeTemixCode(p.temixCode) || null;
     const g = groups.get(p.custCode) ?? [];

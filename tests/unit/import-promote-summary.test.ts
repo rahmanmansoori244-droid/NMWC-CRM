@@ -172,7 +172,8 @@ describe('loadPromoteSummary', () => {
     await load();
     expect(calls[0]).toEqual({
       model: 'importRow',
-      args: { where: { batchId: 'batch-9', state: 'CLEAN' }, select: { parsed: true }, orderBy: { rowNumber: 'asc' } },
+      // Bug hunt round 1, finding 1: and the row's number, for a reason that names rows.
+      args: { where: { batchId: 'batch-9', state: 'CLEAN' }, select: { parsed: true, rowNumber: true }, orderBy: { rowNumber: 'asc' } },
     });
   });
 

@@ -320,10 +320,11 @@ async function recheck(
       cr: string | null;
       branch: string | null;
       released: boolean | null;
+      state: ImportRowState;
     }>
   >`
     SELECT "id", "rowNumber", "parsed"->>'custCode' AS "code", "parsed"->>'phone' AS "phone", "parsed"->>'crNumber' AS "cr",
-           "parsed"->>'branchCode' AS "branch", ("parsed"->>'shopCodeReleased') = 'true' AS "released"
+           "parsed"->>'branchCode' AS "branch", ("parsed"->>'shopCodeReleased') = 'true' AS "released", "state"::text AS "state"
       FROM "ImportRow"
      WHERE "batchId" = ${batch.id} AND "excludedAt" IS NULL AND "parsed" IS NOT NULL
        AND NOT ("state" = 'QUARANTINED' AND ("parsed"->>'excelError') = 'true')`;
@@ -367,7 +368,16 @@ async function recheck(
     corrected.map((x) => rowCustCode(x.row)),
     tx
   );
-  const ctx = { channelKeys, phonesInFile, crsInFile, masterPhones, masterCrs, masterShops, shopsInFile };
+  // Bug hunt round 1, finding 1: the shops this batch's rows with a blank
+  // branch_code created, numbered by their place. A corrected row of the same
+  // file whose code is one of them is another shop: it is held back, never
+  // loaded onto that row's shop (lib/import-row-check.ts numberedShopMessage).
+  const numberedShops = await numberedShopsOf(
+    tx,
+    others.filter((o) => !targetIds.has(o.id) && o.state === ImportRowState.PROMOTED && !(o.branch ?? '').trim() && !!o.code),
+    new Set(corrected.map((x) => rowCustCode(x.row)))
+  );
+  const ctx = { channelKeys, phonesInFile, crsInFile, masterPhones, masterCrs, masterShops, shopsInFile, numberedShops };
 
   let clean = 0;
   let held = 0;
@@ -1125,4 +1135,39 @@ async function audit(
     reason,
     after: after as unknown as Prisma.InputJsonValue,
   });
+}
+
+/**
+ * Bug hunt round 1, finding 1: for the customers `codes`, the shops created by
+ * the batch's loaded rows `blankRows` (rows with a blank branch_code, numbered
+ * by their place), read from each shop's CREATE audit row, which names the
+ * import row that created it (lib/import-lineage.ts createAudit).
+ */
+async function numberedShopsOf(
+  tx: Prisma.TransactionClient,
+  blankRows: ReadonlyArray<{ id: string; rowNumber: number; code: string | null }>,
+  codes: ReadonlySet<string>
+): Promise<Map<string, Array<{ code: string; row: number }>>> {
+  const out = new Map<string, Array<{ code: string; row: number }>>();
+  const rows = blankRows.filter((r) => !!r.code && codes.has(r.code));
+  if (rows.length === 0) return out;
+  const byRowId = new Map(rows.map((r) => [r.id, r] as const));
+  const shops = await tx.branch.findMany({
+    where: { customer: { nmwcCode: { in: [...new Set(rows.map((r) => r.code!))] } } },
+    select: { id: true, branchCode: true, customer: { select: { nmwcCode: true } } },
+  });
+  if (shops.length === 0) return out;
+  const created = await tx.auditLog.findMany({
+    where: { entityType: 'Branch', action: 'CREATE', entityId: { in: shops.map((b) => b.id) } },
+    select: { entityId: true, after: true },
+  });
+  const shopById = new Map(shops.map((b) => [b.id, b] as const));
+  for (const a of created) {
+    const rowId = (a.after as { importRowId?: unknown } | null)?.importRowId;
+    const row = typeof rowId === 'string' ? byRowId.get(rowId) : undefined;
+    const shop = shopById.get(a.entityId);
+    if (!row || !shop || shop.customer.nmwcCode !== row.code) continue;
+    out.set(row.code!, [...(out.get(row.code!) ?? []), { code: shop.branchCode, row: row.rowNumber }]);
+  }
+  return out;
 }
