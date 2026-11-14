@@ -2,7 +2,11 @@
  * The daily Temix import, stage 4: the reads the Check is made from
  * (lib/temix-daily-check.ts checkDailyFile). READS ONLY: no write of any kind,
  * no lock, no change context. The client is passed in, so the apply (stage 5)
- * can make the same reads inside its own transaction.
+ * can make the same reads inside its own transaction. loadCheckInput reads the
+ * whole Customer and Branch tables on each call: right for the preview (it also
+ * counts the customers no row names), but before stage 5 calls it once per
+ * slice of customers it needs a variant that reads only the slice's customers
+ * and their shops.
  *
  * Only codes, ids, enum values and figures are read: the staged rows' names,
  * phones, addresses and CR numbers are never selected (the rows are read with
