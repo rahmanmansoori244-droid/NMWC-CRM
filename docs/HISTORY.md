@@ -306,7 +306,12 @@ await withChangeContext(prisma,
 ```
 
 Today the move of a shop the CRM already has is the only change a file applies
-(`Branch.routeId` and `regionId`, so BranchHistory gets one UPDATE row per move).
+to history (`Branch.routeId` and `regionId`, so BranchHistory gets one UPDATE row
+per move). Finalize also sets a confirmed CRM-made customer's Temix queue state
+from UPLOADED to SYNCED under its row's source; the queue state is not history
+(`temixSyncState` is an unwatched column, tests/unit/history-migration-guard.test.ts),
+so its trace is the AuditLog row and
+the `TEMIX_CODE_CONFIRMED` ledger row.
 Cash/credit, limit and days wait for the owner's answer on the main account row;
 when they are built they are dated the same way. Beside the history, the module
 keeps its own INSERT-only ledger (`TemixChange`), joined to the history and
