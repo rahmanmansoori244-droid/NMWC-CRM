@@ -565,7 +565,7 @@ describe('follow-up 1 (F1): the clean start’s entry shows what it removed and 
   const AFTER = {
     runId: '987654321',
     planId: 'a'.repeat(64),
-    removed: { Customer: 3334, Branch: 3901, AuditLog: 52011, CodeSequence: 1, CronRun: 812 },
+    removed: { Customer: 1234, Branch: 2345, AuditLog: 12345, CodeSequence: 1, CronRun: 67 },
     kept: { User: 41, Route: 27, CodeSequence: 0, CronRun: 96, CronHeartbeat: 11 },
   };
   const list = () => screen.getByRole('list', { name: /removed and kept by the clean start/ });
@@ -575,10 +575,10 @@ describe('follow-up 1 (F1): the clean start’s entry shows what it removed and 
     await open();
     expect(screen.getByText('What was removed and kept')).toBeTruthy();
     expect(cells()).toEqual([
-      'Customers: removed 3,334, kept —',
-      'Branches (shops): removed 3,901, kept —',
-      'Audit log entries: removed 52,011, kept —',
-      'Scheduled job runs: removed 812, kept 96',
+      'Customers: removed 1,234, kept —',
+      'Branches (shops): removed 2,345, kept —',
+      'Audit log entries: removed 12,345, kept —',
+      'Scheduled job runs: removed 67, kept 96',
       'Customer code counters: removed 1, kept 0',
       'Accounts: removed —, kept 41',
       'Routes: removed —, kept 27',
