@@ -124,6 +124,34 @@ describe('verify.sql finish scope skips only the state checks', () => {
   });
 });
 
+describe('the migration ledger: a failed migration refuses, a rolled-back row is history (review 2026-11-15)', () => {
+  // `prisma migrate resolve --rolled-back` (docs/OPERATIONS.md section 5) marks the failed
+  // row and leaves it for ever beside the row of the later successful apply. CS006 refused
+  // any such row, so a database repaired by the runbook could never be planned. The
+  // integration suite runs the shapes against Postgres.
+  const blockOf = (code: string) => {
+    const g = strip(read('guards.sql'));
+    return g.slice(g.lastIndexOf('DO $cs$', g.indexOf(`'${code}'`)), g.indexOf(`'${code}'`));
+  };
+  it('CS006 refuses a row that is unfinished AND not marked rolled back: Prisma\'s own "failed"', () => {
+    const b = blockOf('CS006');
+    expect(b).toMatch(/IF EXISTS \(SELECT 1 FROM public\._prisma_migrations m WHERE m\.finished_at IS NULL AND m\.rolled_back_at IS NULL\) THEN/);
+    expect(b).not.toMatch(/rolled_back_at IS NOT NULL/);
+  });
+  it('CS007 and the plan id\'s migrations hash read the APPLIED rows only (no DISTINCT: applied twice refuses); the ledger state still covers every row', () => {
+    const applied = String.raw`string_agg\(m\.migration_name \|\| ' ' \|\| m\.checksum \|\| E'\\n', ''\s+ORDER BY m\.migration_name COLLATE "C", m\.started_at\)`;
+    expect(blockOf('CS007')).toMatch(new RegExp(`${applied}, ''\\), 'UTF8'\\)\\), 'hex'\\)\\s+INTO have FROM public\\._prisma_migrations m\\s+WHERE m\\.finished_at IS NOT NULL AND m\\.rolled_back_at IS NULL;`));
+    expect(blockOf('CS007')).not.toMatch(/SELECT DISTINCT|DISTINCT ON/);
+    const fp = strip(read('fingerprint.sql'));
+    const mig = fp.slice(fp.indexOf('migrations AS ('), fp.indexOf('codeseq AS ('));
+    expect(mig).toMatch(new RegExp(`${applied}\\s+FILTER \\(WHERE m\\.finished_at IS NOT NULL AND m\\.rolled_back_at IS NULL\\), ''\\), 'UTF8'\\)\\), 'hex'\\) AS sha,`));
+    expect(mig.match(/\bFILTER\b/g)).toHaveLength(1);
+    expect(mig).not.toMatch(/SELECT DISTINCT|DISTINCT ON/);
+    // state: every row with both marks, so a change to a rolled-back row changes the plan id too
+    expect(mig).toMatch(/\(m\.finished_at IS NOT NULL\)::text\s+\|\| ' ' \|\| \(m\.rolled_back_at IS NOT NULL\)::text, E'\\n' ORDER BY m\.migration_name COLLATE "C", m\.started_at\), ''\)\) AS state\s+FROM public\._prisma_migrations m\s*\)/);
+  });
+});
+
 // The rehearsal's night 2 (rehearse-watch.ts nextOmanMorning) was pinned here as "the
 // coming 02:30 UTC", which between 20:00 and 02:30 UTC is night 1's own Oman day: a
 // night that seals nothing and checks no job day (review 2026-11-15). Its rule, at

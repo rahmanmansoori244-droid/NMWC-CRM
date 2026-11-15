@@ -1050,11 +1050,29 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
       `DO $$ DECLARE t record; BEGIN SELECT c.relname, g.tgname INTO t FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid WHERE NOT g.tgisinternal AND c.relnamespace = 'public'::regnamespace ORDER BY 1, 2 LIMIT 1; EXECUTE format('ALTER TABLE public.%I DISABLE TRIGGER %I', t.relname, t.tgname); END $$`,
       {},
     ],
+    [
+      'CS006',
+      'a migration that failed and was never resolved (unfinished, not marked rolled back)',
+      `INSERT INTO public._prisma_migrations (id, checksum, migration_name, started_at, applied_steps_count) VALUES ('zz-cs-failed', repeat('a', 64), '20990101000000_zz_cs_failed', now(), 0)`,
+      {},
+    ],
     ['CS007', 'migrations that are not the checkout', null, { expected_migrations: '0'.repeat(64) }],
+    [
+      'CS007',
+      'a migration marked rolled back and never applied again',
+      `UPDATE public._prisma_migrations SET rolled_back_at = now() WHERE migration_name = (SELECT max(migration_name) FROM public._prisma_migrations)`,
+      {},
+    ],
+    [
+      'CS007',
+      'a migration recorded as applied twice',
+      `INSERT INTO public._prisma_migrations (id, checksum, migration_name, started_at, finished_at, applied_steps_count) SELECT 'zz-cs-twice', m.checksum, m.migration_name, m.started_at + interval '1 minute', now(), 1 FROM public._prisma_migrations m ORDER BY m.migration_name LIMIT 1`,
+      {},
+    ],
     ['CS009', 'an export file key set', `BEGIN; SET LOCAL nmwc.audit_maintenance = 'on'; UPDATE "ExportJob" SET "r2Key" = 'exports/zz.csv' WHERE "id" = (SELECT min("id") FROM "ExportJob"); COMMIT`, {}],
     ['CS011', 'an unknown actor', null, { actor_username: 'zz.nobody.at.all' }],
   ] as const)('PLAN refuses %s: %s', async (code, _label, change, extra) => {
-    const url = await copyOf(code.toLowerCase());
+    const url = await copyOf(`${code.toLowerCase()}n${copies.length}`);
     if (change) {
       const ch = sqlOn(url, change);
       expect(ch, ch.out).toMatchObject({ code: 0 });
@@ -1062,6 +1080,37 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     const r = planOn(url, extra as Record<string, string>);
     expect(r.code, r.out).toBe(3);
     expect(r.out).toMatch(new RegExp(`ERROR:\\s+${code}`));
+    await dropCopy(url);
+  });
+
+  it('a migration that once failed, was marked rolled back and then applied (what `migrate resolve --rolled-back` leaves for ever) is history: PLAN passes and the reset commits', async () => {
+    // Review 2026-11-15: CS006 refused ANY rolled-back row and CS007 hashed every row, so a
+    // database repaired once as docs/OPERATIONS.md section 5 says could never be planned.
+    const url = await copyOf('mighist');
+    // The failed attempt's row: before the applied one, unfinished, marked rolled back, and
+    // with the checksum of the file as it was then.
+    const ch = sqlOn(
+      url,
+      `INSERT INTO public._prisma_migrations (id, checksum, migration_name, logs, started_at, rolled_back_at, applied_steps_count) SELECT 'zz-cs-rolled-back', repeat('b', 64), m.migration_name, 'lock timeout', m.started_at - interval '1 hour', m.started_at - interval '30 minutes', 0 FROM public._prisma_migrations m ORDER BY m.migration_name DESC LIMIT 1`
+    );
+    expect(ch, ch.out).toMatchObject({ code: 0 });
+    const out = mkdtempSync(join(tmp, 'mh-'));
+    const p = run(
+      `PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f ${DIR}/plan.sql -v out_dir='${out}' -v actor_username='${w.actorName}' -v expected_migrations='${expectedMigrations()}'`,
+      { DIRECT_URL: url }
+    );
+    expect(p, p.out).toMatchObject({ code: 0 });
+    const ids = planIds(out);
+    // What is APPLIED is still exactly the checkout's; the ledger itself differs, so the plan id does.
+    expect(ids.migrations_sha256).toBe(expectedMigrations());
+    expect(ids.plan_id).toMatch(/^[0-9a-f]{64}$/);
+    expect(ids.plan_id).not.toBe(planId);
+    // The same guards run again under the reset's locks.
+    const r = reset({ ...vars(), plan_id: ids.plan_id! }, url);
+    expect(r, r.out).toMatchObject({ code: 0 });
+    expect(r.out).toMatch(/clean-start: reset committed/);
+    const v = run(`psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -v run_id=${RUN} -f ${DIR}/verify.sql`, { DIRECT_URL: url });
+    expect(v, v.out).toMatchObject({ code: 0 });
     await dropCopy(url);
   });
 
