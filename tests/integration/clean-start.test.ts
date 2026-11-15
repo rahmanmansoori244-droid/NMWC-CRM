@@ -1041,7 +1041,7 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
       const deadline = Date.now() + 120_000;
       while (!resetDone && Date.now() < deadline) {
         const w = await watcher.$queryRawUnsafe<{ n: bigint }[]>(
-          `SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid NOT IN (pg_backend_pid(), ${Number(writerPid[0]!.pid)})`
+          `SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND ${Number(writerPid[0]!.pid)} = ANY(pg_blocking_pids(pid))`
         );
         if (Number(w[0]!.n) > 0) {
           sawWait = true;

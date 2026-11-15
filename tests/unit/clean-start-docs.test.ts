@@ -33,6 +33,8 @@ const NOT_LINES = new Set([
   ' printed, then ',
   // One instance of the composed "<check>: <status> (not asserted)" line (rehearse-watch.ts reportLines).
   'scheduled-jobs-on-time: fail (not asserted)',
+  // One instance of the composed "night <n>:" heading (rehearse-watch.ts reportLines).
+  'night 2:',
 ]);
 
 function missing(doc: string, src: string): string[] {
@@ -100,6 +102,7 @@ describe("the owner's guide quotes only lines the code prints", () => {
   it('while the rehearsal prints "(not asserted)", the guide explains it under "Lines that may say no"', () => {
     // The code prints the suffix (rehearse-watch.ts reportLines) and run.sh lets it into the log.
     expect(read('scripts/ops/clean-start/rehearse-watch.ts')).toContain("' (not asserted)'");
+    expect(read('scripts/ops/clean-start/rehearse-watch.ts')).toContain('`night ${n.night}:`');
     expect(read('scripts/ops/clean-start/run.sh')).toContain(String.raw`( \(not asserted\))?`);
     const table = guide.slice(guide.indexOf('## Lines that may say no'));
     const row = table.split('\n').find((l) => l.startsWith('|') && l.includes('(not asserted)`'));
