@@ -22,6 +22,9 @@ import { ROUTE_INACTIVE_MESSAGE } from '@/lib/errors';
 import { canPrint } from '@/lib/print';
 import { survivorOf } from '@/lib/merged-customers';
 import { canSeeCustomerHistory } from '@/lib/permissions';
+import { photoModeFor, profilePhotoCount, type PhotoMode } from '@/lib/photo-pacing';
+import { RoutePhoto } from '@/components/nmwc/RoutePhoto';
+import { PhotoQueueStatus } from '@/components/nmwc/PhotoQueueStatus';
 import { MapPin, Phone, Mail, User as UserIcon, Camera, Calendar, Image as ImageIcon, Pencil, Printer, History as HistoryIcon } from 'lucide-react';
 
 export const metadata = { title: 'Customer · NMWC' };
@@ -161,6 +164,10 @@ export default async function CustomerProfilePage({
     : null;
   const sentBack = returned ? sentBackTrail(returned, returned.steps).latest : null;
 
+  // Large-customer photos (lib/photo-pacing.ts): more than 40 photos on the
+  // page load through the tab's paced queue; 40 or fewer render as before.
+  const photoMode = photoModeFor(profilePhotoCount(customer));
+
   return (
     <main>
       <PageHeader
@@ -257,7 +264,7 @@ export default async function CustomerProfilePage({
           <Row label="Payment terms" value={customer.paymentTerms} />
           <Row label="CR number" value={customer.crNumber ?? '—'} mono />
           <Row label="Notes" value={customer.notes ?? '—'} />
-          <PhotoRow label="CR document" photo={customer.crPhoto} />
+          <PhotoRow label="CR document" photo={customer.crPhoto} mode={photoMode} />
         </Section>
 
         <Section title="Channel & Contact">
@@ -289,6 +296,9 @@ export default async function CustomerProfilePage({
             icon={<UserIcon className="h-4 w-4 text-slate-400" />}
           />
         </Section>
+
+        {/* Says nothing unless photos are paced or did not load; Try again is here, never inside a photo's link. */}
+        <PhotoQueueStatus />
 
         <Section title={`Branches (${customer.branches.length})`} className="lg:col-span-2">
           <div className="grid gap-3 md:grid-cols-2">
@@ -335,8 +345,8 @@ export default async function CustomerProfilePage({
                   value={`${b.coolersCount} coolers · ${b.standsCount} stands · ${b.emptyBottlesCount} empties`}
                 />
                 <div className="mt-3 flex gap-2">
-                  <PhotoTile label="Shop" photo={b.shopPhoto} />
-                  <PhotoTile label="Signboard" photo={b.signboardPhoto} />
+                  <PhotoTile label="Shop" photo={b.shopPhoto} mode={photoMode} />
+                  <PhotoTile label="Signboard" photo={b.signboardPhoto} mode={photoMode} />
                 </div>
                 <div className="mt-3 flex items-center justify-between gap-2">
                   <StatusBadge status={b.status} />
@@ -433,7 +443,7 @@ function Row({
  * used to say only "Captured" — a supervisor/manager reviewing a salesman's
  * enrichment could not actually LOOK at the photo from the profile.
  */
-function PhotoRow({ label, photo }: { label: string; photo: { id: string } | null }) {
+function PhotoRow({ label, photo, mode }: { label: string; photo: { id: string } | null; mode: PhotoMode }) {
   return (
     <div className="grid grid-cols-[120px_minmax(0,1fr)] items-start gap-2 text-base [overflow-wrap:anywhere]">
       <dt className="text-slate-500">{label}</dt>
@@ -445,11 +455,11 @@ function PhotoRow({ label, photo }: { label: string; photo: { id: string } | nul
             rel="noreferrer"
             className="inline-flex items-center gap-2 rounded-md bg-emerald-50 px-2 py-1 text-sm font-medium text-emerald-700 ring-1 ring-emerald-200 hover:bg-emerald-100"
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={`/api/photos/${photo.id}`}
+            <RoutePhoto
+              id={photo.id}
               alt={label}
               className="h-10 w-10 rounded object-cover ring-1 ring-emerald-200"
+              mode={mode}
             />
             <Camera className="h-3 w-3" /> View
           </a>
@@ -463,7 +473,7 @@ function PhotoRow({ label, photo }: { label: string; photo: { id: string } | nul
   );
 }
 
-function PhotoTile({ label, photo }: { label: string; photo: { id: string } | null }) {
+function PhotoTile({ label, photo, mode }: { label: string; photo: { id: string } | null; mode: PhotoMode }) {
   if (photo) {
     return (
       <a
@@ -473,12 +483,7 @@ function PhotoTile({ label, photo }: { label: string; photo: { id: string } | nu
         className="relative flex h-24 flex-1 items-end overflow-hidden rounded-md border border-emerald-200 bg-emerald-50 text-sm font-medium text-white"
         aria-label={`${label} photo`}
       >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={`/api/photos/${photo.id}`}
-          alt={label}
-          className="absolute inset-0 h-full w-full object-cover"
-        />
+        <RoutePhoto id={photo.id} alt={label} className="absolute inset-0 h-full w-full object-cover" mode={mode} />
         <span className="relative z-10 inline-flex items-center gap-1 bg-black/45 px-2 py-1 text-xs">
           <Camera className="h-3 w-3" /> {label}
         </span>
