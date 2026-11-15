@@ -341,7 +341,7 @@ jobs:
           rc=0
           psql "$CS_PG_ADMIN_URL" -X -q -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET log_min_messages = 'panic'" -c "ALTER SYSTEM SET log_min_error_statement = 'panic'" -c "ALTER SYSTEM SET log_error_verbosity = 'terse'" -c "SELECT pg_reload_conf()" > "$CS_DIR/quiet.out" 2>&1 || rc=$?
           bash scripts/ops/clean-start/run.sh sql "rehearsal database log settings" "$rc" "$CS_DIR/quiet.out"
-          for i in 1 2 3 4 5; do
+          for _ in 1 2 3 4 5; do
             rc=0
             psql "$CS_PG_ADMIN_URL" -X -q -At -v ON_ERROR_STOP=1 -c "SELECT current_setting('log_min_messages') = 'panic' AND current_setting('log_min_error_statement') = 'panic' AND current_setting('log_error_verbosity') = 'terse'" > "$CS_DIR/quiet.out" 2>&1 || rc=$?
             if [ "$rc" -eq 0 ] && [ "$(tr -d '\r[:space:]' < "$CS_DIR/quiet.out")" = t ]; then break; fi
