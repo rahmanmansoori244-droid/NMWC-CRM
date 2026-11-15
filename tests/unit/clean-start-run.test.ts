@@ -775,6 +775,77 @@ describe('run.sh encrypt-upload / fetch-decrypt / dump-gates / watch-lines / cou
     expect(run('watch-lines "$CS_DIR/w.out" 1').code).toBe(1);
   });
 
+  // vitest 2.1.9 colours its output when CI is set (always on GitHub's runner). Its grey
+  // "stdout | <file> > <test>" header ends with its closing colour codes at the START of
+  // the next line, and the report's lines come in one batch, so only the first one,
+  // "night 1:", carries them. The bytes below are the ones a CI=true probe printed.
+  const ESC = '\x1b';
+  const HEADER = `${ESC}[90mstdout${ESC}[2m | tests/integration/clean-start-watch.test.ts${ESC}[2m > ${ESC}[22m${ESC}[2mclean start: the first two nights of the integrity watch`;
+  const CLOSE = `${ESC}[22m${ESC}[39m`;
+  const RUN_LINE = `${ESC}[1m${ESC}[7m${ESC}[36m RUN ${ESC}[39m${ESC}[27m${ESC}[22m ${ESC}[36mv2.1.9 ${ESC}[39m${ESC}[90mC:/somewhere${ESC}[39m`;
+  const TABLE = ['night 1:', '  seal-written: info', 'night 2:', '  scheduled-jobs-on-time: info (not asserted)'];
+  const LISTED = ['night 1:', 'seal-written: info', 'night 2:', 'scheduled-jobs-on-time: info (not asserted)'];
+  const REFUSED = ['watch rehearsal as expected: no', '::error::clean start refused: the first two nights of the integrity watch are not as expected'];
+  /** A watch.out as vitest writes it with CI set: `last` is the report's last line. */
+  const coloured = (last: string) =>
+    ['', RUN_LINE, '', HEADER, CLOSE + TABLE[0], ...TABLE.slice(1), last, '', ` ${ESC}[2m Test Files ${ESC}[22m ${ESC}[1m${ESC}[32m1 passed${ESC}[39m${ESC}[22m${ESC}[90m (1)${ESC}[39m`].join('\n');
+  const plain = (last: string) => [' RUN  v2.1.9 C:/somewhere', 'stdout | tests/integration/clean-start-watch.test.ts > x', ...TABLE, last].join('\n');
+  const YES = 'first integrity checks as expected: yes';
+
+  it('watch-lines: the coloured output of vitest under CI lists the same lines, "night 1:" first', () => {
+    writeFileSync(join(sb.csDir, 'wc.out'), coloured(YES));
+    writeFileSync(join(sb.csDir, 'wp.out'), plain(YES));
+    const c = run('watch-lines "$CS_DIR/wc.out" 0');
+    const p = run('watch-lines "$CS_DIR/wp.out" 0');
+    expect(c.code).toBe(0);
+    expect(c.lines[0]).toBe('night 1:');
+    expect(c.lines).toEqual([...LISTED, YES]);
+    expect(c.lines).toEqual(p.lines);
+    expect(c.lines.filter((l) => l.includes(ESC))).toEqual([]);
+  });
+
+  it('watch-lines: on coloured output the decision still needs exit code 0 and the whole yes line', () => {
+    writeFileSync(join(sb.csDir, 'wc.out'), coloured(YES));
+    const failed = run('watch-lines "$CS_DIR/wc.out" 1');
+    expect(failed.code).toBe(1);
+    expect(failed.lines).toEqual([...LISTED, YES, ...REFUSED]);
+
+    writeFileSync(join(sb.csDir, 'wn.out'), coloured('first integrity checks as expected: no'));
+    const no = run('watch-lines "$CS_DIR/wn.out" 0');
+    expect(no.code).toBe(1);
+    expect(no.lines).toEqual([...LISTED, 'first integrity checks as expected: no', ...REFUSED]);
+
+    writeFileSync(join(sb.csDir, 'wx.out'), coloured(` ${ESC}[31mFAIL${ESC}[39m tests/integration/clean-start-watch.test.ts`));
+    const none = run('watch-lines "$CS_DIR/wx.out" 0');
+    expect(none.code).toBe(1);
+    expect(none.lines).toEqual([...LISTED, ...REFUSED]);
+  });
+
+  it('watch-lines: a yes line with the colour prefix counts; a coloured line that only contains it does not', () => {
+    // The report with no check lines at all: the yes line is the batch's first line.
+    writeFileSync(join(sb.csDir, 'wy.out'), ['', RUN_LINE, '', HEADER, CLOSE + YES, ''].join('\n'));
+    const y = run('watch-lines "$CS_DIR/wy.out" 0');
+    expect(y.code).toBe(0);
+    expect(y.lines).toEqual([YES]);
+
+    writeFileSync(join(sb.csDir, 'wz.out'), coloured(`${ESC}[31mnote: ${YES}${ESC}[39m`));
+    const z = run('watch-lines "$CS_DIR/wz.out" 0');
+    expect(z.code).toBe(1);
+    expect(z.lines).toEqual([...LISTED, ...REFUSED]);
+    expect(z.lines.filter((l) => l.includes(YES))).toEqual([]);
+  });
+
+  it('watch-lines: a missing or empty output file refuses with the two fixed lines only', () => {
+    rmSync(join(sb.csDir, 'gone.out'), { force: true });
+    const gone = run('watch-lines "$CS_DIR/gone.out" 0');
+    expect(gone.code).toBe(1);
+    expect(gone.lines).toEqual(REFUSED);
+    writeFileSync(join(sb.csDir, 'empty.out'), '');
+    const empty = run('watch-lines "$CS_DIR/empty.out" 0');
+    expect(empty.code).toBe(1);
+    expect(empty.lines).toEqual(REFUSED);
+  });
+
   it('counter: next = 2 or refuse', () => {
     writeFileSync(join(sb.csDir, 'c.out'), '2\n');
     expect(run('counter "$CS_DIR/c.out"').code).toBe(0);
