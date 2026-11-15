@@ -146,19 +146,32 @@ describe('guardStoreBody on real sockets', () => {
     expect(await readAll(g1.web)).toBe(SMALL.length);
     await until(() => free() === 1);
 
-    const second = await get('/pause'); // pauses 600 ms, four times the first limit
-    expect(second.socket).toBe(sock);
-    const g2 = guardStoreBody(second, new AbortController().signal, () => idle.push('second'), 10_000)!;
-    expect(await readAll(g2.web)).toBe(SMALL.length);
-    expect(g2.isDestroyed()).toBe(false);
+    // The proof: the next answer on that socket is NOT guarded, so no new limit
+    // overwrites a left-over one, and it pauses 600 ms, four times the first
+    // limit. A left-over limit would show as a 'timeout' on the socket (a
+    // timeout with no listener does not destroy it, so only a spy can see it).
+    let timeouts = 0;
+    const spy = () => timeouts++;
+    sock!.on('timeout', spy);
+    try {
+      const second = await get('/pause');
+      expect(second.socket).toBe(sock);
+      let n = 0;
+      for await (const chunk of second) n += (chunk as Buffer).length;
+      expect(n).toBe(SMALL.length);
+      expect(timeouts).toBe(0);
 
-    // And with no guard at all on the reused socket: nothing left behind cuts it.
-    await until(() => free() === 1);
-    const third = await get('/pause');
-    expect(third.socket).toBe(sock);
-    let n = 0;
-    for await (const chunk of third) n += (chunk as Buffer).length;
-    expect(n).toBe(SMALL.length);
+      // And an answer guarded with a long limit after it is not cut either.
+      await until(() => free() === 1);
+      const third = await get('/pause');
+      expect(third.socket).toBe(sock);
+      const g3 = guardStoreBody(third, new AbortController().signal, () => idle.push('third'), 10_000)!;
+      expect(await readAll(g3.web)).toBe(SMALL.length);
+      expect(g3.isDestroyed()).toBe(false);
+      expect(timeouts).toBe(0);
+    } finally {
+      sock!.off('timeout', spy);
+    }
     expect(idle).toEqual([]);
   });
 
