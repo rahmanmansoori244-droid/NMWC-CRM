@@ -474,7 +474,8 @@ describe('run.sh: a refusal always reaches the log; the photo-step values are on
     const owner = (env: Record<string, string>) =>
       run('for-the-owner "$CS_DIR/pid.txt"', { GITHUB_RUN_ID: RUN, CS_RESET_STARTED: '2026-11-18T16:12:05Z', ...env });
     // refused and rolled back; the answer lost; settle never ran
-    for (const env of [{ CS_COMMITTED: 'no', CS_RESET_RC: '3' }, { CS_COMMITTED: 'unknown' }, { CS_COMMITTED: '' }]) {
+    const states: Array<Record<string, string>> = [{ CS_COMMITTED: 'no', CS_RESET_RC: '3' }, { CS_COMMITTED: 'unknown' }, { CS_COMMITTED: '' }];
+    for (const env of states) {
       const r = owner(env);
       expect([r.code, r.lines], JSON.stringify(env)).toEqual([0, [NONE]]);
     }
