@@ -801,7 +801,25 @@ describe('run.sh encrypt-upload / fetch-decrypt / dump-gates / watch-lines / cou
     expect(c.lines[0]).toBe('night 1:');
     expect(c.lines).toEqual([...LISTED, YES]);
     expect(c.lines).toEqual(p.lines);
+    // Belt and braces only: the allowed-line pattern can never match an ESC byte.
     expect(c.lines.filter((l) => l.includes(ESC))).toEqual([]);
+  });
+
+  it('watch-lines: the filter removes every colour code (ESC [ digits ; m) and nothing else', () => {
+    // Colour codes inside a line, at its end, and with several numbers are removed.
+    writeFileSync(
+      join(sb.csDir, 'wm.out'),
+      ['', RUN_LINE, '', HEADER, CLOSE + TABLE[0], `  seal-written: info${ESC}[39m`, `night ${ESC}[1m2${ESC}[22m:`, TABLE[3], `${ESC}[1;31m${YES}${ESC}[39m`, ''].join('\n')
+    );
+    const m = run('watch-lines "$CS_DIR/wm.out" 0');
+    expect(m.code).toBe(0);
+    expect(m.lines).toEqual([...LISTED, YES]);
+
+    // Any other escape sequence stays, so a yes line that carries one is not the yes line.
+    writeFileSync(join(sb.csDir, 'wk.out'), coloured(`${YES}${ESC}[0K`));
+    const k = run('watch-lines "$CS_DIR/wk.out" 0');
+    expect(k.code).toBe(1);
+    expect(k.lines).toEqual([...LISTED, ...REFUSED]);
   });
 
   it('watch-lines: on coloured output the decision still needs exit code 0 and the whole yes line', () => {
