@@ -76,6 +76,19 @@ function hookVisibility() {
 }
 
 function recompute() {
+  // Back to burst when nothing waits or loads and nothing has started for
+  // BURST_AGAIN_AFTER_MS: a later page in this tab must not be told its photos
+  // load "one by one" because of a failure long ago.
+  if (
+    paced &&
+    waiting.length === 0 &&
+    inFlight === 0 &&
+    lastStartAt !== null &&
+    Date.now() - lastStartAt >= BURST_AGAIN_AFTER_MS
+  ) {
+    paced = false;
+    pace = PACE_MS;
+  }
   let loaded = 0;
   let failed = 0;
   for (const e of entries.values()) {

@@ -278,6 +278,39 @@ describe('photo queue', () => {
     expect(photoQueueInternalsForTests().paced).toBe(false);
   });
 
+  it('paced ends once nothing waits or loads for 60 s: a later small page does not say "one by one"', () => {
+    // One failed first load (a deleted photo, or one refusal) makes the tab paced.
+    const a = photo('a');
+    reportFirstLoadFailure(a.key);
+    expect(getSnapshot().paced).toBe(true);
+    finish(a, true);
+    unregister(a.key);
+    // Under 60 s since the last start: still paced.
+    vi.advanceTimersByTime(BURST_AGAIN_AFTER_MS - 1000);
+    const b = photo('b');
+    expect(getSnapshot()).toMatchObject({ total: 1, pending: 1, paced: true });
+    unregister(b.key);
+    // An hour later the person opens a 3-photo page (direct mode: they register, idle).
+    vi.advanceTimersByTime(60 * 60_000);
+    const ps = Array.from({ length: 3 }, (_, i) => photo(`p${i}`));
+    expect(getSnapshot()).toMatchObject({ total: 3, pending: 3, paced: false });
+    expect(photoQueueInternalsForTests()).toMatchObject({ paced: false, pace: PACE_MS });
+    ps.forEach((p) => done(p.key, true));
+    expect(getSnapshot()).toMatchObject({ total: 3, loaded: 3, pending: 0, paced: false });
+  });
+
+  it('paced stays while a photo still loads, even after 60 s', () => {
+    const a = photo('a');
+    request(a.key);
+    finish(a, false); // paced
+    vi.advanceTimersByTime(PACE_MS); // a starts again, paced
+    expect(last(a)).toBe('loading');
+    vi.advanceTimersByTime(BURST_AGAIN_AFTER_MS + 1000); // a still loads (no answer yet)
+    const b = photo('b');
+    expect(getSnapshot()).toMatchObject({ total: 2, paced: true });
+    unregister(b.key);
+  });
+
   it('starts nothing while the tab is hidden, and pumps again when it is visible', () => {
     visibility = 'hidden';
     const ps = Array.from({ length: 3 }, (_, i) => photo(`p${i}`));
