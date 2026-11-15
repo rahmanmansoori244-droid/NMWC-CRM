@@ -137,8 +137,8 @@ Repository secrets: `DIRECT_URL`, `BACKUP_AGE_IDENTITY`, `BACKUP_R2_ACCOUNT_ID`,
 `APP_BASE_URL` (the live site's address, which the runs call).
 If `BACKUP_AGE_IDENTITY` is missing, add it yourself from your handover pack. Never show
 it to anyone. You do **not** need `PROD_DB_HOST_MARKER`: nothing reads it any more.
-The first dry run names any missing setting of B, E and F, in a line like
-`setting CLEANSTART_ACTOR_USERNAME present: no`. It cannot see the secrets of C and D:
+The first dry run names any missing setting that it reads itself (B, E and most of F), in
+a line like `setting CLEANSTART_ACTOR_USERNAME present: no`. It cannot see the secrets of C and D:
 they belong to **production-reset** and are only given to a run you approve. Those are
 first read by the Neon dress rehearsal (Step 3). It names a missing one in the same way.
 It also proves that the read-and-write photo token of C really works: it writes two small
