@@ -542,7 +542,22 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     const b = night2Blocks(r.lines);
     if (night2 !== undefined) expect(b, 'night 2 blocks').toHaveLength(night2);
     for (const x of b) expect(x.some((l) => /^\s*scheduled-jobs-on-time: (pass|info)$/.test(l)), x.join('\n')).toBe(true);
+    expectNightHeaders(r, b.length);
   }
+  /**
+   * Every step that printed a watch rehearsal's "night 2:" printed exactly one "night 1:" before it
+   * (compare-watch, in the apply and finish jobs, prints night 1 only and is not such a step), and
+   * there are as many of those steps as night 2 blocks in the whole run.
+   */
+  function expectNightHeaders(r: RunResult, night2: number) {
+    const watchSteps = r.steps.filter((s) => s.lines.some((l) => /^\s*night 2:$/.test(l)));
+    expect(watchSteps, 'steps that printed night 2').toHaveLength(night2);
+    for (const s of watchSteps)
+      expect(s.lines.filter((l) => /^\s*night [12]:$/.test(l)).map((l) => l.trim()), `${s.step}\n${s.lines.join('\n')}`).toEqual(['night 1:', 'night 2:']);
+  }
+  /** Night 1's block of a watch rehearsal: the lines from "night 1:" to "night 2:", one per such step. */
+  const night1Blocks = (r: RunResult) =>
+    r.steps.filter((s) => s.lines.some((l) => /^\s*night 2:$/.test(l))).flatMap((s) => blocks(s.lines, /^\s*night 1:$/, /^\s*night 2:$/));
 
   // ── the modes ─────────────────────────────────────────────────────────
 
@@ -612,12 +627,10 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     // The copy holds the evening world seeded for D (the db-backup heartbeat at the pin minus 1 h, the
     // active-hours jobs at D 14:50), so those ages are negative on the 06:00 clock: this checks night 1's
     // job day, not staleness.
-    // Night 1's block: the watch step's lines before "night 2:". Its own "night 1:" header does not
-    // reach the log (the watch runner's first output line starts with a colour code, which
-    // run.sh watch-lines does not match), so the block is taken from the one step that printed night 2.
-    const watchSteps = m.steps.filter((s) => s.lines.some((l) => /^\s*night 2:$/.test(l)));
-    expect(watchSteps, 'steps that printed night 2').toHaveLength(1);
-    const n1 = watchSteps[0]!.lines.slice(0, watchSteps[0]!.lines.findIndex((l) => /^\s*night 2:$/.test(l)));
+    expectNightHeaders(m, 1);
+    const n1s = night1Blocks(m);
+    expect(n1s, 'night 1 blocks').toHaveLength(1);
+    const n1 = n1s[0]!;
     expect(n1.some((l) => /^\s*scheduled-jobs-on-time: (pass|info)$/.test(l)), n1.join('\n')).toBe(true);
     expect(await auditIds()).toEqual(before);
     expectPublic(m);
