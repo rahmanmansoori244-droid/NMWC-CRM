@@ -1094,6 +1094,12 @@ describe('photo-delete.sh: refuses unless it is safe, then deletes only the righ
     // One object goes with delete-object (seal-archive.sh retire, restore, move), one with
     // delete-objects (the photo deletion's batch call; the stand-in logs its batch size).
     expect(probes().filter((c) => c.op === 'put')).toHaveLength(2);
+    // Sent as the uploads proven on the real R2 are (db-backup.yml, run.sh encrypt-upload):
+    // s3 cp with --checksum-algorithm CRC32 and no other option.
+    expect(probes().filter((c) => c.op === 'put').map((c) => [c.checksum, c.contentType, c.metadata])).toEqual([
+      ['CRC32', null, {}],
+      ['CRC32', null, {}],
+    ]);
     const dels = probes().filter((c) => c.op === 'delete');
     expect(dels.map((c) => (c.batch === undefined ? 'delete-object' : 'delete-objects')).sort()).toEqual(['delete-object', 'delete-objects']);
     expect(new Set(dels.map((c) => c.key)).size).toBe(2);
@@ -1197,8 +1203,7 @@ describe('the work folder: no default, refused when missing (it was a job env: v
     ['run.sh shred', 'bash scripts/ops/clean-start/run.sh shred', 'clean start refused'],
     ['run.sh safety-cleanup', 'bash scripts/ops/clean-start/run.sh safety-cleanup', 'clean start refused'],
     ['seal-archive.sh verify', 'bash scripts/ops/clean-start/seal-archive.sh verify x.jsonl none', 'seal archive refused'],
-    ['photo-delete.sh check', 'bash scripts/ops/clean-start/photo-delete.sh check a b c', 'photo deletion refused'],
-  ] as const;
+    ['photo-delete.sh check', 'bash scripts/ops/clean-start/photo-delete.sh check a b c', 'photo deletion refused'],  ] as const;
   it.each(calls)('%s refuses an unset, empty, relative or root CS_DIR, before anything else', (_n, cmd, who) => {
     for (const v of ['', 'relative/work', '/', 'C:x', 'a:b']) {
       const before = readdirSync(sb.root).sort();

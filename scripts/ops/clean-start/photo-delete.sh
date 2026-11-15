@@ -117,8 +117,11 @@ if [ "$mode" = probe ]; then
   batch=1
   gone=1
   st=9
-  if aws_rw s3 cp "$CS_DIR/pd-probe.txt" "s3://$PHOTOS_BUCKET/$pk-a.txt" --content-type text/plain > /dev/null \
-    && aws_rw s3 cp "$CS_DIR/pd-probe.txt" "s3://$PHOTOS_BUCKET/$pk-b.txt" --content-type text/plain > /dev/null; then
+  # Each upload is sent as the uploads proven on the real R2 are (db-backup.yml, run.sh
+  # encrypt-upload): s3 cp with --checksum-algorithm CRC32 and no other option, so the
+  # probe that gates the rehearsal and the apply is never the first upload of a new shape.
+  if aws_rw s3 cp "$CS_DIR/pd-probe.txt" "s3://$PHOTOS_BUCKET/$pk-a.txt" --checksum-algorithm CRC32 > /dev/null \
+    && aws_rw s3 cp "$CS_DIR/pd-probe.txt" "s3://$PHOTOS_BUCKET/$pk-b.txt" --checksum-algorithm CRC32 > /dev/null; then
     wrote=0
     st=0
     head_rw "$pk-a.txt" || st=$?

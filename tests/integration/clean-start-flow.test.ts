@@ -579,6 +579,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expect(rw.every((c) => c.bucket === 'nmwc-photos' && ['put', 'delete', 'head', 'get', 'list'].includes(c.op))).toBe(true);
     expect(rw.filter((c) => c.op === 'put').length).toBeGreaterThan(0);
     expect(rw.filter((c) => c.op === 'put').every(isProbe)).toBe(true);
+    expect(rw.filter((c) => c.op === 'put').every((c) => c.checksum === 'CRC32')).toBe(true);
     expect(rw.filter((c) => c.op === 'delete').every((c) => isProbe(c) || oldSealKeys.includes(c.key))).toBe(true);
     expect(listBucket('nmwc-photos', 'cleanstart-probe/')).toEqual([]);
     expectPublic(applyA);
