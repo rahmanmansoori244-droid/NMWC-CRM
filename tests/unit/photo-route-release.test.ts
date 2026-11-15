@@ -14,6 +14,10 @@
  * idle limit is never answered 200; the silent failures are logged, with ids only.
  * What is recorded (PHOTO_VIEW), answered and cached is unchanged
  * (tests/unit/photo-view-audit.test.ts holds that in full).
+ *
+ * Since buffered serving, a photo up to PHOTO_BUFFER_MAX_BYTES (8 MB) is read in full
+ * before it is sent (tests/unit/photo-route-buffered.test.ts). The stream hand-off held
+ * here is kept for an object above that limit, so every case below uses one.
  */
 import { describe, it, expect, vi, beforeEach, type MockInstance } from 'vitest';
 import { PassThrough } from 'node:stream';
@@ -35,7 +39,8 @@ type Att = {
 
 type Body = PassThrough & { setTimeout: ReturnType<typeof vi.fn> };
 
-const BYTES = 300_000;
+/** Above the 8 MB buffer limit: the stream path. */
+const BYTES = 8 * 1024 * 1024 + 300_000;
 
 const h = vi.hoisted(() => ({
   att: null as Att | null,
@@ -81,6 +86,7 @@ vi.mock('@/lib/photo-mime', async (importOriginal) => {
 });
 
 import { GET } from '@/app/api/photos/[id]/route';
+import { PHOTO_BUFFER_MAX_BYTES } from '@/lib/photo-body';
 
 const att = (kind: string): Att => ({
   id: `ph-${kind.toLowerCase()}`,
@@ -97,7 +103,7 @@ const att = (kind: string): Att => ({
 });
 
 /**
- * The store's body: 300000 bytes waiting in a Node stream, in 16 KB chunks as a
+ * The store's body: BYTES waiting in a Node stream, in 16 KB chunks as a
  * socket delivers them (so the web stream holds one chunk and the rest waits), with
  * destroy and setTimeout spies.
  */
@@ -142,6 +148,15 @@ beforeEach(() => {
 });
 
 describe('the store connection is given back', () => {
+  it('the attachment used here is above the buffer limit, so the route streams it', async () => {
+    expect(h.att!.bytes).toBeGreaterThan(PHOTO_BUFFER_MAX_BYTES);
+    const res = await call(request().req);
+    expect(res.status).toBe(200);
+    // Handed over as a stream: most of the store body is still unread at return.
+    expect(body.readableEnded).toBe(false);
+    expect(new Uint8Array(await res.arrayBuffer()).length).toBe(BYTES);
+  });
+
   it('(1) the store call gets the request signal', async () => {
     const { req } = request();
     const res = await call(req);
@@ -270,7 +285,7 @@ describe('the store connection is given back', () => {
     expect(logged(h.logInfo, 'photo.client_gone')).toHaveLength(0);
   });
 
-  it('(10) a normal GET: 200, all 300000 bytes, not destroyed early, idle limit 30 s', async () => {
+  it('(10) a normal GET: 200, every byte, not destroyed early, idle limit 30 s', async () => {
     const res = await call(request().req);
     expect(res.status).toBe(200);
     expect(destroy).not.toHaveBeenCalled();
@@ -287,7 +302,9 @@ describe('the store connection is given back', () => {
 describe('a body that ended is not a body that was cut', () => {
   it('a small photo read in full while the row is written is still served 200 with every byte', async () => {
     // Its stream is destroyed by itself once it ends (autoDestroy), with every byte
-    // already queued in the web stream: that must not read as a cut body.
+    // already queued in the web stream: that must not read as a cut body. (The row
+    // still says BYTES, so this is the stream path; the buffered path's version is in
+    // photo-route-buffered.test.ts.)
     body = freshBody(3000, 3000);
     const releaseRow = holdTheRow();
     const pending = call(request().req);

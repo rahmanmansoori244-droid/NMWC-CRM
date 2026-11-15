@@ -9,15 +9,19 @@
  *  (b) an earlier answer's short idle limit does not survive on the pooled socket;
  *  (c) a body never read is cut after idleMs, onIdle once, and the pool is empty;
  *  (d) an aborted signal, before or after guarding, frees the socket at once;
- *  (e) cancelling the web stream mid-body frees the socket.
+ *  (e) cancelling the web stream mid-body frees the socket;
+ *  (f) a 3 MB answer read with readStoreBody (buffered serving) frees the socket as
+ *      soon as the store has delivered it, while nobody consumes the bytes for 2 s.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
-import { guardStoreBody } from '@/lib/photo-body';
+import { guardStoreBody, readStoreBody } from '@/lib/photo-body';
 
 const SMALL = Buffer.alloc(32 * 1024, 1);
 const BIG = 8 * 1024 * 1024; // far more than every buffer between the two ends
+const PHOTO = 3 * 1024 * 1024; // the upload cap
+let photoSentAt = 0;
 
 let server: http.Server;
 let port: number;
@@ -43,6 +47,18 @@ beforeAll(async () => {
           if (!res.write(chunk)) return void res.once('drain', pump);
         }
         if (!res.destroyed) res.end();
+      };
+      pump();
+    } else if (req.url === '/photo') {
+      res.writeHead(200, { 'Content-Length': PHOTO });
+      const chunk = Buffer.alloc(64 * 1024, 3);
+      let sent = 0;
+      const pump = () => {
+        while (sent < PHOTO && !res.destroyed) {
+          sent += chunk.length;
+          if (!res.write(chunk)) return void res.once('drain', pump);
+        }
+        if (!res.destroyed) res.end(() => (photoSentAt = Date.now()));
       };
       pump();
     } else {
@@ -195,4 +211,29 @@ describe('guardStoreBody on real sockets', () => {
     // Node aborts the response's request for it, on the next tick.
     await until(() => g.isDestroyed() && inUse() === 0, 500);
   });
+
+  it('(f) a 3 MB answer read with readStoreBody frees the socket once delivered, while nobody reads the bytes for 2 s', async () => {
+    newAgent();
+    photoSentAt = 0;
+    const res = await get('/photo');
+    const sock = res.socket;
+    const g = guardStoreBody(res, new AbortController().signal, () => {}, 30_000)!;
+    const bytes = await readStoreBody(g, PHOTO);
+    const readAt = Date.now();
+    // Back in the pool at once: nothing downstream holds the store connection.
+    await until(() => inUse() === 0 && free() === 1, 500);
+    expect(Date.now() - readAt).toBeLessThan(500);
+    expect(photoSentAt).toBeGreaterThan(0);
+    expect(Date.now() - photoSentAt).toBeLessThan(1000);
+    // Nobody consumes the bytes for 2 s; the pool stays free and the socket is reused.
+    await new Promise((r) => setTimeout(r, 2000));
+    expect(inUse()).toBe(0);
+    expect(free()).toBe(1);
+    const next = await get('/small');
+    expect(next.socket).toBe(sock);
+    expect(await readAll(guardStoreBody(next, new AbortController().signal, () => {}, 30_000)!.web)).toBe(SMALL.length);
+    expect(bytes.byteLength).toBe(PHOTO);
+    expect(bytes.every((b) => b === 3)).toBe(true);
+    expect(g.isDestroyed()).toBe(false);
+  }, 10_000);
 });

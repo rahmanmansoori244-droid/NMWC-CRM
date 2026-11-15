@@ -21,7 +21,14 @@ import { AppError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { checkLimitLocal } from '@/lib/rate-limit';
 import { serveHeadersFor } from '@/lib/photo-mime';
-import { guardStoreBody, STORE_IDLE_MS, type GuardedBody } from '@/lib/photo-body';
+import {
+  guardStoreBody,
+  readStoreBody,
+  PhotoSizeMismatch,
+  PHOTO_BUFFER_MAX_BYTES,
+  STORE_IDLE_MS,
+  type GuardedBody,
+} from '@/lib/photo-body';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { errorLogFields, reportableError } from '@/lib/account-import';
 import { CONFIDENTIAL_KINDS as CONFIDENTIAL_DOCUMENT_KINDS } from '@/lib/credit-documents';
@@ -186,8 +193,14 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   // upload. The body is now given back on every path where Next will not read it
   // (lib/photo-body.ts), and a store socket with no byte for 30 s is cut. What is
   // recorded, answered and cached is unchanged.
+  // Buffered serving (same day): an ordinary photo is read from the store to its end
+  // first and then sent, so a browser that reads slowly can neither hold the store
+  // connection nor be cut by the 30 s limit, and a store that fails mid-photo gives a
+  // clean 502. Only an object above PHOTO_BUFFER_MAX_BYTES is still handed over as a
+  // stream.
   let guarded: GuardedBody | null = null;
   let handedOff = false;
+  let read: Promise<Uint8Array<ArrayBuffer>> | null = null;
   try {
     const out = await r2().send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: att.r2Key }), {
       abortSignal: req.signal,
@@ -196,12 +209,22 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     guarded = guardStoreBody(out.Body, req.signal, () =>
       logger.warn({ attachmentId: att.id, kind: att.kind, idleMs: STORE_IDLE_MS }, 'photo.store_idle_cut')
     );
+    // Read while the row is written. HEAD reads nothing. The read's failure is
+    // handled where it is awaited; the empty catch only keeps it from counting as
+    // unhandled while `viewed` is awaited.
+    if (guarded && req.method !== 'HEAD' && att.bytes <= PHOTO_BUFFER_MAX_BYTES) {
+      read = readStoreBody(guarded, att.bytes);
+      read.catch(() => {});
+    }
     await viewed;
     if (!guarded) {
       logger.error({ attachmentId: att.id, kind: att.kind }, 'photo.empty_body');
       return NextResponse.json({ error: 'EMPTY_BODY' }, { status: 502 });
     }
     if (guarded.isDestroyed()) {
+      // A read in progress knows why the body was cut: it rejects, and the catch
+      // below logs it.
+      if (read) await read;
       // Gone already: the browser left, or the idle limit cut it. Never a 200 with
       // a full Content-Length and no body.
       if (req.signal.aborted) logger.info({ attachmentId: att.id, stage: 'before_return' }, 'photo.client_gone');
@@ -233,14 +256,25 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       guarded.release();
       return new NextResponse(null, { headers });
     }
+    if (read) {
+      // Every byte is here, exactly att.bytes of them; no stream goes to Next.
+      const bytes = await read;
+      return new NextResponse(bytes, { headers });
+    }
     const res = new NextResponse(guarded.web, { headers });
     handedOff = true;
     return res;
   } catch (err) {
     // Settled before answering, so the INSERT is not cut off when the function ends.
     await viewed;
-    if (req.signal.aborted || (err as Error)?.name === 'AbortError') {
-      logger.info({ attachmentId: att.id, stage: 'store' }, 'photo.client_gone');
+    if (err instanceof PhotoSizeMismatch) {
+      // The stored file is not the size recorded at upload: not shown (sizes only).
+      const { expected, got, more } = err;
+      logger.warn({ attachmentId: att.id, kind: att.kind, expected, got, more }, 'photo.size_mismatch');
+    } else if (req.signal.aborted || (!read && (err as Error)?.name === 'AbortError')) {
+      // During a read, an AbortError alone is also what an idle cut gives: only the
+      // request's own signal says the browser left.
+      logger.info({ attachmentId: att.id, stage: read ? 'body' : 'store' }, 'photo.client_gone');
     } else {
       // Ids and the error's name and scrubbed text only: never the storage key.
       logger.error({ attachmentId: att.id, kind: att.kind, ...errorLogFields(err) }, 'photo.fetch_failed');
