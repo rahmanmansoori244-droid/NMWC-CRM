@@ -607,9 +607,9 @@ The photo run: `run_id`, `list_sha256`, `confirm_host`, `confirm_phrase`
   the reset);
 - `plan.sql` in a read-only session: the table list, ownership, foreign keys, triggers,
   no failed migration (`CS006`: a row that neither finished nor was marked rolled back),
-  the applied migrations equal to the checkout's (`CS007`; a row marked rolled back by
-  `prisma migrate resolve --rolled-back`, §5, is history and is not counted as applied,
-  as in `restore-verify.ts`), only `CUSTOMER-YYYY` counters, no export or Temix
+  the applied migrations equal to the checkout's (`CS007`; a row that Prisma's
+  "migrate resolve --rolled-back" marked rolled back, §5, is history and is not counted
+  as applied, as in `restore-verify.ts`), only `CUSTOMER-YYYY` counters, no export or Temix
   file key, no photo under `seals/`, the actor (`CLEANSTART_ACTOR_USERNAME`) exactly one
   active real account, no clean start recorded yet; then the exports, bound to the plan id;
 - the old seal copies (read-only photo token): a copy that differs from its seal refuses;
