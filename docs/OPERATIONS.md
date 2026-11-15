@@ -783,7 +783,11 @@ says the deletion did NOT complete. The same row is written when the delete step
 cancelled or ran out of time (job limit 180 minutes; each key is confirmed with one call
 of its own): `photo-delete.sh` puts the run's numbers on disk before its first deletion,
 with nothing confirmed yet, so the record step has them. A new run, or a re-run of the
-job, then deletes what is left and writes its own row. The encrypted report goes under
+job, then deletes what is left and writes its own row. The stored list and the
+reports are encrypted to the age key of reset day and live under `cleanstart/` in the
+backups bucket: the photo step must run before that key is retired, and that prefix must
+not fall under a lifecycle rule (the code sets and checks only the 30-day rule for
+`db/`; the owner looks at the bucket's own rules once, guide Step 1 H). The encrypted report goes under
 `cleanstart/<run_id>/photos-<run>-<attempt>/`, one folder per photo run and attempt, so
 a re-run never overwrites an earlier report. It cannot be undone. If bucket versioning is
 on, the bytes linger up to 30 days.

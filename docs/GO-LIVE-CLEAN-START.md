@@ -153,6 +153,15 @@ the backups: add the repository secret `R2_ACCOUNT_ID`. If the photo bucket is n
 **Settings**. Tell Claude three things: is **Object versioning** on; which **lifecycle
 rules** are listed; is there any **bucket lock** rule.
 
+Then look at the backups bucket in the same way (R2 → `nmwc-backups` → **Settings**) and
+tell Claude the same three things. For each lifecycle rule also tell Claude its prefix and
+its number of days. The clean start keeps its only copies of the old seals, the list of
+test photos and its reports in that bucket, in a folder named `cleanstart/`. The only
+things that may be deleted automatically there are the nightly backups (prefix `db/`,
+after 30 days) and unfinished uploads. A rule with no prefix, or one for `cleanstart/`,
+would delete those copies without a word, and the photo step could then never run. If
+you see such a rule, tell Claude before reset day and change nothing yourself.
+
 **I. Look at Vercel** → the project → **Settings** → **Git**: the Production Branch
 should be `main`. Then **Settings** → **Environment Variables**: `DATABASE_URL` and
 `DIRECT_URL` for **Preview** and **Development** must not contain `ep-sweet-haze`. Tell
@@ -447,6 +456,13 @@ answer, not a fault. Send Claude the link either way.
 
 Only when you are sure you will never go back: the real file is loaded and checked, and
 at least 7 full days have passed since the reset. **It cannot be undone.**
+
+Do not leave it for months. Do it **before** you change or remove the backup key
+(the secret `BACKUP_AGE_IDENTITY`), before the read-and-write photo token of Step 1 C
+ends (60 days after you made it), and before you rename or switch off the CRM account of
+Step 1 E. The list of test photos is stored locked with the backup key of reset day: with
+another key the photo step cannot read it. It then refuses and deletes nothing, but it
+stays blocked until the old key is back.
 
 1. Actions → **Clean start photos** → **Run workflow**. Fill in:
    - `The number of the clean-start apply run (from its summary)`: the `run_id for the
