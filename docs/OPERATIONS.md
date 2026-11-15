@@ -629,6 +629,19 @@ through the nightly backup's own gates and size floors (`first nightly backup wo
 below the size floor: yes; set MIN_DUMP_BYTES to <n>` names the value to set), and the
 next customer number (`next customer code would be number 000001: yes`).
 
+**The two nights, at any hour.** Night 1 is the moment of the rehearsal. Night 2 is
+02:30 UTC of the Oman day after night 1's, whatever the clock says: a rehearsal that
+slips past midnight in Oman (20:00 UTC) simulates the morning after its own Oman day,
+not the coming 02:30 UTC, which is still the same Oman day (the watch would write no
+second seal and check no day of job runs there). The rehearsal also requires that night
+1 wrote the new chain's first seal and night 2 the first seal chained to it; a night
+that sealed nothing is a mismatch even though its status is a pass. Night 2 reads the job
+runs of night 1's Oman day, and a copy can hold them all only from 15:00 UTC on that
+date, so `scheduled-jobs-on-time` is asserted on night 2 between 15:00 and 20:00 UTC and
+at every other hour is reported with `(not asserted)`. The planned evening (15:30-20:00
+UTC) is unchanged by this rule. The same holds for the Neon rehearsal and for the
+Rehearse job of an apply.
+
 ### The Neon dress rehearsal (mode `neon-rehearsal`; once, approval-gated)
 
 Plan, then (after Approve) a temporary branch `cleanstart-rehearsal-<run>` of the

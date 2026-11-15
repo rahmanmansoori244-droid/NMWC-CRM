@@ -124,21 +124,7 @@ describe('verify.sql finish scope skips only the state checks', () => {
   });
 });
 
-describe('rehearse-watch night 2 is the next real scheduled run (02:30 UTC)', () => {
-  it('evening before midnight Oman, after midnight Oman, and before 02:30 UTC', async () => {
-    const { nextOmanMorning } = await import('../../scripts/ops/clean-start/rehearse-watch');
-    const at = (s: string) => nextOmanMorning(new Date(s)).toISOString();
-    // a reset-day evening run (Oman 19:30-23:59): the next morning
-    expect(at('2026-11-20T15:30:00Z')).toBe('2026-11-21T02:30:00.000Z');
-    expect(at('2026-11-20T19:59:00Z')).toBe('2026-11-21T02:30:00.000Z');
-    // after 20:00 UTC it is already the next day in Oman, but the next run is still the
-    // coming 02:30 UTC, NOT one day further (the old rule gave 2026-11-22)
-    expect(at('2026-11-20T20:30:00Z')).toBe('2026-11-21T02:30:00.000Z');
-    expect(at('2026-11-20T23:59:00Z')).toBe('2026-11-21T02:30:00.000Z');
-    // before / at 02:30 UTC
-    expect(at('2026-11-21T01:00:00Z')).toBe('2026-11-21T02:30:00.000Z');
-    expect(at('2026-11-21T02:30:00Z')).toBe('2026-11-22T02:30:00.000Z');
-    // month end
-    expect(at('2026-11-30T21:00:00Z')).toBe('2026-12-01T02:30:00.000Z');
-  });
-});
+// The rehearsal's night 2 (rehearse-watch.ts nextOmanMorning) was pinned here as "the
+// coming 02:30 UTC", which between 20:00 and 02:30 UTC is night 1's own Oman day: a
+// night that seals nothing and checks no job day (review 2026-11-15). Its rule, at
+// every hour of the day, is now in tests/unit/clean-start-watch-clock.test.ts.

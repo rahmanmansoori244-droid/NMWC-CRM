@@ -56,7 +56,12 @@
     "night2": { "seal-offsite-copies": ["info"] }
   },
   "night2NotAssertedBeforeUtcHour": {
-    "about": "Night 2 is simulated at 02:30 UTC of the next Oman day, but the windowed jobs (03:00-15:00 UTC) of the reset day have not all run yet when the rehearsal starts before 15:00 UTC: their gaps would be real absences in the copy, not on production. The check is then reported, not asserted.",
+    "about": "Night 2 is simulated at 02:30 UTC of the Oman day after night 1's, and reads the job runs of night 1's Oman day. The windowed jobs of that day run 03:00-15:00 UTC on its calendar date, so a copy taken before 15:00 UTC on that date cannot hold them all: their gaps would be real absences in the copy, not on production. The check is then reported, not asserted. That is every rehearsal before 15:00 UTC, and every one after midnight in Oman (20:00 UTC), whose Oman day has only begun (rehearse-watch.ts jobDayCompleteAt).",
     "scheduled-jobs-on-time": 15
+  },
+  "sealWrittenResult": {
+    "about": "The status of seal-written cannot tell a seal that was written from one that was not: a second run on the same Oman day answers 'already' and is still a pass. Night 1 must write the new chain's first seal (genesis) and night 2 the first seal chained to it (sealed). Anything else is a mismatch.",
+    "night1": "genesis",
+    "night2": "sealed"
   }
 }
