@@ -654,7 +654,8 @@ Rehearse job of an apply.
 
 Plan, then (after Approve) the read-write photo token is proven first
 (`photo-delete.sh probe`: two throwaway objects under `cleanstart-probe/` written, read
-back and deleted, one with each delete call the later steps use). No dry run can hold
+back and deleted, one with each delete call the later steps use; when it refuses, the
+lines starting `photo token check:` say which call stopped it). No dry run can hold
 that token (it is an environment secret), and in an apply its first real use is step g,
 after the COMMIT; this rehearsal is where a token in the wrong box shows, days before
 the reset. Then a temporary branch `cleanstart-rehearsal-<run>` of the

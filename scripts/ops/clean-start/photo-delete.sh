@@ -111,24 +111,45 @@ if [ "$mode" = probe ]; then
   printf 'clean-start: a write-and-delete check of the read-write photo token\n' > "$CS_DIR/pd-probe.txt"
   printf '{"Objects":[{"Key":"%s"}],"Quiet":true}' "$pk-b.txt" > "$CS_DIR/pd-probe.json"
   ok=1
+  wrote=1
+  readback=1
+  one=1
+  batch=1
+  gone=1
   st=9
   if aws_rw s3 cp "$CS_DIR/pd-probe.txt" "s3://$PHOTOS_BUCKET/$pk-a.txt" --content-type text/plain > /dev/null \
     && aws_rw s3 cp "$CS_DIR/pd-probe.txt" "s3://$PHOTOS_BUCKET/$pk-b.txt" --content-type text/plain > /dev/null; then
+    wrote=0
     st=0
     head_rw "$pk-a.txt" || st=$?
     if [ "$st" -eq 0 ]; then head_rw "$pk-b.txt" || st=$?; fi
-    if [ "$st" -eq 0 ] && aws_rw s3api delete-object --bucket "$PHOTOS_BUCKET" --key "$pk-a.txt" > /dev/null \
-      && aws_rw s3api delete-objects --bucket "$PHOTOS_BUCKET" --delete "file://$CS_DIR/pd-probe.json" > /dev/null; then
-      st=0
-      head_rw "$pk-a.txt" || st=$?
-      if [ "$st" -eq 1 ]; then
+    if [ "$st" -eq 0 ]; then
+      readback=0
+      if aws_rw s3api delete-object --bucket "$PHOTOS_BUCKET" --key "$pk-a.txt" > /dev/null; then one=0; fi
+      if aws_rw s3api delete-objects --bucket "$PHOTOS_BUCKET" --delete "file://$CS_DIR/pd-probe.json" > /dev/null; then batch=0; fi
+      if [ "$one" -eq 0 ] && [ "$batch" -eq 0 ]; then
         st=0
-        head_rw "$pk-b.txt" || st=$?
-        [ "$st" -eq 1 ] && ok=0
+        head_rw "$pk-a.txt" || st=$?
+        if [ "$st" -eq 1 ]; then
+          st=0
+          head_rw "$pk-b.txt" || st=$?
+          if [ "$st" -eq 1 ]; then gone=0; fi
+        fi
+        if [ "$gone" -eq 0 ]; then ok=0; fi
       fi
     fi
   fi
   if [ "$ok" -ne 0 ]; then
+    # Which call stopped it, as yes/no lines for the summary (the store's own words stay
+    # in the private log). No real run has made these calls yet: the first one that
+    # fails should say which, not only "the token cannot write and delete".
+    yes_no "photo token check: the test objects were written" "$wrote"
+    if [ "$wrote" -eq 0 ]; then yes_no "photo token check: the test objects were read back" "$readback"; fi
+    if [ "$readback" -eq 0 ]; then
+      yes_no "photo token check: one object deleted (the call used for seal files)" "$one"
+      yes_no "photo token check: a batch deleted (the call used for photos)" "$batch"
+      if [ "$one" -eq 0 ] && [ "$batch" -eq 0 ]; then yes_no "photo token check: both objects confirmed gone" "$gone"; fi
+    fi
     # Leave no throwaway object behind if the token could write but the check stopped half way.
     aws_rw s3api delete-object --bucket "$PHOTOS_BUCKET" --key "$pk-a.txt" > /dev/null || true
     aws_rw s3api delete-object --bucket "$PHOTOS_BUCKET" --key "$pk-b.txt" > /dev/null || true

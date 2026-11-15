@@ -1100,9 +1100,33 @@ describe('photo-delete.sh: refuses unless it is safe, then deletes only the righ
     expect(existsSync(join(sb.s3, 'photos', 'cleanstart-probe')) ? readdirSync(join(sb.s3, 'photos', 'cleanstart-probe')) : []).toEqual([]);
     expect(existsSync(join(sb.csDir, 'pd-probe.json'))).toBe(false);
     // The read-only token pasted into the read-write secret (Step 1 B and C are easy to swap).
+    // A failed check also says which call stopped it (yes/no lines; aws's words stay private).
     const ro = pd(`probe ${RUN}`, { CLEANSTART_R2_RW_ACCESS_KEY_ID: 'ro-key' });
     expect(ro.code).toBe(1);
-    expect(ro.lines).toContain('the read-write photo token can write and delete in the photo bucket: no');
+    expect(ro.lines.slice(0, 2)).toEqual([
+      'photo token check: the test objects were written: no',
+      'the read-write photo token can write and delete in the photo bucket: no',
+    ]);
+    // The store refuses the BATCH delete only (the photo deletion's call; the first real run
+    // is where it first meets the real store): named, and no test object is left behind.
+    const shim = join(sb.root, 'shim-batch');
+    mkdirSync(shim, { recursive: true });
+    writeFileSync(
+      join(shim, 'aws'),
+      ['#!/usr/bin/env bash', 'case " $* " in *" delete-objects "*) echo "An error occurred (NotImplemented)" >&2; exit 254 ;; esac', `exec "${BIN.replace(/\\/g, '/')}/aws" "$@"`, ''].join('\n'),
+      { mode: 0o755 }
+    );
+    const nb2 = pd(`probe ${RUN}`, { PATH: standinPath([shim]) });
+    expect(nb2.code).toBe(1);
+    expect(nb2.lines.slice(0, 5)).toEqual([
+      'photo token check: the test objects were written: yes',
+      'photo token check: the test objects were read back: yes',
+      'photo token check: one object deleted (the call used for seal files): yes',
+      'photo token check: a batch deleted (the call used for photos): no',
+      'the read-write photo token can write and delete in the photo bucket: no',
+    ]);
+    expect(nb2.out).not.toMatch(/NotImplemented/);
+    expect(existsSync(join(sb.s3, 'photos', 'cleanstart-probe')) ? readdirSync(join(sb.s3, 'photos', 'cleanstart-probe')) : []).toEqual([]);
     // A wrong bucket name: every HEAD would read "Not Found", so only the write proves the bucket.
     const nb = pd(`probe ${RUN}`, { FAKE_S3_MISSING_BUCKETS: 'photos' });
     expect(nb.code).toBe(1);
