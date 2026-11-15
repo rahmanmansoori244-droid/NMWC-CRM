@@ -216,7 +216,8 @@ describe('Withdraw', () => {
       expect(await screen.findByText('In review.')).toBeTruthy();
       expect(heard).not.toHaveBeenCalled();
 
-      fireEvent.click(screen.getByRole('button', { name: 'Discard this draft' }));
+      // The refusal shows a moment before the button leaves "Withdrawing…": wait for it.
+      fireEvent.click(await screen.findByRole('button', { name: 'Discard this draft' }));
       confirm();
       await waitFor(() => expect(nav.hardReplace).toHaveBeenCalledWith('/work'));
       expect(order).toEqual(['closed', 'work']);
