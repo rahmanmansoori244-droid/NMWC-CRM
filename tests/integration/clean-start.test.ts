@@ -1002,10 +1002,16 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     // LOCK; a writer the LOCK waited for was then invisible to the plan check, and the
     // TRUNCATE removed a row that is in neither the plan nor the backup. Here: this
     // session's default is REPEATABLE READ, and a customer is committed during the wait.
+    // Deterministic (review 2026-11-15): the writer commits only once pg_stat_activity
+    // shows the reset's backend WAITING on a lock, never after a fixed sleep (on a slow
+    // runner the reset could start after the commit, and the old reset.sql then passed).
     const url = await copyOf('iso');
     const writer = new PrismaClient({ datasourceUrl: url });
+    const watcher = new PrismaClient({ datasourceUrl: url });
     let inserted!: () => void;
     const hasInserted = new Promise<void>((ok) => (inserted = ok));
+    let release!: () => void;
+    const released = new Promise<void>((ok) => (release = ok));
     try {
       const held = writer.$transaction(
         async (tx) => {
@@ -1013,25 +1019,47 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
             `INSERT INTO "Customer" SELECT (jsonb_populate_record(NULL::"Customer", to_jsonb(c) || jsonb_build_object('id', 'zz-cs-late', 'nmwcCode', 'NMWC-1999-999998', 'temixCode', NULL, 'importRowId', NULL, 'crPhotoId', NULL))).* FROM "Customer" c WHERE c."isTest" = false ORDER BY c."id" LIMIT 1`
           );
           inserted();
-          // Holds its row lock while the reset reads its first rows and asks for its locks.
-          await new Promise((r) => setTimeout(r, 3000));
+          // Holds its row lock until the reset is seen waiting for its locks.
+          await released;
         },
-        { timeout: 30_000, maxWait: 10_000 }
+        { timeout: 150_000, maxWait: 10_000 }
       );
       await hasInserted;
+      const writerPid = await watcher.$queryRawUnsafe<{ pid: number }[]>(
+        `SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND state = 'idle in transaction' AND pid <> pg_backend_pid()`
+      );
+      expect(writerPid, 'the writer holds its open transaction').toHaveLength(1);
       const v = Object.entries(vars())
         .map(([k, x]) => `-v ${k}='${x}'`)
         .join(' ');
-      const r = await runAsync(
+      let resetDone = false;
+      const resetRun = runAsync(
         `bash ${DIR}/target-guard.sh rehearse && PGOPTIONS='-c default_transaction_isolation=repeatable\\ read' psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f ${DIR}/reset.sql ${v}`,
         { DIRECT_URL: url }
-      );
+      ).finally(() => (resetDone = true));
+      let sawWait = false;
+      const deadline = Date.now() + 120_000;
+      while (!resetDone && Date.now() < deadline) {
+        const w = await watcher.$queryRawUnsafe<{ n: bigint }[]>(
+          `SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid NOT IN (pg_backend_pid(), ${Number(writerPid[0]!.pid)})`
+        );
+        if (Number(w[0]!.n) > 0) {
+          sawWait = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      release();
       await held;
+      const r = await resetRun;
+      expect(sawWait, `the reset was seen waiting on a lock before the writer committed\n${r.out}`).toBe(true);
       expect(r.code, r.out).toBe(3);
       expect(r.out).toMatch(/ERROR:\s+CS013/);
       expect(r.out).not.toMatch(/reset committed/);
     } finally {
+      release();
       await writer.$disconnect();
+      await watcher.$disconnect();
     }
     // Nothing was removed: the late customer and everything else is still there, no reset row.
     const left = run(
