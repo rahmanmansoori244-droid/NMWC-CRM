@@ -306,6 +306,12 @@ describe('photo queue', () => {
     const before = getSnapshot();
     expect(getSnapshot()).toBe(before); // stable between changes (useSyncExternalStore)
     expect(heard).toHaveBeenCalled();
+    // Nothing changed: nobody is told (useSyncExternalStore would re-render for nothing).
+    heard.mockClear();
+    document.dispatchEvent(new Event('visibilitychange'));
+    request(ps[3]!.key);
+    expect(heard).not.toHaveBeenCalled();
+    expect(getSnapshot()).toBe(before);
     off();
     unregister(ps[3]!.key);
     expect(getSnapshot().total).toBe(4);

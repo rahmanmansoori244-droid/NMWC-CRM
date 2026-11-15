@@ -190,6 +190,24 @@ describe("RoutePhoto 'queued'", () => {
     expect(container.querySelector('img')).toBe(b[0]);
   });
 
+  it('a retry that starts at once, in the same turn as the error, is still a new <img> node', () => {
+    vi.useFakeTimers();
+    mount(<RoutePhoto id={ID} alt="Shop" className="x" mode="queued" />);
+    const a = imgs()[0]!;
+    fire(a, 'error');
+    // Paced now. The second try waits the pace; its failure comes after more
+    // than the pace has passed, so the third try starts in the same turn.
+    act(() => void vi.advanceTimersByTime(queue.PACE_MS));
+    const b = imgs()[0]!;
+    expect(b).not.toBe(a);
+    act(() => void vi.advanceTimersByTime(queue.PACE_MAX_MS + 1));
+    fire(b, 'error');
+    const c = imgs()[0]!;
+    expect(container.querySelector('[data-photo-state="waiting"]')).toBeNull();
+    expect(c).not.toBe(b);
+    expect(c.getAttribute('src')).toBe(SRC);
+  });
+
   it('no <img> ever has its src changed while it loads (MutationObserver)', async () => {
     vi.useFakeTimers();
     const changes: MutationRecord[] = [];
