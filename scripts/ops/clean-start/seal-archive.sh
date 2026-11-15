@@ -301,7 +301,7 @@ restore)
       ok=1; note "unknown whether live $k"; continue
     fi
     aws_rw s3 cp "$WORK/arch" "s3://$PHOTOS/$k" --content-type application/json \
-      --metadata "nmwc-seal-hash=$h" > /dev/null || { ok=1; continue; }
+      --metadata "nmwc-seal-hash=$h" --checksum-algorithm CRC32 > /dev/null || { ok=1; continue; }
     get ro "$PHOTOS" "$k" "$WORK/live" && [ "$(sha_file "$WORK/live")" = "$h" ] || { ok=1; note "not restored $k"; }
   done < "$WORK/index"
   yes_no "old seal files back in the live folder, hash-checked" "$ok"
@@ -328,7 +328,7 @@ restore)
     [[ $k =~ ^seals/v1/$new/[0-9]{8}\.json$ ]] || { ok=1; note "not a seal key, left $k"; continue; }
     get ro "$PHOTOS" "$k" "$WORK/new" || { ok=1; continue; }
     dest="cleanstart/$run/abandoned-chain/$k"
-    aws_bk s3 cp "$WORK/new" "s3://$BACKUP_R2_BUCKET/$dest" --content-type application/json > /dev/null || { ok=1; continue; }
+    aws_bk s3 cp "$WORK/new" "s3://$BACKUP_R2_BUCKET/$dest" --content-type application/json --checksum-algorithm CRC32 > /dev/null || { ok=1; continue; }
     get bk "$BACKUP_R2_BUCKET" "$dest" "$WORK/moved" && [ "$(sha_file "$WORK/moved")" = "$(sha_file "$WORK/new")" ] \
       || { ok=1; note "move not verified $k"; continue; }
     aws_rw s3api delete-object --bucket "$PHOTOS" --key "$k" > /dev/null || { ok=1; continue; }

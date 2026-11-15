@@ -327,6 +327,29 @@ jobs:
           bash scripts/ops/clean-start/run.sh step "rehearse: target"
           bash scripts/ops/clean-start/run.sh rehearse-target REHEARSE_URL
 
+      # PUBLIC LOG. When a job ends, green or red, the runner prints every service
+      # container's own log (docker logs) into the job log, and Postgres writes
+      # each ERROR there with its DETAIL, CONTEXT and STATEMENT lines: the row a
+      # COPY stopped at, "Failing row contains (...)", "Key (...)=(...)". The steps
+      # below keep the CLIENT's copy of such text in files under CS_DIR; nothing
+      # but this step reaches the SERVER's copy. So before the backup is even
+      # downloaded the container is told to log nothing below PANIC, the settings
+      # are read back in a new session, and the job refuses unless they took.
+      - name: The rehearsal database keeps rows and statements out of its own log
+        run: |
+          set -euo pipefail
+          rc=0
+          psql "$CS_PG_ADMIN_URL" -X -q -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET log_min_messages = 'panic'" -c "ALTER SYSTEM SET log_min_error_statement = 'panic'" -c "ALTER SYSTEM SET log_error_verbosity = 'terse'" -c "SELECT pg_reload_conf()" > "$CS_DIR/quiet.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "rehearsal database log settings" "$rc" "$CS_DIR/quiet.out"
+          for i in 1 2 3 4 5; do
+            rc=0
+            psql "$CS_PG_ADMIN_URL" -X -q -At -v ON_ERROR_STOP=1 -c "SELECT current_setting('log_min_messages') = 'panic' AND current_setting('log_min_error_statement') = 'panic' AND current_setting('log_error_verbosity') = 'terse'" > "$CS_DIR/quiet.out" 2>&1 || rc=$?
+            if [ "$rc" -eq 0 ] && [ "$(tr -d '\r[:space:]' < "$CS_DIR/quiet.out")" = t ]; then break; fi
+            sleep 2
+          done
+          bash scripts/ops/clean-start/run.sh sql "rehearsal database log settings read back" "$rc" "$CS_DIR/quiet.out"
+          bash scripts/ops/clean-start/run.sh bool "the rehearsal database keeps rows and statements out of its own log" "$CS_DIR/quiet.out"
+
       - name: Download and decrypt the backup
         id: fetch
         run: bash scripts/ops/clean-start/run.sh backup-fetch "$BACKUP_KEY"
@@ -439,6 +462,11 @@ jobs:
       PHOTOS_BUCKET: ${{ vars.R2_BUCKET || 'nmwc-photos' }}
       CLEANSTART_R2_RO_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RO_ACCESS_KEY_ID }}
       CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RO_SECRET_ACCESS_KEY }}
+      # Read here only by the probe below: this rehearsal is the first run, days before
+      # the reset, that proves the read-write photo token (apply, finish and seal-restore
+      # need it for the old seal files, the photo step for the photos).
+      CLEANSTART_R2_RW_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RW_ACCESS_KEY_ID }}
+      CLEANSTART_R2_RW_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RW_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: auto
       AWS_EC2_METADATA_DISABLED: 'true'
     steps:
@@ -479,6 +507,8 @@ jobs:
           PHOTOS_R2_ACCOUNT_ID: ''
           CLEANSTART_R2_RO_ACCESS_KEY_ID: ''
           CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ''
+          CLEANSTART_R2_RW_ACCESS_KEY_ID: ''
+          CLEANSTART_R2_RW_SECRET_ACCESS_KEY: ''
         run: |
           npm ci --no-audit --no-fund --loglevel=error > /dev/null
           npx prisma generate > /dev/null
@@ -495,6 +525,13 @@ jobs:
         run: |
           bash scripts/ops/clean-start/run.sh step "neon rehearsal: preflight"
           bash scripts/ops/clean-start/run.sh preflight neon-rehearsal
+
+      # The read-write photo token is used by apply only AFTER the reset has committed
+      # (step g, the old seal files), and no dry run holds it. Here, days before the
+      # reset and before any branch is made, it writes and deletes a throwaway object:
+      # a token pasted into the wrong box, a read-only or an expired one stops now.
+      - name: The read-write photo token can write and delete (a throwaway object)
+        run: bash scripts/ops/clean-start/photo-delete.sh probe "$GITHUB_RUN_ID"
 
       - name: A temporary Neon branch of production, never production itself
         run: |
@@ -692,6 +729,9 @@ jobs:
           bash scripts/ops/clean-start/run.sh backup-idle
           bash scripts/ops/clean-start/run.sh neon-green
           bash scripts/ops/clean-start/run.sh backup-pick 6 "$BACKUP_KEY"
+          # The read-write photo token works NOW, before the safety branch and the reset:
+          # its first real use is step g, after the COMMIT (the old seal files).
+          bash scripts/ops/clean-start/photo-delete.sh probe "$GITHUB_RUN_ID"
 
       - name: Migrations of this checkout
         run: |
@@ -804,6 +844,12 @@ jobs:
           set -uo pipefail
           # Nothing to report when the work folder was never set (the first step failed).
           if [ -z "${CS_DIR:-}" ] || [ ! -d "$CS_DIR" ]; then exit 0; fi
+          # FIRST the two values the owner copies for the photo step (printed only for a
+          # reset that committed). This shell stops at the first failing command, so an
+          # upload that fails below must not come before them: the step still ends red.
+          if [ -f "$CS_DIR/aplan/plan-id.txt" ]; then
+            bash scripts/ops/clean-start/run.sh for-the-owner "$CS_DIR/aplan/plan-id.txt"
+          fi
           if [ "${CS_COMMITTED:-}" = yes ]; then
             PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
               -v fact=reset-report -v run_id="$GITHUB_RUN_ID" > "$CS_DIR/reset-report.json" 2>&1 || true
@@ -814,9 +860,6 @@ jobs:
           done
           if [ "${#FILES[@]}" -gt 0 ]; then
             bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$GITHUB_RUN_ID/report" "${FILES[@]}"
-          fi
-          if [ -f "$CS_DIR/aplan/plan-id.txt" ]; then
-            bash scripts/ops/clean-start/run.sh for-the-owner "$CS_DIR/aplan/plan-id.txt"
           fi
 
       - name: Safety branch kept only when the reset committed (or may have)
@@ -951,6 +994,9 @@ jobs:
       - name: g. Remove the old seal files from the live folder (each archived first)
         run: |
           set -euo pipefail
+          # After the settle above (its answer must never wait for a token), before a seal
+          # file is touched: a read-write photo token that does not work is named as such.
+          bash scripts/ops/clean-start/photo-delete.sh probe "$GITHUB_RUN_ID"
           bash scripts/ops/clean-start/seal-archive.sh verify "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN"
           bash scripts/ops/clean-start/seal-archive.sh retire "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN" "$TARGET_RUN"
 
@@ -992,15 +1038,17 @@ jobs:
           set -uo pipefail
           # Nothing to report when the work folder was never set (the first step failed).
           if [ -z "${CS_DIR:-}" ] || [ ! -d "$CS_DIR" ]; then exit 0; fi
+          # FIRST the two values for the photo step (only when the settle above said the
+          # reset committed), so that an upload failing below cannot hide them.
+          if [ -f "$CS_DIR/exports/plan-id.txt" ]; then
+            bash scripts/ops/clean-start/run.sh for-the-owner "$CS_DIR/exports/plan-id.txt" "$TARGET_RUN"
+          fi
           FILES=()
           for f in verify.out watch-results.tsv compare.out smoke.out seal-archive.report; do
             if [ -f "$CS_DIR/$f" ]; then FILES+=("$CS_DIR/$f"); fi
           done
           if [ "${#FILES[@]}" -gt 0 ] && [[ ${TARGET_RUN:-} =~ ^[0-9]{1,20}$ ]]; then
             bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$TARGET_RUN/finish" "${FILES[@]}"
-          fi
-          if [ -f "$CS_DIR/exports/plan-id.txt" ]; then
-            bash scripts/ops/clean-start/run.sh for-the-owner "$CS_DIR/exports/plan-id.txt" "$TARGET_RUN"
           fi
 
       - name: Remove the plaintext
@@ -1097,6 +1145,9 @@ jobs:
 
       - name: The old seal files back, the abandoned chain moved aside
         run: |
+          set -euo pipefail
+          # Before a seal file is touched: the read-write photo token works.
+          bash scripts/ops/clean-start/photo-delete.sh probe "$GITHUB_RUN_ID"
           bash scripts/ops/clean-start/seal-archive.sh restore "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN" "$TARGET_RUN" "$NEW_CHAIN" \
             "$CS_DIR/exports/seal-keys-foreign.txt"
 

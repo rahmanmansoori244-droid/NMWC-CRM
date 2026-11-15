@@ -18,6 +18,8 @@
 --                               job (sla-escalate, keep-warm, email-drain) outside 03:00-15:00 UTC in 3 days
 --   runtime-role-ok             t unless the LATEST runtime-role-privileges result is fail or error
 --   customers-exist             t when at least one customer exists (the real file was loaded)
+--   actor-ok       -v actor_username=U  t when U is exactly one active account that is not a test
+--                               account (the rule of guards.sql CS011 and photos-record.sql CS401)
 --
 -- Exit 0 = answered; 3 = an error (SQLSTATE only, VERBOSITY sqlstate).
 
@@ -46,6 +48,10 @@
 \else
 \set old_chain ''
 \endif
+\if :{?actor_username}
+\else
+\set actor_username ''
+\endif
 
 BEGIN READ ONLY;
 SET LOCAL TimeZone = 'UTC';
@@ -63,6 +69,7 @@ SELECT :'fact' = 'heartbeat' AS f_heartbeat,
        :'fact' = 'owner-facts' AS f_owner_facts,
        :'fact' = 'runtime-role-ok' AS f_runtime_role_ok,
        :'fact' = 'customers-exist' AS f_customers_exist,
+       :'fact' = 'actor-ok' AS f_actor_ok,
        :'run_id' ~ '^[0-9]{1,20}$' AS f_run_ok,
        :'hours' ~ '^[0-9]{1,2}$' AS f_hours_ok
 \gset
@@ -126,6 +133,9 @@ SELECT NOT EXISTS (SELECT 1 FROM (SELECT i."status" FROM public."IntegrityCheckR
                     WHERE l."status" IN ('fail', 'error'));
 \elif :f_customers_exist
 SELECT EXISTS (SELECT 1 FROM public."Customer");
+\elif :f_actor_ok
+SELECT count(*) = 1 FROM public."User" u
+ WHERE :'actor_username' <> '' AND u."username" = :'actor_username' AND u."isActive" AND NOT u."isTest";
 \endif
 
 COMMIT;

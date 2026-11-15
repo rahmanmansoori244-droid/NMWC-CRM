@@ -186,14 +186,18 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     UAT_DATABASE_URL_RO: url('localhost', UAT),
   });
   const SKIPPED = /^(Install |i\. Smoke$)/;
-  const run = (file: 'clean-start.yml' | 'clean-start-photos.yml', inputs: Record<string, string>): RunResult & { runId: string } => {
+  const run = (
+    file: 'clean-start.yml' | 'clean-start-photos.yml',
+    inputs: Record<string, string>,
+    secretOverride: Record<string, string> = {}
+  ): RunResult & { runId: string } => {
     const runId = String(++runSeq);
     dropDb(RESTORE);
     const r = runWorkflow({
       file: join(tree, '.github', 'workflows', file),
       cwd: tree,
       inputs,
-      secrets: secrets(),
+      secrets: { ...secrets(), ...secretOverride },
       vars: { BACKUP_AGE_RECIPIENTS: recipient, APP_BASE_URL: 'https://app.cs-flow.invalid' },
       github: { run_id: runId, sha: SHA, ref: 'refs/heads/main', repository: 'owner/nmwc', default_branch: 'main', token: 'ght-flow' },
       baseEnv: env(),
@@ -261,6 +265,13 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
 
   afterAll(async () => {
     await db?.$disconnect();
+    // The Rehearse job silences its database server's log (ALTER SYSTEM: on a runner that is
+    // the job's own service container; here it is this cluster). Hand the cluster back as
+    // its own configuration file has it.
+    for (const s of ['log_min_messages', 'log_min_error_statement', 'log_error_verbosity']) {
+      try { sql(adminUrl, `ALTER SYSTEM RESET ${s}`); } catch { /* best effort */ }
+    }
+    try { sql(adminUrl, 'SELECT pg_reload_conf()'); } catch { /* best effort */ }
     if (work && process.env.CS_FLOW_KEEP_WORK !== '1') {
       for (const d of [PROD, PRISTINE, RESTORE, UAT]) {
         try { dropDb(d); } catch { /* best effort */ }
@@ -388,6 +399,9 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
   ];
   const lines = (r: RunResult) => r.lines;
   const expectPublic = (r: RunResult) => expect(publicLogViolations(lines(r), forbidden())).toEqual([]);
+  /** The two values the owner logs for the photo step: printed only for a reset that committed. */
+  const PHOTO_VALUE = /^(run_id|list_sha256) for the photo step: /;
+  const NO_PHOTO_VALUES = 'values for the photo step printed (only after a reset that committed): no';
   const notRunHere = (r: RunResult) => [...new Set(r.steps.filter((s) => s.outcome === 'not run here').map((s) => s.step))].sort();
 
   // ── the modes ─────────────────────────────────────────────────────────
@@ -410,6 +424,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
       'environment production-reset has a required reviewer: yes',
       'exports match the plan: yes',
       'other objects under seals/ (reported once on the first night): yes',
+      'the rehearsal database keeps rows and statements out of its own log: yes',
       'backup restored with no error: yes',
       'restored backup passes restore-verify against its manifest: yes',
       'backup equals production: yes',
@@ -421,6 +436,10 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     ])
       expect(dry.lines, l).toContain(l);
     expect(notRunHere(dry)).toEqual(['Install dependencies', 'Install the Postgres 17 client and age', 'actions/checkout@v7', 'actions/setup-node@v7']);
+    // The server the backup was restored into logs nothing below PANIC: GitHub prints a
+    // service container's own log into the public job log, failing rows and all.
+    expect(dry.lines.indexOf('the rehearsal database keeps rows and statements out of its own log: yes')).toBeLessThan(dry.lines.indexOf('backup decrypted: yes'));
+    expect([sql(adminUrl, 'SHOW log_min_messages'), sql(adminUrl, 'SHOW log_min_error_statement'), sql(adminUrl, 'SHOW log_error_verbosity')]).toEqual(['panic', 'panic', 'terse']);
     expect(await auditIds()).toEqual(before);
     expect(listBucket('nmwc-backups', `cleanstart/${dry.runId}/plan/`)).toEqual(
       ['photo-keys.txt.age', 'plan-id.txt.age', 'plan.json.age', 'seal-keys-foreign.txt.age', 'seals.jsonl.age'].map((f) => `cleanstart/${dry.runId}/plan/${f}`)
@@ -429,12 +448,30 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expectPublic(dry);
   });
 
+  it('neon-rehearsal with the read-only key pasted into the read-write boxes stops before any branch is made (the write token is proven days before the reset)', () => {
+    // Review 2026-11-15: no run before reset night used the read-write photo token, so a
+    // swapped or read-only one was first found at apply step g, after the COMMIT.
+    const swapped = run(
+      'clean-start.yml',
+      { mode: 'neon-rehearsal', confirm_host: '127.0.0.1', confirm_phrase: '', run_id: '' },
+      { CLEANSTART_R2_RW_ACCESS_KEY_ID: SECRETS.ro, CLEANSTART_R2_RW_SECRET_ACCESS_KEY: SECRETS.ro }
+    );
+    expect(results(swapped), describeJob(swapped, 'neon_rehearsal')).toMatchObject({ plan: 'success', neon_rehearsal: 'failure' });
+    expect(swapped.lines).toContain('the read-write photo token can write and delete in the photo bucket: no');
+    expect(swapped.lines.some((l) => /refused: the read-write photo token cannot write and delete in the photo bucket/.test(l))).toBe(true);
+    expect(swapped.lines).not.toContain('Neon branch created and confirmed: yes');
+    expect(neon().branches.map((b) => b.name)).toEqual(['main']);
+    expect(listBucket('nmwc-photos', 'cleanstart-probe/')).toEqual([]);
+    expectPublic(swapped);
+  });
+
   let neonRun: RunResult & { runId: string };
   it('neon-rehearsal: reset on a branch, restored to the noted time, the exact fingerprint back, every branch deleted', async () => {
     await db.$disconnect(); // a branch is CREATE DATABASE … TEMPLATE production: no session may hold it
     neonRun = run('clean-start.yml', { mode: 'neon-rehearsal', confirm_host: '127.0.0.1', confirm_phrase: '', run_id: '' });
     expect(results(neonRun), describeJob(neonRun, 'neon_rehearsal')).toMatchObject({ plan: 'success', neon_rehearsal: 'success', rehearse: 'skipped', apply: 'skipped' });
     for (const l of [
+      'the read-write photo token can write and delete in the photo bucket: yes',
       'Neon default branch is production: yes',
       'Neon branch created and confirmed: yes',
       'Neon branch host is not production: yes',
@@ -487,6 +524,9 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expect(neon().branches.map((b) => b.name)).toEqual(['main']);
     expect(sql(PROD_LOCAL, `SELECT count(*) FROM "AuditLog" WHERE id LIKE 'cleanstart-%'`)).toBe('0');
     expect(has('nmwc-photos', oldSealKeys[0]!)).toBe(true);
+    // No reset, so no values for the photo step: a refused run must not hand the owner a pair to log.
+    expect(r.lines).toContain(NO_PHOTO_VALUES);
+    expect(r.lines.some((l) => PHOTO_VALUE.test(l))).toBe(false);
     expectPublic(r);
   });
 
@@ -497,6 +537,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     for (const l of [
       'green Neon rehearsal of these scripts within 14 days: yes',
       'the rehearsed backup is still the newest: yes',
+      'the read-write photo token can write and delete in the photo bucket: yes',
       'production unchanged since the plan: yes',
       'Neon branch created and confirmed: yes',
       'old seals archived, re-read and chained: yes',
@@ -526,10 +567,21 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expect(listBucket('nmwc-photos', 'seals/v1/').filter((k) => k !== FOREIGN)).toHaveLength(1);
     expect(neon().branches.map((b) => b.name)).toEqual(['main', `pre-clean-start-${omanDateISO(new Date())}-${applyA.runId}`]);
     expect(listBucket('nmwc-backups', `cleanstart/${applyA.runId}/report/`).length).toBeGreaterThanOrEqual(5);
-    // The R2 write token was used only on the photo bucket, only to delete old seal keys.
+    // The write token is proven in step a: before the safety branch, the archive and the reset.
+    const probed = applyA.lines.indexOf('the read-write photo token can write and delete in the photo bucket: yes');
+    for (const later of ['Neon branch created and confirmed: yes', 'old seals archived, re-read and chained: yes', 'reset: ok'])
+      expect(applyA.lines.indexOf(later), later).toBeGreaterThan(probed);
+    // The R2 write token was used only on the photo bucket: the probe's throwaway objects
+    // (written, read back, deleted, none left), and otherwise only to delete old seal keys.
     const calls = readFileSync(join(work, 's3.log'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
     const rw = calls.filter((c) => c.accessKeyId === 'rw-flow');
-    expect(rw.every((c) => c.bucket === 'nmwc-photos' && ['delete', 'head', 'get', 'list'].includes(c.op))).toBe(true);
+    const isProbe = (c: { key?: string }) => String(c.key ?? '').startsWith('cleanstart-probe/');
+    expect(rw.every((c) => c.bucket === 'nmwc-photos' && ['put', 'delete', 'head', 'get', 'list'].includes(c.op))).toBe(true);
+    expect(rw.filter((c) => c.op === 'put').length).toBeGreaterThan(0);
+    expect(rw.filter((c) => c.op === 'put').every(isProbe)).toBe(true);
+    expect(rw.filter((c) => c.op === 'put').every((c) => c.checksum === 'CRC32')).toBe(true);
+    expect(rw.filter((c) => c.op === 'delete').every((c) => isProbe(c) || oldSealKeys.includes(c.key))).toBe(true);
+    expect(listBucket('nmwc-photos', 'cleanstart-probe/')).toEqual([]);
     expectPublic(applyA);
   });
 
@@ -561,6 +613,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
   });
 
   let applyB: RunResult & { runId: string };
+  let finishA: RunResult & { runId: string };
   it('finish, outcome A: the connection was lost AFTER the COMMIT — finish settles it, verifies and completes', async () => {
     await db.$disconnect();
     resetProd();
@@ -580,13 +633,21 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
       expect(fin.lines, l).toContain(l);
     expect(has('nmwc-photos', oldSealKeys[0]!)).toBe(false);
     expect(neon().branches.map((b) => b.name)).toContain(`pre-clean-start-${omanDateISO(new Date())}-${applyB.runId}`);
+    // The apply did not know whether it committed: it prints no values for the photo step.
+    // Finish settled it, and prints them, with the APPLY run's id.
+    expect(applyB.lines).toContain(NO_PHOTO_VALUES);
+    expect(applyB.lines.some((l) => PHOTO_VALUE.test(l))).toBe(false);
+    expect(fin.lines).toContain(`run_id for the photo step: ${applyB.runId}`);
+    expect(fin.lines.some((l) => /^list_sha256 for the photo step: [0-9a-f]{64}$/.test(l))).toBe(true);
+    finishA = fin;
     expectPublic(applyB);
     expectPublic(fin);
   });
 
   it('photos: refused before 7 days; then the deletion — shared and odd keys kept, safety branch first, one audit row', async () => {
-    const listSum = applyB.lines.find((l) => l.startsWith('list_sha256 for the photo step: '));
-    const sum = listSum ? listSum.split(': ')[1]! : sha(photoKeys.slice().sort().join('\n') + '\n');
+    // The owner copies the two values from the run that settled the reset (here: finish).
+    const sum = finishA.lines.find((l) => l.startsWith('list_sha256 for the photo step: '))!.split(': ')[1]!;
+    expect(sum).toBe(sha(photoKeys.slice().sort().join('\n') + '\n'));
     db = new PrismaClient({ datasourceUrl: assertNotProduction(PROD_LOCAL, []) });
     const inputs = { run_id: applyB.runId, list_sha256: sum, confirm_host: '127.0.0.1', confirm_phrase: 'DELETE TEST PHOTOS' };
     const early = run('clean-start-photos.yml', inputs);
@@ -608,9 +669,18 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     });
     const wrongPhrase = run('clean-start-photos.yml', { ...inputs, confirm_phrase: 'delete test photos' });
     expect(wrongPhrase.jobs.photos!.result).toBe('failure');
+    // The audit row is written under the actor's account. An account that cannot record it
+    // (here: a test-flagged one) is refused BEFORE anything is deleted, not after the photos went.
+    const badActor = run('clean-start-photos.yml', inputs, { CLEANSTART_ACTOR_USERNAME: `zz.test.${sfx}` });
+    expect(badActor.jobs.photos!.result, describeJob(badActor, 'photos')).toBe('failure');
+    expect(badActor.lines).toContain('the account that records the deletion is one active, real account: no');
+    expect(badActor.lines).not.toContain('the read-write photo token can write and delete in the photo bucket: yes');
+    for (const k of photoKeys) expect(has('nmwc-photos', k), k).toBe(true);
+    expect(neon().branches.some((b) => b.name.endsWith(`-${applyB.runId}`))).toBe(true);
+    expectPublic(badActor);
     const r = run('clean-start-photos.yml', inputs);
     expect(r.jobs.photos!.result, describeJob(r, 'photos')).toBe('success');
-    for (const l of ['the stored list, the typed value and the reset row agree: yes', 'production references none of the listed photos: yes', 'temporary Neon branches deleted: yes', 'keys kept because the test environment uses them: yes', 'keys skipped because they do not have the photo shape: yes', 'every photo to delete is confirmed gone: yes', 'photo deletion recorded in the audit log: ok'])
+    for (const l of ['the stored list, the typed value and the reset row agree: yes', 'production references none of the listed photos: yes', 'the account that records the deletion is one active, real account: yes', 'temporary Neon branches deleted: yes', 'keys kept because the test environment uses them: yes', 'keys skipped because they do not have the photo shape: yes', 'every photo to delete is confirmed gone: yes', 'photo deletion recorded in the audit log: ok'])
       expect(r.lines, l).toContain(l);
     expect(has('nmwc-photos', photoKeys[0]!)).toBe(true); // UAT uses it
     expect(has('nmwc-photos', photoKeys.find((k) => k.startsWith('legacy/'))!)).toBe(true);
@@ -640,6 +710,11 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expect(sql(PROD_LOCAL, `SELECT count(*) FROM "AuditLog" WHERE id LIKE 'cleanstart-%'`)).toBe('0');
     expect(Number(sql(PROD_LOCAL, `SELECT count(*) FROM "Customer"`))).toBeGreaterThan(0);
     for (const k of [oldSealKeys[0]!, FOREIGN]) expect(has('nmwc-photos', k)).toBe(true);
+    // Neither run has values for the photo step: the reset never committed.
+    for (const x of [applyC, fin]) {
+      expect(x.lines).toContain(NO_PHOTO_VALUES);
+      expect(x.lines.some((l) => PHOTO_VALUE.test(l))).toBe(false);
+    }
     expectPublic(applyC);
     expectPublic(fin);
   });

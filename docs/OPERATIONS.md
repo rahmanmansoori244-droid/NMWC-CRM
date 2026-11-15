@@ -562,12 +562,12 @@ a key the test environment also uses is kept.
 |---|---|
 | `tables.json` | every table: EMPTY, PARTIAL (CodeSequence, CronRun) or KEEP |
 | `plan.sql`, `guards.sql`, `fingerprint.sql` | the read-only checks (SQLSTATE `CS001`-`CS012`) and the exports (photo-key list, seals, plan, plan id), bound together by one plan id |
-| `reset.sql`, `selfcheck.sql` | ONE transaction as the owner login in the §5e window: the checks again under SHARE locks, the plan id again (`CS013`), the `TRUNCATE`, two partial DELETEs, the AuditLog row, the baselines, the self-check (`CS101`-`CS113`), COMMIT |
+| `reset.sql`, `selfcheck.sql` | ONE transaction as the owner login in the §5e window, READ COMMITTED by its own `BEGIN` whatever the login's default (`CS021` refuses another level: each check must read the state under the locks): the checks again under SHARE locks, the plan id again (`CS013`), the `TRUNCATE`, two partial DELETEs, the AuditLog row, the baselines, the self-check (`CS101`-`CS113`), COMMIT |
 | `verify.sql` | after COMMIT, read-only; `CS301` means the reset row is not there, so nothing changed |
 | `facts.sql`, `counter.sql`, `photos-record.sql` | small read-only questions; the next customer number in a rolled-back transaction; the photo run's one AuditLog row |
 | `run.sh`, `target-guard.sh` | the targets (the shared host list `config/production-hosts.txt`; the typed `confirm_host` and phrase), the public-log rule, encryption, storage, the GitHub and Neon calls. Neither names a database client: every database command is written in the workflow file and writes to a file |
 | `seal-archive.sh` | the old seal files: `verify`, `archive`, `retire`; `restore` after a rollback |
-| `photo-delete.sh` | the day-7 photo deletion: `check`, then `delete` |
+| `photo-delete.sh` | the day-7 photo deletion: `check`, then `delete`; `probe` proves the read-write photo token (also run by the Neon rehearsal, apply step a, finish and seal-restore) |
 | `rehearse-watch.ts`, `compare-watch.ts`, `expected-watch.json` | the first two nights of the integrity watch on a reset copy, and the first night on production, against the expected status table |
 | `.github/workflows/clean-start.yml` | jobs `Plan (read-only)`, `Rehearse on the restored backup`, `Neon rehearsal`, `Apply (the owner's approval)`, `Finish an apply (steps e-j)`, `Seal restore (after a rollback)`; modes `dry-run`, `neon-rehearsal`, `apply`, `finish`, `seal-restore` |
 | `.github/workflows/clean-start-photos.yml` | the photo deletion (phrase `DELETE TEST PHOTOS`) |
@@ -609,7 +609,10 @@ The photo run: `run_id`, `list_sha256`, `confirm_host`, `confirm_phrase`
   `error` (the rehearsal's copy has no grants, so this is the only place it is seen before
   the reset);
 - `plan.sql` in a read-only session: the table list, ownership, foreign keys, triggers,
-  migrations equal to the checkout's, only `CUSTOMER-YYYY` counters, no export or Temix
+  no failed migration (`CS006`: a row that neither finished nor was marked rolled back),
+  the applied migrations equal to the checkout's (`CS007`; a row that Prisma's
+  "migrate resolve --rolled-back" marked rolled back, §5, is history and is not counted
+  as applied, as in `restore-verify.ts`), only `CUSTOMER-YYYY` counters, no export or Temix
   file key, no photo under `seals/`, the actor (`CLEANSTART_ACTOR_USERNAME`) exactly one
   active real account, no clean start recorded yet; then the exports, bound to the plan id;
 - the old seal copies (read-only photo token): a copy that differs from its seal refuses;
@@ -619,8 +622,13 @@ The photo run: `run_id`, `list_sha256`, `confirm_host`, `confirm_phrase`
 
 ### Dry runs (mode `dry-run`; changes nothing on production)
 
-"Rehearse on the restored backup" downloads the dump the plan picked, decrypts it,
-restores it into a Postgres 17 service container, runs `restore-verify.ts --manifest`,
+"Rehearse on the restored backup" first silences its Postgres 17 service container's own
+log (`ALTER SYSTEM`: nothing below PANIC, no statement text, terse; read back, and the
+job refuses unless it took): GitHub prints every service container's log into the public
+job log when the job ends, green or red, and Postgres would write a failing row there
+(`the rehearsal database keeps rows and statements out of its own log: yes`). Only then
+it downloads the dump the plan picked, decrypts it,
+restores it into that container, runs `restore-verify.ts --manifest`,
 and runs `plan.sql` on it: its plan id must equal production's (`backup equals
 production: yes`), which proves the backup holds exactly what the reset will remove and
 keep. A sign-in or any other write between the backup and the plan changes the plan id
@@ -632,9 +640,28 @@ through the nightly backup's own gates and size floors (`first nightly backup wo
 below the size floor: yes; set MIN_DUMP_BYTES to <n>` names the value to set), and the
 next customer number (`next customer code would be number 000001: yes`).
 
+**The two nights, at any hour.** Night 1 is the moment of the rehearsal. Night 2 is
+02:30 UTC of the Oman day after night 1's, whatever the clock says: a rehearsal that
+slips past midnight in Oman (20:00 UTC) simulates the morning after its own Oman day,
+not the coming 02:30 UTC, which is still the same Oman day (the watch would write no
+second seal and check no day of job runs there). The rehearsal also requires that night
+1 wrote the new chain's first seal and night 2 the first seal chained to it; a night
+that sealed nothing is a mismatch even though its status is a pass. Night 2 reads the job
+runs of night 1's Oman day, and a copy can hold them all only from 15:00 UTC on that
+date, so `scheduled-jobs-on-time` is asserted on night 2 between 15:00 and 20:00 UTC and
+at every other hour is reported with `(not asserted)`. The planned evening (15:30-20:00
+UTC) is unchanged by this rule. The same holds for the Neon rehearsal and for the
+Rehearse job of an apply.
+
 ### The Neon dress rehearsal (mode `neon-rehearsal`; once, approval-gated)
 
-Plan, then (after Approve) a temporary branch `cleanstart-rehearsal-<run>` of the
+Plan, then (after Approve) the read-write photo token is proven first
+(`photo-delete.sh probe`: two throwaway objects under `cleanstart-probe/` written, read
+back and deleted, one with each delete call the later steps use; when it refuses, the
+lines starting `photo token check:` say which call stopped it). No dry run can hold
+that token (it is an environment secret), and in an apply its first real use is step g,
+after the COMMIT; this rehearsal is where a token in the wrong box shows, days before
+the reset. Then a temporary branch `cleanstart-rehearsal-<run>` of the
 default branch with a compute; its host must not be production. The default branch
 itself must be production's: one of its endpoints has the host of the first line of
 `config/production-hosts.txt` (`Neon default branch is production: yes`), checked
@@ -662,7 +689,9 @@ again at the reset). Plan and Rehearse run as in a dry run (about 20 minutes). T
 job then waits for **Approve** on `production-reset`: that click is the yes. Apply:
 
 - a. the checks again (window, production, release, reviewer, backups idle, the green
-  Neon rehearsal; the newest backup at most 6 hours old and still the one rehearsed;
+  Neon rehearsal; the newest backup at most 6 hours old and still the one rehearsed; the
+  read-write photo token proven again with `photo-delete.sh probe`, before anything is
+  made or changed;
   `plan.sql` again: `production unchanged since the plan: yes`; heartbeat); the exports
   stored again under `cleanstart/<run>/apply/` (the later modes read this copy);
 - b. Neon safety branch `pre-clean-start-<Oman date>-<run>` of production, no compute;
@@ -682,8 +711,12 @@ job then waits for **Approve** on `production-reset`: that click is the yes. App
   first run compared with night 1 of `expected-watch.json` (`first integrity checks as
   expected: yes`; `seal-written: info` is the new chain's first seal);
 - i. `npm run smoke -- <APP_BASE_URL> --expect-commit <sha>` (`smoke ok: yes`);
-- j. the encrypted report under `cleanstart/<run>/report/`, then `run_id for the photo
-  step`, `list_sha256 for the photo step` and `reset started at (UTC)`.
+- j. `run_id for the photo step`, `list_sha256 for the photo step` and
+  `reset started at (UTC)`, printed first and only when the reset committed. A refused,
+  rolled-back or unsettled run prints one line in their place:
+  `values for the photo step printed (only after a reset that committed): no`.
+  Then the encrypted report under `cleanstart/<run>/report/`; a failed upload turns the
+  step red but can no longer hide the two values.
 
 The safety branch is deleted only when it is certain the reset did not commit (it never
 started: no marker on disk and no exit code; Postgres refused it; or verify read
@@ -700,7 +733,9 @@ the operations log; nothing is to be done about it.
 **Mode `finish`** (input `run_id`, approval-gated) repeats e-j for an apply run whose
 answer to the COMMIT was lost: it settles first; when the reset did not commit it
 deletes that run's safety branch and fails with "the reset of that run did not commit;
-nothing changed on production". Its `verify.sql` runs with `scope=finish`: only the
+nothing changed on production". After the settle and before step g it proves the
+read-write photo token (`photo-delete.sh probe`), as `seal-restore` does before it puts
+a seal file back. Its `verify.sql` runs with `scope=finish`: only the
 checks that stay true while the CRM is used (`CS301`, `CS304`, `CS305`, `CS307`); the
 "still empty" checks (`CS302`, `CS303`, `CS306`) are skipped, so a saved view or a new
 request does not block it. It calls the watch only when no watch has run since the
@@ -732,8 +767,13 @@ apply run's summary. It refuses unless the reset row `cleanstart-<run_id>` exist
 at least 7 days old, the sha256 of the stored list (`cleanstart/<run_id>/apply/photo-keys.txt.age`)
 equals both the typed value and the reset row's value, and no production `Attachment`
 row references a listed key (one hit means a rollback happened: everything is refused).
-Before anything is deleted, the read-write photo token writes a throwaway object
-(`cleanstart-probe/…`), reads it back and deletes it (`photo-delete.sh probe`): a
+It also refuses, before anything is deleted, unless `CLEANSTART_ACTOR_USERNAME` is still
+exactly one active account that is not a test account (`facts.sql` `actor-ok`): the audit
+row at the end is written under that account, and an account renamed or switched off
+since the reset used to show up only after the photos were gone (`CS401`).
+Before anything is deleted, the read-write photo token writes two throwaway objects
+(`cleanstart-probe/…`), reads them back and deletes them, one with each delete call
+(`photo-delete.sh probe`): a
 read-only, expired or revoked token, or a wrong bucket name, is refused there, with
 nothing deleted. Then it deletes the Neon safety branch FIRST (no rollback may be left
 pointing at missing files), skips keys without the photo shape, keeps keys the test
@@ -743,7 +783,15 @@ the rest in batches of at most 1000 and HEAD-checks each. It then writes one Aud
 per run attempt: `cleanstart-photos-<run>` for the first, `cleanstart-photos-<run>-<N>`
 for a re-run attempt N (`photos-record.sql`). The row stores `complete` and `runAttempt`
 with the counts; if the delete step was red, the row has `complete` false and its reason
-says the deletion did NOT complete. The encrypted report goes under
+says the deletion did NOT complete. The same row is written when the delete step was
+cancelled or ran out of time (job limit 180 minutes; each key is confirmed with one call
+of its own): `photo-delete.sh` puts the run's numbers on disk before its first deletion,
+with nothing confirmed yet, so the record step has them. A new run, or a re-run of the
+job, then deletes what is left and writes its own row. The stored list and the
+reports are encrypted to the age key of reset day and live under `cleanstart/` in the
+backups bucket: the photo step must run before that key is retired, and that prefix must
+not fall under a lifecycle rule (the code sets and checks only the 30-day rule for
+`db/`; the owner looks at the bucket's own rules once, guide Step 1 H). The encrypted report goes under
 `cleanstart/<run_id>/photos-<run>-<attempt>/`, one folder per photo run and attempt, so
 a re-run never overwrites an earlier report. It cannot be undone. If bucket versioning is
 on, the bytes linger up to 30 days.

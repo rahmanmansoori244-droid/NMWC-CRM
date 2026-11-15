@@ -31,7 +31,7 @@
  *     npx vitest run tests/integration/clean-start.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -112,7 +112,6 @@ type Run = { code: number; out: string };
 describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
   const sfx = `cs${Date.now().toString(36)}`;
   const scratchDb = `nmwc_${sfx}`;
-  const foreignDb = `nmwc_${sfx}_fk`;
   let admin: PrismaClient;
   let db: PrismaClient;
   let scratchUrl = '';
@@ -130,6 +129,8 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
   const Dm1 = addDays(D, -1);
   const Dm2 = addDays(D, -2);
   const Dm3 = addDays(D, -3);
+  // The day after: the reset's own day, if midnight in Oman (20:00 UTC) passes while the suite runs.
+  const Dp1 = addDays(D, 1);
 
   const w = {
     actor: '',
@@ -149,12 +150,24 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     customers: [] as string[],
     keys: [] as string[],
     oldSealKeys: [] as string[],
+    /** When each seeded job run was (ms): the reset keeps those from the Oman day before its own. */
+    cronRunAts: [] as number[],
   };
 
   const run = (cmd: string, env: Record<string, string>): Run => {
     const r = spawnSync('bash', ['-c', cmd], { env: { ...process.env, ...env }, encoding: 'utf8' });
     return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
   };
+  /** The same, without blocking this process: for a command that must wait on another session here. */
+  const runAsync = (cmd: string, env: Record<string, string>): Promise<Run> =>
+    new Promise((resolveRun, reject) => {
+      const p = spawn('bash', ['-c', cmd], { env: { ...process.env, ...env } });
+      let out = '';
+      p.stdout.on('data', (d: Buffer) => (out += d.toString('utf8')));
+      p.stderr.on('data', (d: Buffer) => (out += d.toString('utf8')));
+      p.on('error', reject);
+      p.on('close', (code) => resolveRun({ code: code ?? -1, out }));
+    });
   /** reset.sql exactly as the workflow runs it: the target guard, then psql with its variables. */
   const reset = (
     vars: Record<string, string>,
@@ -263,7 +276,7 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
   afterAll(async () => {
     await db?.$disconnect();
     if (admin) {
-      for (const name of [scratchDb, foreignDb, ...copies]) {
+      for (const name of [scratchDb, ...copies]) {
         await admin
           .$executeRawUnsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`)
           .catch(() => undefined);
@@ -719,11 +732,14 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     await db.rateLimit.create({ data: { key: `login:${sfx}`, tokens: 3 } });
 
     // The job runs: an old day (removed), and every scheduled run of D-1 and D (kept), so the
-    // first nights' scheduled-jobs-on-time has what production will have.
+    // first nights' scheduled-jobs-on-time has what production will have. D+1 too: the reset
+    // cuts the job runs by the DATABASE's clock, so if midnight in Oman passes between this
+    // seeding and the reset, the reset's own day is D+1 and the two nights read D and D+1.
+    // The suite must not depend on the hour it runs at (see resetOmanDay below).
     const runs: Prisma.CronRunCreateManyInput[] = [
       { key: 'photo-gc', at: dayUtc(Dm3, 3), ok: true, durationMs: 5 },
     ];
-    for (const day of [Dm1, D]) {
+    for (const day of [Dm1, D, Dp1]) {
       for (const [key, exp] of Object.entries(HEARTBEAT_EXPECTATIONS)) {
         if (key === 'db-backup') continue;
         if (exp.activeHoursUtc) {
@@ -744,6 +760,7 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
       }
     }
     await db.cronRun.createMany({ data: runs });
+    w.cronRunAts = runs.map((r) => new Date(r.at).getTime());
     for (const [key, exp] of Object.entries(HEARTBEAT_EXPECTATIONS)) {
       const lastRunAt =
         key === 'db-backup'
@@ -877,7 +894,7 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     expect([r.code, /confirm_phrase/.test(r.out)]).toEqual([1, true]);
     r = reset(vars(), fakeProd, 'apply', {
       CONFIRM_HOST: prod,
-      CONFIRM_PHRASE: `REMOVE ALL TEST DATA ${Dm1}`,
+      CONFIRM_PHRASE: `REMOVE ALL TEST DATA ${addDays(today, -1)}`,
     });
     expect(r.code).toBe(1);
     r = reset(vars(), fakeProd, 'apply', {
@@ -996,6 +1013,80 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     await dropCopy(url);
   });
 
+  it('a write that commits while the reset WAITS for its locks is refused (CS013), whatever isolation level the login defaults to', async () => {
+    // Review 2026-11-15: reset.sql began with a bare BEGIN. Under a role or database
+    // default of REPEATABLE READ its snapshot is taken by its first SELECT, before the
+    // LOCK; a writer the LOCK waited for was then invisible to the plan check, and the
+    // TRUNCATE removed a row that is in neither the plan nor the backup. Here: this
+    // session's default is REPEATABLE READ, and a customer is committed during the wait.
+    // Deterministic (review 2026-11-15): the writer commits only once pg_stat_activity
+    // shows the reset's backend WAITING on a lock, never after a fixed sleep (on a slow
+    // runner the reset could start after the commit, and the old reset.sql then passed).
+    const url = await copyOf('iso');
+    const writer = new PrismaClient({ datasourceUrl: url });
+    const watcher = new PrismaClient({ datasourceUrl: url });
+    let inserted!: () => void;
+    const hasInserted = new Promise<void>((ok) => (inserted = ok));
+    let release!: () => void;
+    const released = new Promise<void>((ok) => (release = ok));
+    try {
+      const held = writer.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(
+            `INSERT INTO "Customer" SELECT (jsonb_populate_record(NULL::"Customer", to_jsonb(c) || jsonb_build_object('id', 'zz-cs-late', 'nmwcCode', 'NMWC-1999-999998', 'temixCode', NULL, 'importRowId', NULL, 'crPhotoId', NULL))).* FROM "Customer" c WHERE c."isTest" = false ORDER BY c."id" LIMIT 1`
+          );
+          inserted();
+          // Holds its row lock until the reset is seen waiting for its locks.
+          await released;
+        },
+        { timeout: 150_000, maxWait: 10_000 }
+      );
+      await hasInserted;
+      const writerPid = await watcher.$queryRawUnsafe<{ pid: number }[]>(
+        `SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND state = 'idle in transaction' AND pid <> pg_backend_pid()`
+      );
+      expect(writerPid, 'the writer holds its open transaction').toHaveLength(1);
+      const v = Object.entries(vars())
+        .map(([k, x]) => `-v ${k}='${x}'`)
+        .join(' ');
+      let resetDone = false;
+      const resetRun = runAsync(
+        `bash ${DIR}/target-guard.sh rehearse && PGOPTIONS='-c default_transaction_isolation=repeatable\\ read' psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f ${DIR}/reset.sql ${v}`,
+        { DIRECT_URL: url }
+      ).finally(() => (resetDone = true));
+      let sawWait = false;
+      const deadline = Date.now() + 120_000;
+      while (!resetDone && Date.now() < deadline) {
+        const w = await watcher.$queryRawUnsafe<{ n: bigint }[]>(
+          `SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND ${Number(writerPid[0]!.pid)} = ANY(pg_blocking_pids(pid))`
+        );
+        if (Number(w[0]!.n) > 0) {
+          sawWait = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      release();
+      await held;
+      const r = await resetRun;
+      expect(sawWait, `the reset was seen waiting on a lock before the writer committed\n${r.out}`).toBe(true);
+      expect(r.code, r.out).toBe(3);
+      expect(r.out).toMatch(/ERROR:\s+CS013/);
+      expect(r.out).not.toMatch(/reset committed/);
+    } finally {
+      release();
+      await writer.$disconnect();
+      await watcher.$disconnect();
+    }
+    // Nothing was removed: the late customer and everything else is still there, no reset row.
+    const left = run(
+      `psql "$DIRECT_URL" -X -q -At -c "SELECT (SELECT count(*) FROM \\"Customer\\" WHERE id = 'zz-cs-late') || ' ' || (SELECT count(*) FROM \\"AuditLog\\" WHERE id LIKE 'cleanstart-%') || ' ' || (SELECT count(*) > 1 FROM \\"Customer\\")"`,
+      { DIRECT_URL: url }
+    ).out.trim();
+    expect(left).toBe('1 0 true');
+    await dropCopy(url);
+  });
+
   it.each([
     ['CS001', 'an extra table in public', `CREATE TABLE public.zz_extra (x int)`, {}],
     [
@@ -1004,11 +1095,29 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
       `DO $$ DECLARE t record; BEGIN SELECT c.relname, g.tgname INTO t FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid WHERE NOT g.tgisinternal AND c.relnamespace = 'public'::regnamespace ORDER BY 1, 2 LIMIT 1; EXECUTE format('ALTER TABLE public.%I DISABLE TRIGGER %I', t.relname, t.tgname); END $$`,
       {},
     ],
+    [
+      'CS006',
+      'a migration that failed and was never resolved (unfinished, not marked rolled back)',
+      `INSERT INTO public._prisma_migrations (id, checksum, migration_name, started_at, applied_steps_count) VALUES ('zz-cs-failed', repeat('a', 64), '20990101000000_zz_cs_failed', now(), 0)`,
+      {},
+    ],
     ['CS007', 'migrations that are not the checkout', null, { expected_migrations: '0'.repeat(64) }],
+    [
+      'CS007',
+      'a migration marked rolled back and never applied again',
+      `UPDATE public._prisma_migrations SET rolled_back_at = now() WHERE migration_name = (SELECT max(migration_name) FROM public._prisma_migrations)`,
+      {},
+    ],
+    [
+      'CS007',
+      'a migration recorded as applied twice',
+      `INSERT INTO public._prisma_migrations (id, checksum, migration_name, started_at, finished_at, applied_steps_count) SELECT 'zz-cs-twice', m.checksum, m.migration_name, m.started_at + interval '1 minute', now(), 1 FROM public._prisma_migrations m ORDER BY m.migration_name LIMIT 1`,
+      {},
+    ],
     ['CS009', 'an export file key set', `BEGIN; SET LOCAL nmwc.audit_maintenance = 'on'; UPDATE "ExportJob" SET "r2Key" = 'exports/zz.csv' WHERE "id" = (SELECT min("id") FROM "ExportJob"); COMMIT`, {}],
     ['CS011', 'an unknown actor', null, { actor_username: 'zz.nobody.at.all' }],
   ] as const)('PLAN refuses %s: %s', async (code, _label, change, extra) => {
-    const url = await copyOf(code.toLowerCase());
+    const url = await copyOf(`${code.toLowerCase()}n${copies.length}`);
     if (change) {
       const ch = sqlOn(url, change);
       expect(ch, ch.out).toMatchObject({ code: 0 });
@@ -1016,6 +1125,37 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     const r = planOn(url, extra as Record<string, string>);
     expect(r.code, r.out).toBe(3);
     expect(r.out).toMatch(new RegExp(`ERROR:\\s+${code}`));
+    await dropCopy(url);
+  });
+
+  it('a migration that once failed, was marked rolled back and then applied (what `migrate resolve --rolled-back` leaves for ever) is history: PLAN passes and the reset commits', async () => {
+    // Review 2026-11-15: CS006 refused ANY rolled-back row and CS007 hashed every row, so a
+    // database repaired once as docs/OPERATIONS.md section 5 says could never be planned.
+    const url = await copyOf('mighist');
+    // The failed attempt's row: before the applied one, unfinished, marked rolled back, and
+    // with the checksum of the file as it was then.
+    const ch = sqlOn(
+      url,
+      `INSERT INTO public._prisma_migrations (id, checksum, migration_name, logs, started_at, rolled_back_at, applied_steps_count) SELECT 'zz-cs-rolled-back', repeat('b', 64), m.migration_name, 'lock timeout', m.started_at - interval '1 hour', m.started_at - interval '30 minutes', 0 FROM public._prisma_migrations m ORDER BY m.migration_name DESC LIMIT 1`
+    );
+    expect(ch, ch.out).toMatchObject({ code: 0 });
+    const out = mkdtempSync(join(tmp, 'mh-'));
+    const p = run(
+      `PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f ${DIR}/plan.sql -v out_dir='${out}' -v actor_username='${w.actorName}' -v expected_migrations='${expectedMigrations()}'`,
+      { DIRECT_URL: url }
+    );
+    expect(p, p.out).toMatchObject({ code: 0 });
+    const ids = planIds(out);
+    // What is APPLIED is still exactly the checkout's; the ledger itself differs, so the plan id does.
+    expect(ids.migrations_sha256).toBe(expectedMigrations());
+    expect(ids.plan_id).toMatch(/^[0-9a-f]{64}$/);
+    expect(ids.plan_id).not.toBe(planId);
+    // The same guards run again under the reset's locks.
+    const r = reset({ ...vars(), plan_id: ids.plan_id! }, url);
+    expect(r, r.out).toMatchObject({ code: 0 });
+    expect(r.out).toMatch(/clean-start: reset committed/);
+    const v = run(`psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -v run_id=${RUN} -f ${DIR}/verify.sql`, { DIRECT_URL: url });
+    expect(v, v.out).toMatchObject({ code: 0 });
     await dropCopy(url);
   });
 
@@ -1194,10 +1334,27 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     expect(await keptRows()).toEqual(kept);
   });
 
+  /**
+   * The reset's own Oman day, by the DATABASE's clock (reset.sql cut the job runs by it):
+   * the day the suite started, or the next one if midnight in Oman passed meanwhile.
+   */
+  const resetOmanDay = async () => {
+    const [r] = await db.$queryRaw<Array<{ day: string }>>`
+      SELECT to_char(a."at" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Muscat', 'YYYY-MM-DD') AS day
+        FROM "AuditLog" a WHERE a."id" = ${`cleanstart-${RUN}`}`;
+    expect([D, Dp1]).toContain(r!.day);
+    return r!.day;
+  };
+
   it('job runs: the Oman day before and the reset day kept, older ones gone', async () => {
-    const cut = new Date(dayUtc(Dm1, 0).getTime() - 4 * 3600_000);
-    expect(await db.cronRun.count({ where: { at: { lt: cut } } })).toBe(0);
-    expect(await db.cronRun.count()).toBe(before.CronRun! - 1);
+    const R = await resetOmanDay();
+    const cut = dayUtc(addDays(R, -1), 0).getTime() - 4 * 3600_000;
+    expect(await db.cronRun.count({ where: { at: { lt: new Date(cut) } } })).toBe(0);
+    const keptRuns = w.cronRunAts.filter((t) => t >= cut).length;
+    expect(await db.cronRun.count()).toBe(keptRuns);
+    expect(keptRuns).toBeLessThan(before.CronRun!);
+    // On the day the suite started: every seeded run but the one old one.
+    if (R === D) expect(keptRuns).toBe(before.CronRun! - 1);
   });
 
   it('the counter gives NMWC-<year>-000001 next, and no sequence went back', async () => {
@@ -1242,41 +1399,137 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     expect(await counts()).toEqual(n0);
   });
 
-  it('the first two nights of the integrity watch are as the design expects, with and without foreign seals', async () => {
-    // A copy of the just-reset database for the second case (the watch writes seals and results).
-    await db.$disconnect();
-    await admin.$executeRawUnsafe(`CREATE DATABASE "${foreignDb}" TEMPLATE "${scratchDb}"`);
-    db = new PrismaClient({ datasourceUrl: assertNotProduction(scratchUrl, []) });
+  // ── the first two nights of the watch ───────────────────────────────────
+  // Every clock below is INJECTED: night 1 is an instant of the reset's own Oman day (R,
+  // by the database's clock), never "now". Until the review of 2026-11-15 these tests
+  // read the real clock, and between 20:00 and 02:30 UTC (00:00-06:30 in Oman) the
+  // rehearsal's night 2 fell on night 1's own Oman day: no second seal, no day of job
+  // runs, and still "as expected". The pure rules, minute by minute, are in
+  // tests/unit/clean-start-watch-clock.test.ts; here the REAL watch runs through the day.
 
-    const r = await rehearseWatch(db, runIntegrityWatch, {
-      now: new Date(),
-      assertJobsOnNight2: true,
-    });
+  /** The just-reset database, copied before any watch ran on it; never connected to. */
+  let justReset = '';
+  /** One throw-away copy of the just-reset database (the watch writes seals and results). */
+  const onResetCopy = async <T>(tag: string, fn: (client: PrismaClient) => Promise<T>): Promise<T> => {
+    const name = `${scratchDb}_${tag}`;
+    await admin.$executeRawUnsafe(`CREATE DATABASE "${name}" TEMPLATE "${justReset}"`);
+    copies.push(name);
+    const u = new URL(scratchUrl);
+    u.pathname = `/${name}`;
+    const client = new PrismaClient({ datasourceUrl: assertNotProduction(u.toString(), []) });
+    try {
+      return await fn(client);
+    } finally {
+      await client.$disconnect();
+      await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    }
+  };
+  /** What a rehearsal left behind: the seals, and the days each night's job check read. */
+  const nightsOf = async (client: PrismaClient) => ({
+    seals: await client.$queryRaw<Array<{ seq: number; day: string; prevHash: string | null; hash: string }>>`
+      SELECT "seq", "day"::text AS day, "prevHash", "hash" FROM "SealRecord" ORDER BY "seq"`,
+    jobDays: (
+      await client.$queryRaw<Array<{ days: string[] }>>`
+        SELECT "detail" -> 'days' AS days FROM "IntegrityCheckResult"
+         WHERE "checkId" = 'scheduled-jobs-on-time' ORDER BY "runAt"`
+    ).map((x) => x.days),
+  });
+
+  it('the watch at EVERY hour of the reset day (injected clocks): a first seal, the first chained seal the next Oman morning, a day of job runs read each night', async () => {
+    const R = await resetOmanDay();
+    const [Rm1, Rp1] = [addDays(R, -1), addDays(R, 1)];
+    // The schedulers' heartbeats as they will be on the reset evening. They were seeded as
+    // of the day the suite started; if the reset's day is the next one (midnight in Oman
+    // passed meanwhile), the schedulers have run a day more by then. (CronHeartbeat is a
+    // kept table: its byte-identity through the reset is asserted above, before this.)
+    if (R !== D)
+      await db.$executeRaw`UPDATE "CronHeartbeat" SET "lastRunAt" = "lastRunAt" + interval '1 day' WHERE "key" <> 'db-backup'`;
+    justReset = new URL(await copyOf('rst')).pathname.slice(1);
+
+    // Night 1 at every UTC hour of Oman day R (20:00 the evening before to 19:59), and
+    // each side of the rules' boundaries: 02:30 UTC (that morning's own watch), 15:00 UTC
+    // (the day's last windowed job run), 20:00 UTC (midnight in Oman).
+    const at = (h: number, m = 0) => (h >= 20 ? dayUtc(Rm1, h, m) : dayUtc(R, h, m));
+    const instants = [
+      ...Array.from({ length: 24 }, (_, h) => at(h)),
+      at(23, 59),
+      at(2, 29),
+      at(2, 30),
+      at(14, 59),
+      at(15, 30),
+      at(19, 59),
+    ].sort((a, b) => a.getTime() - b.getTime());
+    expect(new Set(instants.map((t) => t.getUTCHours())).size).toBe(24);
+    expect(new Set(instants.map((t) => omanDateISO(t)))).toEqual(new Set([R]));
+
+    const jobDayComplete = dayUtc(R, 15).getTime();
+    for (const [i, t] of instants.entries()) {
+      const label = t.toISOString();
+      await onResetCopy(`w${i}`, async (client) => {
+        // The copy is "taken" at night 1's time: the 15:00 UTC rule follows it (no real clock).
+        const r = await rehearseWatch(client, runIntegrityWatch, { now: t });
+        expect(r.mismatches, label).toEqual([]);
+        expect(r.ok, label).toBe(true);
+        expect(r.nights.map((n) => n.at), label).toEqual([label, `${Rp1}T02:30:00.000Z`]);
+        expect(r.nights[1]!.at, label).toBe(nextOmanMorning(t).toISOString());
+        expect(r.nights.map((n) => n.statuses['seal-written']), label).toEqual(['info', 'pass']);
+        // Night 2 reads the reset day's job runs. This database holds them all, so the
+        // check passes at every hour; the rehearsal ASSERTS it only when a real copy
+        // taken at night 1's time could hold them (from 15:00 UTC of day R).
+        expect(['pass', 'info'], label).toContain(r.nights[1]!.statuses['scheduled-jobs-on-time']);
+        expect(r.nights[0]!.notAsserted, label).toEqual([]);
+        expect(r.nights[1]!.notAsserted, label).toEqual(
+          t.getTime() >= jobDayComplete ? [] : ['scheduled-jobs-on-time']
+        );
+        const left = await nightsOf(client);
+        // Two seals, one per Oman day, the second chained to the first: never "already".
+        expect(left.seals.map((s) => [s.seq, s.day]), label).toEqual([
+          [0, R],
+          [1, Rp1],
+        ]);
+        expect(left.seals[0]!.prevHash, label).toBeNull();
+        expect(left.seals[1]!.prevHash, label).toBe(left.seals[0]!.hash);
+        // Each night's job check read one whole Oman day: never an empty list.
+        expect(left.jobDays, label).toEqual([[Rm1], [R]]);
+      });
+    }
+  });
+
+  it('the first two nights of the integrity watch are as the design expects, with and without foreign seals', async () => {
+    const R = await resetOmanDay();
+    expect(justReset).not.toBe('');
+    // The planned evening: 19:30 in Oman on the reset day.
+    const evening = dayUtc(R, 15, 30);
+    const r = await rehearseWatch(db, runIntegrityWatch, { now: evening, assertJobsOnNight2: true });
     expect(r.mismatches).toEqual([]);
     expect(r.ok).toBe(true);
     expect(r.nights.map((n) => n.statuses['seal-written'])).toEqual(['info', 'pass']);
     expect(r.nights[1]!.at).toBe(nextOmanMorning(new Date(r.nights[0]!.at)).toISOString());
+    expect(r.nights[1]!.at).toBe(`${addDays(R, 1)}T02:30:00.000Z`);
     const seals = await db.sealRecord.findMany({
       orderBy: { seq: 'asc' },
       select: { seq: true, prevHash: true },
     });
     expect(seals.map((s) => s.seq)).toEqual([0, 1]);
 
-    // The old chain's copies left in seals/: reported once as new (critical), then information.
-    const fk = new URL(scratchUrl);
-    fk.pathname = `/${foreignDb}`;
-    const other = new PrismaClient({ datasourceUrl: assertNotProduction(fk.toString(), []) });
-    try {
-      const r2 = await rehearseWatch(other, runIntegrityWatch, {
-        now: new Date(),
-        foreignKeys: w.oldSealKeys,
-        assertJobsOnNight2: true,
+    // The old chain's copies left in seals/: reported once as new (critical), then
+    // information. In the planned evening, and for a run that slipped past midnight in Oman.
+    for (const [tag, night1] of [
+      ['fk', evening],
+      ['fkl', dayUtc(addDays(R, -1), 21, 15)],
+    ] as const) {
+      await onResetCopy(tag, async (other) => {
+        const r2 = await rehearseWatch(other, runIntegrityWatch, {
+          now: night1,
+          foreignKeys: w.oldSealKeys,
+          assertJobsOnNight2: true,
+        });
+        expect(r2.mismatches, tag).toEqual([]);
+        expect(r2.nights.map((n) => n.statuses['seal-offsite-copies']), tag).toEqual(['fail', 'info']);
+        expect((await nightsOf(other)).seals.map((s) => s.seq), tag).toEqual([0, 1]);
       });
-      expect(r2.mismatches).toEqual([]);
-      expect(r2.nights.map((n) => n.statuses['seal-offsite-copies'])).toEqual(['fail', 'info']);
-    } finally {
-      await other.$disconnect();
     }
+    await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${justReset}" WITH (FORCE)`);
   });
 
   it('VERIFY after the CRM was used: the full check refuses (CS306), mode finish (scope=finish) still settles "committed" and passes', async () => {
@@ -1337,6 +1590,24 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     expect(rows[0]![1]).toMatch(/were deleted from storage/);
     expect(rows[1]![1]).toMatch(/did NOT complete/);
     expect(rows[1]![1]).not.toMatch(/were deleted/);
+    // The actor rule the row needs (CS401) is asked BEFORE anything is deleted (facts.sql
+    // actor-ok; the photo run refuses on "f"): an account switched off, flagged as a test
+    // account or renamed since the reset must not show up only after the photos are gone.
+    const actorOk = (name: string) =>
+      run(
+        `psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f ${DIR}/facts.sql -v fact=actor-ok -v actor_username='${name}'`,
+        { DIRECT_URL: url }
+      ).out.trim();
+    expect(actorOk(w.actorName)).toBe('t');
+    for (const bad of ['zz.nobody.at.all', '', `zz.test.${sfx}`, `${sfx}.gone`]) {
+      expect(actorOk(bad), bad).toBe('f');
+      const refused = run(
+        `psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f ${DIR}/photos-record.sql -v run_id=804 -v reset_run_id=${RUN} ` +
+          `-v actor_username='${bad}' -v list_sha256=${sum} -v listed=10 -v skipped_shape=1 -v skipped_uat=1 -v deleted=8 -v complete=yes -v attempt=1`,
+        { DIRECT_URL: url }
+      );
+      expect([refused.code, /CS401/.test(refused.out)], bad).toEqual([3, true]);
+    }
     await dropCopy(url);
   });
 });

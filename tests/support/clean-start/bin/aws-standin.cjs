@@ -77,7 +77,7 @@ if (svc === 's3' && cmd === 'cp') {
     if (m) for (const kv of m.split(',')) { const [k, v] = kv.split('='); meta[k] = v; }
     fs.mkdirSync(path.dirname(metaPath(to.bucket, to.key)), { recursive: true });
     fs.writeFileSync(metaPath(to.bucket, to.key), JSON.stringify({ metadata: meta, contentType: opt('--content-type') || null }));
-    log({ op: 'put', bucket: to.bucket, key: to.key, metadata: meta });
+    log({ op: 'put', bucket: to.bucket, key: to.key, metadata: meta, contentType: opt('--content-type') || null, checksum: opt('--checksum-algorithm') || null });
     process.stdout.write(`upload: ${src} to ${dst}\n`);
   } else { process.stderr.write('aws stand-in: cp needs one s3:// side\n'); process.exit(255); }
   process.exit(0);

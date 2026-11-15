@@ -137,8 +137,13 @@ Repository secrets: `DIRECT_URL`, `BACKUP_AGE_IDENTITY`, `BACKUP_R2_ACCOUNT_ID`,
 `APP_BASE_URL` (the live site's address, which the runs call).
 If `BACKUP_AGE_IDENTITY` is missing, add it yourself from your handover pack. Never show
 it to anyone. You do **not** need `PROD_DB_HOST_MARKER`: nothing reads it any more.
-The first dry run also names any missing setting, in a line like
-`setting CLEANSTART_ACTOR_USERNAME present: no`.
+The first dry run names any missing setting that it reads itself (B, E and most of F), in
+a line like `setting CLEANSTART_ACTOR_USERNAME present: no`. It cannot see the secrets of C and D:
+they belong to **production-reset** and are only given to a run you approve. Those are
+first read by the Neon dress rehearsal (Step 3). It names a missing one in the same way.
+It also proves that the read-and-write photo token of C really works: it writes two small
+test files into the photo bucket and deletes them again. So do Step 3 well before reset
+day: a token pasted into the wrong box shows there, not on reset night.
 
 **G. Only if it applies.** If the photo bucket is in a different Cloudflare account from
 the backups: add the repository secret `R2_ACCOUNT_ID`. If the photo bucket is not called
@@ -147,6 +152,15 @@ the backups: add the repository secret `R2_ACCOUNT_ID`. If the photo bucket is n
 **H. Look, without changing anything,** at Cloudflare → **R2** → `nmwc-photos` →
 **Settings**. Tell Claude three things: is **Object versioning** on; which **lifecycle
 rules** are listed; is there any **bucket lock** rule.
+
+Then look at the backups bucket in the same way (R2 → `nmwc-backups` → **Settings**) and
+tell Claude the same three things. For each lifecycle rule also tell Claude its prefix and
+its number of days. The clean start keeps its only copies of the old seals, the list of
+test photos and its reports in that bucket, in a folder named `cleanstart/`. The only
+things that may be deleted automatically there are the nightly backups (prefix `db/`,
+after 30 days) and unfinished uploads. A rule with no prefix, or one for `cleanstart/`,
+would delete those copies without a word, and the photo step could then never run. If
+you see such a rule, tell Claude before reset day and change nothing yourself.
 
 **I. Look at Vercel** → the project → **Settings** → **Git**: the Production Branch
 should be `main`. Then **Settings** → **Environment Variables**: `DATABASE_URL` and
@@ -206,7 +220,8 @@ backup** have a green tick. In the summary you see, among others:
 - `the nightly backup's table gate passes on the reset copy: yes`
 - `next customer code would be number 000001: yes`
 
-Some lines report a fact and may say `no` while the run is still green. They are listed
+Some lines report a fact and may say `no` while the run is still green (a run before 19:00
+or after midnight Oman also shows a line ending in `(not asserted)`). They are listed
 at the end of this guide, under "Lines that may say no".
 
 **Write down** (in your private notes) the line that starts with
@@ -244,6 +259,7 @@ changes the clean-start scripts after it, you do it again.
 **Green looks like this.** **Plan (read-only)** and **Neon rehearsal** are green, and the
 summary has:
 
+- `the read-write photo token can write and delete in the photo bucket: yes`
 - `Neon default branch is production: yes`
 - `Neon branch host is not production: yes`
 - `reset on the Neon branch: ok`
@@ -252,6 +268,9 @@ summary has:
 - `the reset row is gone after the restore: yes`
 - `the Neon restore returned the exact fingerprint: yes`
 - `temporary Neon branches deleted: yes`
+
+Run before 19:00 or after midnight Oman time, it also shows a line ending in
+`(not asserted)`; that is fine (see "Lines that may say no").
 
 **Afterwards:** Neon console → your project → **Branches**. No branch whose name starts
 with `cleanstart-rehearsal-` may be left. If the run said
@@ -301,6 +320,7 @@ start is refused safely (`the target guard refused`), but the evening is lost.
 
 **Green looks like this.** The Apply job has a green tick, and its summary says:
 
+- `the read-write photo token can write and delete in the photo bucket: yes`
 - `production unchanged since the plan: yes`
 - `Neon default branch is production: yes`
 - `Neon branch created and confirmed: yes`
@@ -420,7 +440,8 @@ Find the bold **refused:** line in the summary. A red Apply after the line
 | `reset committed: unknown (no connection); run mode finish with this run id` or `reset committed: unknown (the check did not finish); run mode finish with this run id` | the answer was lost | send Claude the link, then run **finish** (below) the same evening when Claude says so |
 | a red Apply with `reset started at (UTC)` but no `reset committed:` line | the run was stopped, or ran out of time; the reset may have happened | press nothing; send Claude the link |
 | `the real customer file is loaded (customers exist): no` (photos) | the real file is not loaded yet | load it first (Step 6) |
-| `the read-write photo token cannot write and delete in the photo bucket (a wrong, read-only or expired token, or a wrong bucket name); nothing was deleted` (photos) | the token of Step 1 C does not work (it lasts 60 days), or the two tokens were swapped | nothing was deleted. Send Claude the link; Claude helps you make a new token |
+| `the account that records the deletion is one active, real account: no` (photos) | the CRM account of Step 1 E was renamed or switched off since the reset, or its secret was changed | nothing was deleted. Send Claude the link |
+| `the read-write photo token cannot write and delete in the photo bucket (a wrong, read-only or expired token, or a wrong bucket name); nothing was deleted` (Neon rehearsal, apply, finish, seal-restore, photos) | the token of Step 1 C does not work (it lasts 60 days), or the two tokens were swapped | this check deleted and changed nothing. In an apply it comes before the reset, so the reset did not happen. Send Claude the link; Claude helps you make a new token. The lines just above it that start with `photo token check:` say which part failed |
 | `the old seal files are back, but a seal chain under seals/ cannot be named (the new chain's id was not recorded); nothing else is moved; tell Claude` (seal-restore) | the old seal files are back; one folder of seal files is unexplained | send Claude the link before anyone uses the CRM |
 | anything else | | send Claude the link; do not press anything |
 
@@ -443,6 +464,13 @@ answer, not a fault. Send Claude the link either way.
 Only when you are sure you will never go back: the real file is loaded and checked, and
 at least 7 full days have passed since the reset. **It cannot be undone.**
 
+Do not leave it for months. Do it **before** you change or remove the backup key
+(the secret `BACKUP_AGE_IDENTITY`), before the read-and-write photo token of Step 1 C
+ends (60 days after you made it), and before you rename or switch off the CRM account of
+Step 1 E. The list of test photos is stored locked with the backup key of reset day: with
+another key the photo step cannot read it. It then refuses and deletes nothing, but it
+stays blocked until the old key is back.
+
 1. Actions → **Clean start photos** → **Run workflow**. Fill in:
    - `The number of the clean-start apply run (from its summary)`: the `run_id for the
      photo step` from your log;
@@ -459,6 +487,7 @@ green, and the summary says:
 - `the reset is at least 7 days old: yes`
 - `the stored list, the typed value and the reset row agree: yes`
 - `production references none of the listed photos: yes`
+- `the account that records the deletion is one active, real account: yes`
 - `the read-write photo token can write and delete in the photo bucket: yes`
 - `temporary Neon branches deleted: yes` (this is the Neon safety copy; if it was
   already gone, the line is `Neon branches to delete: no`)
@@ -466,7 +495,11 @@ green, and the summary says:
 - `photo deletion recorded in the audit log: ok`
 
 Note it in your operations log. If it is red, send Claude the link. A refusal before
-`temporary Neon branches deleted` means nothing was deleted.
+`temporary Neon branches deleted` means nothing was deleted. Never cancel this run while
+it is deleting. If it stopped half way (cancelled, or out of time), the Audit page gets an
+entry saying the deletion did not complete, and Claude will ask you to run the photo step
+once more with the same boxes. That is safe: the second run deletes what is left and
+records it.
 
 ---
 
@@ -556,6 +589,8 @@ These lines report a fact. They can say `no` (or `yes`) while the job is green:
 | `green Neon rehearsal of these scripts within 14 days` (dry run) | `no` before Step 3 is normal; apply needs `yes` |
 | `the first watch after the reset already ran` (finish) | recorded; finish runs it when `no` |
 | `new seal chain id recorded` | `no` only if the first check did not run; tell Claude |
+| A line after the `night 2:` line that ends with `… (not asserted)`, for example `scheduled-jobs-on-time: fail (not asserted)` (dry run, Neon rehearsal, the Rehearse job of an apply) | recorded only, never judged, even when it says `fail`: at that hour the copy cannot yet hold a whole day of job runs. It appears when the watch step runs before 19:00 or after midnight Oman time (before 15:00 or after 20:00 UTC); between 19:00 and midnight Oman it does not appear. The line to trust is `first integrity checks as expected: yes` |
+| `values for the photo step printed (only after a reset that committed)` | `no` on a run whose reset did not happen, or is not yet known to have happened. Such a run has no `run_id for the photo step` and no `list_sha256 for the photo step`: never log values from another run in their place. The green apply prints them; so does a green finish |
 | `other objects under seals/ left where they are` (seal-restore) | recorded only |
 
 Every other `<something>: no` line, and every bold **refused:** line, means stop and send
