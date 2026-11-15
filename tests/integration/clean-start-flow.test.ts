@@ -668,9 +668,18 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     });
     const wrongPhrase = run('clean-start-photos.yml', { ...inputs, confirm_phrase: 'delete test photos' });
     expect(wrongPhrase.jobs.photos!.result).toBe('failure');
+    // The audit row is written under the actor's account. An account that cannot record it
+    // (here: a test-flagged one) is refused BEFORE anything is deleted, not after the photos went.
+    const badActor = run('clean-start-photos.yml', inputs, { CLEANSTART_ACTOR_USERNAME: `zz.test.${sfx}` });
+    expect(badActor.jobs.photos!.result, describeJob(badActor, 'photos')).toBe('failure');
+    expect(badActor.lines).toContain('the account that records the deletion is one active, real account: no');
+    expect(badActor.lines).not.toContain('the read-write photo token can write and delete in the photo bucket: yes');
+    for (const k of photoKeys) expect(has('nmwc-photos', k), k).toBe(true);
+    expect(neon().branches.some((b) => b.name.endsWith(`-${applyB.runId}`))).toBe(true);
+    expectPublic(badActor);
     const r = run('clean-start-photos.yml', inputs);
     expect(r.jobs.photos!.result, describeJob(r, 'photos')).toBe('success');
-    for (const l of ['the stored list, the typed value and the reset row agree: yes', 'production references none of the listed photos: yes', 'temporary Neon branches deleted: yes', 'keys kept because the test environment uses them: yes', 'keys skipped because they do not have the photo shape: yes', 'every photo to delete is confirmed gone: yes', 'photo deletion recorded in the audit log: ok'])
+    for (const l of ['the stored list, the typed value and the reset row agree: yes', 'production references none of the listed photos: yes', 'the account that records the deletion is one active, real account: yes', 'temporary Neon branches deleted: yes', 'keys kept because the test environment uses them: yes', 'keys skipped because they do not have the photo shape: yes', 'every photo to delete is confirmed gone: yes', 'photo deletion recorded in the audit log: ok'])
       expect(r.lines, l).toContain(l);
     expect(has('nmwc-photos', photoKeys[0]!)).toBe(true); // UAT uses it
     expect(has('nmwc-photos', photoKeys.find((k) => k.startsWith('legacy/'))!)).toBe(true);

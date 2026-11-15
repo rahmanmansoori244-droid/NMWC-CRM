@@ -185,6 +185,15 @@ yes_no "keys skipped because they do not have the photo shape" "$([ "$skipped_sh
 yes_no "keys kept because the test environment uses them" "$([ "$skipped_uat" -gt 0 ]; echo $?)"
 
 : "${PHOTOS_BUCKET:?}"
+listed="$(wc -l < "$CS_DIR/pd-list" | tr -d ' ')"
+# The numbers for the in-app record (photos-record.sql), never the log. Written
+# HERE, before the first deletion, with nothing confirmed gone yet, and again at
+# the end. If this step is cancelled or runs out of time in between (the
+# confirmation below makes one call per key), the record step still finds the
+# run's numbers and writes its row as NOT complete. Before 2026-11-15 it found
+# no file then and wrote no row at all, with the photos already deleted.
+printf '%s %s %s %s\n' "$listed" "$skipped_shape" "$skipped_uat" 0 > "$CS_DIR/photo-delete.counts"
+note "started listed=$listed skipped_shape=$skipped_shape skipped_uat=$skipped_uat"
 rm -f "$CS_DIR"/pd-batch-*
 BATCH="${PHOTO_DELETE_BATCH:-1000}"
 [[ $BATCH =~ ^[0-9]{1,4}$ ]] && [ "$BATCH" -ge 1 ] && [ "$BATCH" -le 1000 ] || BATCH=1000
@@ -212,9 +221,8 @@ while IFS= read -r k; do
   if [ "$rc" -ne 0 ] && grep -qE '\((404|NoSuchKey|NotFound)\)|Not Found' "$CS_DIR/pd-head.err"; then gone=$((gone + 1)); else left=$((left + 1)); fi
 done < "$CS_DIR/pd-go"
 rm -f "$CS_DIR/pd-head.err"
-listed="$(wc -l < "$CS_DIR/pd-list" | tr -d ' ')"
 note "listed=$listed skipped_shape=$skipped_shape skipped_uat=$skipped_uat deleted_confirmed=$gone still_there=$left"
-# For the in-app record only (photos-record.sql), never the log.
+# The final numbers, with what was confirmed gone.
 printf '%s %s %s %s\n' "$listed" "$skipped_shape" "$skipped_uat" "$gone" > "$CS_DIR/photo-delete.counts"
 [ "$left" -eq 0 ] || ok=1
 yes_no "every photo to delete is confirmed gone" "$ok"

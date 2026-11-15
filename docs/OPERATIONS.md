@@ -763,6 +763,10 @@ apply run's summary. It refuses unless the reset row `cleanstart-<run_id>` exist
 at least 7 days old, the sha256 of the stored list (`cleanstart/<run_id>/apply/photo-keys.txt.age`)
 equals both the typed value and the reset row's value, and no production `Attachment`
 row references a listed key (one hit means a rollback happened: everything is refused).
+It also refuses, before anything is deleted, unless `CLEANSTART_ACTOR_USERNAME` is still
+exactly one active account that is not a test account (`facts.sql` `actor-ok`): the audit
+row at the end is written under that account, and an account renamed or switched off
+since the reset used to show up only after the photos were gone (`CS401`).
 Before anything is deleted, the read-write photo token writes two throwaway objects
 (`cleanstart-probe/…`), reads them back and deletes them, one with each delete call
 (`photo-delete.sh probe`): a
@@ -775,7 +779,11 @@ the rest in batches of at most 1000 and HEAD-checks each. It then writes one Aud
 per run attempt: `cleanstart-photos-<run>` for the first, `cleanstart-photos-<run>-<N>`
 for a re-run attempt N (`photos-record.sql`). The row stores `complete` and `runAttempt`
 with the counts; if the delete step was red, the row has `complete` false and its reason
-says the deletion did NOT complete. The encrypted report goes under
+says the deletion did NOT complete. The same row is written when the delete step was
+cancelled or ran out of time (job limit 180 minutes; each key is confirmed with one call
+of its own): `photo-delete.sh` puts the run's numbers on disk before its first deletion,
+with nothing confirmed yet, so the record step has them. A new run, or a re-run of the
+job, then deletes what is left and writes its own row. The encrypted report goes under
 `cleanstart/<run_id>/photos-<run>-<attempt>/`, one folder per photo run and attempt, so
 a re-run never overwrites an earlier report. It cannot be undone. If bucket versioning is
 on, the bytes linger up to 30 days.

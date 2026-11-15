@@ -1486,6 +1486,24 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     expect(rows[0]![1]).toMatch(/were deleted from storage/);
     expect(rows[1]![1]).toMatch(/did NOT complete/);
     expect(rows[1]![1]).not.toMatch(/were deleted/);
+    // The actor rule the row needs (CS401) is asked BEFORE anything is deleted (facts.sql
+    // actor-ok; the photo run refuses on "f"): an account switched off, flagged as a test
+    // account or renamed since the reset must not show up only after the photos are gone.
+    const actorOk = (name: string) =>
+      run(
+        `psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f ${DIR}/facts.sql -v fact=actor-ok -v actor_username='${name}'`,
+        { DIRECT_URL: url }
+      ).out.trim();
+    expect(actorOk(w.actorName)).toBe('t');
+    for (const bad of ['zz.nobody.at.all', '', `zz.test.${sfx}`, `${sfx}.gone`]) {
+      expect(actorOk(bad), bad).toBe('f');
+      const refused = run(
+        `psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f ${DIR}/photos-record.sql -v run_id=804 -v reset_run_id=${RUN} ` +
+          `-v actor_username='${bad}' -v list_sha256=${sum} -v listed=10 -v skipped_shape=1 -v skipped_uat=1 -v deleted=8 -v complete=yes -v attempt=1`,
+        { DIRECT_URL: url }
+      );
+      expect([refused.code, /CS401/.test(refused.out)], bad).toEqual([3, true]);
+    }
     await dropCopy(url);
   });
 });

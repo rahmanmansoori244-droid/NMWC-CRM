@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { sandbox, type Sandbox } from '../support/clean-start/sandbox';
+import { BIN, sandbox, standinPath, type Sandbox } from '../support/clean-start/sandbox';
 import { envHeaderViolations, publicLogViolations } from '../support/clean-start/public-log';
 import { compareFirstRun, parseReadBack } from '../../scripts/ops/clean-start/compare-watch';
 import { foreignSignature, loadExpected } from '../../scripts/ops/clean-start/rehearse-watch';
@@ -1051,6 +1051,38 @@ describe('photo-delete.sh: refuses unless it is safe, then deletes only the righ
     expect(r.code).toBe(1);
     expect(r.lines).toContain('every photo to delete is confirmed gone: no');
     expect(readFileSync(join(sb.csDir, 'photo-delete.counts'), 'utf8').trim()).toBe('1 0 0 0');
+  });
+
+  it('the numbers for the audit row are on disk BEFORE the first deletion (a cancelled or timed-out step is still recorded, as not complete)', () => {
+    // Review 2026-11-15: the counts were written on the script's last lines, so a delete step
+    // cancelled, or out of time, during the per-key confirmation left photos deleted and no
+    // file for the record step, which then wrote no audit row.
+    const k = key(8);
+    writeFileSync(join(sb.csDir, 'late.txt'), `${k}\n`);
+    sb.put('photos', k, 'jpeg');
+    rmSync(join(sb.csDir, 'photo-delete.counts'), { force: true });
+    rmSync(join(sb.csDir, 'counts-at-delete'), { force: true });
+    // An aws that notes, at the first delete-objects, what the counts file holds; then the stand-in.
+    const shim = join(sb.root, 'shim');
+    mkdirSync(shim, { recursive: true });
+    writeFileSync(
+      join(shim, 'aws'),
+      [
+        '#!/usr/bin/env bash',
+        'case " $* " in *" delete-objects "*)',
+        '  if [ ! -f "$CS_DIR/counts-at-delete" ]; then cat "$CS_DIR/photo-delete.counts" > "$CS_DIR/counts-at-delete" 2>/dev/null || echo missing > "$CS_DIR/counts-at-delete"; fi ;;',
+        'esac',
+        `exec "${BIN.replace(/\\/g, '/')}/aws" "$@"`,
+        '',
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+    const r = pd('delete "$CS_DIR/late.txt"', { PATH: standinPath([shim]) });
+    expect(r.code, r.out).toBe(0);
+    expect(sb.has('photos', k)).toBe(false);
+    // listed, skipped (shape), skipped (UAT), confirmed gone: nothing confirmed yet at the first deletion
+    expect(readFileSync(join(sb.csDir, 'counts-at-delete'), 'utf8').trim()).toBe('1 0 0 0');
+    expect(readFileSync(join(sb.csDir, 'photo-delete.counts'), 'utf8').trim()).toBe('1 0 0 1');
   });
 
   it('probe: the read-write token writes, reads back and deletes throwaway objects, by BOTH delete calls the later steps use; a read-only token or a wrong bucket refuses', () => {

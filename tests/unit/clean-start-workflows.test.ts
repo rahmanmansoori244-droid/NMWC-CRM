@@ -373,6 +373,32 @@ describe('targets', () => {
     );
   });
 
+  it('the photo run checks the actor BEFORE anything is deleted, and records a cancelled or timed-out deletion too (review 2026-11-15)', () => {
+    const steps = PHOTOS.jobs.photos!.steps;
+    const at = (re: RegExp) => steps.findIndex((s) => re.test(s.run ?? ''));
+    // The audit row is written under the actor's account (photos-record.sql CS401): read
+    // read-only with the other facts, refused with the other refusals, before the probe,
+    // the Neon safety branch and the deletion.
+    const read_ = steps[at(/fact=actor-ok/)]!;
+    expect(commands(read_.run!).join('\n')).toMatch(/-f scripts\/ops\/clean-start\/facts\.sql\s+-v fact=actor-ok -v actor_username="\$CLEANSTART_ACTOR_USERNAME" > "\$CS_DIR\/actor\.out" 2>&1/);
+    expect(read_.env?.PGOPTIONS).toBe('-c default_transaction_read_only=on');
+    const refuse = at(/run\.sh bool "the account that records the deletion is one active, real account" "\$CS_DIR\/actor\.out"$/m);
+    expect(refuse).toBeGreaterThan(at(/fact=actor-ok/));
+    for (const later of [/photo-delete\.sh probe/, /neon-delete-safety/, /photo-delete\.sh delete/, /-f scripts\/ops\/clean-start\/photos-record\.sql/])
+      expect(at(later), String(later)).toBeGreaterThan(refuse);
+    expect(read('scripts/ops/clean-start/facts.sql')).toMatch(
+      /\\elif :f_actor_ok\nSELECT count\(\*\) = 1 FROM public\."User" u\n WHERE :'actor_username' <> '' AND u\."username" = :'actor_username' AND u\."isActive" AND NOT u\."isTest";/
+    );
+    // A delete step that was cancelled or ran out of time may already have deleted photos:
+    // the record step runs then too, and photo-delete.sh has the numbers on disk by then.
+    const rec = steps.find((s) => /Record it in production's audit log/.test(s.name ?? ''))!;
+    expect(rec.if).toBe("always() && (steps.delete.outcome == 'success' || steps.delete.outcome == 'failure' || steps.delete.outcome == 'cancelled')");
+    const pd = read('scripts/ops/clean-start/photo-delete.sh');
+    const early = pd.indexOf(`printf '%s %s %s %s\\n' "$listed" "$skipped_shape" "$skipped_uat" 0 > "$CS_DIR/photo-delete.counts"`);
+    expect(early).toBeGreaterThan(-1);
+    expect(early).toBeLessThan(pd.indexOf('aws_rw s3api delete-objects --bucket "$PHOTOS_BUCKET" --delete "file://$b.json"'));
+  });
+
   it('the photo record: complete only on a green delete step, its own row and report folder per run attempt', () => {
     const steps = PHOTOS.jobs.photos!.steps;
     const rec = steps.find((s) => /Record it in production's audit log/.test(s.name ?? ''))!;

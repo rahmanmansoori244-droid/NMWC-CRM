@@ -424,6 +424,7 @@ Find the bold **refused:** line in the summary. A red Apply after the line
 | `reset committed: unknown (no connection); run mode finish with this run id` or `reset committed: unknown (the check did not finish); run mode finish with this run id` | the answer was lost | send Claude the link, then run **finish** (below) the same evening when Claude says so |
 | a red Apply with `reset started at (UTC)` but no `reset committed:` line | the run was stopped, or ran out of time; the reset may have happened | press nothing; send Claude the link |
 | `the real customer file is loaded (customers exist): no` (photos) | the real file is not loaded yet | load it first (Step 6) |
+| `the account that records the deletion is one active, real account: no` (photos) | the CRM account of Step 1 E was renamed or switched off since the reset, or its secret was changed | nothing was deleted. Send Claude the link |
 | `the read-write photo token cannot write and delete in the photo bucket (a wrong, read-only or expired token, or a wrong bucket name); nothing was deleted` (Neon rehearsal, apply, finish, seal-restore, photos) | the token of Step 1 C does not work (it lasts 60 days), or the two tokens were swapped | this check deleted and changed nothing. In an apply it comes before the reset, so the reset did not happen. Send Claude the link; Claude helps you make a new token |
 | `the old seal files are back, but a seal chain under seals/ cannot be named (the new chain's id was not recorded); nothing else is moved; tell Claude` (seal-restore) | the old seal files are back; one folder of seal files is unexplained | send Claude the link before anyone uses the CRM |
 | anything else | | send Claude the link; do not press anything |
@@ -463,6 +464,7 @@ green, and the summary says:
 - `the reset is at least 7 days old: yes`
 - `the stored list, the typed value and the reset row agree: yes`
 - `production references none of the listed photos: yes`
+- `the account that records the deletion is one active, real account: yes`
 - `the read-write photo token can write and delete in the photo bucket: yes`
 - `temporary Neon branches deleted: yes` (this is the Neon safety copy; if it was
   already gone, the line is `Neon branches to delete: no`)
@@ -470,7 +472,11 @@ green, and the summary says:
 - `photo deletion recorded in the audit log: ok`
 
 Note it in your operations log. If it is red, send Claude the link. A refusal before
-`temporary Neon branches deleted` means nothing was deleted.
+`temporary Neon branches deleted` means nothing was deleted. Never cancel this run while
+it is deleting. If it stopped half way (cancelled, or out of time), the Audit page gets an
+entry saying the deletion did not complete, and Claude will ask you to run the photo step
+once more with the same boxes. That is safe: the second run deletes what is left and
+records it.
 
 ---
 
