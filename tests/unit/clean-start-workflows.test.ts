@@ -315,6 +315,46 @@ describe('targets', () => {
     expect(steps[probe]!.run).toMatch(/photo-delete\.sh probe "\$GITHUB_RUN_ID"/);
   });
 
+  it('the read-write photo token is proven BEFORE the reset commits and days before reset day (it was first used at apply step g, after the COMMIT)', () => {
+    const PROBE = /^bash scripts\/ops\/clean-start\/photo-delete\.sh probe "\$GITHUB_RUN_ID"$/;
+    const at = (job: string, re: RegExp) => MAIN.jobs[job]!.steps.findIndex((s) => commands(s.run ?? '').some((c) => re.test(c)));
+    const lineOf = (job: string, step: number, re: RegExp) => commands(MAIN.jobs[job]!.steps[step]!.run!).findIndex((c) => re.test(c));
+
+    // The Neon rehearsal (Step 3 of the owner's guide, days ahead): right after the
+    // preflight that names the two secrets, before any branch is made.
+    const nr = MAIN.jobs.neon_rehearsal!;
+    for (const k of ['CLEANSTART_R2_RW_ACCESS_KEY_ID', 'CLEANSTART_R2_RW_SECRET_ACCESS_KEY']) expect(nr.env![k], k).toBe(`\${{ secrets.${k} }}`);
+    const np = at('neon_rehearsal', PROBE);
+    expect(np).toBeGreaterThan(at('neon_rehearsal', /run\.sh preflight neon-rehearsal/));
+    expect(np).toBeLessThan(at('neon_rehearsal', /run\.sh neon-create/));
+    expect(nr.steps[np]!.if).toBeUndefined();
+    expect(read('scripts/ops/clean-start/run.sh')).toMatch(/neon-rehearsal\) names=\([^)]*CLEANSTART_R2_RW_ACCESS_KEY_ID CLEANSTART_R2_RW_SECRET_ACCESS_KEY\)/);
+
+    // Apply: in step a, so before the safety branch (b), the archive (c) and the reset (d).
+    const ap = at('apply', PROBE);
+    expect(MAIN.jobs.apply!.steps[ap]!.name).toMatch(/^a\. The plan checks again/);
+    expect(MAIN.jobs.apply!.steps[ap]!.if).toBeUndefined();
+    for (const later of [/run\.sh neon-create/, /seal-archive\.sh archive/, /reset\.sql/, /seal-archive\.sh retire/])
+      expect(at('apply', later), String(later)).toBeGreaterThan(ap);
+
+    // Finish: after the settle (its answer never waits for a token), before a seal file is touched.
+    const fp = at('finish', PROBE);
+    expect(fp).toBeGreaterThan(at('finish', /run\.sh settle/));
+    expect(fp).toBe(at('finish', /seal-archive\.sh retire/));
+    expect(lineOf('finish', fp, PROBE)).toBeLessThan(lineOf('finish', fp, /seal-archive\.sh (verify|retire)/));
+
+    // Seal-restore: before the old files are put back.
+    const sp = at('seal_restore', PROBE);
+    expect(sp).toBe(at('seal_restore', /seal-archive\.sh restore/));
+    expect(lineOf('seal_restore', sp, PROBE)).toBeLessThan(lineOf('seal_restore', sp, /seal-archive\.sh restore/));
+
+    // No job that is not approval-gated holds, or probes with, the write token.
+    for (const id of ['plan', 'rehearse']) {
+      expect(JSON.stringify(MAIN.jobs[id]!.env)).not.toMatch(/CLEANSTART_R2_RW_/);
+      expect(at(id, /photo-delete\.sh/)).toBe(-1);
+    }
+  });
+
   it('the photo record: complete only on a green delete step, its own row and report folder per run attempt', () => {
     const steps = PHOTOS.jobs.photos!.steps;
     const rec = steps.find((s) => /Record it in production's audit log/.test(s.name ?? ''))!;

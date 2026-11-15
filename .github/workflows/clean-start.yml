@@ -462,6 +462,11 @@ jobs:
       PHOTOS_BUCKET: ${{ vars.R2_BUCKET || 'nmwc-photos' }}
       CLEANSTART_R2_RO_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RO_ACCESS_KEY_ID }}
       CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RO_SECRET_ACCESS_KEY }}
+      # Read here only by the probe below: this rehearsal is the first run, days before
+      # the reset, that proves the read-write photo token (apply, finish and seal-restore
+      # need it for the old seal files, the photo step for the photos).
+      CLEANSTART_R2_RW_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RW_ACCESS_KEY_ID }}
+      CLEANSTART_R2_RW_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RW_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: auto
       AWS_EC2_METADATA_DISABLED: 'true'
     steps:
@@ -502,6 +507,8 @@ jobs:
           PHOTOS_R2_ACCOUNT_ID: ''
           CLEANSTART_R2_RO_ACCESS_KEY_ID: ''
           CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ''
+          CLEANSTART_R2_RW_ACCESS_KEY_ID: ''
+          CLEANSTART_R2_RW_SECRET_ACCESS_KEY: ''
         run: |
           npm ci --no-audit --no-fund --loglevel=error > /dev/null
           npx prisma generate > /dev/null
@@ -518,6 +525,13 @@ jobs:
         run: |
           bash scripts/ops/clean-start/run.sh step "neon rehearsal: preflight"
           bash scripts/ops/clean-start/run.sh preflight neon-rehearsal
+
+      # The read-write photo token is used by apply only AFTER the reset has committed
+      # (step g, the old seal files), and no dry run holds it. Here, days before the
+      # reset and before any branch is made, it writes and deletes a throwaway object:
+      # a token pasted into the wrong box, a read-only or an expired one stops now.
+      - name: The read-write photo token can write and delete (a throwaway object)
+        run: bash scripts/ops/clean-start/photo-delete.sh probe "$GITHUB_RUN_ID"
 
       - name: A temporary Neon branch of production, never production itself
         run: |
@@ -715,6 +729,9 @@ jobs:
           bash scripts/ops/clean-start/run.sh backup-idle
           bash scripts/ops/clean-start/run.sh neon-green
           bash scripts/ops/clean-start/run.sh backup-pick 6 "$BACKUP_KEY"
+          # The read-write photo token works NOW, before the safety branch and the reset:
+          # its first real use is step g, after the COMMIT (the old seal files).
+          bash scripts/ops/clean-start/photo-delete.sh probe "$GITHUB_RUN_ID"
 
       - name: Migrations of this checkout
         run: |
@@ -974,6 +991,9 @@ jobs:
       - name: g. Remove the old seal files from the live folder (each archived first)
         run: |
           set -euo pipefail
+          # After the settle above (its answer must never wait for a token), before a seal
+          # file is touched: a read-write photo token that does not work is named as such.
+          bash scripts/ops/clean-start/photo-delete.sh probe "$GITHUB_RUN_ID"
           bash scripts/ops/clean-start/seal-archive.sh verify "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN"
           bash scripts/ops/clean-start/seal-archive.sh retire "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN" "$TARGET_RUN"
 
@@ -1120,6 +1140,9 @@ jobs:
 
       - name: The old seal files back, the abandoned chain moved aside
         run: |
+          set -euo pipefail
+          # Before a seal file is touched: the read-write photo token works.
+          bash scripts/ops/clean-start/photo-delete.sh probe "$GITHUB_RUN_ID"
           bash scripts/ops/clean-start/seal-archive.sh restore "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN" "$TARGET_RUN" "$NEW_CHAIN" \
             "$CS_DIR/exports/seal-keys-foreign.txt"
 

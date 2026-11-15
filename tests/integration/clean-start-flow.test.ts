@@ -186,14 +186,18 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     UAT_DATABASE_URL_RO: url('localhost', UAT),
   });
   const SKIPPED = /^(Install |i\. Smoke$)/;
-  const run = (file: 'clean-start.yml' | 'clean-start-photos.yml', inputs: Record<string, string>): RunResult & { runId: string } => {
+  const run = (
+    file: 'clean-start.yml' | 'clean-start-photos.yml',
+    inputs: Record<string, string>,
+    secretOverride: Record<string, string> = {}
+  ): RunResult & { runId: string } => {
     const runId = String(++runSeq);
     dropDb(RESTORE);
     const r = runWorkflow({
       file: join(tree, '.github', 'workflows', file),
       cwd: tree,
       inputs,
-      secrets: secrets(),
+      secrets: { ...secrets(), ...secretOverride },
       vars: { BACKUP_AGE_RECIPIENTS: recipient, APP_BASE_URL: 'https://app.cs-flow.invalid' },
       github: { run_id: runId, sha: SHA, ref: 'refs/heads/main', repository: 'owner/nmwc', default_branch: 'main', token: 'ght-flow' },
       baseEnv: env(),
@@ -441,12 +445,30 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expectPublic(dry);
   });
 
+  it('neon-rehearsal with the read-only key pasted into the read-write boxes stops before any branch is made (the write token is proven days before the reset)', () => {
+    // Review 2026-11-15: no run before reset night used the read-write photo token, so a
+    // swapped or read-only one was first found at apply step g, after the COMMIT.
+    const swapped = run(
+      'clean-start.yml',
+      { mode: 'neon-rehearsal', confirm_host: '127.0.0.1', confirm_phrase: '', run_id: '' },
+      { CLEANSTART_R2_RW_ACCESS_KEY_ID: SECRETS.ro, CLEANSTART_R2_RW_SECRET_ACCESS_KEY: SECRETS.ro }
+    );
+    expect(results(swapped), describeJob(swapped, 'neon_rehearsal')).toMatchObject({ plan: 'success', neon_rehearsal: 'failure' });
+    expect(swapped.lines).toContain('the read-write photo token can write and delete in the photo bucket: no');
+    expect(swapped.lines.some((l) => /refused: the read-write photo token cannot write and delete in the photo bucket/.test(l))).toBe(true);
+    expect(swapped.lines).not.toContain('Neon branch created and confirmed: yes');
+    expect(neon().branches.map((b) => b.name)).toEqual(['main']);
+    expect(listBucket('nmwc-photos', 'cleanstart-probe/')).toEqual([]);
+    expectPublic(swapped);
+  });
+
   let neonRun: RunResult & { runId: string };
   it('neon-rehearsal: reset on a branch, restored to the noted time, the exact fingerprint back, every branch deleted', async () => {
     await db.$disconnect(); // a branch is CREATE DATABASE … TEMPLATE production: no session may hold it
     neonRun = run('clean-start.yml', { mode: 'neon-rehearsal', confirm_host: '127.0.0.1', confirm_phrase: '', run_id: '' });
     expect(results(neonRun), describeJob(neonRun, 'neon_rehearsal')).toMatchObject({ plan: 'success', neon_rehearsal: 'success', rehearse: 'skipped', apply: 'skipped' });
     for (const l of [
+      'the read-write photo token can write and delete in the photo bucket: yes',
       'Neon default branch is production: yes',
       'Neon branch created and confirmed: yes',
       'Neon branch host is not production: yes',
@@ -509,6 +531,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     for (const l of [
       'green Neon rehearsal of these scripts within 14 days: yes',
       'the rehearsed backup is still the newest: yes',
+      'the read-write photo token can write and delete in the photo bucket: yes',
       'production unchanged since the plan: yes',
       'Neon branch created and confirmed: yes',
       'old seals archived, re-read and chained: yes',
@@ -538,10 +561,20 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expect(listBucket('nmwc-photos', 'seals/v1/').filter((k) => k !== FOREIGN)).toHaveLength(1);
     expect(neon().branches.map((b) => b.name)).toEqual(['main', `pre-clean-start-${omanDateISO(new Date())}-${applyA.runId}`]);
     expect(listBucket('nmwc-backups', `cleanstart/${applyA.runId}/report/`).length).toBeGreaterThanOrEqual(5);
-    // The R2 write token was used only on the photo bucket, only to delete old seal keys.
+    // The write token is proven in step a: before the safety branch, the archive and the reset.
+    const probed = applyA.lines.indexOf('the read-write photo token can write and delete in the photo bucket: yes');
+    for (const later of ['Neon branch created and confirmed: yes', 'old seals archived, re-read and chained: yes', 'reset: ok'])
+      expect(applyA.lines.indexOf(later), later).toBeGreaterThan(probed);
+    // The R2 write token was used only on the photo bucket: the probe's throwaway objects
+    // (written, read back, deleted, none left), and otherwise only to delete old seal keys.
     const calls = readFileSync(join(work, 's3.log'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
     const rw = calls.filter((c) => c.accessKeyId === 'rw-flow');
-    expect(rw.every((c) => c.bucket === 'nmwc-photos' && ['delete', 'head', 'get', 'list'].includes(c.op))).toBe(true);
+    const isProbe = (c: { key?: string }) => String(c.key ?? '').startsWith('cleanstart-probe/');
+    expect(rw.every((c) => c.bucket === 'nmwc-photos' && ['put', 'delete', 'head', 'get', 'list'].includes(c.op))).toBe(true);
+    expect(rw.filter((c) => c.op === 'put').length).toBeGreaterThan(0);
+    expect(rw.filter((c) => c.op === 'put').every(isProbe)).toBe(true);
+    expect(rw.filter((c) => c.op === 'delete').every((c) => isProbe(c) || oldSealKeys.includes(c.key))).toBe(true);
+    expect(listBucket('nmwc-photos', 'cleanstart-probe/')).toEqual([]);
     expectPublic(applyA);
   });
 

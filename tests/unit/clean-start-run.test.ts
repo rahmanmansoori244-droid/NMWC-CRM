@@ -255,6 +255,28 @@ describe('run.sh: release, approval rule, backups, rehearsal, window', () => {
     expect(run('preflight seal-restore', { ...all, DEFAULT_BRANCH: 'main', GITHUB_REF: 'refs/heads/main' }).code).toBe(0);
     expect(run('preflight nonsense').code).toBe(1);
   });
+
+  it('preflight of the Neon rehearsal names the read-write photo token (its first check, days before the reset)', () => {
+    // Review 2026-11-15: no run before reset night read the read-write pair, so a token
+    // pasted into the wrong box was first found at apply step g, after the COMMIT.
+    const base = {
+      CLEANSTART_ACTOR_USERNAME: 'x',
+      NEON_API_KEY: 'x',
+      NEON_PROJECT_ID: 'x',
+      DEFAULT_BRANCH: 'main',
+      GITHUB_REF: 'refs/heads/main',
+    };
+    const r = run('preflight neon-rehearsal', { ...base, CLEANSTART_R2_RW_ACCESS_KEY_ID: '', CLEANSTART_R2_RW_SECRET_ACCESS_KEY: '' });
+    expect(r.code).toBe(1);
+    expect(r.lines).toContain('setting CLEANSTART_R2_RW_ACCESS_KEY_ID present: no');
+    expect(r.lines).toContain('setting CLEANSTART_R2_RW_SECRET_ACCESS_KEY present: no');
+    expect(run('preflight neon-rehearsal', base).code).toBe(0);
+    // The plan job is not approval-gated and never holds the write token: it does not ask for it.
+    const src = readFileSync('scripts/ops/clean-start/run.sh', 'utf8');
+    expect(/^\s*plan\) names=\(([^)]*)\)/m.exec(src)![1]).not.toMatch(/_RW_/);
+    for (const mode of ['neon-rehearsal', 'apply', 'finish', 'seal-restore', 'photos'])
+      expect(new RegExp(`^\\s*${mode}\\) names=\\(([^)]*)\\)`, 'm').exec(src)![1], mode).toMatch(/CLEANSTART_R2_RW_ACCESS_KEY_ID CLEANSTART_R2_RW_SECRET_ACCESS_KEY/);
+  });
 });
 
 describe('run.sh settle: did the reset commit?', () => {
@@ -955,12 +977,19 @@ describe('photo-delete.sh: refuses unless it is safe, then deletes only the righ
     expect(readFileSync(join(sb.csDir, 'photo-delete.counts'), 'utf8').trim()).toBe('1 0 0 0');
   });
 
-  it('probe: the read-write token writes, reads back and deletes a throwaway object; a read-only token or a wrong bucket refuses', () => {
+  it('probe: the read-write token writes, reads back and deletes throwaway objects, by BOTH delete calls the later steps use; a read-only token or a wrong bucket refuses', () => {
     const probes = () => sb.s3Calls().filter((c) => String(c.key ?? '').startsWith('cleanstart-probe/'));
     const ok = pd(`probe ${RUN}`);
     expect([ok.code, ok.lines]).toEqual([0, ['the read-write photo token can write and delete in the photo bucket: yes']]);
     expect(probes().filter((c) => c.op === 'put' || c.op === 'delete').every((c) => c.accessKeyId === 'rw-key' && c.bucket === 'photos')).toBe(true);
+    // One object goes with delete-object (seal-archive.sh retire, restore, move), one with
+    // delete-objects (the photo deletion's batch call; the stand-in logs its batch size).
+    expect(probes().filter((c) => c.op === 'put')).toHaveLength(2);
+    const dels = probes().filter((c) => c.op === 'delete');
+    expect(dels.map((c) => (c.batch === undefined ? 'delete-object' : 'delete-objects')).sort()).toEqual(['delete-object', 'delete-objects']);
+    expect(new Set(dels.map((c) => c.key)).size).toBe(2);
     expect(existsSync(join(sb.s3, 'photos', 'cleanstart-probe')) ? readdirSync(join(sb.s3, 'photos', 'cleanstart-probe')) : []).toEqual([]);
+    expect(existsSync(join(sb.csDir, 'pd-probe.json'))).toBe(false);
     // The read-only token pasted into the read-write secret (Step 1 B and C are easy to swap).
     const ro = pd(`probe ${RUN}`, { CLEANSTART_R2_RW_ACCESS_KEY_ID: 'ro-key' });
     expect(ro.code).toBe(1);

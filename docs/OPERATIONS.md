@@ -564,7 +564,7 @@ a key the test environment also uses is kept.
 | `facts.sql`, `counter.sql`, `photos-record.sql` | small read-only questions; the next customer number in a rolled-back transaction; the photo run's one AuditLog row |
 | `run.sh`, `target-guard.sh` | the targets (the shared host list `config/production-hosts.txt`; the typed `confirm_host` and phrase), the public-log rule, encryption, storage, the GitHub and Neon calls. Neither names a database client: every database command is written in the workflow file and writes to a file |
 | `seal-archive.sh` | the old seal files: `verify`, `archive`, `retire`; `restore` after a rollback |
-| `photo-delete.sh` | the day-7 photo deletion: `check`, then `delete` |
+| `photo-delete.sh` | the day-7 photo deletion: `check`, then `delete`; `probe` proves the read-write photo token (also run by the Neon rehearsal, apply step a, finish and seal-restore) |
 | `rehearse-watch.ts`, `compare-watch.ts`, `expected-watch.json` | the first two nights of the integrity watch on a reset copy, and the first night on production, against the expected status table |
 | `.github/workflows/clean-start.yml` | jobs `Plan (read-only)`, `Rehearse on the restored backup`, `Neon rehearsal`, `Apply (the owner's approval)`, `Finish an apply (steps e-j)`, `Seal restore (after a rollback)`; modes `dry-run`, `neon-rehearsal`, `apply`, `finish`, `seal-restore` |
 | `.github/workflows/clean-start-photos.yml` | the photo deletion (phrase `DELETE TEST PHOTOS`) |
@@ -649,7 +649,12 @@ Rehearse job of an apply.
 
 ### The Neon dress rehearsal (mode `neon-rehearsal`; once, approval-gated)
 
-Plan, then (after Approve) a temporary branch `cleanstart-rehearsal-<run>` of the
+Plan, then (after Approve) the read-write photo token is proven first
+(`photo-delete.sh probe`: two throwaway objects under `cleanstart-probe/` written, read
+back and deleted, one with each delete call the later steps use). No dry run can hold
+that token (it is an environment secret), and in an apply its first real use is step g,
+after the COMMIT; this rehearsal is where a token in the wrong box shows, days before
+the reset. Then a temporary branch `cleanstart-rehearsal-<run>` of the
 default branch with a compute; its host must not be production. The default branch
 itself must be production's: one of its endpoints has the host of the first line of
 `config/production-hosts.txt` (`Neon default branch is production: yes`), checked
@@ -677,7 +682,9 @@ again at the reset). Plan and Rehearse run as in a dry run (about 20 minutes). T
 job then waits for **Approve** on `production-reset`: that click is the yes. Apply:
 
 - a. the checks again (window, production, release, reviewer, backups idle, the green
-  Neon rehearsal; the newest backup at most 6 hours old and still the one rehearsed;
+  Neon rehearsal; the newest backup at most 6 hours old and still the one rehearsed; the
+  read-write photo token proven again with `photo-delete.sh probe`, before anything is
+  made or changed;
   `plan.sql` again: `production unchanged since the plan: yes`; heartbeat); the exports
   stored again under `cleanstart/<run>/apply/` (the later modes read this copy);
 - b. Neon safety branch `pre-clean-start-<Oman date>-<run>` of production, no compute;
@@ -715,7 +722,9 @@ the operations log; nothing is to be done about it.
 **Mode `finish`** (input `run_id`, approval-gated) repeats e-j for an apply run whose
 answer to the COMMIT was lost: it settles first; when the reset did not commit it
 deletes that run's safety branch and fails with "the reset of that run did not commit;
-nothing changed on production". Its `verify.sql` runs with `scope=finish`: only the
+nothing changed on production". After the settle and before step g it proves the
+read-write photo token (`photo-delete.sh probe`), as `seal-restore` does before it puts
+a seal file back. Its `verify.sql` runs with `scope=finish`: only the
 checks that stay true while the CRM is used (`CS301`, `CS304`, `CS305`, `CS307`); the
 "still empty" checks (`CS302`, `CS303`, `CS306`) are skipped, so a saved view or a new
 request does not block it. It calls the watch only when no watch has run since the
@@ -747,8 +756,9 @@ apply run's summary. It refuses unless the reset row `cleanstart-<run_id>` exist
 at least 7 days old, the sha256 of the stored list (`cleanstart/<run_id>/apply/photo-keys.txt.age`)
 equals both the typed value and the reset row's value, and no production `Attachment`
 row references a listed key (one hit means a rollback happened: everything is refused).
-Before anything is deleted, the read-write photo token writes a throwaway object
-(`cleanstart-probe/…`), reads it back and deletes it (`photo-delete.sh probe`): a
+Before anything is deleted, the read-write photo token writes two throwaway objects
+(`cleanstart-probe/…`), reads them back and deletes them, one with each delete call
+(`photo-delete.sh probe`): a
 read-only, expired or revoked token, or a wrong bucket name, is refused there, with
 nothing deleted. Then it deletes the Neon safety branch FIRST (no rollback may be left
 pointing at missing files), skips keys without the photo shape, keeps keys the test

@@ -137,8 +137,13 @@ Repository secrets: `DIRECT_URL`, `BACKUP_AGE_IDENTITY`, `BACKUP_R2_ACCOUNT_ID`,
 `APP_BASE_URL` (the live site's address, which the runs call).
 If `BACKUP_AGE_IDENTITY` is missing, add it yourself from your handover pack. Never show
 it to anyone. You do **not** need `PROD_DB_HOST_MARKER`: nothing reads it any more.
-The first dry run also names any missing setting, in a line like
-`setting CLEANSTART_ACTOR_USERNAME present: no`.
+The first dry run names any missing setting of B, E and F, in a line like
+`setting CLEANSTART_ACTOR_USERNAME present: no`. It cannot see the secrets of C and D:
+they belong to **production-reset** and are only given to a run you approve. Those are
+first read by the Neon dress rehearsal (Step 3). It names a missing one in the same way.
+It also proves that the read-and-write photo token of C really works: it writes two small
+test files into the photo bucket and deletes them again. So do Step 3 well before reset
+day: a token pasted into the wrong box shows there, not on reset night.
 
 **G. Only if it applies.** If the photo bucket is in a different Cloudflare account from
 the backups: add the repository secret `R2_ACCOUNT_ID`. If the photo bucket is not called
@@ -243,6 +248,7 @@ changes the clean-start scripts after it, you do it again.
 **Green looks like this.** **Plan (read-only)** and **Neon rehearsal** are green, and the
 summary has:
 
+- `the read-write photo token can write and delete in the photo bucket: yes`
 - `Neon default branch is production: yes`
 - `Neon branch host is not production: yes`
 - `reset on the Neon branch: ok`
@@ -300,6 +306,7 @@ start is refused safely (`the target guard refused`), but the evening is lost.
 
 **Green looks like this.** The Apply job has a green tick, and its summary says:
 
+- `the read-write photo token can write and delete in the photo bucket: yes`
 - `production unchanged since the plan: yes`
 - `Neon default branch is production: yes`
 - `Neon branch created and confirmed: yes`
@@ -417,7 +424,7 @@ Find the bold **refused:** line in the summary. A red Apply after the line
 | `reset committed: unknown (no connection); run mode finish with this run id` or `reset committed: unknown (the check did not finish); run mode finish with this run id` | the answer was lost | send Claude the link, then run **finish** (below) the same evening when Claude says so |
 | a red Apply with `reset started at (UTC)` but no `reset committed:` line | the run was stopped, or ran out of time; the reset may have happened | press nothing; send Claude the link |
 | `the real customer file is loaded (customers exist): no` (photos) | the real file is not loaded yet | load it first (Step 6) |
-| `the read-write photo token cannot write and delete in the photo bucket (a wrong, read-only or expired token, or a wrong bucket name); nothing was deleted` (photos) | the token of Step 1 C does not work (it lasts 60 days), or the two tokens were swapped | nothing was deleted. Send Claude the link; Claude helps you make a new token |
+| `the read-write photo token cannot write and delete in the photo bucket (a wrong, read-only or expired token, or a wrong bucket name); nothing was deleted` (Neon rehearsal, apply, finish, seal-restore, photos) | the token of Step 1 C does not work (it lasts 60 days), or the two tokens were swapped | this check deleted and changed nothing. In an apply it comes before the reset, so the reset did not happen. Send Claude the link; Claude helps you make a new token |
 | `the old seal files are back, but a seal chain under seals/ cannot be named (the new chain's id was not recorded); nothing else is moved; tell Claude` (seal-restore) | the old seal files are back; one folder of seal files is unexplained | send Claude the link before anyone uses the CRM |
 | anything else | | send Claude the link; do not press anything |
 

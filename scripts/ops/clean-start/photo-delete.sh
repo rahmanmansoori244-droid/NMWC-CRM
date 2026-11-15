@@ -92,28 +92,48 @@ case "$mode" in check | delete | probe) ;; *)
 esac
 
 # probe <run id>: BEFORE anything is deleted (the Neon safety branch included),
-# the read-write photo token writes a throwaway object, reads it back and deletes
-# it, and the store then says it is gone. A swapped (read-only), expired or
-# revoked token, or a wrong bucket name, is refused here, not after the
-# irreversible steps. (A HEAD has no body: a missing bucket answers it as a
+# the read-write photo token writes two throwaway objects, reads each back and
+# deletes them, and the store then says both are gone. A swapped (read-only),
+# expired or revoked token, or a wrong bucket name, is refused here, not after
+# the irreversible steps. (A HEAD has no body: a missing bucket answers it as a
 # missing key does, so "gone" alone could never prove the bucket.)
+# One object goes with delete-object, the call seal-archive.sh uses on the old
+# seal files, and one with delete-objects, the batch call the photo deletion
+# below uses: each later step's own call is proven, not only one of the two.
+# clean-start.yml runs the probe too: in the Neon rehearsal (days before the
+# reset), in apply step a (before the safety branch and the reset), and before
+# mode finish or seal-restore touches a seal file. Until 2026-11-15 the token's
+# first use in an apply was step g, after the COMMIT.
 if [ "$mode" = probe ]; then
   [[ $list =~ ^[0-9]{1,20}$ ]] || refuse "the run id is malformed"
   : "${PHOTOS_BUCKET:?}"
-  pk="cleanstart-probe/$list-$(date -u +%s).txt"
-  printf 'clean-start photo step: a write-and-delete check of the read-write token\n' > "$CS_DIR/pd-probe.txt"
+  pk="cleanstart-probe/$list-$(date -u +%s)"
+  printf 'clean-start: a write-and-delete check of the read-write photo token\n' > "$CS_DIR/pd-probe.txt"
+  printf '{"Objects":[{"Key":"%s"}],"Quiet":true}' "$pk-b.txt" > "$CS_DIR/pd-probe.json"
   ok=1
   st=9
-  if aws_rw s3 cp "$CS_DIR/pd-probe.txt" "s3://$PHOTOS_BUCKET/$pk" --content-type text/plain > /dev/null; then
+  if aws_rw s3 cp "$CS_DIR/pd-probe.txt" "s3://$PHOTOS_BUCKET/$pk-a.txt" --content-type text/plain > /dev/null \
+    && aws_rw s3 cp "$CS_DIR/pd-probe.txt" "s3://$PHOTOS_BUCKET/$pk-b.txt" --content-type text/plain > /dev/null; then
     st=0
-    head_rw "$pk" || st=$?
-    if [ "$st" -eq 0 ] && aws_rw s3api delete-object --bucket "$PHOTOS_BUCKET" --key "$pk" > /dev/null; then
+    head_rw "$pk-a.txt" || st=$?
+    if [ "$st" -eq 0 ]; then head_rw "$pk-b.txt" || st=$?; fi
+    if [ "$st" -eq 0 ] && aws_rw s3api delete-object --bucket "$PHOTOS_BUCKET" --key "$pk-a.txt" > /dev/null \
+      && aws_rw s3api delete-objects --bucket "$PHOTOS_BUCKET" --delete "file://$CS_DIR/pd-probe.json" > /dev/null; then
       st=0
-      head_rw "$pk" || st=$?
-      [ "$st" -eq 1 ] && ok=0
+      head_rw "$pk-a.txt" || st=$?
+      if [ "$st" -eq 1 ]; then
+        st=0
+        head_rw "$pk-b.txt" || st=$?
+        [ "$st" -eq 1 ] && ok=0
+      fi
     fi
   fi
-  rm -f "$CS_DIR/pd-probe.txt"
+  if [ "$ok" -ne 0 ]; then
+    # Leave no throwaway object behind if the token could write but the check stopped half way.
+    aws_rw s3api delete-object --bucket "$PHOTOS_BUCKET" --key "$pk-a.txt" > /dev/null || true
+    aws_rw s3api delete-object --bucket "$PHOTOS_BUCKET" --key "$pk-b.txt" > /dev/null || true
+  fi
+  rm -f "$CS_DIR/pd-probe.txt" "$CS_DIR/pd-probe.json"
   note "probe=$pk ok=$ok"
   yes_no "the read-write photo token can write and delete in the photo bucket" "$ok"
   [ "$ok" -eq 0 ] || refuse "the read-write photo token cannot write and delete in the photo bucket (a wrong, read-only or expired token, or a wrong bucket name); nothing was deleted"
