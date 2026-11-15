@@ -4,7 +4,7 @@
  * a CR document) stay 'direct'; 41 (20 shops and a CR document) are 'queued'.
  */
 import { describe, expect, it } from 'vitest';
-import { PHOTO_QUEUE_FROM, photoModeFor, profilePhotoCount } from '@/lib/photo-pacing';
+import { PHOTO_QUEUE_FROM, approvalPhotoCount, photoModeFor, profilePhotoCount } from '@/lib/photo-pacing';
 
 const id = (n: number, k: string) => `${k}-${n}`;
 const shops = (n: number) => Array.from({ length: n }, (_, i) => i);
@@ -34,5 +34,45 @@ describe('customer profile', () => {
     expect(
       profilePhotoCount({ crPhoto: null, branches: [{ shopPhoto: { id: 'a' }, signboardPhoto: null }, { shopPhoto: null, signboardPhoto: null }] })
     ).toBe(1);
+  });
+});
+
+describe('approval detail', () => {
+  // The ten PhotoRow call sites, each a list of the ids it renders.
+  const rows = (n: number) => [
+    ['cr'], // CR document of a new-customer request
+    [], // guarantees
+    [], // a credit document
+    [], // the signed application
+    ...shops(n).map((i) => [id(i, 's'), id(i, 'b')]), // each branch draft
+    [], // the evidence
+    [], // CR document on file
+  ];
+  it('19 shops with 2 photos plus CR (39): direct; 20 shops plus CR (41): queued', () => {
+    expect(approvalPhotoCount(rows(19))).toBe(39);
+    expect(photoModeFor(approvalPhotoCount(rows(19)))).toBe('direct');
+    expect(approvalPhotoCount(rows(20))).toBe(41);
+    expect(photoModeFor(approvalPhotoCount(rows(20)))).toBe('queued');
+  });
+  it('counts every one of the 10 PhotoRow sources', () => {
+    const sources = [
+      'createCr',
+      'guarantees',
+      'creditDocument',
+      'signedForm',
+      'branchDraft',
+      'evidence',
+      'liveCr',
+      'liveShop',
+      'liveSignboard',
+      'liveOther',
+    ];
+    const lists = sources.map((s) => [`${s}-1`, `${s}-2`]);
+    expect(approvalPhotoCount(lists)).toBe(20);
+    for (let i = 0; i < sources.length; i++) {
+      const one = sources.map((_, j) => (j === i ? [`x-${j}`] : []));
+      expect(approvalPhotoCount(one), sources[i]).toBe(1);
+    }
+    expect(approvalPhotoCount([[null, undefined, ''], []])).toBe(0);
   });
 });
