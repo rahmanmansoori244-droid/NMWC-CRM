@@ -1107,12 +1107,21 @@ describe('photo-delete.sh: refuses unless it is safe, then deletes only the righ
     expect(existsSync(join(sb.csDir, 'pd-probe.json'))).toBe(false);
     // The read-only token pasted into the read-write secret (Step 1 B and C are easy to swap).
     // A failed check also says which call stopped it (yes/no lines; aws's words stay private).
-    const ro = pd(`probe ${RUN}`, { CLEANSTART_R2_RW_ACCESS_KEY_ID: 'ro-key' });
+    const roSummary = join(sb.root, 'summary-probe.md');
+    writeFileSync(roSummary, '');
+    const ro = pd(`probe ${RUN}`, { CLEANSTART_R2_RW_ACCESS_KEY_ID: 'ro-key', GITHUB_STEP_SUMMARY: roSummary });
     expect(ro.code).toBe(1);
-    expect(ro.lines.slice(0, 2)).toEqual([
+    const refusal = 'the read-write photo token cannot write and delete in the photo bucket (a wrong, read-only or expired token, or a wrong bucket name); nothing was deleted';
+    // The red annotation says what refused: a token check, not a photo deletion (the probe
+    // also gates the Neon rehearsal, the apply, finish and seal-restore). The bold summary
+    // line the guide quotes is unchanged.
+    expect(ro.lines).toEqual([
       'photo token check: the test objects were written: no',
       'the read-write photo token can write and delete in the photo bucket: no',
+      `::error::photo token check refused: ${refusal}`,
     ]);
+    expect(ro.out).not.toMatch(/photo deletion refused/);
+    expect(readFileSync(roSummary, 'utf8')).toContain(`- **refused: ${refusal}**\n`);
     // The store refuses the BATCH delete only (the photo deletion's call; the first real run
     // is where it first meets the real store): named, and no test object is left behind.
     const shim = join(sb.root, 'shim-batch');
@@ -1137,7 +1146,8 @@ describe('photo-delete.sh: refuses unless it is safe, then deletes only the righ
     const nb = pd(`probe ${RUN}`, { FAKE_S3_MISSING_BUCKETS: 'photos' });
     expect(nb.code).toBe(1);
     expect(nb.out).toMatch(/nothing was deleted/);
-    expect(pd('probe x').code).toBe(1);
+    const bad = pd('probe x');
+    expect([bad.code, bad.lines]).toEqual([1, ['::error::photo token check refused: the run id is malformed']]);
   });
 
   it('a batch size can only be made smaller, never above 1000', () => {
@@ -1203,7 +1213,9 @@ describe('the work folder: no default, refused when missing (it was a job env: v
     ['run.sh shred', 'bash scripts/ops/clean-start/run.sh shred', 'clean start refused'],
     ['run.sh safety-cleanup', 'bash scripts/ops/clean-start/run.sh safety-cleanup', 'clean start refused'],
     ['seal-archive.sh verify', 'bash scripts/ops/clean-start/seal-archive.sh verify x.jsonl none', 'seal archive refused'],
-    ['photo-delete.sh check', 'bash scripts/ops/clean-start/photo-delete.sh check a b c', 'photo deletion refused'],  ] as const;
+    ['photo-delete.sh check', 'bash scripts/ops/clean-start/photo-delete.sh check a b c', 'photo deletion refused'],
+    ['photo-delete.sh probe', 'bash scripts/ops/clean-start/photo-delete.sh probe 1', 'photo token check refused'],
+  ] as const;
   it.each(calls)('%s refuses an unset, empty, relative or root CS_DIR, before anything else', (_n, cmd, who) => {
     for (const v of ['', 'relative/work', '/', 'C:x', 'a:b']) {
       const before = readdirSync(sb.root).sort();

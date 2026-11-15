@@ -42,8 +42,13 @@ say() {
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then printf -- '- %s\n' "$1" >> "$GITHUB_STEP_SUMMARY"; fi
 }
 yes_no() { if [ "$2" -eq 0 ]; then say "$1: yes"; else say "$1: no"; fi; }
+# The red annotation names what refused: the probe also gates the Neon rehearsal, the
+# apply, finish and seal-restore, where no photo was about to be deleted. The bold
+# summary line ("refused: …", which the guide quotes) is the same for both.
+REFUSED_WHO="photo deletion refused"
+if [ "${1:-}" = probe ]; then REFUSED_WHO="photo token check refused"; fi
 refuse() {
-  echo "::error::photo deletion refused: $1"
+  echo "::error::$REFUSED_WHO: $1"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then printf -- '- **refused: %s**\n' "$1" >> "$GITHUB_STEP_SUMMARY"; fi
   exit 1
 }
