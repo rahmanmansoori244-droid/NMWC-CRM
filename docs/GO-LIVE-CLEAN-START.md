@@ -175,10 +175,11 @@ it, the photo step still works.
 **K. Your operations log.** In your private handover pack, start the entry: the date,
 "go-live clean start", your decisions, "I authorise it". Leave space for the run link,
 the plan id and the results. On reset day the Audit page shows that the clean start
-happened and why, but **not** how many records of each kind were removed: those figures
-are then only in the run's encrypted report. Claude's small follow-up change, which goes
-live after the reset when you say so, adds them under that entry ("What was removed and
-kept"). If you want them in your log before then, Claude reads the report with you.
+happened and why. How many records of each kind were removed is listed under that entry
+("What was removed and kept") only once Claude's small follow-up change is live; it goes
+live when you say so, before or after the reset. Until then those figures are only in
+the run's encrypted report: if you want them in your log, Claude reads the report with
+you.
 
 **L. Everyone signs out.** Before reset day, every person who tested the CRM presses
 **Sign out** on every phone and computer they used. Signing out also deletes the unsent
@@ -396,10 +397,10 @@ from that line. Save. (The automatic backup runs at about 06:00 Oman.)
      "Different shop: release…" lets the row through with a typed reason. If you are
      unsure, ask Claude first.
 
-Once Claude's small follow-up change is live (after the reset, when you say so), a
-dashboard comparison whose earlier period starts before the reset shows "No earlier data
-yet to compare with" instead of an up or down figure. Until then, those comparisons
-compare with empty days: read them from the reset day on.
+Once Claude's small follow-up change is live (when you say so, before or after the
+reset), a dashboard comparison whose earlier period starts before the reset shows "No
+earlier data yet to compare with" instead of an up or down figure. Until then, those
+comparisons compare with empty days: read them from the reset day on.
 
 **From this import on there is no way back** for the database. Mistakes are then fixed
 forward.

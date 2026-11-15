@@ -871,8 +871,8 @@ operations-log entry, written before and completed after. The compliance notes:
 `db-backup.yml` stops printing the total row count; `lib/test-records.ts`
 `KNOWN_TEST_RECORDS.customerCode` is no longer a test record (§7, "Flag a test record").
 
-**Follow-up release 1** (branch `claude/follow-up-1`; live only after the reset, when
-the owner says so; no migration): the Audit page shows the reset row's removed and kept
+**Follow-up release 1** (branch `claude/follow-up-1`; live when the owner says so,
+before or after the reset; no migration): the Audit page shows the reset row's removed and kept
 counts (owner question 10, default yes; above). And the dashboard no longer compares
 with emptied days: a tile, sentence or note that compares a period with the one before
 it (New customers, Customers updated, Branches closed, the "What stands out" sentence on

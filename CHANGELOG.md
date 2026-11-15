@@ -438,4 +438,3 @@ Three adversarial reviews of the items above found these; each is fixed with a t
 - **How:** `app/(app)/notifications/page.tsx` (the same count by kind as `app/(app)/layout.tsx`).
 - **Docs:** `AUDITOR-BRIEF.md` (F1 notifications).
 - **Tests:** `tests/unit/notifications-unread-count.test.tsx` (new: 100 read rows shown and 43 older unread ones; nothing unread — the first fails without the change).
-
