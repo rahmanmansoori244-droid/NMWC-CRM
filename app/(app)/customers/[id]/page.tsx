@@ -456,6 +456,7 @@ function PhotoRow({ label, photo, mode }: { label: string; photo: { id: string }
             className="inline-flex items-center gap-2 rounded-md bg-emerald-50 px-2 py-1 text-sm font-medium text-emerald-700 ring-1 ring-emerald-200 hover:bg-emerald-100"
           >
             <RoutePhoto
+              key={photo.id}
               id={photo.id}
               alt={label}
               className="h-10 w-10 rounded object-cover ring-1 ring-emerald-200"
@@ -483,7 +484,7 @@ function PhotoTile({ label, photo, mode }: { label: string; photo: { id: string 
         className="relative flex h-24 flex-1 items-end overflow-hidden rounded-md border border-emerald-200 bg-emerald-50 text-sm font-medium text-white"
         aria-label={`${label} photo`}
       >
-        <RoutePhoto id={photo.id} alt={label} className="absolute inset-0 h-full w-full object-cover" mode={mode} />
+        <RoutePhoto key={photo.id} id={photo.id} alt={label} className="absolute inset-0 h-full w-full object-cover" mode={mode} />
         <span className="relative z-10 inline-flex items-center gap-1 bg-black/45 px-2 py-1 text-xs">
           <Camera className="h-3 w-3" /> {label}
         </span>
