@@ -261,6 +261,13 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
 
   afterAll(async () => {
     await db?.$disconnect();
+    // The Rehearse job silences its database server's log (ALTER SYSTEM: on a runner that is
+    // the job's own service container; here it is this cluster). Hand the cluster back as
+    // its own configuration file has it.
+    for (const s of ['log_min_messages', 'log_min_error_statement', 'log_error_verbosity']) {
+      try { sql(adminUrl, `ALTER SYSTEM RESET ${s}`); } catch { /* best effort */ }
+    }
+    try { sql(adminUrl, 'SELECT pg_reload_conf()'); } catch { /* best effort */ }
     if (work && process.env.CS_FLOW_KEEP_WORK !== '1') {
       for (const d of [PROD, PRISTINE, RESTORE, UAT]) {
         try { dropDb(d); } catch { /* best effort */ }
@@ -410,6 +417,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
       'environment production-reset has a required reviewer: yes',
       'exports match the plan: yes',
       'other objects under seals/ (reported once on the first night): yes',
+      'the rehearsal database keeps rows and statements out of its own log: yes',
       'backup restored with no error: yes',
       'restored backup passes restore-verify against its manifest: yes',
       'backup equals production: yes',
@@ -421,6 +429,10 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     ])
       expect(dry.lines, l).toContain(l);
     expect(notRunHere(dry)).toEqual(['Install dependencies', 'Install the Postgres 17 client and age', 'actions/checkout@v7', 'actions/setup-node@v7']);
+    // The server the backup was restored into logs nothing below PANIC: GitHub prints a
+    // service container's own log into the public job log, failing rows and all.
+    expect(dry.lines.indexOf('the rehearsal database keeps rows and statements out of its own log: yes')).toBeLessThan(dry.lines.indexOf('backup decrypted: yes'));
+    expect([sql(adminUrl, 'SHOW log_min_messages'), sql(adminUrl, 'SHOW log_min_error_statement'), sql(adminUrl, 'SHOW log_error_verbosity')]).toEqual(['panic', 'panic', 'terse']);
     expect(await auditIds()).toEqual(before);
     expect(listBucket('nmwc-backups', `cleanstart/${dry.runId}/plan/`)).toEqual(
       ['photo-keys.txt.age', 'plan-id.txt.age', 'plan.json.age', 'seal-keys-foreign.txt.age', 'seals.jsonl.age'].map((f) => `cleanstart/${dry.runId}/plan/${f}`)

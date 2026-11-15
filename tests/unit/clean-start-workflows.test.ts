@@ -143,6 +143,42 @@ describe('every run: block', () => {
       for (const c of commands(s.run!))
         if (/\b(npm|npx)\b/.test(c)) expect(c, `${f} ${id}`).toMatch(/> (\/dev\/null|"\$CS_DIR\/[^"]+")/);
   });
+
+  it('a job with a database SERVICE CONTAINER silences the server\'s own log before any data reaches it (the runner prints that log at the end, green or red)', () => {
+    // Review 2026-11-15, blocker: the runner prints every service container's
+    // `docker logs` into the public job log ("Print service container logs"), and
+    // Postgres writes each ERROR there with the failing row (CONTEXT: COPY ..., line
+    // N: "<row>"; DETAIL: Failing row contains (...)). The files under CS_DIR hold
+    // only the client's copy. The Rehearse job restores the real backup into such a
+    // container; no other clean-start job has one.
+    const withService = allJobs().filter(([, , j]) => j.services !== undefined);
+    expect(withService.map(([f, id]) => `${f} ${id}`)).toEqual(['clean-start.yml rehearse']);
+    for (const [f, id, j] of withService) {
+      const where = `${f} ${id}`;
+      const quiet = j.steps.findIndex((s) => /ALTER SYSTEM/.test(s.run ?? ''));
+      expect(quiet, where).toBeGreaterThan(0);
+      const step = j.steps[quiet]!;
+      expect(step.if, where).toBeUndefined();
+      const cs = commands(step.run!);
+      const set = cs.find((c) => /ALTER SYSTEM/.test(c))!;
+      for (const s of ["log_min_messages = 'panic'", "log_min_error_statement = 'panic'", "log_error_verbosity = 'terse'"])
+        expect(set, where).toContain(`-c "ALTER SYSTEM SET ${s}"`);
+      expect(set, where).toMatch(/^psql "\$CS_PG_ADMIN_URL" [^|;&]*-c "SELECT pg_reload_conf\(\)" > "\$CS_DIR\/quiet\.out" 2>&1 \|\| rc=\$\?$/);
+      // Read back in a new session, and refused (not merely recorded) unless all three took.
+      expect(step.run, where).toContain(
+        `-c "SELECT current_setting('log_min_messages') = 'panic' AND current_setting('log_min_error_statement') = 'panic' AND current_setting('log_error_verbosity') = 'terse'" > "$CS_DIR/quiet.out" 2>&1`
+      );
+      const last = cs.filter((c) => c !== '').at(-1)!;
+      expect(last, where).toMatch(/^bash scripts\/ops\/clean-start\/run\.sh bool "[^"]+" "\$CS_DIR\/quiet\.out"$/);
+      // Before the backup is downloaded, and before any other step touches a database.
+      const touches = (s: Step) => /backup-fetch|restore-load|pg_dump|"\$(REHEARSE_URL|CS_PG_ADMIN_URL)"/.test(s.run ?? '');
+      const first = j.steps.findIndex((s, i) => i !== quiet && touches(s));
+      expect(first, where).toBeGreaterThan(quiet);
+      expect(j.steps[quiet + 1]!.run, where).toMatch(/run\.sh backup-fetch/);
+      // Nothing later turns the log back on.
+      for (const s of j.steps.slice(quiet + 1)) expect(s.run ?? '', `${where}: ${s.name}`).not.toMatch(/ALTER SYSTEM|pg_reload_conf|log_min_|log_statement|log_error_verbosity/);
+    }
+  });
 });
 
 describe('targets', () => {

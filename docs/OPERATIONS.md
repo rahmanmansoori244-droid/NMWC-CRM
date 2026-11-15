@@ -616,8 +616,13 @@ The photo run: `run_id`, `list_sha256`, `confirm_host`, `confirm_phrase`
 
 ### Dry runs (mode `dry-run`; changes nothing on production)
 
-"Rehearse on the restored backup" downloads the dump the plan picked, decrypts it,
-restores it into a Postgres 17 service container, runs `restore-verify.ts --manifest`,
+"Rehearse on the restored backup" first silences its Postgres 17 service container's own
+log (`ALTER SYSTEM`: nothing below PANIC, no statement text, terse; read back, and the
+job refuses unless it took): GitHub prints every service container's log into the public
+job log when the job ends, green or red, and Postgres would write a failing row there
+(`the rehearsal database keeps rows and statements out of its own log: yes`). Only then
+it downloads the dump the plan picked, decrypts it,
+restores it into that container, runs `restore-verify.ts --manifest`,
 and runs `plan.sql` on it: its plan id must equal production's (`backup equals
 production: yes`), which proves the backup holds exactly what the reset will remove and
 keep. A sign-in or any other write between the backup and the plan changes the plan id
