@@ -127,7 +127,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Preflight
@@ -290,7 +293,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
@@ -320,6 +326,29 @@ jobs:
         run: |
           bash scripts/ops/clean-start/run.sh step "rehearse: target"
           bash scripts/ops/clean-start/run.sh rehearse-target REHEARSE_URL
+
+      # PUBLIC LOG. When a job ends, green or red, the runner prints every service
+      # container's own log (docker logs) into the job log, and Postgres writes
+      # each ERROR there with its DETAIL, CONTEXT and STATEMENT lines: the row a
+      # COPY stopped at, "Failing row contains (...)", "Key (...)=(...)". The steps
+      # below keep the CLIENT's copy of such text in files under CS_DIR; nothing
+      # but this step reaches the SERVER's copy. So before the backup is even
+      # downloaded the container is told to log nothing below PANIC, the settings
+      # are read back in a new session, and the job refuses unless they took.
+      - name: The rehearsal database keeps rows and statements out of its own log
+        run: |
+          set -euo pipefail
+          rc=0
+          psql "$CS_PG_ADMIN_URL" -X -q -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET log_min_messages = 'panic'" -c "ALTER SYSTEM SET log_min_error_statement = 'panic'" -c "ALTER SYSTEM SET log_error_verbosity = 'terse'" -c "SELECT pg_reload_conf()" > "$CS_DIR/quiet.out" 2>&1 || rc=$?
+          bash scripts/ops/clean-start/run.sh sql "rehearsal database log settings" "$rc" "$CS_DIR/quiet.out"
+          for _ in 1 2 3 4 5; do
+            rc=0
+            psql "$CS_PG_ADMIN_URL" -X -q -At -v ON_ERROR_STOP=1 -c "SELECT current_setting('log_min_messages') = 'panic' AND current_setting('log_min_error_statement') = 'panic' AND current_setting('log_error_verbosity') = 'terse'" > "$CS_DIR/quiet.out" 2>&1 || rc=$?
+            if [ "$rc" -eq 0 ] && [ "$(tr -d '\r[:space:]' < "$CS_DIR/quiet.out")" = t ]; then break; fi
+            sleep 2
+          done
+          bash scripts/ops/clean-start/run.sh sql "rehearsal database log settings read back" "$rc" "$CS_DIR/quiet.out"
+          bash scripts/ops/clean-start/run.sh bool "the rehearsal database keeps rows and statements out of its own log" "$CS_DIR/quiet.out"
 
       - name: Download and decrypt the backup
         id: fetch
@@ -433,6 +462,11 @@ jobs:
       PHOTOS_BUCKET: ${{ vars.R2_BUCKET || 'nmwc-photos' }}
       CLEANSTART_R2_RO_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RO_ACCESS_KEY_ID }}
       CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RO_SECRET_ACCESS_KEY }}
+      # Read here only by the probe below: this rehearsal is the first run, days before
+      # the reset, that proves the read-write photo token (apply, finish and seal-restore
+      # need it for the old seal files, the photo step for the photos).
+      CLEANSTART_R2_RW_ACCESS_KEY_ID: ${{ secrets.CLEANSTART_R2_RW_ACCESS_KEY_ID }}
+      CLEANSTART_R2_RW_SECRET_ACCESS_KEY: ${{ secrets.CLEANSTART_R2_RW_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: auto
       AWS_EC2_METADATA_DISABLED: 'true'
     steps:
@@ -473,6 +507,8 @@ jobs:
           PHOTOS_R2_ACCOUNT_ID: ''
           CLEANSTART_R2_RO_ACCESS_KEY_ID: ''
           CLEANSTART_R2_RO_SECRET_ACCESS_KEY: ''
+          CLEANSTART_R2_RW_ACCESS_KEY_ID: ''
+          CLEANSTART_R2_RW_SECRET_ACCESS_KEY: ''
         run: |
           npm ci --no-audit --no-fund --loglevel=error > /dev/null
           npx prisma generate > /dev/null
@@ -489,6 +525,13 @@ jobs:
         run: |
           bash scripts/ops/clean-start/run.sh step "neon rehearsal: preflight"
           bash scripts/ops/clean-start/run.sh preflight neon-rehearsal
+
+      # The read-write photo token is used by apply only AFTER the reset has committed
+      # (step g, the old seal files), and no dry run holds it. Here, days before the
+      # reset and before any branch is made, it writes and deletes a throwaway object:
+      # a token pasted into the wrong box, a read-only or an expired one stops now.
+      - name: The read-write photo token can write and delete (a throwaway object)
+        run: bash scripts/ops/clean-start/photo-delete.sh probe "$GITHUB_RUN_ID"
 
       - name: A temporary Neon branch of production, never production itself
         run: |
@@ -550,11 +593,19 @@ jobs:
             npx vitest run tests/integration/clean-start-watch.test.ts > "$CS_DIR/watch.out" 2>&1 || rc=$?
           bash scripts/ops/clean-start/run.sh watch-lines "$CS_DIR/watch.out" "$rc"
 
-      - name: Neon restores the branch to the noted time, and the fingerprint returns
+      # Neon's own point-in-time restore works on root branches only, and this
+      # branch is a child of production: Neon makes a NEW branch from this one's
+      # history at the noted time instead. neon-uri then hands its connection
+      # string to the next step (a GITHUB_ENV value reaches only later steps).
+      - name: Neon makes a copy of the branch as it was at the noted time
         run: |
           set -euo pipefail
-          bash scripts/ops/clean-start/run.sh neon-restore "$CS_RESTORE_TO" "cleanstart-rehearsal-$GITHUB_RUN_ID-after"
+          bash scripts/ops/clean-start/run.sh neon-restore "$CS_RESTORE_TO" "cleanstart-rehearsal-$GITHUB_RUN_ID-at"
           bash scripts/ops/clean-start/run.sh neon-uri
+
+      - name: The copy at the noted time has the exact fingerprint again
+        run: |
+          set -euo pipefail
           bash scripts/ops/clean-start/run.sh rehearse-target CS_BRANCH_URL
           mkdir -p "$CS_DIR/nplan1"
           rc=0
@@ -641,7 +692,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
@@ -675,6 +729,9 @@ jobs:
           bash scripts/ops/clean-start/run.sh backup-idle
           bash scripts/ops/clean-start/run.sh neon-green
           bash scripts/ops/clean-start/run.sh backup-pick 6 "$BACKUP_KEY"
+          # The read-write photo token works NOW, before the safety branch and the reset:
+          # its first real use is step g, after the COMMIT (the old seal files).
+          bash scripts/ops/clean-start/photo-delete.sh probe "$GITHUB_RUN_ID"
 
       - name: Migrations of this checkout
         run: |
@@ -740,7 +797,13 @@ jobs:
           fi
           bash scripts/ops/clean-start/run.sh sql "reset" "$rc" "$CS_DIR/reset.out"
 
+      # Also after a reset Postgres refused (exit 3: rolled back, e.g. CS013 when
+      # someone used the CRM during the approval wait), so the summary says
+      # "reset committed: no (nothing changed)" as the owner's guide promises.
+      # Not after a cancel, a timeout or another failure: the transaction may
+      # still be ending then, and only mode finish, later, settles it.
       - name: e-f. Did it commit? Verify (read-only)
+        if: success() || (failure() && env.CS_RESET_RC == '3')
         env:
           PGOPTIONS: -c default_transaction_read_only=on
         run: |
@@ -781,6 +844,12 @@ jobs:
           set -uo pipefail
           # Nothing to report when the work folder was never set (the first step failed).
           if [ -z "${CS_DIR:-}" ] || [ ! -d "$CS_DIR" ]; then exit 0; fi
+          # FIRST the two values the owner copies for the photo step (printed only for a
+          # reset that committed). This shell stops at the first failing command, so an
+          # upload that fails below must not come before them: the step still ends red.
+          if [ -f "$CS_DIR/aplan/plan-id.txt" ]; then
+            bash scripts/ops/clean-start/run.sh for-the-owner "$CS_DIR/aplan/plan-id.txt"
+          fi
           if [ "${CS_COMMITTED:-}" = yes ]; then
             PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
               -v fact=reset-report -v run_id="$GITHUB_RUN_ID" > "$CS_DIR/reset-report.json" 2>&1 || true
@@ -791,9 +860,6 @@ jobs:
           done
           if [ "${#FILES[@]}" -gt 0 ]; then
             bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$GITHUB_RUN_ID/report" "${FILES[@]}"
-          fi
-          if [ -f "$CS_DIR/aplan/plan-id.txt" ]; then
-            bash scripts/ops/clean-start/run.sh for-the-owner "$CS_DIR/aplan/plan-id.txt"
           fi
 
       - name: Safety branch kept only when the reset committed (or may have)
@@ -868,7 +934,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
@@ -925,6 +994,9 @@ jobs:
       - name: g. Remove the old seal files from the live folder (each archived first)
         run: |
           set -euo pipefail
+          # After the settle above (its answer must never wait for a token), before a seal
+          # file is touched: a read-write photo token that does not work is named as such.
+          bash scripts/ops/clean-start/photo-delete.sh probe "$GITHUB_RUN_ID"
           bash scripts/ops/clean-start/seal-archive.sh verify "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN"
           bash scripts/ops/clean-start/seal-archive.sh retire "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN" "$TARGET_RUN"
 
@@ -966,15 +1038,17 @@ jobs:
           set -uo pipefail
           # Nothing to report when the work folder was never set (the first step failed).
           if [ -z "${CS_DIR:-}" ] || [ ! -d "$CS_DIR" ]; then exit 0; fi
+          # FIRST the two values for the photo step (only when the settle above said the
+          # reset committed), so that an upload failing below cannot hide them.
+          if [ -f "$CS_DIR/exports/plan-id.txt" ]; then
+            bash scripts/ops/clean-start/run.sh for-the-owner "$CS_DIR/exports/plan-id.txt" "$TARGET_RUN"
+          fi
           FILES=()
           for f in verify.out watch-results.tsv compare.out smoke.out seal-archive.report; do
             if [ -f "$CS_DIR/$f" ]; then FILES+=("$CS_DIR/$f"); fi
           done
           if [ "${#FILES[@]}" -gt 0 ] && [[ ${TARGET_RUN:-} =~ ^[0-9]{1,20}$ ]]; then
             bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$TARGET_RUN/finish" "${FILES[@]}"
-          fi
-          if [ -f "$CS_DIR/exports/plan-id.txt" ]; then
-            bash scripts/ops/clean-start/run.sh for-the-owner "$CS_DIR/exports/plan-id.txt" "$TARGET_RUN"
           fi
 
       - name: Remove the plaintext
@@ -1033,7 +1107,10 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age > /dev/null
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 > /dev/null
+          # age comes from the Ubuntu universe mirror, which flakes now and then (db-backup.yml): one retry.
+          sudo apt-get install -y --no-install-recommends age > /dev/null \
+            || { sleep 20; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > /dev/null; }
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
 
       - name: Preflight, production named, the apply run's exports
@@ -1051,7 +1128,8 @@ jobs:
           done
           echo "OLD_CHAIN=$(sed -n 's/^old_chain=//p' "$CS_DIR/exports/plan-id.txt" | tr -d '\r')" >> "$GITHUB_ENV"
 
-          # Which folder under seals/ is production's NEW chain (recorded by apply step h or finish).
+          # Which folder under seals/ is production's NEW chain (recorded by apply step h or finish);
+          # "none" when nothing was recorded (the old files then go back, nothing is moved).
           bash scripts/ops/clean-start/run.sh chain-id-fetch "$TARGET_RUN"
 
       - name: Production is back to before the reset (read-only)
@@ -1067,7 +1145,11 @@ jobs:
 
       - name: The old seal files back, the abandoned chain moved aside
         run: |
-          bash scripts/ops/clean-start/seal-archive.sh restore "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN" "$TARGET_RUN" "$NEW_CHAIN"
+          set -euo pipefail
+          # Before a seal file is touched: the read-write photo token works.
+          bash scripts/ops/clean-start/photo-delete.sh probe "$GITHUB_RUN_ID"
+          bash scripts/ops/clean-start/seal-archive.sh restore "$CS_DIR/exports/seals.jsonl" "$OLD_CHAIN" "$TARGET_RUN" "$NEW_CHAIN" \
+            "$CS_DIR/exports/seal-keys-foreign.txt"
 
       - name: The integrity watch, once
         run: |

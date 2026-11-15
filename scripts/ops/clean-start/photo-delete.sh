@@ -42,8 +42,13 @@ say() {
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then printf -- '- %s\n' "$1" >> "$GITHUB_STEP_SUMMARY"; fi
 }
 yes_no() { if [ "$2" -eq 0 ]; then say "$1: yes"; else say "$1: no"; fi; }
+# The red annotation names what refused: the probe also gates the Neon rehearsal, the
+# apply, finish and seal-restore, where no photo was about to be deleted. The bold
+# summary line ("refused: …", which the guide quotes) is the same for both.
+REFUSED_WHO="photo deletion refused"
+if [ "${1:-}" = probe ]; then REFUSED_WHO="photo token check refused"; fi
 refuse() {
-  echo "::error::photo deletion refused: $1"
+  echo "::error::$REFUSED_WHO: $1"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then printf -- '- **refused: %s**\n' "$1" >> "$GITHUB_STEP_SUMMARY"; fi
   exit 1
 }
@@ -71,12 +76,99 @@ aws_rw() {
 }
 sorted() { tr -d '\r' < "$1" | grep -v '^$' | LC_ALL=C sort -u || true; }
 
+# head_rw <key>: 0 = there, 1 = definitely not found, 2 = unknown (the read-write token).
+head_rw() {
+  local rc=0
+  AWS_ACCESS_KEY_ID="${CLEANSTART_R2_RW_ACCESS_KEY_ID:?}" AWS_SECRET_ACCESS_KEY="${CLEANSTART_R2_RW_SECRET_ACCESS_KEY:?}" \
+    aws s3api head-object --bucket "$PHOTOS_BUCKET" --key "$1" --endpoint-url "https://${PHOTOS_R2_ACCOUNT_ID:?}.r2.cloudflarestorage.com" \
+    > /dev/null 2> "$CS_DIR/pd-head.err" || rc=$?
+  cat "$CS_DIR/pd-head.err" >> "$CS_DIR/aws.log" 2>/dev/null || true
+  if [ "$rc" -eq 0 ]; then rm -f "$CS_DIR/pd-head.err"; return 0; fi
+  if grep -qE '\((404|NoSuchKey|NotFound)\)|Not Found' "$CS_DIR/pd-head.err"; then rm -f "$CS_DIR/pd-head.err"; return 1; fi
+  rm -f "$CS_DIR/pd-head.err"
+  return 2
+}
+
 mode="${1:-}"
 list="${2:-}"
-case "$mode" in check | delete) ;; *)
-  echo "usage: photo-delete.sh check <list> <reset row> <production keys> [uat keys] | delete <list> [uat keys]" >&2
+case "$mode" in check | delete | probe) ;; *)
+  echo "usage: photo-delete.sh check <list> <reset row> <production keys> [uat keys] | delete <list> [uat keys] | probe <run id>" >&2
   exit 2 ;;
 esac
+
+# probe <run id>: BEFORE anything is deleted (the Neon safety branch included),
+# the read-write photo token writes two throwaway objects, reads each back and
+# deletes them, and the store then says both are gone. A swapped (read-only),
+# expired or revoked token, or a wrong bucket name, is refused here, not after
+# the irreversible steps. (A HEAD has no body: a missing bucket answers it as a
+# missing key does, so "gone" alone could never prove the bucket.)
+# One object goes with delete-object, the call seal-archive.sh uses on the old
+# seal files, and one with delete-objects, the batch call the photo deletion
+# below uses: each later step's own call is proven, not only one of the two.
+# clean-start.yml runs the probe too: in the Neon rehearsal (days before the
+# reset), in apply step a (before the safety branch and the reset), and before
+# mode finish or seal-restore touches a seal file. Until 2026-11-15 the token's
+# first use in an apply was step g, after the COMMIT.
+if [ "$mode" = probe ]; then
+  [[ $list =~ ^[0-9]{1,20}$ ]] || refuse "the run id is malformed"
+  : "${PHOTOS_BUCKET:?}"
+  pk="cleanstart-probe/$list-$(date -u +%s)"
+  printf 'clean-start: a write-and-delete check of the read-write photo token\n' > "$CS_DIR/pd-probe.txt"
+  printf '{"Objects":[{"Key":"%s"}],"Quiet":true}' "$pk-b.txt" > "$CS_DIR/pd-probe.json"
+  ok=1
+  wrote=1
+  readback=1
+  one=1
+  batch=1
+  gone=1
+  st=9
+  # Each upload is sent as the uploads proven on the real R2 are (db-backup.yml, run.sh
+  # encrypt-upload): s3 cp with --checksum-algorithm CRC32 and no other option, so the
+  # probe that gates the rehearsal and the apply is never the first upload of a new shape.
+  if aws_rw s3 cp "$CS_DIR/pd-probe.txt" "s3://$PHOTOS_BUCKET/$pk-a.txt" --checksum-algorithm CRC32 > /dev/null \
+    && aws_rw s3 cp "$CS_DIR/pd-probe.txt" "s3://$PHOTOS_BUCKET/$pk-b.txt" --checksum-algorithm CRC32 > /dev/null; then
+    wrote=0
+    st=0
+    head_rw "$pk-a.txt" || st=$?
+    if [ "$st" -eq 0 ]; then head_rw "$pk-b.txt" || st=$?; fi
+    if [ "$st" -eq 0 ]; then
+      readback=0
+      if aws_rw s3api delete-object --bucket "$PHOTOS_BUCKET" --key "$pk-a.txt" > /dev/null; then one=0; fi
+      if aws_rw s3api delete-objects --bucket "$PHOTOS_BUCKET" --delete "file://$CS_DIR/pd-probe.json" > /dev/null; then batch=0; fi
+      if [ "$one" -eq 0 ] && [ "$batch" -eq 0 ]; then
+        st=0
+        head_rw "$pk-a.txt" || st=$?
+        if [ "$st" -eq 1 ]; then
+          st=0
+          head_rw "$pk-b.txt" || st=$?
+          if [ "$st" -eq 1 ]; then gone=0; fi
+        fi
+        if [ "$gone" -eq 0 ]; then ok=0; fi
+      fi
+    fi
+  fi
+  if [ "$ok" -ne 0 ]; then
+    # Which call stopped it, as yes/no lines for the summary (the store's own words stay
+    # in the private log). No real run has made these calls yet: the first one that
+    # fails should say which, not only "the token cannot write and delete".
+    yes_no "photo token check: the test objects were written" "$wrote"
+    if [ "$wrote" -eq 0 ]; then yes_no "photo token check: the test objects were read back" "$readback"; fi
+    if [ "$readback" -eq 0 ]; then
+      yes_no "photo token check: one object deleted (the call used for seal files)" "$one"
+      yes_no "photo token check: a batch deleted (the call used for photos)" "$batch"
+      if [ "$one" -eq 0 ] && [ "$batch" -eq 0 ]; then yes_no "photo token check: both objects confirmed gone" "$gone"; fi
+    fi
+    # Leave no throwaway object behind if the token could write but the check stopped half way.
+    aws_rw s3api delete-object --bucket "$PHOTOS_BUCKET" --key "$pk-a.txt" > /dev/null || true
+    aws_rw s3api delete-object --bucket "$PHOTOS_BUCKET" --key "$pk-b.txt" > /dev/null || true
+  fi
+  rm -f "$CS_DIR/pd-probe.txt" "$CS_DIR/pd-probe.json"
+  note "probe=$pk ok=$ok"
+  yes_no "the read-write photo token can write and delete in the photo bucket" "$ok"
+  [ "$ok" -eq 0 ] || refuse "the read-write photo token cannot write and delete in the photo bucket (a wrong, read-only or expired token, or a wrong bucket name); nothing was deleted"
+  exit 0
+fi
+
 [ -f "$list" ] || refuse "the stored key list is missing"
 
 if [ "$mode" = check ]; then
@@ -122,6 +214,15 @@ yes_no "keys skipped because they do not have the photo shape" "$([ "$skipped_sh
 yes_no "keys kept because the test environment uses them" "$([ "$skipped_uat" -gt 0 ]; echo $?)"
 
 : "${PHOTOS_BUCKET:?}"
+listed="$(wc -l < "$CS_DIR/pd-list" | tr -d ' ')"
+# The numbers for the in-app record (photos-record.sql), never the log. Written
+# HERE, before the first deletion, with nothing confirmed gone yet, and again at
+# the end. If this step is cancelled or runs out of time in between (the
+# confirmation below makes one call per key), the record step still finds the
+# run's numbers and writes its row as NOT complete. Before 2026-11-15 it found
+# no file then and wrote no row at all, with the photos already deleted.
+printf '%s %s %s %s\n' "$listed" "$skipped_shape" "$skipped_uat" 0 > "$CS_DIR/photo-delete.counts"
+note "started listed=$listed skipped_shape=$skipped_shape skipped_uat=$skipped_uat"
 rm -f "$CS_DIR"/pd-batch-*
 BATCH="${PHOTO_DELETE_BATCH:-1000}"
 [[ $BATCH =~ ^[0-9]{1,4}$ ]] && [ "$BATCH" -ge 1 ] && [ "$BATCH" -le 1000 ] || BATCH=1000
@@ -149,9 +250,8 @@ while IFS= read -r k; do
   if [ "$rc" -ne 0 ] && grep -qE '\((404|NoSuchKey|NotFound)\)|Not Found' "$CS_DIR/pd-head.err"; then gone=$((gone + 1)); else left=$((left + 1)); fi
 done < "$CS_DIR/pd-go"
 rm -f "$CS_DIR/pd-head.err"
-listed="$(wc -l < "$CS_DIR/pd-list" | tr -d ' ')"
 note "listed=$listed skipped_shape=$skipped_shape skipped_uat=$skipped_uat deleted_confirmed=$gone still_there=$left"
-# For the in-app record only (photos-record.sql), never the log.
+# The final numbers, with what was confirmed gone.
 printf '%s %s %s %s\n' "$listed" "$skipped_shape" "$skipped_uat" "$gone" > "$CS_DIR/photo-delete.counts"
 [ "$left" -eq 0 ] || ok=1
 yes_no "every photo to delete is confirmed gone" "$ok"

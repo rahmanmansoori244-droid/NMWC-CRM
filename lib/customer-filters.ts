@@ -12,6 +12,7 @@
 import { Prisma, Role } from '@prisma/client';
 import { normalizePhone } from './phone';
 import { normalizeTemixCode } from './temix-code';
+import { endOfOmanDay, startOfOmanDay } from './tz';
 
 /** Raw URL search params accepted on /customers. */
 export type CustomerFilterParams = {
@@ -79,11 +80,24 @@ function parseScore(raw: string | undefined): number | null {
   return Math.max(0, Math.min(100, n));
 }
 
-function parseDate(raw: string | undefined): Date | null {
-  if (!raw) return null;
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return null;
-  return d;
+/**
+ * Follow-up 1, H12 (bug hunt round 1, finding 5): a "Created/Edited after or
+ * before" box sends a day ("2026-11-19"). Read as new Date(), it was UTC
+ * midnight, 04:00 in Oman, so "after the 19th" left out what was created or
+ * edited from 00:00 to 03:59 that Oman day and "before the 19th" took it in.
+ * "After" now starts at the Oman day's first instant and "before" ends at its
+ * last (the whole day included), as the customer-master and field-update
+ * exports read their days. A day and only a day (a real one): anything else is
+ * no filter, since a full timestamp's UTC date can be the Oman day before.
+ */
+function parseOmanDay(raw: string | undefined, bound: 'start' | 'end'): Date | null {
+  const m = raw ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw) : null;
+  if (!m) return null;
+  const [y, mo, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  // The calendar day itself (no clock): 2026-02-30 rolls over, so it is no day.
+  const d = new Date(Date.UTC(y, mo - 1, day));
+  if (d.getUTCFullYear() !== y || d.getUTCMonth() !== mo - 1 || d.getUTCDate() !== day) return null;
+  return bound === 'start' ? startOfOmanDay(d) : endOfOmanDay(d);
 }
 
 export function parseCustomerFilters(sp: CustomerFilterParams): ParsedCustomerFilters {
@@ -102,10 +116,10 @@ export function parseCustomerFilters(sp: CustomerFilterParams): ParsedCustomerFi
     paymentTerms: paymentTerms === 'CASH' || paymentTerms === 'CREDIT' ? paymentTerms : '',
     minScore: parseScore(sp.minScore),
     maxScore: parseScore(sp.maxScore),
-    createdAfter: parseDate(sp.createdAfter),
-    createdBefore: parseDate(sp.createdBefore),
-    editedAfter: parseDate(sp.editedAfter),
-    editedBefore: parseDate(sp.editedBefore),
+    createdAfter: parseOmanDay(sp.createdAfter, 'start'),
+    createdBefore: parseOmanDay(sp.createdBefore, 'end'),
+    editedAfter: parseOmanDay(sp.editedAfter, 'start'),
+    editedBefore: parseOmanDay(sp.editedBefore, 'end'),
     includeTest: false,
   };
 }

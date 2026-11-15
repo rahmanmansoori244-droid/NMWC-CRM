@@ -209,7 +209,9 @@ export async function refundLimit(key: string, cfg: RateLimitConfig): Promise<vo
   } catch (err) {
     // No in-memory fallback, unlike checkLimit: the token was taken from the
     // durable bucket, and a per-Lambda map has nothing to give back.
-    logger.warn({ err: String(err), key }, 'rate-limit.refund.failed');
+    // The key's kind only, never the key (it holds the IP or the typed name),
+    // as rate-limit.store.unavailable does.
+    logger.warn({ err: String(err), keyKind: rateLimitKeyKind(key) }, 'rate-limit.refund.failed');
   }
 }
 

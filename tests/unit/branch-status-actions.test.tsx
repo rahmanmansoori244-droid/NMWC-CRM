@@ -105,8 +105,21 @@ describe('the evidence photo is on no slot until the request is accepted', () =>
     type('Shop shut for good.');
     fireEvent.click(screen.getByRole('button', { name: 'Submit closure' }));
     expect(await screen.findByText('Photo is older than 24 hours — capture a fresh one.', {}, { timeout: LOADED_MS })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.getByRole('button', { name: 'Mark closed' })).toBeTruthy();
+    // The refusal can be on screen while the submit's transition is still
+    // settling; Cancel is disabled until then, and a click on it did nothing
+    // (the form stayed open now and then under load). Wait for it to be usable,
+    // then for what Cancel means: the form gone and "Mark closed" back.
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    await waitFor(() => expect(cancel).not.toBeDisabled(), { timeout: LOADED_MS });
+    fireEvent.click(cancel);
+    await waitFor(
+      () => {
+        expect(screen.queryByRole('button', { name: 'Submit closure' })).toBeNull();
+        expect(screen.queryByRole('textbox')).toBeNull();
+        expect(screen.getByRole('button', { name: 'Mark closed' })).toBeTruthy();
+      },
+      { timeout: LOADED_MS }
+    );
     expect(h.sent.map((s) => s.url)).toEqual(['/api/forms/branch-close']);
   });
 });

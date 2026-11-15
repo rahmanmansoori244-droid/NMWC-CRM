@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { MapPin, Check, RotateCcw, AlertTriangle, PencilLine, Undo2 } from 'lucide-react';
 import { gpsAccuracyAdvice, gpsAccuracyBand } from '@/lib/gps-accuracy';
 import {
@@ -36,6 +36,15 @@ const OMAN_LNG_MAX = 60;
 export const GPS_TRY_OUTSIDE_MESSAGE = `No GPS fix in ${Math.round(GPS_LISTEN_MS / 1000)} seconds. Step outside, away from roofs and walls, then tap “Try again outside”.`;
 
 /**
+ * The line shown while the phone looks for a first reading. Follow-up 1, F4: it
+ * said "up to 25 seconds" from the tap, but the 25 s window starts only once
+ * location is allowed (or at the first reading), and until then the button waits
+ * up to GPS_START_WAIT_MS (lib/gps-listen.ts) for the "Allow location?" question.
+ * The words now say what the code does.
+ */
+export const GPS_LOOKING_MESSAGE = `Looking for GPS… this can take up to ${Math.round(GPS_LISTEN_MS / 1000)} seconds once location is allowed.`;
+
+/**
  * Finding 19, second round: the listen never started — the phone neither said
  * location is allowed nor sent a reading — most likely because the "Allow
  * location?" question is still open. Not the sky's fault, so not "step outside".
@@ -48,6 +57,21 @@ function browserPermissions(): PermissionsLike | null {
   const p = typeof navigator !== 'undefined' ? (navigator as { permissions?: unknown }).permissions : undefined;
   return p && typeof (p as PermissionsLike).query === 'function' ? (p as PermissionsLike) : null;
 }
+
+/**
+ * Follow-up 1, F4: a tap area at least 44 by 44 CSS px (docs/UX-SPEC.md) for a
+ * small text link, without moving anything around it. An empty ::before over
+ * the link (16 px tall) reaches 18 px above it and 10 px below, 44 px in all: it
+ * is part of the link for a tap but takes no room in the layout, and the link's
+ * text is far wider than 44 px. It reaches up rather than down because what sits
+ * above the link is usually the location chip (not a control), while "Enter
+ * coordinates manually" sits 10 px below on a phone. The two buttons that can
+ * sit next to it ("Try again outside" above, "Enter coordinates manually"
+ * below) are raised over that area (relative z-[1]), so their own taps are never
+ * taken from them.
+ */
+export const WIDE_TAP_AREA =
+  "before:absolute before:inset-x-0 before:-top-[18px] before:-bottom-2.5 before:min-h-11 before:min-w-11 before:content-['']";
 
 const samePoint = (a: Gps | null | undefined, b: Gps | null | undefined) =>
   !!a &&
@@ -99,6 +123,7 @@ export function GpsCaptureButton({
   enforceAccuracy?: boolean;
 }) {
   const [gps, setGps] = useState<Gps | null>(initial ?? null);
+  const backQuestionId = `gps-back-${useId().replace(/:/g, '')}`;
   // A reading taken on this page, as opposed to the point loaded from file:
   // only a fresh capture is held to the ±100 m rule at submit.
   const [fresh, setFresh] = useState(false);
@@ -150,6 +175,22 @@ export function GpsCaptureButton({
   // Finding 19, third round: the question opened by the quiet "Wrong place?" link
   // under a point as good as or better than the one on file.
   const [askBack, setAskBack] = useState(false);
+  // Follow-up 1, F4: the question is not an alert (he opened it himself), so it
+  // is a labelled group, and the button that leads it takes the focus the link
+  // had: the link is gone once the question is open.
+  const keepNewRef = useRef<HTMLButtonElement | null>(null);
+  // Review of follow-up 1: "Keep the new location" closes the question and the
+  // link comes back, so the focus goes back to the link (it fell to the page).
+  const wrongPlaceRef = useRef<HTMLButtonElement | null>(null);
+  const refocusLinkRef = useRef(false);
+  useEffect(() => {
+    if (askBack) {
+      keepNewRef.current?.focus();
+    } else if (refocusLinkRef.current) {
+      refocusLinkRef.current = false;
+      wrongPlaceRef.current?.focus();
+    }
+  }, [askBack]);
 
   function take(next: Gps) {
     setGps(next);
@@ -353,7 +394,9 @@ export function GpsCaptureButton({
   const currentLabel = gps && saved && samePoint(gps, saved) ? 'the saved location' : 'the location already here';
 
   return (
-    <div className="space-y-2">
+    // isolate: the two buttons raised over the "Wrong place?" tap area (z-[1])
+    // stay inside this block and never paint over the form's Submit bar.
+    <div className="isolate space-y-2">
       <button
         type="button"
         onClick={capture}
@@ -410,7 +453,7 @@ export function GpsCaptureButton({
       {pending && (
         <p role="status" className="text-sm text-slate-600">
           {bestSoFar === null
-            ? `Looking for GPS… this can take up to ${Math.round(GPS_LISTEN_MS / 1000)} seconds.`
+            ? GPS_LOOKING_MESSAGE
             : `Looking for a better fix… best so far ±${Math.round(bestSoFar)} m.`}
         </p>
       )}
@@ -424,7 +467,7 @@ export function GpsCaptureButton({
           type="button"
           disabled={disabled}
           onClick={capture}
-          className="inline-flex min-h-11 items-center gap-2 rounded-md border border-brand-600 bg-white px-4 text-sm font-semibold text-brand-700 hover:bg-brand-50 disabled:opacity-60"
+          className="relative z-[1] inline-flex min-h-11 items-center gap-2 rounded-md border border-brand-600 bg-white px-4 text-sm font-semibold text-brand-700 hover:bg-brand-50 disabled:opacity-60"
         >
           <MapPin className="h-4 w-4" />
           Try again outside
@@ -482,23 +525,34 @@ export function GpsCaptureButton({
         <button
           type="button"
           disabled={disabled}
+          ref={wrongPlaceRef}
           onClick={() => !disabledRef.current && setAskBack(true)}
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 underline underline-offset-2 hover:text-slate-700"
+          data-testid="gps-wrong-place"
+          className={`relative inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 underline underline-offset-2 hover:text-slate-700 ${WIDE_TAP_AREA}`}
         >
           <Undo2 className="h-3 w-3" />
           Wrong place? Go back to the saved location…
         </button>
       )}
       {canGoBackFromBetter && askBack && !rougher && !pending && saved && gps && (
-        <div role="alert" className="rounded-md border border-slate-300 bg-slate-50 p-3 text-sm text-slate-800">
-          <p className="font-medium" data-testid="gps-back-distance">
+        <div
+          id={backQuestionId}
+          role="group"
+          aria-labelledby={`${backQuestionId}-q`}
+          className="rounded-md border border-slate-300 bg-slate-50 p-3 text-sm text-slate-800"
+        >
+          <p id={`${backQuestionId}-q`} className="font-medium" data-testid="gps-back-distance">
             {`The location on the chip is ${distanceWords(distanceMetres(gps, saved))} from ${savedLabel(saved)}. Go back to the saved location?`}
           </p>
           <div className="mt-2 flex flex-wrap gap-2">
             <button
+              ref={keepNewRef}
               type="button"
               disabled={disabled}
-              onClick={() => setAskBack(false)}
+              onClick={() => {
+                refocusLinkRef.current = true;
+                setAskBack(false);
+              }}
               className="min-h-11 rounded-md bg-brand-600 px-3 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
             >
               Keep the new location
@@ -537,7 +591,7 @@ export function GpsCaptureButton({
           type="button"
           disabled={disabled}
           onClick={() => setShowManual(true)}
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline"
+          className="relative z-[1] inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline"
         >
           <PencilLine className="h-3 w-3" />
           Enter coordinates manually

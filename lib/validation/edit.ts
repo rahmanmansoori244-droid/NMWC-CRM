@@ -28,6 +28,8 @@
 import { z } from 'zod';
 import { CustomerStatus, DayOfWeek, PaymentTerms } from '@prisma/client';
 import { gpsManualReasonSchema } from '../gps-manual';
+import { GPS_READING_TOO_ROUGH_MESSAGE } from '../gps-accuracy';
+import { GPS_ACCURACY_MAX } from '../db-rules';
 import { submissionIdSchema } from '../submission';
 import {
   BRANCH_EDIT_FIELDS,
@@ -187,7 +189,13 @@ export const branchPatchSchema = z
       .optional(),
     // GPS companions: only with the point, no base. null = the point has no
     // reported accuracy (a typed-in one).
-    gpsAccuracy: z.number().min(0).max(10000).nullable().optional(),
+    // H14: the database's range; a reading outside it is named on the GPS field.
+    gpsAccuracy: z
+      .number()
+      .min(0, GPS_READING_TOO_ROUGH_MESSAGE)
+      .max(GPS_ACCURACY_MAX, GPS_READING_TOO_ROUGH_MESSAGE)
+      .nullable()
+      .optional(),
     gpsCapturedAt: capturedAt.optional(),
     // Item 41: present only when the salesman TYPED the point in. Not a Branch
     // column — services/edits.ts turns it into a marker on the gps entries.

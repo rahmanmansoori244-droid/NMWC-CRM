@@ -8,7 +8,7 @@ import { prisma } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import { Role } from '@prisma/client';
 import { authConfig } from '../auth.config';
-import { checkLimit, LOGIN_LIMIT, LOGIN_NETWORK_LIMIT, refundLimit } from '@/lib/rate-limit';
+import { checkLimit, LOGIN_LIMIT, LOGIN_NETWORK_LIMIT, rateLimitKeyKind, refundLimit } from '@/lib/rate-limit';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { isDemoAccount } from '@/lib/demo-accounts';
 import { LoginThrottledError } from '@/lib/login-throttle';
@@ -370,8 +370,10 @@ const {
         for (const [bucket, key, limit] of buckets) {
           const lim = await checkLimit(key, limit);
           if (!lim.ok) {
+            // The key's kind only, never the key: it holds the client's IP or
+            // the typed username (lib/rate-limit.ts rateLimitKeyKind).
             logger.warn(
-              { key, retryAfterSec: lim.retryAfterSec },
+              { keyKind: rateLimitKeyKind(key), retryAfterSec: lim.retryAfterSec },
               'rate-limit.login.authorize'
             );
             // Still pay equalized bcrypt cost so timing doesn't out the limit.

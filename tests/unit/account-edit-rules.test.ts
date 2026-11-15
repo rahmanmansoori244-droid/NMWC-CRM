@@ -18,6 +18,7 @@ import {
   routeMoveNotes,
   routeSignInName,
   strandedCreatesImportIssue,
+  strandedHolderImportIssue,
   signedFormDisableIssue,
   strandedCreatesIssue,
   supervisorCoverIssue,
@@ -388,6 +389,15 @@ describe('reviewer fixes (2026-10-07)', () => {
     expect(strandedCreatesImportIssue('c4', 2)).toMatch(
       /Afterwards he could not send them again from his new route, only withdraw them\./
     );
+  });
+
+  // Bug hunt round 2, F2: the account import's words for the ACTIVE salesman a
+  // change_route=yes row would take the route from.
+  it('the salesman a route is taken from is named, with what he would be left unable to send', () => {
+    const m = strandedHolderImportIssue({ username: 'joiner', holder: 'c4', routeCode: 'C4', count: 2 });
+    expect(m).toMatch(/^route C4 is worked by "c4", who has 2 new-customer request\(s\) only he can send or close/);
+    expect(m).toMatch(/Nothing was written for "joiner"\. This row would leave "c4" with no route, and then he could never send them again\./);
+    expect(m).toMatch(/Ask him to send or withdraw them first, or change his account on Users \(Edit account\)/);
   });
 
   // Owner decisions 2026-10-11 (review, Q-signed-form-stranded): a credit request

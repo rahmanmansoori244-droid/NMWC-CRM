@@ -543,6 +543,13 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
     expect(full!.n).toBe(5);
   });
 
+  it('follow-up 1 (F2): a database that never had a clean start reads no moment, so the dashboard compares as before', async () => {
+    // The loader as the page calls it: its own transaction, SET LOCAL statement_timeout, the deadline.
+    expect(await load.loadCleanStart()).toEqual({ ok: true, data: null });
+    const { comparisonFor } = await import('@/lib/insights/compare');
+    expect(comparisonFor(periodLib.parsePeriod({ period: '30d' }, NOW), { ok: true, data: null })).toEqual({ kind: 'compare' });
+  });
+
   it('Postgres buckets weeks on the Monday period.ts gap-fills, in Oman days', async () => {
     const instants = [
       '2099-06-07 19:59:59', // Sunday 23:59:59 Oman

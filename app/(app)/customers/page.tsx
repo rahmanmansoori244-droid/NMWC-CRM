@@ -206,7 +206,11 @@ export default async function CustomersPage({
     // all 50 rows across the wire per render.
     prisma.customer.findMany({
       where,
-      orderBy: { legalName: 'asc' },
+      // Follow-up 1, H9 (bug hunt round 2, F7): paged by OFFSET, so the order must
+      // be total. Two customers of one legal name had no defined order between
+      // them, and at a page boundary one could show on both pages, the other on
+      // neither. The id breaks the tie, as the Today list and the audit page do.
+      orderBy: [{ legalName: 'asc' }, { id: 'asc' }],
       skip: (page - 1) * PAGE_SIZE,
       take: PAGE_SIZE,
       select: {

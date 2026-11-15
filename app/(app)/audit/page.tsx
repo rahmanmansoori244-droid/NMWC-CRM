@@ -13,18 +13,19 @@ import {
   AUDIT_ENTITY_TYPES,
   MANAGER_AUDIT_ACTIONS,
   MANAGER_AUDIT_ENTITY_TYPES,
-  STEWARD_HIDDEN_BY_DEFAULT,
   auditCustomersByCode,
   customerFilterSql,
   managerAuditScopeSql,
   managerAuditUserIds,
   type AuditCustomer,
 } from '@/lib/audit-scope';
+import { AUDIT_PAGE_SIZE, AUDIT_ROW_INCLUDE, listAuditRows, type AuditRow } from '@/lib/audit-rows';
+import { cleanStartCounts, isCleanStartRecord } from '@/lib/clean-start-record';
 
 export const metadata = { title: 'Audit log · NMWC' };
 export const dynamic = 'force-dynamic';
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = AUDIT_PAGE_SIZE;
 
 type Search = {
   actor?: string;
@@ -65,10 +66,10 @@ export default async function AuditPage({
   // a Manager's address it is ignored, and his links do not carry it on.
   const customerCode = isManager ? null : sp.customer?.trim() || null;
   const filters: Search = isManager ? { ...sp, customer: undefined } : sp;
-  const include = { actor: { select: { fullName: true, username: true } } } as const;
+  const include = AUDIT_ROW_INCLUDE;
 
   let total = 0;
-  let logs: Prisma.AuditLogGetPayload<{ include: typeof include }>[] = [];
+  let logs: AuditRow[] = [];
   // The reads written as SQL — a Manager's regional scope, or the Steward's
   // customer filter — share one WHERE for the count and the page of ids below.
   // Null when nothing is read that way.
@@ -94,23 +95,9 @@ export default async function AuditPage({
     const asked = await customerFilterSql(prisma, customers.slice(0, AUDIT_CUSTOMER_MATCH_LIMIT));
     if (asked) rawConds = [asked];
   } else {
-    const where: Prisma.AuditLogWhereInput = {};
-    if (sp.actor) where.actorId = sp.actor;
     // Owner decisions 2026-10-11: photo views are left out of the Steward's list
     // and its count unless he picks that action (or uses the customer filter).
-    where.action = action ?? { notIn: [...STEWARD_HIDDEN_BY_DEFAULT] };
-    if (sp.entityType) where.entityType = sp.entityType;
-    if (q) where.entityId = { contains: q };
-    [total, logs] = await Promise.all([
-      prisma.auditLog.count({ where }),
-      prisma.auditLog.findMany({
-        where,
-        orderBy: { at: 'desc' },
-        skip: (page - 1) * PAGE_SIZE,
-        take: PAGE_SIZE,
-        include,
-      }),
-    ]);
+    ({ total, logs } = await listAuditRows(prisma, { actor: sp.actor, action, entityType: sp.entityType, q }, page));
   }
   if (rawConds) {
     const conds = [...rawConds];
@@ -312,7 +299,10 @@ export default async function AuditPage({
                   <td className="px-3 py-2 font-mono text-[11px] text-slate-600">
                     {l.entityType}/{l.entityId.slice(0, 8)}…
                   </td>
-                  <td className="px-3 py-2 text-slate-600">{l.reason ?? '—'}</td>
+                  <td className="px-3 py-2 text-slate-600">
+                    {l.reason ?? '—'}
+                    {isCleanStartRecord(l) && <CleanStartCounts after={l.after} />}
+                  </td>
                 </tr>
               ))}
               {logs.length === 0 && (
@@ -350,5 +340,34 @@ export default async function AuditPage({
         )}
       </div>
     </main>
+  );
+}
+
+/**
+ * The go-live clean start's own entry (lib/clean-start-record.ts): how many
+ * records of each kind it removed and kept, read from the entry itself. A figure
+ * the entry does not hold is shown as a dash, never as a number.
+ */
+function CleanStartCounts({ after }: { after: Prisma.JsonValue }) {
+  const rows = cleanStartCounts(after);
+  if (!rows) {
+    return <p className="mt-1 text-slate-500">This entry holds no counts of what was removed and kept.</p>;
+  }
+  const n = (v: number | null) => (v === null ? '—' : v.toLocaleString('en-US'));
+  return (
+    <details className="mt-1">
+      <summary className="cursor-pointer font-medium text-brand-700">What was removed and kept</summary>
+      {/* A list, not a nested table: every table sits in a TableScroll of its own
+          (tests/unit/mobile-quick-wins.test.tsx), and a list wraps on a phone. */}
+      <ul aria-label="Records removed and kept by the clean start, by kind" className="mt-1 space-y-0.5 text-[11px]">
+        {rows.map((r) => (
+          <li key={r.kind}>
+            <span className="font-medium text-slate-700">{r.label}</span>: removed{' '}
+            <span className="tabular-nums">{n(r.removed)}</span>, kept <span className="tabular-nums">{n(r.kept)}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-1 text-slate-500">A dash: the entry holds no figure for that kind.</p>
+    </details>
   );
 }

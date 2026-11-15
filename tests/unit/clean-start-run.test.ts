@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { sandbox, type Sandbox } from '../support/clean-start/sandbox';
+import { BIN, sandbox, standinPath, type Sandbox } from '../support/clean-start/sandbox';
 import { envHeaderViolations, publicLogViolations } from '../support/clean-start/public-log';
 import { compareFirstRun, parseReadBack } from '../../scripts/ops/clean-start/compare-watch';
 import { foreignSignature, loadExpected } from '../../scripts/ops/clean-start/rehearse-watch';
@@ -26,7 +26,9 @@ import { foreignSignature, loadExpected } from '../../scripts/ops/clean-start/re
 const sha = (b: string | Buffer) => createHash('sha256').update(b).digest('hex');
 const MARKER = 'csprodsim-zq7';
 const PROD_URL = `postgresql://owner_zq:pw-zq-secret@${MARKER}-pooler.example.invalid/neondb?sslmode=require`;
-const COPY_URL = 'postgresql://ci:ci@localhost:5432/cs_restore';
+/** The host of production's Neon endpoint (the default branch's), as Neon lists it. */
+const PROD_HOST = `${MARKER}-ab12cd.example.invalid`;
+const COPY_URL ='postgresql://ci:ci@localhost:5432/cs_restore';
 const RUN = '987654321';
 const ALL_LINES: string[] = [];
 const FORBIDDEN = ['pw-zq-secret', 'owner_zq', 'bk-secret-zq', 'ro-secret-zq', 'rw-secret-zq', 'example.invalid', 'secret-name-zq'];
@@ -181,21 +183,28 @@ describe('run.sh: release, approval rule, backups, rehearsal, window', () => {
   });
 
   it('backup-pick: the newest dump, with its manifest, young enough', () => {
-    expect(run('backup-pick 4').code).toBe(1); // none
-    const stamp = (msAgo: number) => new Date(Date.now() - msAgo).toISOString().slice(0, 19).replace(/:/g, '-') + 'Z';
+    // "Now" is pinned to a morning instant (the date stand-in answers `date -u +%s`
+    // from FAKE_UTC_EPOCH): with the real clock this test failed every evening from
+    // 15:00 UTC, when the evening-dump rule (tested on its own below) refuses first.
+    const nowMs = Date.parse(`${new Date().toISOString().slice(0, 10)}T11:00:00Z`);
+    const clock = { FAKE_UTC_EPOCH: String(nowMs / 1000) };
+    const pick = (args: string, env: Record<string, string> = {}) => run(`backup-pick ${args}`, { ...clock, ...env });
+    rmSync(join(sb.s3, 'backups', 'db'), { recursive: true, force: true });
+    expect(pick('4').code).toBe(1); // none
+    const stamp = (msAgo: number) => new Date(nowMs - msAgo).toISOString().slice(0, 19).replace(/:/g, '-') + 'Z';
     const old = stamp(5 * 3600_000);
     sb.put('backups', `db/${old}.sql.gz.age`, 'x');
     sb.put('backups', `db/${old}.manifest.json`, '{}');
-    expect(run('backup-pick 4').out).toMatch(/newest backup at most 4 h old: no/);
-    expect(run('backup-pick 6').code).toBe(0);
+    expect(pick('4').out).toMatch(/newest backup at most 4 h old: no/);
+    expect(pick('6').code).toBe(0);
     const fresh = stamp(600_000);
     sb.put('backups', `db/${fresh}.sql.gz.age`, 'x');
-    expect(run('backup-pick 4').out).toMatch(/newest backup has a manifest: no/);
+    expect(pick('4').out).toMatch(/newest backup has a manifest: no/);
     sb.put('backups', `db/${fresh}.manifest.json`, '{}');
-    const r = run('backup-pick 4', { GITHUB_OUTPUT: join(sb.root, 'out2') });
+    const r = pick('4', { GITHUB_OUTPUT: join(sb.root, 'out2') });
     expect(r.code).toBe(0);
     expect(readFileSync(join(sb.root, 'out2'), 'utf8')).toContain(`backup_key=db/${fresh}.sql.gz.age`);
-    expect(run(`backup-pick 6 db/${old}.sql.gz.age`).out).toMatch(/the rehearsed backup is still the newest: no/);
+    expect(pick(`6 db/${old}.sql.gz.age`).out).toMatch(/the rehearsed backup is still the newest: no/);
   });
 
   it('neon-green: a green neon-rehearsal of these exact scripts AND workflow, on the default branch, within 14 days', () => {
@@ -245,6 +254,28 @@ describe('run.sh: release, approval rule, backups, rehearsal, window', () => {
     expect(run('preflight seal-restore', { ...all, DEFAULT_BRANCH: 'main', GITHUB_REF: 'refs/heads/feature' }).code).toBe(1);
     expect(run('preflight seal-restore', { ...all, DEFAULT_BRANCH: 'main', GITHUB_REF: 'refs/heads/main' }).code).toBe(0);
     expect(run('preflight nonsense').code).toBe(1);
+  });
+
+  it('preflight of the Neon rehearsal names the read-write photo token (its first check, days before the reset)', () => {
+    // Review 2026-11-15: no run before reset night read the read-write pair, so a token
+    // pasted into the wrong box was first found at apply step g, after the COMMIT.
+    const base = {
+      CLEANSTART_ACTOR_USERNAME: 'x',
+      NEON_API_KEY: 'x',
+      NEON_PROJECT_ID: 'x',
+      DEFAULT_BRANCH: 'main',
+      GITHUB_REF: 'refs/heads/main',
+    };
+    const r = run('preflight neon-rehearsal', { ...base, CLEANSTART_R2_RW_ACCESS_KEY_ID: '', CLEANSTART_R2_RW_SECRET_ACCESS_KEY: '' });
+    expect(r.code).toBe(1);
+    expect(r.lines).toContain('setting CLEANSTART_R2_RW_ACCESS_KEY_ID present: no');
+    expect(r.lines).toContain('setting CLEANSTART_R2_RW_SECRET_ACCESS_KEY present: no');
+    expect(run('preflight neon-rehearsal', base).code).toBe(0);
+    // The plan job is not approval-gated and never holds the write token: it does not ask for it.
+    const src = readFileSync('scripts/ops/clean-start/run.sh', 'utf8');
+    expect(/^\s*plan\) names=\(([^)]*)\)/m.exec(src)![1]).not.toMatch(/_RW_/);
+    for (const mode of ['neon-rehearsal', 'apply', 'finish', 'seal-restore', 'photos'])
+      expect(new RegExp(`^\\s*${mode}\\) names=\\(([^)]*)\\)`, 'm').exec(src)![1], mode).toMatch(/CLEANSTART_R2_RW_ACCESS_KEY_ID CLEANSTART_R2_RW_SECRET_ACCESS_KEY/);
   });
 });
 
@@ -352,7 +383,7 @@ describe('run.sh started / safety-cleanup: the safety branch survives a cancelle
   };
   const names = () => (JSON.parse(readFileSync(join(sb.state, 'neon.json'), 'utf8')) as { branches: Array<{ name: string }> }).branches.map((b) => b.name);
   const fresh = (files: Record<string, string>) => {
-    neonState({ seq: 0, branches: [{ id: 'br-main-1', name: 'main', default: true }, { id: 'br-s-9', name: 'pre-clean-start-2026-11-18-1' }] });
+    neonState({ seq: 0, branches: [{ id: 'br-main-1', name: 'main', default: true, host: PROD_HOST }, { id: 'br-s-9', name: 'pre-clean-start-2026-11-18-1' }] });
     for (const f of ['reset-started', 'reset-rc', 'committed', 'neon-branches']) rmSync(join(sb.csDir, f), { force: true });
     writeFileSync(join(sb.csDir, 'neon-branches'), '- pre-clean-start-2026-11-18-1\n');
     for (const [k, v] of Object.entries(files)) writeFileSync(join(sb.csDir, k), v);
@@ -386,6 +417,83 @@ describe('run.sh started / safety-cleanup: the safety branch survives a cancelle
   });
 });
 
+describe('run.sh: a refusal always reaches the log; the photo-step values are only a committed reset\'s (review 2026-11-15)', () => {
+  const neon = {
+    NEON_API_KEY: 'neon-key-zq',
+    NEON_PROJECT_ID: 'proj-zq',
+    FAKE_NEON_API_KEY: 'neon-key-zq',
+    FAKE_NEON_PROJECT_ID: 'proj-zq',
+  };
+  const names = () => (JSON.parse(readFileSync(join(sb.state, 'neon.json'), 'utf8')) as { branches: Array<{ name: string }> }).branches.map((b) => b.name);
+
+  it('refuse writes its ::error:: line to stderr (the runner reads both streams), so a refusal inside $(...) is not captured', () => {
+    const out = sh('( bash scripts/ops/clean-start/run.sh window 2>/dev/null )', { FAKE_UTC_HHMM: '0300' });
+    expect([out.code, out.lines]).toEqual([1, ['inside the evening window (15:30-23:30 UTC): no']]);
+    const err = sh('( bash scripts/ops/clean-start/run.sh window 2>&1 >/dev/null )', { FAKE_UTC_HHMM: '0300' });
+    expect([err.code, err.lines]).toEqual([1, ['::error::clean start refused: apply runs only between 15:30 and 23:30 UTC']]);
+    // check-run-id sent the helper's output to /dev/null, and its refusal with it.
+    const id = run('check-run-id not-a-number');
+    expect([id.code, id.lines]).toEqual([1, ['::error::clean start refused: run_id must be the number of the apply run']]);
+  });
+
+  it('neon-cleanup when the Neon API cannot be read: the log names the refusal AND says a branch is left (it ended with nothing but exit 1)', () => {
+    neonState({ seq: 0, branches: [{ id: 'br-main-1', name: 'main', default: true, host: PROD_HOST }, { id: 'br-r-7', name: 'cleanstart-rehearsal-7' }] });
+    writeFileSync(join(sb.csDir, 'neon-branches'), '- cleanstart-rehearsal-7\n');
+    const summary = join(sb.root, 'summary-nc.md');
+    writeFileSync(summary, '');
+    // A key Neon does not accept (just rotated); a blip of the API answers "not 200" the same way.
+    const r = run('neon-cleanup', { ...neon, NEON_API_KEY: 'neon-key-rotated-zq', GITHUB_STEP_SUMMARY: summary });
+    expect(r.code).toBe(1);
+    expect(r.lines).toEqual([
+      '::error::clean start refused: the Neon branches could not be read',
+      'temporary Neon branches deleted: no',
+      '::error::a temporary Neon branch is left; delete it by hand in the Neon console (Branches): it holds a full copy of production',
+    ]);
+    expect(readFileSync(summary, 'utf8')).toContain('- temporary Neon branches deleted: no');
+    // Nothing was deleted, and the list is kept: with the API back the same cleanup deletes it.
+    expect(names()).toContain('cleanstart-rehearsal-7');
+    expect(existsSync(join(sb.csDir, 'neon-branches'))).toBe(true);
+    expect(run('neon-cleanup', neon).lines).toContain('temporary Neon branches deleted: yes');
+    expect(names()).toEqual(['main']);
+  });
+
+  it('safety-name: a run id that is not a number refuses, and no name with a gap is printed', () => {
+    // (sb.run, not sh: the name is captured by the workflow, never printed to the log)
+    const ok = sb.run('bash scripts/ops/clean-start/run.sh safety-name', { GITHUB_RUN_ID: '424242' });
+    expect(ok.code).toBe(0);
+    expect(ok.out).toMatch(/^pre-clean-start-\d{4}-\d{2}-\d{2}-424242$/);
+    const bad = run('safety-name', { GITHUB_RUN_ID: 'abc' });
+    expect(bad.code).toBe(1);
+    expect(bad.lines).toEqual(['::error::clean start refused: the run id is not a GitHub run id']);
+  });
+
+  it('for-the-owner prints the two photo-step values only for a reset that committed', () => {
+    writeFileSync(join(sb.csDir, 'pid.txt'), `plan_id=${'a'.repeat(64)}\nphoto_keys_sha256=${'b'.repeat(64)}\n`);
+    rmSync(join(sb.csDir, 'committed'), { force: true });
+    const NONE = 'values for the photo step printed (only after a reset that committed): no';
+    const owner = (env: Record<string, string>) =>
+      run('for-the-owner "$CS_DIR/pid.txt"', { GITHUB_RUN_ID: RUN, CS_RESET_STARTED: '2026-11-18T16:12:05Z', ...env });
+    // refused and rolled back; the answer lost; settle never ran
+    const states: Array<Record<string, string>> = [{ CS_COMMITTED: 'no', CS_RESET_RC: '3' }, { CS_COMMITTED: 'unknown' }, { CS_COMMITTED: '' }];
+    for (const env of states) {
+      const r = owner(env);
+      expect([r.code, r.lines], JSON.stringify(env)).toEqual([0, [NONE]]);
+    }
+    expect(owner({ CS_COMMITTED: 'yes' }).lines).toEqual([
+      `run_id for the photo step: ${RUN}`,
+      `list_sha256 for the photo step: ${'b'.repeat(64)}`,
+      'reset started at (UTC): 2026-11-18T16:12:05Z',
+      'reset started at (Oman time): 2026-11-18 20:12',
+    ]);
+    // settle's file, when the job environment was never applied
+    writeFileSync(join(sb.csDir, 'committed'), 'yes\n');
+    expect(owner({ CS_COMMITTED: '' }).lines[0]).toBe(`run_id for the photo step: ${RUN}`);
+    writeFileSync(join(sb.csDir, 'committed'), 'no\n');
+    expect(owner({ CS_COMMITTED: '' }).lines).toEqual([NONE]);
+    rmSync(join(sb.csDir, 'committed'), { force: true });
+  });
+});
+
 describe('run.sh chain-id / chain-id-fetch / finish-may: production\'s new chain is named, never inferred', () => {
   let identity = '';
   let recipient = '';
@@ -406,12 +514,14 @@ describe('run.sh chain-id / chain-id-fetch / finish-may: production\'s new chain
     expect([back.code, back.lines]).toEqual([0, ['new seal chain id of that run found: yes']]);
     expect(readFileSync(join(sb.csDir, 'new-chain'), 'utf8')).toBe('0f1e2d3c4b5a6978');
   });
-  it('no genesis yet: recorded as no; a run with nothing recorded refuses seal-restore', () => {
+  it('no genesis yet: recorded as no; seal-restore of a run with nothing recorded goes on with NEW_CHAIN=none', () => {
     writeFileSync(join(sb.csDir, 'chain-id.out'), 'none\n');
     expect(run(`chain-id "$CS_DIR/chain-id.out" ${RUN}`, { BACKUP_AGE_RECIPIENTS: recipient }).lines).toEqual(['new seal chain id recorded: no']);
-    const r = run('chain-id-fetch 1234', { BACKUP_AGE_IDENTITY: identity });
-    expect(r.code).toBe(1);
-    expect(r.out).toMatch(/the new seal chain's id of that run was not recorded, so no seal file is moved; tell Claude/);
+    // Apply stopped at step g or h: the old seal files must still go back (seal-archive.sh
+    // restore with "none", which moves nothing and refuses a chain it cannot name).
+    const r = run('chain-id-fetch 1234', { BACKUP_AGE_IDENTITY: identity, GITHUB_ENV: envFile() });
+    expect([r.code, r.lines]).toEqual([0, ['new seal chain id of that run recorded: no']]);
+    expect(readEnvFile()).toContain('NEW_CHAIN=none');
   });
   it('finish-may: everything under seals/ that verify listed now, minus the new chain', () => {
     writeFileSync(join(sb.csDir, 'seal-keys-foreign.txt'), 'seals/v1/0f1e2d3c4b5a6978/00000000.json\nseals/v1/8888888888888888/00000003.json\n');
@@ -472,7 +582,7 @@ describe('run.sh neon: a timeout after the create, and old failures elsewhere, d
   };
   const names = () => (JSON.parse(readFileSync(join(sb.state, 'neon.json'), 'utf8')) as { branches: Array<{ name: string }> }).branches.map((b) => b.name);
   it('Neon made the branch but the answer was lost: the cleanup still finds it by name', () => {
-    neonState({ seq: 0, branches: [{ id: 'br-main-1', name: 'main', default: true }] });
+    neonState({ seq: 0, branches: [{ id: 'br-main-1', name: 'main', default: true, host: PROD_HOST }] });
     rmSync(join(sb.csDir, 'neon-branches'), { force: true });
     const r = run('neon-create pre-clean-start-2026-11-18-77 none', { ...neon, FAKE_NEON_CREATE_TIMEOUT: '1' });
     expect(r.code).toBe(1);
@@ -482,11 +592,11 @@ describe('run.sh neon: a timeout after the create, and old failures elsewhere, d
     expect(names()).toEqual(['main']);
   });
   it('a failed operation of ANOTHER branch blocks neither a create nor the cleanup; one of this branch refuses', () => {
-    neonState({ seq: 0, branches: [{ id: 'br-main-1', name: 'main', default: true }], pending: [{ id: 'op-old', branch_id: 'br-gone-1', status: 'failed' }] });
+    neonState({ seq: 0, branches: [{ id: 'br-main-1', name: 'main', default: true, host: PROD_HOST }], pending: [{ id: 'op-old', branch_id: 'br-gone-1', status: 'failed' }] });
     rmSync(join(sb.csDir, 'neon-branches'), { force: true });
     expect(run('neon-create pre-clean-start-2026-11-18-78 none', neon).code).toBe(0);
     expect(run('neon-cleanup', neon).lines).toContain('temporary Neon branches deleted: yes');
-    neonState({ seq: 4, branches: [{ id: 'br-main-1', name: 'main', default: true }], pending: [{ id: 'op-x', branch_id: 'br-fake-5', status: 'failed' }] });
+    neonState({ seq: 4, branches: [{ id: 'br-main-1', name: 'main', default: true, host: PROD_HOST }], pending: [{ id: 'op-x', branch_id: 'br-fake-5', status: 'failed' }] });
     rmSync(join(sb.csDir, 'neon-branches'), { force: true });
     const r = run('neon-create pre-clean-start-2026-11-18-79 none', neon);
     expect(r.code).toBe(1);
@@ -506,19 +616,35 @@ describe('run.sh neon: branches of production, never production, always cleaned 
     FAKE_NEON_URI_BASE: 'postgresql://postgres@localhost:5432',
     GITHUB_ENV: '',
   };
-  const fresh = () => neonState({ seq: 0, retention: 604800, branches: [{ id: 'br-main-1', name: 'main', default: true }] });
+  const fresh = () => neonState({ seq: 0, retention: 604800, branches: [{ id: 'br-main-1', name: 'main', default: true, host: PROD_HOST }] });
+  const names = () => (JSON.parse(readFileSync(join(sb.state, 'neon.json'), 'utf8')) as { branches: Array<{ name: string }> }).branches.map((b) => b.name);
 
   it('a safety branch without compute is created, confirmed, and deleted only by cleanup', () => {
     fresh();
     const env = { ...neon, GITHUB_ENV: envFile() };
     const r = run('neon-create pre-clean-start-2026-11-18-42 none', env);
     expect(r.code).toBe(0);
-    expect(r.lines).toEqual(['Neon branch created and confirmed: yes']);
+    expect(r.lines).toEqual(['Neon default branch is production: yes', 'Neon branch created and confirmed: yes']);
     expect(run('neon-retention', env).lines).toEqual(['Neon history kept at least 7 days: yes']);
     const st = () => JSON.parse(readFileSync(join(sb.state, 'neon.json'), 'utf8')) as { branches: Array<{ name: string }> };
     expect(st().branches.map((b) => b.name)).toContain('pre-clean-start-2026-11-18-42');
     expect(run('neon-cleanup', env).lines).toContain('temporary Neon branches deleted: yes');
     expect(st().branches.map((b) => b.name)).toEqual(['main']);
+  });
+
+  it('no branch is made of a default branch that is not production (another branch set as default, another project)', () => {
+    for (const main of [
+      { id: 'br-main-1', name: 'uat-testing', default: true, host: 'ep-other-words-zz11.example.invalid' },
+      { id: 'br-main-1', name: 'main', default: true }, // no endpoint at all
+    ]) {
+      neonState({ seq: 0, retention: 604800, branches: [main, { id: 'br-prod-2', name: 'production', host: PROD_HOST }] });
+      rmSync(join(sb.csDir, 'neon-branches'), { force: true });
+      const r = run('neon-create pre-clean-start-2026-11-18-43 none', { ...neon, GITHUB_ENV: envFile() });
+      expect(r.code).toBe(1);
+      expect(r.lines).toContain('Neon default branch is production: no');
+      expect(r.out).toMatch(/the Neon default branch is not production/);
+      expect(names()).toEqual([main.name, 'production']);
+    }
   });
 
   it('neon-uri refuses a branch whose connection string names production', () => {
@@ -532,10 +658,56 @@ describe('run.sh neon: branches of production, never production, always cleaned 
     expect(run('neon-cleanup', env).code).toBe(0);
   });
 
+  it('the copy at the noted time is a NEW branch from the rehearsal branch\'s history (Neon restores only root branches), deleted first', () => {
+    fresh();
+    rmSync(join(sb.csDir, 'neon-branches'), { force: true });
+    const env = { ...neon, GITHUB_ENV: envFile() };
+    expect(run('neon-create cleanstart-rehearsal-5 compute', env).code).toBe(0);
+    const ids = () => [...readEnvFile().matchAll(/CS_NEON_BRANCH_ID=(\S+)/g)].map((m) => m[1]!);
+    const rehearsal = ids().at(-1)!;
+    const at = new Date().toISOString().slice(0, 19) + 'Z';
+    const r = run(`neon-restore ${at} cleanstart-rehearsal-5-at`, { ...env, CS_NEON_BRANCH_ID: rehearsal });
+    expect(r.code, r.out).toBe(0);
+    expect(r.lines).toEqual(['Neon made a copy of the branch as it was at the noted time: yes']);
+    const st = JSON.parse(readFileSync(join(sb.state, 'neon.json'), 'utf8')) as { branches: Array<{ id: string; name: string; parent?: string }> };
+    const copy = st.branches.find((b) => b.name === 'cleanstart-rehearsal-5-at')!;
+    expect(copy.parent).toBe(rehearsal);
+    // The later steps read the copy, never the rehearsal branch.
+    expect(ids().at(-1)).toBe(copy.id);
+    expect(readFileSync(join(sb.csDir, 'neon-current-id'), 'utf8')).toBe(copy.id);
+    // In the SAME step (CS_NEON_BRANCH_ID there still names the rehearsal branch), neon-uri
+    // hands on the copy's connection string, never the rehearsal branch's.
+    const u = run('neon-uri', { ...env, CS_NEON_BRANCH_ID: rehearsal });
+    expect(u.code, u.out).toBe(0);
+    const urls = [...readEnvFile().matchAll(/CS_BRANCH_URL=(\S+)/g)].map((m) => m[1]!);
+    const st2 = JSON.parse(readFileSync(join(sb.state, 'neon.json'), 'utf8')) as { branches: Array<{ id: string; db: string }> };
+    expect(urls.at(-1)).toBe(`postgresql://postgres@localhost:5432/${st2.branches.find((b) => b.id === copy.id)!.db}`);
+    // Neither branch is restored in place: no /restore call at all.
+    expect(readFileSync(sb.logs.http, 'utf8')).not.toContain('/restore"');
+    const c = run('neon-cleanup', env);
+    expect(c.lines).toContain('temporary Neon branches deleted: yes');
+    expect(names()).toEqual(['main']);
+  });
+
+  it('a time before the rehearsal branch existed is refused, and the cleanup still deletes everything', () => {
+    fresh();
+    rmSync(join(sb.csDir, 'neon-branches'), { force: true });
+    const env = { ...neon, GITHUB_ENV: envFile() };
+    expect(run('neon-create cleanstart-rehearsal-6 compute', env).code).toBe(0);
+    const id = [...readEnvFile().matchAll(/CS_NEON_BRANCH_ID=(\S+)/g)].map((m) => m[1]!).at(-1)!;
+    const r = run('neon-restore 2020-01-01T00:00:00Z cleanstart-rehearsal-6-at', { ...env, CS_NEON_BRANCH_ID: id });
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/Neon did not make the copy of the branch at the noted time/);
+    expect(run('neon-cleanup', env).lines).toContain('temporary Neon branches deleted: yes');
+    expect(names()).toEqual(['main']);
+  });
+
   it('never restores or deletes the default branch', () => {
     fresh();
+    writeFileSync(join(sb.csDir, 'neon-current-id'), 'br-main-1');
     const r = run('neon-restore 2026-11-18T16:00:00Z keep-me', { ...neon, CS_NEON_BRANCH_ID: 'br-main-1' });
     expect(r.code).toBe(1);
+    expect(r.out).toMatch(/refusing to restore the default branch/);
     writeFileSync(join(sb.csDir, 'neon-branches'), 'br-main-1 main\n');
     expect(run('neon-cleanup', neon).code).toBe(1);
   });
@@ -544,7 +716,7 @@ describe('run.sh neon: branches of production, never production, always cleaned 
     neonState({
       seq: 5,
       branches: [
-        { id: 'br-main-1', name: 'main', default: true },
+        { id: 'br-main-1', name: 'main', default: true, host: PROD_HOST },
         { id: 'br-s-2', name: `pre-clean-start-2026-11-18-${RUN}` },
         { id: 'br-s-3', name: 'pre-clean-start-2026-11-18-1' },
       ],
@@ -566,6 +738,11 @@ describe('run.sh encrypt-upload / fetch-decrypt / dump-gates / watch-lines / cou
     expect(sb.has('backups', `cleanstart/${RUN}/plan/plan.json.age`)).toBe(true);
     expect(sb.read('backups', `cleanstart/${RUN}/plan/plan.json.age`).toString('latin1')).not.toContain('Customer');
     expect(run(`encrypt-upload elsewhere/${RUN} "$CS_DIR/plan.json"`, { BACKUP_AGE_RECIPIENTS: recipient }).code).toBe(1);
+    // One folder per photo run and attempt (a re-run never overwrites the earlier report).
+    expect(run(`encrypt-upload cleanstart/${RUN}/photos-5551-2 "$CS_DIR/plan.json"`, { BACKUP_AGE_RECIPIENTS: recipient }).code).toBe(0);
+    expect(sb.has('backups', `cleanstart/${RUN}/photos-5551-2/plan.json.age`)).toBe(true);
+    for (const bad of ['photos-5551', '9photos', 'photos-x-1', 'photos/5551', 'photos-5551-2-3'])
+      expect(run(`encrypt-upload cleanstart/${RUN}/${bad} "$CS_DIR/plan.json"`, { BACKUP_AGE_RECIPIENTS: recipient }).code, bad).toBe(1);
     expect(run(`encrypt-upload cleanstart/${RUN}/plan "$CS_DIR/plan.json"`, { BACKUP_AGE_RECIPIENTS: '' }).code).toBe(1);
     const back = run(`fetch-decrypt cleanstart/${RUN}/plan/plan.json.age "$CS_DIR/back.json"`, { BACKUP_AGE_IDENTITY: identity });
     expect(back.code).toBe(0);
@@ -744,6 +921,35 @@ describe('seal-archive.sh: the old chain archived, retired, restored — against
     expect(deleted.every((k) => k.startsWith(`seals/v1/${NEW}/`))).toBe(true);
   });
 
+  it('restore with no recorded new chain: the old files back, nothing moved; a chain nobody can name refuses', () => {
+    // Apply stopped after step g (old live copies removed) and before a new chain was recorded.
+    const live = (k: string) => join(sb.s3, 'photos', ...k.split('/'));
+    for (const s of seals) rmSync(live(s.r2Key), { force: true });
+    rmSync(live(`seals/v1/${'8'.repeat(16)}/00000003.json`), { force: true }); // (a chain begun after the reset: below)
+    writeFileSync(join(sb.csDir, 'then.txt'), FOREIGN.join('\n') + '\n'); // the apply's seal-keys-foreign.txt
+    expect(sa(`restore ${writeSeals(seals)} ${OLD} ${RUN} none`).code).toBe(1); // that list is required
+    const before = sb.s3Calls().length;
+    const r = sa(`restore ${writeSeals(seals)} ${OLD} ${RUN} none "$CS_DIR/then.txt"`);
+    expect(r.code, r.out).toBe(0);
+    expect(r.lines).toEqual([
+      'old seal files back in the live folder, hash-checked: yes',
+      'every seal chain under seals/ is the old one or was there at the reset: yes',
+      'no new seal chain to move out of the live folder: yes',
+    ]);
+    for (const s of seals) expect(sha(sb.read('photos', s.r2Key))).toBe(s.hash);
+    expect(sb.s3Calls().slice(before).filter((c) => c.op === 'delete')).toEqual([]);
+    // A chain folder that is neither the old chain nor there at the reset: never guessed at.
+    sb.put('photos', `seals/v1/${NEW}/00000000.json`, '{"new":true}');
+    const after = sb.s3Calls().length;
+    const u = sa(`restore ${writeSeals(seals)} ${OLD} ${RUN} none "$CS_DIR/then.txt"`);
+    expect(u.code).toBe(1);
+    expect(u.lines).toContain('every seal chain under seals/ is the old one or was there at the reset: no');
+    expect(u.out).toMatch(/a seal chain under seals\/ cannot be named/);
+    expect(sb.has('photos', `seals/v1/${NEW}/00000000.json`)).toBe(true);
+    expect(sb.s3Calls().slice(after).filter((c) => c.op === 'delete')).toEqual([]);
+    rmSync(live(`seals/v1/${NEW}/00000000.json`), { force: true });
+  });
+
   it('a HEAD that fails for another reason than "not found" never counts as removed', () => {
     for (const s of seals) sb.put('photos', s.r2Key, s.bodyText);
     sb.put('photos', seals[1]!.r2Key, seals[1]!.bodyText);
@@ -848,6 +1054,102 @@ describe('photo-delete.sh: refuses unless it is safe, then deletes only the righ
     expect(readFileSync(join(sb.csDir, 'photo-delete.counts'), 'utf8').trim()).toBe('1 0 0 0');
   });
 
+  it('the numbers for the audit row are on disk BEFORE the first deletion (a cancelled or timed-out step is still recorded, as not complete)', () => {
+    // Review 2026-11-15: the counts were written on the script's last lines, so a delete step
+    // cancelled, or out of time, during the per-key confirmation left photos deleted and no
+    // file for the record step, which then wrote no audit row.
+    const k = key(8);
+    writeFileSync(join(sb.csDir, 'late.txt'), `${k}\n`);
+    sb.put('photos', k, 'jpeg');
+    rmSync(join(sb.csDir, 'photo-delete.counts'), { force: true });
+    rmSync(join(sb.csDir, 'counts-at-delete'), { force: true });
+    // An aws that notes, at the first delete-objects, what the counts file holds; then the stand-in.
+    const shim = join(sb.root, 'shim');
+    mkdirSync(shim, { recursive: true });
+    writeFileSync(
+      join(shim, 'aws'),
+      [
+        '#!/usr/bin/env bash',
+        'case " $* " in *" delete-objects "*)',
+        '  if [ ! -f "$CS_DIR/counts-at-delete" ]; then cat "$CS_DIR/photo-delete.counts" > "$CS_DIR/counts-at-delete" 2>/dev/null || echo missing > "$CS_DIR/counts-at-delete"; fi ;;',
+        'esac',
+        `exec "${BIN.replace(/\\/g, '/')}/aws" "$@"`,
+        '',
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+    const r = pd('delete "$CS_DIR/late.txt"', { PATH: standinPath([shim]) });
+    expect(r.code, r.out).toBe(0);
+    expect(sb.has('photos', k)).toBe(false);
+    // listed, skipped (shape), skipped (UAT), confirmed gone: nothing confirmed yet at the first deletion
+    expect(readFileSync(join(sb.csDir, 'counts-at-delete'), 'utf8').trim()).toBe('1 0 0 0');
+    expect(readFileSync(join(sb.csDir, 'photo-delete.counts'), 'utf8').trim()).toBe('1 0 0 1');
+  });
+
+  it('probe: the read-write token writes, reads back and deletes throwaway objects, by BOTH delete calls the later steps use; a read-only token or a wrong bucket refuses', () => {
+    const probes = () => sb.s3Calls().filter((c) => String(c.key ?? '').startsWith('cleanstart-probe/'));
+    const ok = pd(`probe ${RUN}`);
+    expect([ok.code, ok.lines]).toEqual([0, ['the read-write photo token can write and delete in the photo bucket: yes']]);
+    expect(probes().filter((c) => c.op === 'put' || c.op === 'delete').every((c) => c.accessKeyId === 'rw-key' && c.bucket === 'photos')).toBe(true);
+    // One object goes with delete-object (seal-archive.sh retire, restore, move), one with
+    // delete-objects (the photo deletion's batch call; the stand-in logs its batch size).
+    expect(probes().filter((c) => c.op === 'put')).toHaveLength(2);
+    // Sent as the uploads proven on the real R2 are (db-backup.yml, run.sh encrypt-upload):
+    // s3 cp with --checksum-algorithm CRC32 and no other option.
+    expect(probes().filter((c) => c.op === 'put').map((c) => [c.checksum, c.contentType, c.metadata])).toEqual([
+      ['CRC32', null, {}],
+      ['CRC32', null, {}],
+    ]);
+    const dels = probes().filter((c) => c.op === 'delete');
+    expect(dels.map((c) => (c.batch === undefined ? 'delete-object' : 'delete-objects')).sort()).toEqual(['delete-object', 'delete-objects']);
+    expect(new Set(dels.map((c) => c.key)).size).toBe(2);
+    expect(existsSync(join(sb.s3, 'photos', 'cleanstart-probe')) ? readdirSync(join(sb.s3, 'photos', 'cleanstart-probe')) : []).toEqual([]);
+    expect(existsSync(join(sb.csDir, 'pd-probe.json'))).toBe(false);
+    // The read-only token pasted into the read-write secret (Step 1 B and C are easy to swap).
+    // A failed check also says which call stopped it (yes/no lines; aws's words stay private).
+    const roSummary = join(sb.root, 'summary-probe.md');
+    writeFileSync(roSummary, '');
+    const ro = pd(`probe ${RUN}`, { CLEANSTART_R2_RW_ACCESS_KEY_ID: 'ro-key', GITHUB_STEP_SUMMARY: roSummary });
+    expect(ro.code).toBe(1);
+    const refusal = 'the read-write photo token cannot write and delete in the photo bucket (a wrong, read-only or expired token, or a wrong bucket name); nothing was deleted';
+    // The red annotation says what refused: a token check, not a photo deletion (the probe
+    // also gates the Neon rehearsal, the apply, finish and seal-restore). The bold summary
+    // line the guide quotes is unchanged.
+    expect(ro.lines).toEqual([
+      'photo token check: the test objects were written: no',
+      'the read-write photo token can write and delete in the photo bucket: no',
+      `::error::photo token check refused: ${refusal}`,
+    ]);
+    expect(ro.out).not.toMatch(/photo deletion refused/);
+    expect(readFileSync(roSummary, 'utf8')).toContain(`- **refused: ${refusal}**\n`);
+    // The store refuses the BATCH delete only (the photo deletion's call; the first real run
+    // is where it first meets the real store): named, and no test object is left behind.
+    const shim = join(sb.root, 'shim-batch');
+    mkdirSync(shim, { recursive: true });
+    writeFileSync(
+      join(shim, 'aws'),
+      ['#!/usr/bin/env bash', 'case " $* " in *" delete-objects "*) echo "An error occurred (NotImplemented)" >&2; exit 254 ;; esac', `exec "${BIN.replace(/\\/g, '/')}/aws" "$@"`, ''].join('\n'),
+      { mode: 0o755 }
+    );
+    const nb2 = pd(`probe ${RUN}`, { PATH: standinPath([shim]) });
+    expect(nb2.code).toBe(1);
+    expect(nb2.lines.slice(0, 5)).toEqual([
+      'photo token check: the test objects were written: yes',
+      'photo token check: the test objects were read back: yes',
+      'photo token check: one object deleted (the call used for seal files): yes',
+      'photo token check: a batch deleted (the call used for photos): no',
+      'the read-write photo token can write and delete in the photo bucket: no',
+    ]);
+    expect(nb2.out).not.toMatch(/NotImplemented/);
+    expect(existsSync(join(sb.s3, 'photos', 'cleanstart-probe')) ? readdirSync(join(sb.s3, 'photos', 'cleanstart-probe')) : []).toEqual([]);
+    // A wrong bucket name: every HEAD would read "Not Found", so only the write proves the bucket.
+    const nb = pd(`probe ${RUN}`, { FAKE_S3_MISSING_BUCKETS: 'photos' });
+    expect(nb.code).toBe(1);
+    expect(nb.out).toMatch(/nothing was deleted/);
+    const bad = pd('probe x');
+    expect([bad.code, bad.lines]).toEqual([1, ['::error::photo token check refused: the run id is malformed']]);
+  });
+
   it('a batch size can only be made smaller, never above 1000', () => {
     const src = readFileSync('scripts/ops/clean-start/photo-delete.sh', 'utf8');
     expect(src).toMatch(/\[ "\$BATCH" -le 1000 \] \|\| BATCH=1000/);
@@ -912,6 +1214,7 @@ describe('the work folder: no default, refused when missing (it was a job env: v
     ['run.sh safety-cleanup', 'bash scripts/ops/clean-start/run.sh safety-cleanup', 'clean start refused'],
     ['seal-archive.sh verify', 'bash scripts/ops/clean-start/seal-archive.sh verify x.jsonl none', 'seal archive refused'],
     ['photo-delete.sh check', 'bash scripts/ops/clean-start/photo-delete.sh check a b c', 'photo deletion refused'],
+    ['photo-delete.sh probe', 'bash scripts/ops/clean-start/photo-delete.sh probe 1', 'photo token check refused'],
   ] as const;
   it.each(calls)('%s refuses an unset, empty, relative or root CS_DIR, before anything else', (_n, cmd, who) => {
     for (const v of ['', 'relative/work', '/', 'C:x', 'a:b']) {

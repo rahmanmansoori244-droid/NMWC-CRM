@@ -69,6 +69,16 @@ review** and a button **Review deployments**.
 2. Tick **production-reset**.
 3. Click **Approve and deploy**.
 
+**A run you will not approve now: reject it.** Only one Clean start run (or Clean start
+photos run) can go at a time. A run left at **Waiting for review** keeps its place for up
+to 30 days, and every later run then only waits behind it, showing **Pending**. So if you
+will not approve a waiting run now (you changed your mind, it is too late in the evening,
+or you are not sure it is yours): open it → **Review deployments** → tick
+**production-reset** → **Reject**. Rejecting changes nothing. Before you start any run,
+look at the **Clean start** and **Clean start photos** lists: no run may still show a
+yellow circle. If one does and it is waiting for review, reject it first; if it is
+running, wait for it.
+
 **The run id.** Some steps ask for a run id. It is the long number in the address bar of
 the run's page, after `/runs/`. The apply run also prints it in its summary, as
 `run_id for the photo step: <number>`. It is not the short number with a `#`.
@@ -127,8 +137,13 @@ Repository secrets: `DIRECT_URL`, `BACKUP_AGE_IDENTITY`, `BACKUP_R2_ACCOUNT_ID`,
 `APP_BASE_URL` (the live site's address, which the runs call).
 If `BACKUP_AGE_IDENTITY` is missing, add it yourself from your handover pack. Never show
 it to anyone. You do **not** need `PROD_DB_HOST_MARKER`: nothing reads it any more.
-The first dry run also names any missing setting, in a line like
-`setting CLEANSTART_ACTOR_USERNAME present: no`.
+The first dry run names any missing setting that it reads itself (B, E and most of F), in
+a line like `setting CLEANSTART_ACTOR_USERNAME present: no`. It cannot see the secrets of C and D:
+they belong to **production-reset** and are only given to a run you approve. Those are
+first read by the Neon dress rehearsal (Step 3). It names a missing one in the same way.
+It also proves that the read-and-write photo token of C really works: it writes two small
+test files into the photo bucket and deletes them again. So do Step 3 well before reset
+day: a token pasted into the wrong box shows there, not on reset night.
 
 **G. Only if it applies.** If the photo bucket is in a different Cloudflare account from
 the backups: add the repository secret `R2_ACCOUNT_ID`. If the photo bucket is not called
@@ -137,6 +152,15 @@ the backups: add the repository secret `R2_ACCOUNT_ID`. If the photo bucket is n
 **H. Look, without changing anything,** at Cloudflare → **R2** → `nmwc-photos` →
 **Settings**. Tell Claude three things: is **Object versioning** on; which **lifecycle
 rules** are listed; is there any **bucket lock** rule.
+
+Then look at the backups bucket in the same way (R2 → `nmwc-backups` → **Settings**) and
+tell Claude the same three things. For each lifecycle rule also tell Claude its prefix and
+its number of days. The clean start keeps its only copies of the old seals, the list of
+test photos and its reports in that bucket, in a folder named `cleanstart/`. The only
+things that may be deleted automatically there are the nightly backups (prefix `db/`,
+after 30 days) and unfinished uploads. A rule with no prefix, or one for `cleanstart/`,
+would delete those copies without a word, and the photo step could then never run. If
+you see such a rule, tell Claude before reset day and change nothing yourself.
 
 **I. Look at Vercel** → the project → **Settings** → **Git**: the Production Branch
 should be `main`. Then **Settings** → **Environment Variables**: `DATABASE_URL` and
@@ -150,15 +174,21 @@ it, the photo step still works.
 
 **K. Your operations log.** In your private handover pack, start the entry: the date,
 "go-live clean start", your decisions, "I authorise it". Leave space for the run link,
-the plan id and the results. The Audit page shows that the clean start happened and why,
-but **not** how many records of each kind were removed: those figures are only in the
-run's encrypted report. If you want them in your log, Claude reads the report with you
-after the reset.
+the plan id and the results. On reset day the Audit page shows that the clean start
+happened and why. How many records of each kind were removed is listed under that entry
+("What was removed and kept") only once Claude's small follow-up change is live; it goes
+live when you say so, before or after the reset. Until then those figures are only in
+the run's encrypted report: if you want them in your log, Claude reads the report with
+you.
 
 **L. Everyone signs out.** Before reset day, every person who tested the CRM presses
 **Sign out** on every phone and computer they used. Signing out also deletes the unsent
 copies of forms that a phone keeps for 7 days; otherwise a test request saved during
 testing could be sent after the reset and become a real-looking request.
+A sign-in ends by itself after 8 hours, and that does **not** delete those copies. So if
+a phone or computer already shows the sign-in page, they sign in, then press **Sign out**.
+Do this before the evening of dry run 2 (Step 4): a sign-in during a run's evening
+changes the database and stops the run.
 
 **M. The merge.** When Claude says the pull request is green, reply "merge it". After the
 merge, wait about 15 minutes for the live site to update before the first dry run.
@@ -191,7 +221,8 @@ backup** have a green tick. In the summary you see, among others:
 - `the nightly backup's table gate passes on the reset copy: yes`
 - `next customer code would be number 000001: yes`
 
-Some lines report a fact and may say `no` while the run is still green. They are listed
+Some lines report a fact and may say `no` while the run is still green (a run before 19:00
+or after midnight Oman also shows a line ending in `(not asserted)`). They are listed
 at the end of this guide, under "Lines that may say no".
 
 **Write down** (in your private notes) the line that starts with
@@ -229,13 +260,18 @@ changes the clean-start scripts after it, you do it again.
 **Green looks like this.** **Plan (read-only)** and **Neon rehearsal** are green, and the
 summary has:
 
+- `the read-write photo token can write and delete in the photo bucket: yes`
+- `Neon default branch is production: yes`
 - `Neon branch host is not production: yes`
 - `reset on the Neon branch: ok`
 - `first integrity checks as expected: yes`
-- `Neon restored the branch to the noted time: yes`
+- `Neon made a copy of the branch as it was at the noted time: yes`
 - `the reset row is gone after the restore: yes`
 - `the Neon restore returned the exact fingerprint: yes`
 - `temporary Neon branches deleted: yes`
+
+Run before 19:00 or after midnight Oman time, it also shows a line ending in
+`(not asserted)`; that is fine (see "Lines that may say no").
 
 **Afterwards:** Neon console → your project → **Branches**. No branch whose name starts
 with `cleanstart-rehearsal-` may be left. If the run said
@@ -261,8 +297,15 @@ start is refused safely (`the target guard refused`), but the evening is lost.
 1. **Write the entry in your private operations log first:** the date, "go-live clean
    start", that you authorise it, and why.
 2. **Tell staff not to open the CRM** until you say so. Do not sign in yourself.
-3. Actions → **DB Backup** → **Run workflow**. Wait for the green tick.
-4. Actions → **Clean start** → **Run workflow**:
+3. **Pause two automatic timers for tonight.** Actions → **SLA escalation sweep** → the
+   **…** button at the top right of its list of runs → **Disable workflow**. Do the same
+   for **Keep production warm**. They are spare timers (the live site runs the same jobs
+   itself), but GitHub sometimes starts them hours late, in the evening, and one late run
+   changes the database and stops the reset. You switch them on again in Step 6, whatever
+   tonight's result.
+4. Actions → **DB Backup** → **Run workflow**. Wait for the green tick.
+5. Actions → **Clean start**. No earlier run may still show a yellow circle (see "A run
+   you will not approve now: reject it" above). Then **Run workflow**:
    - mode `apply`;
    - host box `ep-sweet-haze`;
    - phrase box `REMOVE ALL TEST DATA` and today's date in Oman, for example
@@ -270,15 +313,17 @@ start is refused safely (`the target guard refused`), but the evening is lost.
      date as year-month-day);
    - run id box empty.
    Click **Run workflow**.
-5. Wait until **Plan (read-only)** and **Rehearse on the restored backup** are green (about
+6. Wait until **Plan (read-only)** and **Rehearse on the restored backup** are green (about
    20 minutes). If either is red: stop. Send Claude the link. Nothing has changed.
-6. The run shows **Waiting for review**. Click **Review deployments** → tick
+7. The run shows **Waiting for review**. Click **Review deployments** → tick
    **production-reset** → **Approve and deploy**. **This click is your yes.**
-7. Wait about 10 minutes for **Apply (the owner's approval)**. Do not touch anything.
+8. Wait about 10 minutes for **Apply (the owner's approval)**. Do not touch anything.
 
 **Green looks like this.** The Apply job has a green tick, and its summary says:
 
+- `the read-write photo token can write and delete in the photo bucket: yes`
 - `production unchanged since the plan: yes`
+- `Neon default branch is production: yes`
 - `Neon branch created and confirmed: yes`
 - `old seals archived, re-read and chained: yes`
 - `reset started at (UTC): …` and `reset started at (Oman time): …` (write both in your
@@ -301,8 +346,10 @@ integrity alert tonight** because of it. Note it in your log; do nothing about i
 
 **If it is red:** do not press anything again. Send Claude the link. The summary says
 whether the reset happened: `reset committed: yes`, or `reset committed: no (nothing
-changed)`, or `reset committed: unknown`. For `unknown`, see "When something is red".
-When Claude says to run **finish**, run it **the same evening, before 06:00 Oman time**
+changed)`, or `reset committed: unknown`. For `unknown`, see "When something is red". If
+the summary has `reset started at (UTC)` but none of these three lines (the run was
+stopped, or ran out of time), the reset may have happened: press nothing and send Claude
+the link. When Claude says to run **finish**, run it **the same evening, before 06:00 Oman time**
 (the nightly integrity check runs at 06:30). If that time has passed, tell Claude before
 you press anything: the night's check will then have reported the old seal files as one
 unexplained critical alert.
@@ -322,20 +369,24 @@ from that line. Save. (The automatic backup runs at about 06:00 Oman.)
    exception allowed is "The off-site copies of the seals are there" when the summary
    showed `seal-offsite-copies: fail`.
 5. **Audit**: the clean-start entry is the only row before your sign-ins, with its reason.
-   Write in your private operations log that you saw it, with the run link. (The page
-   does not show how many records were removed; see Step 1 K.)
+   Write in your private operations log that you saw it, with the run link. (Until
+   Claude's follow-up change is live, the page does not show how many records were
+   removed; see Step 1 K.)
 6. Tell staff the CRM is open again, but no new customers yet.
 
 ---
 
 ## Step 6. The next morning
 
-1. **Service status** → **Integrity**: "Tonight's seal was written" is pass. Nothing is
+1. Switch the two timers of Step 5 on again: Actions → **SLA escalation sweep** →
+   **Enable workflow**, and the same for **Keep production warm**. Do this even if the
+   reset was red or did not happen.
+2. **Service status** → **Integrity**: "Tonight's seal was written" is pass. Nothing is
    failing.
-2. Actions → **DB Backup**: last night's run has a green tick.
-3. **Requests** is empty. If a request is there, it was sent from a phone that kept a
+3. Actions → **DB Backup**: last night's run has a green tick.
+4. **Requests** is empty. If a request is there, it was sent from a phone that kept a
    test form: tell Claude before the import.
-4. Only now load the real customer file through the **Import** screen. Check the preview
+5. Only now load the real customer file through the **Import** screen. Check the preview
    first: the codes should be in capital letters, like CCT0005. Two things on the batch
    page are expected and are not faults:
    - A customer code or Temix code typed in small letters is read in capitals. The row
@@ -346,9 +397,10 @@ from that line. Save. (The automatic backup runs at about 06:00 Oman.)
      "Different shop: release…" lets the row through with a typed reason. If you are
      unsure, ask Claude first.
 
-Until Claude's small follow-up change lands (planned for the day after the reset), the
-dashboards' "up/down" comparisons that reach back before the reset day compare with
-empty days. Read the comparisons from the reset day on.
+Once Claude's small follow-up change is live (when you say so, before or after the
+reset), a dashboard comparison whose earlier period starts before the reset shows "No
+earlier data yet to compare with" instead of an up or down figure. Until then, those
+comparisons compare with empty days: read them from the reset day on.
 
 **From this import on there is no way back** for the database. Mistakes are then fixed
 forward.
@@ -364,7 +416,9 @@ you are unsure, send Claude the link and Claude confirms.
 
 ## Step 7. When something is red
 
-Find the bold **refused:** line in the summary.
+Find the bold **refused:** line in the summary. A red Apply after the line
+`reset started at (UTC)` may have none: then find the line that starts with
+`reset committed:` instead.
 
 | The line says | What it means | What you do |
 |---|---|---|
@@ -378,14 +432,18 @@ Find the bold **refused:** line in the summary.
 | `a DB Backup run is in progress; wait for it and start again` | a backup is running | wait for it, then start again |
 | `run DB Backup first: the newest dump is too old` | the backup is older than allowed | run DB Backup, then start again |
 | `a newer dump exists than the one the rehearsal restored; start again` | a backup ran during the run | start again |
-| `backup equals production: no` or `production unchanged since the plan: no` | someone used the CRM | make sure nobody does; DB Backup again; start again |
+| `backup equals production: no` or `production unchanged since the plan: no` | the database changed after the backup: someone used the CRM, or a late automatic timer ran (Step 5, item 3), or someone outside tried to sign in | make sure nobody uses it and both timers are disabled; DB Backup again; start again. If nobody used it, tell Claude |
 | `no green neon-rehearsal of these exact scripts in the last 14 days` | the dress rehearsal is missing or too old | do Step 3 again |
 | `the newest dump was taken before 19:00 Oman; run DB Backup again now, then start again` | the backup is from earlier today | run DB Backup, then start again |
 | `DB Backup heartbeat ok within 4 h: no` (or `6 h`) | the CRM has not seen the last backup | send Claude the link |
 | `runtime role privileges not failing on production (latest watch): no` | the nightly check found a wrong database permission | send Claude the link; it must be fixed before the reset |
-| `reset committed: unknown (no connection); run mode finish with this run id` or `reset committed: unknown (the check did not finish); run mode finish with this run id` | the answer was lost | run **finish** (below), the same evening |
+| `reset committed: no (nothing changed)` (Apply) | the database refused the reset and undid it, usually because someone used the CRM while the run waited for your Approve | nothing changed. Send Claude the link. Do not start apply again tonight |
+| `reset committed: unknown (no connection); run mode finish with this run id` or `reset committed: unknown (the check did not finish); run mode finish with this run id` | the answer was lost | send Claude the link, then run **finish** (below) the same evening when Claude says so |
+| a red Apply with `reset started at (UTC)` but no `reset committed:` line | the run was stopped, or ran out of time; the reset may have happened | press nothing; send Claude the link |
 | `the real customer file is loaded (customers exist): no` (photos) | the real file is not loaded yet | load it first (Step 6) |
-| `the new seal chain's id of that run was not recorded, so no seal file is moved; tell Claude` (seal-restore) | | send Claude the link |
+| `the account that records the deletion is one active, real account: no` (photos) | the CRM account of Step 1 E was renamed or switched off since the reset, or its secret was changed | nothing was deleted. Send Claude the link |
+| `the read-write photo token cannot write and delete in the photo bucket (a wrong, read-only or expired token, or a wrong bucket name); nothing was deleted` (Neon rehearsal, apply, finish, seal-restore, photos) | the token of Step 1 C does not work (it lasts 60 days), or the two tokens were swapped | this check deleted and changed nothing. In an apply it comes before the reset, so the reset did not happen. Send Claude the link; Claude helps you make a new token. The lines just above it that start with `photo token check:` say which part failed |
+| `the old seal files are back, but a seal chain under seals/ cannot be named (the new chain's id was not recorded); nothing else is moved; tell Claude` (seal-restore) | the old seal files are back; one folder of seal files is unexplained | send Claude the link before anyone uses the CRM |
 | anything else | | send Claude the link; do not press anything |
 
 Every refusal before the line `reset started at (UTC)` means nothing changed.
@@ -407,6 +465,13 @@ answer, not a fault. Send Claude the link either way.
 Only when you are sure you will never go back: the real file is loaded and checked, and
 at least 7 full days have passed since the reset. **It cannot be undone.**
 
+Do not leave it for months. Do it **before** you change or remove the backup key
+(the secret `BACKUP_AGE_IDENTITY`), before the read-and-write photo token of Step 1 C
+ends (60 days after you made it), and before you rename or switch off the CRM account of
+Step 1 E. The list of test photos is stored locked with the backup key of reset day: with
+another key the photo step cannot read it. It then refuses and deletes nothing, but it
+stays blocked until the old key is back.
+
 1. Actions → **Clean start photos** → **Run workflow**. Fill in:
    - `The number of the clean-start apply run (from its summary)`: the `run_id for the
      photo step` from your log;
@@ -423,13 +488,19 @@ green, and the summary says:
 - `the reset is at least 7 days old: yes`
 - `the stored list, the typed value and the reset row agree: yes`
 - `production references none of the listed photos: yes`
+- `the account that records the deletion is one active, real account: yes`
+- `the read-write photo token can write and delete in the photo bucket: yes`
 - `temporary Neon branches deleted: yes` (this is the Neon safety copy; if it was
   already gone, the line is `Neon branches to delete: no`)
 - `every photo to delete is confirmed gone: yes`
 - `photo deletion recorded in the audit log: ok`
 
 Note it in your operations log. If it is red, send Claude the link. A refusal before
-`temporary Neon branches deleted` means nothing was deleted.
+`temporary Neon branches deleted` means nothing was deleted. Never cancel this run while
+it is deleting. If it stopped half way (cancelled, or out of time), the Audit page gets an
+entry saying the deletion did not complete, and Claude will ask you to run the photo step
+once more with the same boxes. That is safe: the second run deletes what is left and
+records it.
 
 ---
 
@@ -474,7 +545,10 @@ alert about the new seal files.
    `production is back to before the reset (old chain, no reset row): yes`,
    `old seal files back in the live folder, hash-checked: yes`,
    `the abandoned new chain moved out of the live folder: yes` and
-   `a check failing or in error: no`. If a check is failing, the job is red: send Claude
+   `a check failing or in error: no`. (If the apply stopped before it recorded the new
+   chain, the summary says `new seal chain id of that run recorded: no` and, instead of
+   the "moved" line, `no new seal chain to move out of the live folder: yes`. That is
+   green too.) If a check is failing, the job is red: send Claude
    the link before anyone uses the CRM. One exception keeps it green: when the test
    environment's files sit in the seal folder, the summary shows
    `seal-offsite-copies: fail` and
@@ -516,6 +590,8 @@ These lines report a fact. They can say `no` (or `yes`) while the job is green:
 | `green Neon rehearsal of these scripts within 14 days` (dry run) | `no` before Step 3 is normal; apply needs `yes` |
 | `the first watch after the reset already ran` (finish) | recorded; finish runs it when `no` |
 | `new seal chain id recorded` | `no` only if the first check did not run; tell Claude |
+| A line after the `night 2:` line that ends with `… (not asserted)`, for example `scheduled-jobs-on-time: fail (not asserted)` (dry run, Neon rehearsal, the Rehearse job of an apply) | recorded only, never judged, even when it says `fail`: at that hour the copy cannot yet hold a whole day of job runs. It appears when the watch step runs before 19:00 or after midnight Oman time (before 15:00 or after 20:00 UTC); between 19:00 and midnight Oman it does not appear. The line to trust is `first integrity checks as expected: yes` |
+| `values for the photo step printed (only after a reset that committed)` | `no` on a run whose reset did not happen, or is not yet known to have happened. Such a run has no `run_id for the photo step` and no `list_sha256 for the photo step`: never log values from another run in their place. The green apply prints them; so does a green finish |
 | `other objects under seals/ left where they are` (seal-restore) | recorded only |
 
 Every other `<something>: no` line, and every bold **refused:** line, means stop and send

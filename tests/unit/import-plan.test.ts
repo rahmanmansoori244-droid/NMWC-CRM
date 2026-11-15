@@ -596,6 +596,8 @@ describe('addGroup and summaryLines — the counts and the words', () => {
       routeNotApplied: 0,
       // Owner's answer 2026-11-11 (A5): counted by the loader, not by addGroup.
       codesCapitalised: 0,
+      // Bug hunt round 2, F1: counted by the loader too (held-back rows).
+      excelErrorRows: 0,
       crm: {
         customersFilled: 0,
         shopsFilled: 0,
@@ -615,6 +617,8 @@ describe('addGroup and summaryLines — the counts and the words', () => {
       },
       credit: { rows: 1, reasons: [{ reason: 'NO_CODE_ON_RECORD', rows: 1 }] },
       expectRejected: { customers: 1, rows: 2, reasons: [{ reason: 'payment terms that differ from the record', customers: 1 }] },
+      // Bug hunt round 1, finding 1: none of these customers has a blank row numbered like another row.
+      numberedClash: { customers: 0, examples: [] },
       unchangedCustomers: 1,
     });
   });

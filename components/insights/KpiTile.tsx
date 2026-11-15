@@ -8,6 +8,11 @@ export type Delta = {
   against: string;
   /** Whether a rise is good news (new customers) or not (closures); colours the arrow. */
   goodWhenUp?: boolean;
+  /**
+   * Shown instead of any arrow or percentage when the period before cannot be
+   * compared (lib/insights/compare.ts: it starts before the clean start).
+   */
+  note?: string;
 };
 
 /**
@@ -59,6 +64,9 @@ export function KpiTile({
 }
 
 function DeltaLine({ delta }: { delta: Delta }) {
+  if (delta.note) {
+    return <div className="text-[11px] text-slate-500">{delta.note}</div>;
+  }
   if (delta.pct === null) {
     return <div className="text-[11px] text-slate-500">none {delta.against.replace(/^vs /, 'in ')}</div>;
   }

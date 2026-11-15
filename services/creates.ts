@@ -116,9 +116,16 @@ function zodIssuesToFields(issues: ZodIssue[]): Record<string, string> {
     const p = issue.path;
     if (p[0] === 'branches' && typeof p[1] === 'number') {
       const sub = p.slice(2).join('.');
-      // Map schema field names onto the form's rendered error slots.
+      // Map schema field names onto the form's rendered error slots. The
+      // location's companions (accuracy, capture time) render under the same
+      // `gps` slot, as lib/edit-values.ts fieldSlotKey does for an update (H14);
+      // unmapped, they fell to the top of the form.
       const key =
-        sub === 'gpsLat' || sub === 'gpsLng' || sub === 'gpsManualReason'
+        sub === 'gpsLat' ||
+        sub === 'gpsLng' ||
+        sub === 'gpsAccuracy' ||
+        sub === 'gpsCapturedAt' ||
+        sub === 'gpsManualReason'
           ? 'gps'
           : sub === 'shopPhotoAttachmentId'
             ? 'shopPhoto'

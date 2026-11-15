@@ -128,16 +128,30 @@ BEGIN
 END
 $cs$;
 
--- CS006: no migration unfinished or rolled back.
+-- The migration ledger, read as Prisma and scripts/ops/restore-verify.ts read it:
+--   applied      finished_at set and rolled_back_at empty;
+--   failed       both empty: the migration started and did not finish. Prisma then
+--                refuses every deploy (P3009) until someone resolves it;
+--   rolled back  rolled_back_at set: HISTORY. `prisma migrate resolve --rolled-back`
+--                (docs/OPERATIONS.md section 5, "A migration refused by a lock")
+--                marks the failed row and leaves it for ever, beside the row of
+--                the later successful apply.
+-- Until 2026-11-15 CS006 refused any rolled-back row and CS007 hashed every row,
+-- so a database that was once repaired exactly as the runbook says could never
+-- pass the plan again, whatever was done.
+--
+-- CS006: no migration is failed (unfinished and not marked rolled back).
 DO $cs$
 BEGIN
-  IF EXISTS (SELECT 1 FROM public._prisma_migrations m WHERE m.finished_at IS NULL OR m.rolled_back_at IS NOT NULL) THEN
-    RAISE EXCEPTION 'clean-start guard: a migration is unfinished or rolled back' USING ERRCODE = 'CS006';
+  IF EXISTS (SELECT 1 FROM public._prisma_migrations m WHERE m.finished_at IS NULL AND m.rolled_back_at IS NULL) THEN
+    RAISE EXCEPTION 'clean-start guard: a migration is unfinished (failed, and not marked rolled back)' USING ERRCODE = 'CS006';
   END IF;
 END
 $cs$;
 
--- CS007: the applied migrations (names and checksums) are the checkout's.
+-- CS007: the applied migrations (names and checksums) are the checkout's: every
+-- one of the checkout's applied exactly once, with its checksum, and nothing else
+-- applied. A migration that was only rolled back, or applied twice, refuses here.
 DO $cs$
 DECLARE
   want text := current_setting('cs.expected_migrations', true);
@@ -145,7 +159,8 @@ DECLARE
 BEGIN
   SELECT encode(sha256(convert_to(COALESCE(string_agg(m.migration_name || ' ' || m.checksum || E'\n', ''
            ORDER BY m.migration_name COLLATE "C", m.started_at), ''), 'UTF8')), 'hex')
-    INTO have FROM public._prisma_migrations m;
+    INTO have FROM public._prisma_migrations m
+   WHERE m.finished_at IS NOT NULL AND m.rolled_back_at IS NULL;
   IF want IS NULL OR want !~ '^[0-9a-f]{64}$' OR have IS DISTINCT FROM want THEN
     RAISE EXCEPTION 'clean-start guard: the applied migrations are not the checkout''s' USING ERRCODE = 'CS007';
   END IF;

@@ -207,11 +207,20 @@ export function stageSnapshot(
   };
 }
 
-/** Working minutes until `dueAt` (negative = overdue by that many working minutes). */
+/**
+ * Working minutes until `dueAt` (negative = overdue by that many working minutes).
+ *
+ * Once `now` is past `dueAt` the answer is always below zero, at least -1. A
+ * deadline at exactly 17:00 (the end of the working day) has no working minute
+ * between it and the evening, so the working-minute count alone is 0, and the
+ * pages read "due in 0m" all evening (all weekend after a Thursday deadline)
+ * while the SLA sweep, which compares the wall clock, has already said "past its
+ * SLA". Item H15.
+ */
 export function minutesRemaining(dueAt: Date, now: Date = new Date()): number {
   return now.getTime() <= dueAt.getTime()
     ? workingMinutesBetween(now, dueAt)
-    : -workingMinutesBetween(dueAt, now);
+    : -Math.max(1, workingMinutesBetween(dueAt, now));
 }
 
 /** Queue-pill label: "due in 5h" / "due in 90m" / "OVERDUE 3h". */

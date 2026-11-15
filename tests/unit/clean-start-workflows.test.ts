@@ -143,6 +143,42 @@ describe('every run: block', () => {
       for (const c of commands(s.run!))
         if (/\b(npm|npx)\b/.test(c)) expect(c, `${f} ${id}`).toMatch(/> (\/dev\/null|"\$CS_DIR\/[^"]+")/);
   });
+
+  it('a job with a database SERVICE CONTAINER silences the server\'s own log before any data reaches it (the runner prints that log at the end, green or red)', () => {
+    // Review 2026-11-15, blocker: the runner prints every service container's
+    // `docker logs` into the public job log ("Print service container logs"), and
+    // Postgres writes each ERROR there with the failing row (CONTEXT: COPY ..., line
+    // N: "<row>"; DETAIL: Failing row contains (...)). The files under CS_DIR hold
+    // only the client's copy. The Rehearse job restores the real backup into such a
+    // container; no other clean-start job has one.
+    const withService = allJobs().filter(([, , j]) => j.services !== undefined);
+    expect(withService.map(([f, id]) => `${f} ${id}`)).toEqual(['clean-start.yml rehearse']);
+    for (const [f, id, j] of withService) {
+      const where = `${f} ${id}`;
+      const quiet = j.steps.findIndex((s) => /ALTER SYSTEM/.test(s.run ?? ''));
+      expect(quiet, where).toBeGreaterThan(0);
+      const step = j.steps[quiet]!;
+      expect(step.if, where).toBeUndefined();
+      const cs = commands(step.run!);
+      const set = cs.find((c) => /ALTER SYSTEM/.test(c))!;
+      for (const s of ["log_min_messages = 'panic'", "log_min_error_statement = 'panic'", "log_error_verbosity = 'terse'"])
+        expect(set, where).toContain(`-c "ALTER SYSTEM SET ${s}"`);
+      expect(set, where).toMatch(/^psql "\$CS_PG_ADMIN_URL" [^|;&]*-c "SELECT pg_reload_conf\(\)" > "\$CS_DIR\/quiet\.out" 2>&1 \|\| rc=\$\?$/);
+      // Read back in a new session, and refused (not merely recorded) unless all three took.
+      expect(step.run, where).toContain(
+        `-c "SELECT current_setting('log_min_messages') = 'panic' AND current_setting('log_min_error_statement') = 'panic' AND current_setting('log_error_verbosity') = 'terse'" > "$CS_DIR/quiet.out" 2>&1`
+      );
+      const last = cs.filter((c) => c !== '').at(-1)!;
+      expect(last, where).toMatch(/^bash scripts\/ops\/clean-start\/run\.sh bool "[^"]+" "\$CS_DIR\/quiet\.out"$/);
+      // Before the backup is downloaded, and before any other step touches a database.
+      const touches = (s: Step) => /backup-fetch|restore-load|pg_dump|"\$(REHEARSE_URL|CS_PG_ADMIN_URL)"/.test(s.run ?? '');
+      const first = j.steps.findIndex((s, i) => i !== quiet && touches(s));
+      expect(first, where).toBeGreaterThan(quiet);
+      expect(j.steps[quiet + 1]!.run, where).toMatch(/run\.sh backup-fetch/);
+      // Nothing later turns the log back on.
+      for (const s of j.steps.slice(quiet + 1)) expect(s.run ?? '', `${where}: ${s.name}`).not.toMatch(/ALTER SYSTEM|pg_reload_conf|log_min_|log_statement|log_error_verbosity/);
+    }
+  });
 });
 
 describe('targets', () => {
@@ -264,8 +300,140 @@ describe('targets', () => {
     const sr = run('seal_restore');
     expect(sr.indexOf('run.sh chain-id-fetch')).toBeGreaterThan(-1);
     expect(sr.indexOf('run.sh chain-id-fetch')).toBeLessThan(sr.indexOf('seal-archive.sh restore'));
-    expect(sr).toMatch(/seal-archive\.sh restore "\$CS_DIR\/exports\/seals\.jsonl" "\$OLD_CHAIN" "\$TARGET_RUN" "\$NEW_CHAIN"/);
+    expect(sr).toMatch(/seal-archive\.sh restore "\$CS_DIR\/exports\/seals\.jsonl" "\$OLD_CHAIN" "\$TARGET_RUN" "\$NEW_CHAIN" \\\s+"\$CS_DIR\/exports\/seal-keys-foreign\.txt"/);
     expect(sr).toMatch(/run\.sh status-lines "\$CS_DIR\/watch-latest\.tsv" refuse/);
+  });
+
+  it('the photo run probes the read-write token before it deletes the Neon safety branch (its first irreversible step)', () => {
+    const steps = PHOTOS.jobs.photos!.steps;
+    const names = steps.map((s) => s.name ?? '');
+    const probe = names.findIndex((n) => /read-write photo token can write and delete/.test(n));
+    const neon = names.findIndex((n) => /Neon safety branch/.test(n));
+    expect(probe).toBeGreaterThan(0);
+    expect(neon).toBe(probe + 1);
+    expect(steps[probe]!.if).toBeUndefined();
+    expect(steps[probe]!.run).toMatch(/photo-delete\.sh probe "\$GITHUB_RUN_ID"/);
+  });
+
+  it('the read-write photo token is proven BEFORE the reset commits and days before reset day (it was first used at apply step g, after the COMMIT)', () => {
+    const PROBE = /^bash scripts\/ops\/clean-start\/photo-delete\.sh probe "\$GITHUB_RUN_ID"$/;
+    const at = (job: string, re: RegExp) => MAIN.jobs[job]!.steps.findIndex((s) => commands(s.run ?? '').some((c) => re.test(c)));
+    const lineOf = (job: string, step: number, re: RegExp) => commands(MAIN.jobs[job]!.steps[step]!.run!).findIndex((c) => re.test(c));
+
+    // The Neon rehearsal (Step 3 of the owner's guide, days ahead): right after the
+    // preflight that names the two secrets, before any branch is made.
+    const nr = MAIN.jobs.neon_rehearsal!;
+    for (const k of ['CLEANSTART_R2_RW_ACCESS_KEY_ID', 'CLEANSTART_R2_RW_SECRET_ACCESS_KEY']) expect(nr.env![k], k).toBe(`\${{ secrets.${k} }}`);
+    const np = at('neon_rehearsal', PROBE);
+    expect(np).toBeGreaterThan(at('neon_rehearsal', /run\.sh preflight neon-rehearsal/));
+    expect(np).toBeLessThan(at('neon_rehearsal', /run\.sh neon-create/));
+    expect(nr.steps[np]!.if).toBeUndefined();
+    expect(read('scripts/ops/clean-start/run.sh')).toMatch(/neon-rehearsal\) names=\([^)]*CLEANSTART_R2_RW_ACCESS_KEY_ID CLEANSTART_R2_RW_SECRET_ACCESS_KEY\)/);
+
+    // Apply: in step a, so before the safety branch (b), the archive (c) and the reset (d).
+    const ap = at('apply', PROBE);
+    expect(MAIN.jobs.apply!.steps[ap]!.name).toMatch(/^a\. The plan checks again/);
+    expect(MAIN.jobs.apply!.steps[ap]!.if).toBeUndefined();
+    for (const later of [/run\.sh neon-create/, /seal-archive\.sh archive/, /reset\.sql/, /seal-archive\.sh retire/])
+      expect(at('apply', later), String(later)).toBeGreaterThan(ap);
+
+    // Finish: after the settle (its answer never waits for a token), before a seal file is touched.
+    const fp = at('finish', PROBE);
+    expect(fp).toBeGreaterThan(at('finish', /run\.sh settle/));
+    expect(fp).toBe(at('finish', /seal-archive\.sh retire/));
+    expect(lineOf('finish', fp, PROBE)).toBeLessThan(lineOf('finish', fp, /seal-archive\.sh (verify|retire)/));
+
+    // Seal-restore: before the old files are put back.
+    const sp = at('seal_restore', PROBE);
+    expect(sp).toBe(at('seal_restore', /seal-archive\.sh restore/));
+    expect(lineOf('seal_restore', sp, PROBE)).toBeLessThan(lineOf('seal_restore', sp, /seal-archive\.sh restore/));
+
+    // No job that is not approval-gated holds, or probes with, the write token.
+    for (const id of ['plan', 'rehearse']) {
+      expect(JSON.stringify(MAIN.jobs[id]!.env)).not.toMatch(/CLEANSTART_R2_RW_/);
+      expect(at(id, /photo-delete\.sh/)).toBe(-1);
+    }
+  });
+
+  it('the report step prints the photo-step values BEFORE the upload that can fail, and only for a committed reset (apply and finish)', () => {
+    // `defaults.run.shell: bash` runs each block with -e: when encrypt-upload refused, the
+    // lines after it never ran, and the two values the owner must copy were not in the summary.
+    for (const id of ['apply', 'finish']) {
+      const j = MAIN.jobs[id]!.steps.find((s) => s.name === 'j. The encrypted report')!;
+      expect(j.if, id).toBe('always()');
+      const owner = j.run!.indexOf('run.sh for-the-owner');
+      expect(owner, id).toBeGreaterThan(-1);
+      expect(owner, id).toBeLessThan(j.run!.indexOf('run.sh encrypt-upload'));
+      expect(owner, id).toBeLessThan(j.run!.indexOf('FILES=()'));
+    }
+    expect((MAIN as unknown as { defaults: unknown }).defaults).toEqual({ run: { shell: 'bash' } });
+    // A refused or rolled-back reset has no values to copy (run.sh; tests/unit/clean-start-run.test.ts).
+    expect(read('scripts/ops/clean-start/run.sh')).toMatch(
+      /\ncmd_for_the_owner\(\) \{\n(?: {2}[^\n]*\n){1,3} {2}if \[ "\$committed" != yes \]; then\n {4}say "[^"]+: no"\n {4}return 0\n {2}fi\n/
+    );
+  });
+
+  it('the photo run checks the actor BEFORE anything is deleted, and records a cancelled or timed-out deletion too (review 2026-11-15)', () => {
+    const steps = PHOTOS.jobs.photos!.steps;
+    const at = (re: RegExp) => steps.findIndex((s) => re.test(s.run ?? ''));
+    // The audit row is written under the actor's account (photos-record.sql CS401): read
+    // read-only with the other facts, refused with the other refusals, before the probe,
+    // the Neon safety branch and the deletion.
+    const read_ = steps[at(/fact=actor-ok/)]!;
+    expect(commands(read_.run!).join('\n')).toMatch(/-f scripts\/ops\/clean-start\/facts\.sql\s+-v fact=actor-ok -v actor_username="\$CLEANSTART_ACTOR_USERNAME" > "\$CS_DIR\/actor\.out" 2>&1/);
+    expect(read_.env?.PGOPTIONS).toBe('-c default_transaction_read_only=on');
+    const refuse = at(/run\.sh bool "the account that records the deletion is one active, real account" "\$CS_DIR\/actor\.out"$/m);
+    expect(refuse).toBeGreaterThan(at(/fact=actor-ok/));
+    for (const later of [/photo-delete\.sh probe/, /neon-delete-safety/, /photo-delete\.sh delete/, /-f scripts\/ops\/clean-start\/photos-record\.sql/])
+      expect(at(later), String(later)).toBeGreaterThan(refuse);
+    expect(read('scripts/ops/clean-start/facts.sql')).toMatch(
+      /\\elif :f_actor_ok\nSELECT count\(\*\) = 1 FROM public\."User" u\n WHERE :'actor_username' <> '' AND u\."username" = :'actor_username' AND u\."isActive" AND NOT u\."isTest";/
+    );
+    // A delete step that was cancelled or ran out of time may already have deleted photos:
+    // the record step runs then too, and photo-delete.sh has the numbers on disk by then.
+    const rec = steps.find((s) => /Record it in production's audit log/.test(s.name ?? ''))!;
+    expect(rec.if).toBe("always() && (steps.delete.outcome == 'success' || steps.delete.outcome == 'failure' || steps.delete.outcome == 'cancelled')");
+    const pd = read('scripts/ops/clean-start/photo-delete.sh');
+    const early = pd.indexOf(`printf '%s %s %s %s\\n' "$listed" "$skipped_shape" "$skipped_uat" 0 > "$CS_DIR/photo-delete.counts"`);
+    expect(early).toBeGreaterThan(-1);
+    expect(early).toBeLessThan(pd.indexOf('aws_rw s3api delete-objects --bucket "$PHOTOS_BUCKET" --delete "file://$b.json"'));
+  });
+
+  it('the photo record: complete only on a green delete step, its own row and report folder per run attempt', () => {
+    const steps = PHOTOS.jobs.photos!.steps;
+    const rec = steps.find((s) => /Record it in production's audit log/.test(s.name ?? ''))!;
+    expect(rec.env?.DELETE_OUTCOME).toBe('${{ steps.delete.outcome }}');
+    expect(rec.run).toMatch(/COMPLETE=no\n\s*if \[ "\$DELETE_OUTCOME" = success \]; then COMPLETE=yes; fi/);
+    expect(commands(rec.run!).join('\n')).toMatch(/-v complete="\$COMPLETE"\s+-v attempt="\$\{GITHUB_RUN_ATTEMPT:-1\}"/);
+    const report = steps.find((s) => s.name === 'The encrypted report')!;
+    expect(report.run).toMatch(/encrypt-upload "cleanstart\/\$TARGET_RUN\/photos-\$GITHUB_RUN_ID-\$\{GITHUB_RUN_ATTEMPT:-1\}"/);
+  });
+
+  it('age is installed on its own with one retry (the universe mirror flakes; db-backup.yml), in every job that needs it', () => {
+    let n = 0;
+    for (const [f, id, j] of allJobs()) {
+      for (const s of j.steps) {
+        const lines = commands(s.run ?? '').filter((l) => /apt-get install/.test(l));
+        if (!lines.some((l) => /\bage\b/.test(l))) continue;
+        n++;
+        const ages = lines.filter((l) => /\bage\b/.test(l));
+        expect(ages, `${f} ${id}`).toHaveLength(1);
+        expect(ages[0], `${f} ${id}`).toMatch(/install -y --no-install-recommends age > \/dev\/null\s+\|\| \{ sleep \d+; sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends age > \/dev\/null; \}$/);
+        expect(ages[0]).not.toMatch(/postgresql-client/);
+      }
+    }
+    expect(n).toBe(6);
+  });
+
+  it('apply settles "reset committed" also after a reset Postgres refused (exit 3), never after a cancel or another failure', () => {
+    const steps = MAIN.jobs.apply!.steps;
+    const d = steps.findIndex((s) => (s.name ?? '').startsWith('d. THE RESET'));
+    const ef = steps.findIndex((s) => (s.name ?? '').startsWith('e-f.'));
+    expect(d).toBeGreaterThan(0);
+    expect(ef).toBe(d + 1);
+    expect(steps[d]!.run).toMatch(/echo "CS_RESET_RC=\$rc" >> "\$GITHUB_ENV"\n[\s\S]*run\.sh sql "reset"/);
+    expect(steps[ef]!.if).toBe("success() || (failure() && env.CS_RESET_RC == '3')");
+    expect(steps[ef]!.run).toMatch(/run\.sh settle/);
   });
 
   it('every verify-seals call names its host (it refuses with exit 2 without --expect-host, so the recorded line could never say yes)', () => {

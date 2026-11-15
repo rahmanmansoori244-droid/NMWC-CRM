@@ -114,6 +114,21 @@ describe('a figure whose query failed', () => {
   });
 });
 
+describe('a figure compared with the period before (follow-up 1, F2)', () => {
+  it('compares as before: arrow, sign and percentage', () => {
+    const { container } = render(<KpiTile label="New customers" value="9" delta={{ pct: 50, against: 'vs the 30 days before' }} />);
+    expect(container.textContent).toMatch(/▲ \+50% vs the 30 days before/);
+  });
+
+  it('with a note: the note alone, no arrow and no percentage', () => {
+    const { container } = render(
+      <KpiTile label="New customers" value="9" delta={{ pct: null, against: 'vs the 30 days before', note: 'No earlier data yet to compare with' }} />
+    );
+    expect(container.textContent).toContain('No earlier data yet to compare with');
+    expect(container.textContent).not.toMatch(/[▲▼■]|%|vs the|none in/);
+  });
+});
+
 describe('What stands out', () => {
   const routeRef = (id: string, hasOwner: boolean) => ({ id, code: id.toUpperCase(), name: id, regionId: 'r', regionName: 'R', hasOwner });
   const counts = { branches: 10, customers: 10, open: 10, closed: 0, closedInPeriod: 0, openWithGps: 4, openNoDay: 3, openNoShop: 0, openNoSign: 0, openNoEquipment: 0, customersNoCr: 0, imported: 0, completenessPct: 50 };
@@ -148,7 +163,7 @@ describe('What stands out', () => {
   };
 
   it('reads the view: trend, reach, idle routes, the largest GPS gap, visit days, concentration', () => {
-    const items = highlights(data, 'in the last 30 days');
+    const items = highlights(data, 'in the last 30 days', 'compare');
     const text = items.map((i) => i.text).join(' | ');
     expect(text).toMatch(/12 new customers created in the field in the last 30 days, up 20% on the period before\. 3 of them on credit\./);
     expect(text).toMatch(/Approved updates reached 25% of the customers in view \(50 of 200\)/);
@@ -172,7 +187,7 @@ describe('What stands out', () => {
           }
         : data.updated,
     };
-    const text = highlights(shared, 'in the last 30 days').map((i) => i.text).join(' | ');
+    const text = highlights(shared, 'in the last 30 days', 'compare').map((i) => i.text).join(' | ');
     expect(text).toMatch(/2 routes with customers had no approved field request in the last 30 days/);
   });
 
@@ -184,9 +199,24 @@ describe('What stands out', () => {
   });
 
   it('leaves out what failed, and never compares the viewer with anyone else', () => {
-    const items = highlights(data, 'in the last 30 days');
+    const items = highlights(data, 'in the last 30 days', 'compare');
     expect(items.some((i) => i.key === 'closures')).toBe(false);
     expect(items.map((i) => i.text).join(' ')).not.toMatch(/company|national|organisation|average|other region|Manager [A-Z]/);
+  });
+
+  it('follow-up 1 (F2): after a clean start whose moment falls after the period before began, no up, down or percentage', () => {
+    const text = highlights(data, 'in the last 30 days', 'no-earlier-data').map((i) => i.text).join(' | ');
+    expect(text).toMatch(
+      /12 new customers created in the field in the last 30 days; there is no earlier data yet to compare with\. 3 of them on credit\./
+    );
+    expect(text).not.toMatch(/\bup \d|\bdown \d|period before/);
+    // A database whose clean start could not be read: no comparison either, and no claim about it.
+    const unchecked = highlights(data, 'in the last 30 days', 'unchecked').find((i) => i.key === 'created')!.text;
+    expect(unchecked).toBe('12 new customers created in the field in the last 30 days. 3 of them on credit.');
+    // None before, some now: "against none" is a comparison too, so it goes as well.
+    const fromNone: Insights = { ...data, created: { ok: true, data: { ...(data.created.ok ? data.created.data : ({} as never)), prevTotal: 0 } } };
+    expect(highlights(fromNone, 'in the last 30 days', 'compare').find((i) => i.key === 'created')!.text).toMatch(/against none in the period before/);
+    expect(highlights(fromNone, 'in the last 30 days', 'no-earlier-data').find((i) => i.key === 'created')!.text).not.toMatch(/against none/);
   });
 
   it('concentration is only read when the drawn cells can show it', () => {

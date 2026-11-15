@@ -139,6 +139,7 @@ import { checkLimit, LOGIN_LIMIT, LOGIN_NETWORK_LIMIT, refundLimit, type RateLim
 import { loginAction } from '@/app/actions/auth';
 import { LoginThrottledError, loginFailureMessage } from '@/lib/login-throttle';
 import { AuthError, CredentialsSignin } from '@auth/core/errors';
+import { logger } from '@/lib/logger';
 
 const SAVED = { backend: process.env.RATE_LIMIT_BACKEND, db: process.env.DATABASE_URL };
 afterAll(() => {
@@ -437,6 +438,38 @@ describe('X-AUTH-2 at authorize(): the network bucket counts failed sign-ins onl
     await expect(authorize()({ username, password })).rejects.toMatchObject({ code: 'locked_user' });
     expect(vi.mocked(refundLimit).mock.calls).toEqual([[`login:ip:${h.ip}`, LOGIN_NETWORK_LIMIT]]);
     expect(await tokensLeft(`login:ip:${h.ip}`)).toBe(NET_FULL);
+  });
+
+  it('the throttle log line names the kind of key, never the typed username or the IP', async () => {
+    // Follow-up 1, F3: rate-limit.login.authorize logged the raw key, which holds
+    // the typed username or the client's IP. Now only rateLimitKeyKind(key).
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    try {
+      const { username, password } = freshUser();
+      const firstIp = h.ip;
+      const userKey = `login:user:${username}`;
+      for (let i = 0; i < FULL; i += 1) expect((await checkLimit(userKey, LOGIN_LIMIT)).ok).toBe(true);
+      await expect(authorize()({ username, password })).rejects.toMatchObject({ code: 'locked_user' });
+
+      const other = freshUser();
+      const ipKey = `login:ip:${h.ip}`;
+      for (let i = 0; i < NET_FULL; i += 1) expect((await checkLimit(ipKey, LOGIN_NETWORK_LIMIT)).ok).toBe(true);
+      await expect(authorize()(other)).rejects.toMatchObject({ code: 'throttled_ip' });
+
+      const lines = warn.mock.calls.filter((c) => c[1] === 'rate-limit.login.authorize').map((c) => c[0] as Record<string, unknown>);
+      expect(lines.map((f) => f.keyKind)).toEqual(['login:user', 'login:ip']);
+      for (const f of lines) {
+        expect(f).not.toHaveProperty('key');
+        expect(f.retryAfterSec).toEqual(expect.any(Number));
+        const text = JSON.stringify(f);
+        expect(text).not.toContain(username);
+        expect(text).not.toContain(other.username);
+        expect(text).not.toContain(h.ip);
+        expect(text).not.toContain(firstIp);
+      }
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('one network cycling through many usernames cannot drain the accounts it is refused for', async () => {

@@ -26,7 +26,7 @@ It is safe to interrupt. Everything already promoted is committed, and the batch
 ---
 
 ## 1. Account master (`account-master-template.xlsx`)
-Three sheets, named exactly **Regions**, **Routes**, **Users** (plus an Instructions tab you can ignore). Delete the yellow example rows before importing.
+Three sheets, named exactly **Regions**, **Routes**, **Users** (plus an Instructions tab you can ignore). Delete the yellow example rows before importing. A row with an Excel error in any cell (`#N/A`, `#REF!`, or a formula whose saved result is one) is held back and nothing is written for it; the reason names the column. Put the real value in the cell and upload the sheet again.
 
 ### Regions
 | Column | Required | Notes |
@@ -54,7 +54,7 @@ Three sheets, named exactly **Regions**, **Routes**, **Users** (plus an Instruct
 | `email`, `phone` | optional | Blank on re-import = keep what is on record. The import can set or replace a value but never clears one; the Steward clears one with **Edit** on `/users`. |
 | `reset_password` | optional | `yes` to rotate an existing user's password (also fill `password`). The same rules as a reset in `/users`: the new password may not be the account's current one or one of its last five (the row is held back and **nothing** is written), and the old one joins those five, so the person cannot go back to it when they choose their own. Your own password cannot be reset here — change it at `/profile`. |
 | `change_role` | optional | `yes` to change an existing user's role; the change also signs that person out, as a role change in `/users` does. Without `yes`, the `role` cell must name the role the account already has: a row that names another role is held back and **nothing** is written for it (its route and regions were meant for the other role). A SUPERVISOR who still has people reporting to them keeps the role until those reports are given another supervisor: the row is held back, saying how many. MANAGER and STEWARD roles are changed only in `/users`. |
-| `change_route` | optional | `yes` lets a salesman row take its route from a salesman whose account is **active**; he is left with no route unless his own row gives him one (put both rows of a swap in one file). Without it such a row is held back and **nothing** is written. A deactivated owner gives the route up without it. |
+| `change_route` | optional | `yes` lets a salesman row take its route from a salesman whose account is **active**; he is left with no route unless his own row gives him one (put both rows of a swap in one file). The row is held back, and nothing is written, while that salesman has new-customer requests only he can send or close (drafts, sent back to him, or waiting for his upload of a signed credit application). Without it such a row is held back and **nothing** is written. A deactivated owner gives the route up without it. |
 | `change_name` | optional | `yes` lets the row change the `full_name` of an existing **salesman**. Without it a row whose name differs (spaces and capitals aside) is held back and **nothing** is written: the import finds accounts by username, which for a salesman is the route code, and after a route is handed to a new salesman on `/users` an older sheet would otherwise put the leaver's name, phone and supervisor on the joiner's account. |
 | `must_change_password` | optional | `yes` forces the person to choose a new password at first login. Only then is a short initial password (4+) accepted — the one they choose must be 12+. |
 

@@ -72,7 +72,13 @@
 \set archive_prefix ''
 \endif
 
-BEGIN;
+-- READ COMMITTED, by name. Every check below must read the state as it is UNDER
+-- the locks. At REPEATABLE READ or SERIALIZABLE (which a role or a database can
+-- carry as its default) the snapshot is taken by the first SELECT, a few lines
+-- down and BEFORE the LOCK: the plan check (CS013), the counts and the baselines
+-- would then read the state from before a writer the LOCK waited for, while
+-- TRUNCATE removes whatever is there now. CS021 refuses any other level.
+BEGIN ISOLATION LEVEL READ COMMITTED;
 SET LOCAL lock_timeout = '10s';
 SET LOCAL statement_timeout = '120s';
 SET LOCAL idle_in_transaction_session_timeout = '60s';
@@ -107,12 +113,14 @@ BEGIN
 END
 $cs$;
 
--- CS021: the owner's window is open and the transaction may write.
+-- CS021: the owner's window is open, the transaction may write, and each
+-- statement reads what is committed when it runs (read committed; see BEGIN).
 DO $cs$
 BEGIN
   IF current_setting('nmwc.audit_maintenance', true) IS DISTINCT FROM 'on'
-     OR current_setting('transaction_read_only') <> 'off' THEN
-    RAISE EXCEPTION 'clean-start: the maintenance window is not open for writing' USING ERRCODE = 'CS021';
+     OR current_setting('transaction_read_only') <> 'off'
+     OR current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'clean-start: the maintenance window is not open for writing, or the transaction is not read committed' USING ERRCODE = 'CS021';
   END IF;
 END
 $cs$;

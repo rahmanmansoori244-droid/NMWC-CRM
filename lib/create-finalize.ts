@@ -183,7 +183,9 @@ export async function finalizeCreateInTx(
   edit: FinalizableEdit,
   env: AuditEnvelope,
   finalizedAt: Date,
-  temixCode: string
+  temixCode: string,
+  /** H4: whether the approving Accountant may open a customer with these live shops. */
+  approverCanSee?: (branches: Array<{ routeId: string; regionId: string; deletedAt: Date | null }>) => boolean
 ): Promise<{ customerId: string; nmwcCode: string; legalName: string; temixCode: string }> {
   const draft = edit.customerDraft;
   const isCredit = draft.paymentTerms === 'CREDIT';
@@ -228,6 +230,7 @@ export async function finalizeCreateInTx(
     regionIds: currentRegionIds,
     excludeEditId: edit.id,
     includeOpenRequests: false,
+    finalizerCanSee: approverCanSee,
   });
 
   // 3. Photo liveness pre-check. The submit gate proved these existed; a

@@ -1,7 +1,8 @@
 -- Go-live clean start: the PLAN FINGERPRINT (design section 2).
 --
 -- One read-only statement. It computes plan_id = sha256 over a document of:
---   - the migration list (name, checksum, finished, rolled back);
+--   - the migration list: the applied ones (name, checksum), and every row of the
+--     ledger with whether it finished and whether it was rolled back;
 --   - per KEEP table except CronHeartbeat: count and md5 of every row as jsonb,
 --     in key order (COLLATE "C");
 --   - per EMPTY table except RateLimit: count, max key, max seq and max
@@ -79,9 +80,13 @@ empty_fp AS (
             c.t), false, false, '')))[1]::text AS value
     FROM empty_cols c
 ),
+-- sha: the APPLIED migrations (finished, not rolled back), the value guards.sql
+-- CS007 compares with the checkout's list. state: EVERY row with its two marks,
+-- a rolled-back one too, so any change to the ledger changes the plan id.
 migrations AS (
   SELECT encode(sha256(convert_to(COALESCE(string_agg(m.migration_name || ' ' || m.checksum || E'\n', ''
-                  ORDER BY m.migration_name COLLATE "C", m.started_at), ''), 'UTF8')), 'hex') AS sha,
+                  ORDER BY m.migration_name COLLATE "C", m.started_at)
+                  FILTER (WHERE m.finished_at IS NOT NULL AND m.rolled_back_at IS NULL), ''), 'UTF8')), 'hex') AS sha,
          md5(COALESCE(string_agg(m.migration_name || ' ' || m.checksum || ' ' || (m.finished_at IS NOT NULL)::text
                   || ' ' || (m.rolled_back_at IS NOT NULL)::text, E'\n' ORDER BY m.migration_name COLLATE "C", m.started_at), '')) AS state
     FROM public._prisma_migrations m

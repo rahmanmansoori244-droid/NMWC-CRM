@@ -11,6 +11,7 @@
  */
 import type { Insights } from './load';
 import { changePct, pct, type HeatData } from './shape';
+import type { Comparison } from './compare';
 
 export type Highlight = { key: string; text: string };
 
@@ -39,13 +40,17 @@ export function concentration(heat: HeatData): { squares: number; sharePct: numb
   return null; // half the branches sit beyond the drawn cells: not readable from them
 }
 
-export function highlights(data: Insights, periodPhrase: string): Highlight[] {
+/**
+ * `comparison`: whether the period before may be compared (lib/insights/compare.ts).
+ * When it may not, no sentence says up, down or "none in the period before".
+ */
+export function highlights(data: Insights, periodPhrase: string, comparison: Comparison['kind']): Highlight[] {
   const out: Highlight[] = [];
 
   if (data.created.ok) {
     const c = data.created.data;
     const change = changePct(c.total, c.prevTotal);
-    const trend =
+    const compared =
       change === null
         ? c.prevTotal === 0 && c.total > 0
           ? ', against none in the period before'
@@ -53,6 +58,12 @@ export function highlights(data: Insights, periodPhrase: string): Highlight[] {
         : change === 0
           ? ', the same as the period before'
           : `, ${change > 0 ? 'up' : 'down'} ${Math.abs(change)}% on the period before`;
+    const trend =
+      comparison === 'no-earlier-data'
+        ? '; there is no earlier data yet to compare with'
+        : comparison === 'unchecked'
+          ? ''
+          : compared;
     out.push({
       key: 'created',
       text: `${fmt(c.total)} new customer${c.total === 1 ? '' : 's'} created in the field ${periodPhrase}${trend}.${

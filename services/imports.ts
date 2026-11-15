@@ -57,6 +57,7 @@ import {
   accountRowList,
   type AccountSheetRow,
   accountImportInterruptedMessage,
+  accountRowExcelErrorIssue,
   accountRowFailure,
   accountUpdateAudit,
   errorLogFields,
@@ -75,6 +76,7 @@ import {
   importRouteHolderIssue,
   importSupervisorCoverIssue,
   strandedCreatesImportIssue,
+  strandedHolderImportIssue,
 } from '@/lib/account-edit';
 import { onlyHisToCloseWhere } from '@/lib/stranded-creates';
 import { assertPasswordNotReused, rotatePasswordHistory } from '@/lib/password-policy';
@@ -110,6 +112,8 @@ import { branchCrmRule, customerCrmRule, keptNote, type CrmOutcome } from '@/lib
 import {
   creditReason,
   decideLane,
+  branchCodeClash,
+  branchCodeClashMessage,
   differingBranchCells,
   rowCreditNote,
   shopNotChangedNote,
@@ -123,7 +127,7 @@ import {
   type RouteNotApplied,
 } from '@/lib/import-shop-route';
 import { lockCustomerRowByCode } from '@/lib/locks';
-import { branchStatusEvents, followBranchStatus, liveBranchStatuses } from '@/lib/customer-status';
+import { branchStatusEvents, followBranchStatus, liveBranchStatuses, statusAuditAction } from '@/lib/customer-status';
 import { archivedUncodedDeactivationWhere } from '@/lib/temix';
 import {
   lockTemixCode,
@@ -393,6 +397,12 @@ async function uploadAccountMasterCore(formData: FormData): Promise<AccountUploa
         notReached('Regions', sheetRow);
         continue;
       }
+      // Review of the hunt fixes: a cell holding an Excel error is not data.
+      const excelHeld = accountRowExcelErrorIssue(row);
+      if (excelHeld) {
+        issues.push({ sheet: 'Regions', row: sheetRow, message: excelHeld });
+        continue;
+      }
       const code = uc(row.code ?? row.Code);
       const name = String(row.name ?? row.Name ?? '').trim();
       if (!code || !name) {
@@ -445,6 +455,12 @@ async function uploadAccountMasterCore(formData: FormData): Promise<AccountUploa
       }
       if (outOfTime()) {
         notReached('Routes', sheetRow);
+        continue;
+      }
+      // Review of the hunt fixes: a cell holding an Excel error is not data.
+      const excelHeld = accountRowExcelErrorIssue(row);
+      if (excelHeld) {
+        issues.push({ sheet: 'Routes', row: sheetRow, message: excelHeld });
         continue;
       }
       const code = uc(row.code ?? row.Code);
@@ -546,6 +562,13 @@ async function uploadAccountMasterCore(formData: FormData): Promise<AccountUploa
       }
       if (outOfTime()) {
         notReached('Users', sheetRow);
+        continue;
+      }
+      // Review of the hunt fixes: a cell holding an Excel error is not data (a
+      // failed lookup must not become a person's name, phone or password).
+      const excelHeld = accountRowExcelErrorIssue(row);
+      if (excelHeld) {
+        issues.push({ sheet: 'Users', row: sheetRow, message: excelHeld });
         continue;
       }
       const username = lc(row.username);
@@ -921,6 +944,36 @@ async function uploadAccountMasterCore(formData: FormData): Promise<AccountUploa
               message: strandedCreatesImportIssue(username, stranded),
             });
             continue;
+          }
+        }
+        // (5) Bug hunt round 2, F2: the same guard for the ACTIVE salesman this row
+        // takes the route from (change_route=yes, rule 1). He is left with no
+        // route, so every request only he can send or close — a draft, one sent
+        // back, or a credit request waiting for his upload of the signed
+        // application — could never be sent again, and would hold its shop and
+        // CR number. Guard (4) counted them only for the account the row names.
+        if (routeMoves) {
+          const holder = await prisma.user.findUnique({
+            where: { ownedRouteId: ownedRouteId! },
+            select: { id: true, username: true, isActive: true },
+          });
+          if (holder && holder.isActive && holder.username !== username) {
+            const stranded = await prisma.customerEdit.count({
+              where: { submittedById: holder.id, ...onlyHisToCloseWhere() },
+            });
+            if (stranded > 0) {
+              issues.push({
+                sheet: 'Users',
+                row: sheetRow,
+                message: strandedHolderImportIssue({
+                  username,
+                  holder: holder.username,
+                  routeCode: ownedRouteCode!,
+                  count: stranded,
+                }),
+              });
+              continue;
+            }
           }
         }
 
@@ -2592,20 +2645,22 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
       // (overwrite) the first branch — one physical branch lost, both rows marked
       // PROMOTED. There is no way to know which row is authoritative, so reject the
       // whole group to steward review rather than drop data silently.
-      const seenBranchCodes = new Set<string>();
-      let dupBranchCode: string | null = null;
-      for (const r of resolvedBranches) {
-        if (seenBranchCodes.has(r.branchCode)) {
-          dupBranchCode = r.branchCode;
-          break;
-        }
-        seenBranchCodes.add(r.branchCode);
-      }
-      if (dupBranchCode) {
+      // Bug hunt round 1, finding 1: when one of the two rows has a blank
+      // branch_code, numbered by its place, nothing in the file is repeated; the
+      // reason says so and names both rows (lib/import-plan.ts branchCodeClash).
+      // The numbering itself is unchanged (an open owner question).
+      const clash = branchCodeClash(
+        resolvedBranches,
+        g.rowIds.map((id) => rowMeta.get(id)?.rowNumber)
+      );
+      if (clash) {
         failures.push({
           custCode,
           rowIds: g.rowIds,
-          reason: `branch_code ${dupBranchCode} appears on more than one row for this customer — steward review`,
+          reason:
+            clash.kind === 'repeated'
+              ? `branch_code ${clash.code} appears on more than one row for this customer — steward review`
+              : `${branchCodeClashMessage(clash)} — steward review`,
         });
         await prisma.importRow
           .updateMany({
@@ -2615,7 +2670,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               issues: [
                 {
                   field: '_promote',
-                  message: `duplicate branch_code ${dupBranchCode} within this customer`,
+                  message: branchCodeClashMessage(clash),
                 },
               ] as Prisma.InputJsonValue,
               reviewedById: me.id,
@@ -3680,6 +3735,23 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 await tx.customer.update({
                   where: { id: customerId },
                   data: { status: settled },
+                });
+              }
+              // Bug hunt round 1, finding 6: a NEW customer was created with the
+              // file's status (its CREATE audit row says so) and is moved here when
+              // one of its new shops is open — [CLOSED, blank] ends ACTIVE. That move
+              // was written with no audit row, so the customer's trail said CLOSED.
+              // It is audited as every other status move is (lib/customer-status.ts
+              // followBranchStatus, which runs only for a customer that existed).
+              // An existing customer's move is audited by followBranchStatus below.
+              if (!existing && settled !== statedStatus) {
+                await writeAudit(tx, env, {
+                  action: statusAuditAction(settled),
+                  entityType: 'Customer',
+                  entityId: customerId,
+                  before: { status: statedStatus },
+                  after: { status: settled },
+                  reason: `customer status follows its branches: import ${batchId}`,
                 });
               }
             }

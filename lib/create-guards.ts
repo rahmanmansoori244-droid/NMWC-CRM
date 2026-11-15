@@ -120,6 +120,12 @@ export async function assertNoExactCreateDuplicate(
     callerId?: string;
     /** Launch fix: the salesman's route at submit — a live customer is named only if he can open it. */
     callerRouteId?: string;
+    /**
+     * Follow-up 1, H4: at finalize, whether the approver may open a customer
+     * with these live shops (lib/access.ts canSeeCustomer with his scope). A
+     * live CR holder he may not open is not named. Omitted: named, as before.
+     */
+    finalizerCanSee?: (branches: Array<{ routeId: string; regionId: string; deletedAt: Date | null }>) => boolean;
   }
 ): Promise<void> {
   const openStates = [EditState.DRAFT, EditState.SUBMITTED, EditState.NEEDS_CORRECTION];
@@ -184,14 +190,30 @@ export async function assertNoExactCreateDuplicate(
   const atSubmit = !!args.callerId;
 
   if (args.crNumberNorm) {
+    // H4: at finalize with an approver given, the holder's live shops, so the
+    // refusal can be held to what he may open. (At submit routeBranch asks.)
+    const finalizerBranches =
+      !atSubmit && args.finalizerCanSee
+        ? { branches: { where: { deletedAt: null }, select: { routeId: true, regionId: true, deletedAt: true } } }
+        : {};
     const liveCr = (await tx.customer.findFirst({
       where: { crNumberNorm: args.crNumberNorm, deletedAt: null },
-      select: { nmwcCode: true, legalName: true, ...routeBranch },
-    })) as { nmwcCode: string; legalName: string; branches?: unknown[] } | null;
+      select: { nmwcCode: true, legalName: true, ...routeBranch, ...finalizerBranches },
+    })) as {
+      nmwcCode: string;
+      legalName: string;
+      branches?: Array<{ routeId: string; regionId: string; deletedAt: Date | null }>;
+    } | null;
     if (liveCr) {
+      // H4: the Accountant at the last step is told of a holder he may not open
+      // (another region's customer) without its code or name.
+      const finalizerMayNotSee =
+        !atSubmit && !!args.finalizerCanSee && !args.finalizerCanSee(liveCr.branches ?? []);
       throw new ConflictError(
         'DUPLICATE_CR',
-        !atSubmit
+        finalizerMayNotSee
+          ? 'A customer with this CR number already exists in another region. It cannot be created twice: reject this request and give that as the reason.'
+          : !atSubmit
           ? `A customer with this CR number already exists: ${liveCr.nmwcCode} — ${liveCr.legalName}. It cannot be created twice: reject this request and give that as the reason.`
           : opensIt(liveCr)
             ? `A customer with this CR number already exists: ${liveCr.nmwcCode} — ${liveCr.legalName}. Open it from your customers instead of creating a new one.`

@@ -2495,7 +2495,7 @@ describe('owner’s answers 2026-11-11 (A5) — codes in small letters and looka
     const out = await promote();
     expect(out).toMatchObject({ promoted: 0, failed: 1 });
     expect(rejected[0].data.issues[0].message).toBe(
-      "branch_code: Shop code \"ARC1-2\" looks like this customer's existing shop \"ARC1-02\" (Excel may have dropped a zero). Correct the code if it is the same shop; if it is a different shop, release the row with a reason."
+      "branch_code: Shop code \"ARC1-2\" looks like this customer's existing shop \"ARC1-02\" (Excel may have dropped a zero). \"ARC1-2\" is on row 2. Correct the code if it is the same shop; if it is a different shop, release the row with a reason."
     );
     for (const wr of WRITES) expect(order).not.toContain(wr);
   });
@@ -2504,7 +2504,10 @@ describe('owner’s answers 2026-11-11 (A5) — codes in small letters and looka
     setup(null, [parsed({ custCode: 'NEW6', branchCode: '01' }), parsed({ custCode: 'NEW6', branchCode: '1' })]);
     const out = await promote();
     expect(out).toMatchObject({ promoted: 0, failed: 1 });
-    expect(rejected[0].data.issues[0].message).toMatch(/^branch_code: Shop code "01" looks like shop code "1" on row 3 /);
+    // Follow-up 1, F5: written to every row of the customer, so it names both rows.
+    expect(rejected[0].data.issues[0].message).toBe(
+      'branch_code: Shop code "01" looks like shop code "1" on row 3 of the same customer in this sheet (Excel may have dropped a zero). "01" is on row 2. Correct the code if it is the same shop; if it is a different shop, release the row with a reason.'
+    );
     expect(order).not.toContain('customer.upsert');
   });
 

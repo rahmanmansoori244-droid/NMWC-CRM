@@ -31,6 +31,10 @@ const NOT_LINES = new Set([
   ' is checked first), one at a time (',
   'restore-verify.ts --manifest',
   ' printed, then ',
+  // One instance of the composed "<check>: <status> (not asserted)" line (rehearse-watch.ts reportLines).
+  'scheduled-jobs-on-time: fail (not asserted)',
+  // One instance of the composed "night <n>:" heading (rehearse-watch.ts reportLines).
+  'night 2:',
 ]);
 
 function missing(doc: string, src: string): string[] {
@@ -62,6 +66,57 @@ describe("the owner's guide quotes only lines the code prints", () => {
 
   it('the check can fail', () => {
     expect(missing('`a line nobody prints: yes`', src)).toEqual(['a line nobody prints: yes']);
+  });
+
+  it('the GitHub timers that can start late are disabled for the reset evening and enabled again, by their real names', () => {
+    for (const f of ['.github/workflows/sla-escalate.yml', '.github/workflows/keep-warm.yml']) {
+      const name = /^name: (.+)$/m.exec(read(f))![1]!.trim();
+      const step5 = guide.slice(guide.indexOf('## Step 5.'), guide.indexOf('## Step 6.'));
+      const step6 = guide.slice(guide.indexOf('## Step 6.'), guide.indexOf('## Step 7.'));
+      expect(step5, name).toContain(`**${name}**`);
+      expect(step5).toContain('**Disable workflow**');
+      expect(step5.indexOf(`**${name}**`)).toBeLessThan(step5.indexOf('Actions → **DB Backup**'));
+      expect(step6, name).toContain(`**${name}**`);
+      expect(step6).toContain('**Enable workflow**');
+    }
+    // The refusal a late run causes no longer blames only a person.
+    expect(guide).toMatch(/`production unchanged since the plan: no` \| [^|]*late automatic timer/);
+  });
+
+  it('a waiting run that will not be approved is rejected (one concurrency group for both workflows)', () => {
+    for (const f of ['.github/workflows/clean-start.yml', '.github/workflows/clean-start-photos.yml'])
+      expect(read(f)).toMatch(/concurrency:\s*\n\s*group: clean-start\s*\n\s*cancel-in-progress: false/);
+    const approve = guide.slice(guide.indexOf('**How to approve a run.**'), guide.indexOf('**The run id.**'));
+    expect(approve).toMatch(/Review deployments\*\* → tick\s+\*\*production-reset\*\* → \*\*Reject\*\*/);
+    expect(approve).toMatch(/no run may still show a\s+yellow circle/);
+    const step5 = guide.slice(guide.indexOf('## Step 5.'), guide.indexOf('## Step 6.'));
+    expect(step5).toMatch(/No earlier run may still show a yellow circle/);
+  });
+
+  it('Step 1 L covers a phone whose 8-hour sign-in already ended (Sign out is only there once signed in)', () => {
+    const l = guide.slice(guide.indexOf('**L. Everyone signs out.**'), guide.indexOf('**M. The merge.**'));
+    expect(l).toMatch(/already shows the sign-in page, they sign in, then press \*\*Sign out\*\*/);
+    expect(l).toMatch(/before the evening of dry run 2/);
+  });
+
+  it('while the rehearsal prints "(not asserted)", the guide explains it under "Lines that may say no"', () => {
+    // The code prints the suffix (rehearse-watch.ts reportLines) and run.sh lets it into the log.
+    expect(read('scripts/ops/clean-start/rehearse-watch.ts')).toContain("' (not asserted)'");
+    expect(read('scripts/ops/clean-start/rehearse-watch.ts')).toContain('`night ${n.night}:`');
+    expect(read('scripts/ops/clean-start/run.sh')).toContain(String.raw`( \(not asserted\))?`);
+    const table = guide.slice(guide.indexOf('## Lines that may say no'));
+    const row = table.split('\n').find((l) => l.startsWith('|') && l.includes('(not asserted)`'));
+    expect(row, 'a row for the (not asserted) line').toBeDefined();
+    expect(row).toMatch(/recorded only, never judged/);
+    expect(row).toMatch(/`fail`/);
+    expect(row).toMatch(/before 19:00 or after midnight Oman time/);
+    expect(row).toMatch(/before 15:00 or after 20:00 UTC/);
+    expect(row).toContain('`first integrity checks as expected: yes`');
+    // The hours in the row are the code's: night 2's job check is asserted from 15:00 UTC.
+    const expected = JSON.parse(read('scripts/ops/clean-start/expected-watch.json'));
+    expect(expected.night2NotAssertedBeforeUtcHour['scheduled-jobs-on-time']).toBe(15);
+    const step3 = guide.slice(guide.indexOf('## Step 3.'), guide.indexOf('## Step 4.'));
+    expect(step3).toMatch(/before 19:00 or after midnight Oman time[^.]*`\(not asserted\)`/);
   });
 
   it('the guide no longer says the Audit page shows the reset figures', () => {

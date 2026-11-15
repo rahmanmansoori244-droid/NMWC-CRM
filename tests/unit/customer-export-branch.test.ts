@@ -74,6 +74,8 @@ describe('exportFilteredCustomersAction — F17', () => {
     expect(branchWhere()).toEqual(expected);
     expect(args.include.branches.take).toBe(1);
     expect(args.include.branches.orderBy).toEqual({ createdAt: 'asc' });
+    // H9: the list's total order, so same-named customers keep the pages' order.
+    expect(args.orderBy).toEqual([{ legalName: 'asc' }, { id: 'asc' }]);
   });
 
   it('a customer matched by its name still gets a branch: the search is not in the include', async () => {

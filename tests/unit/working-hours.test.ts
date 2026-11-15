@@ -114,6 +114,37 @@ describe('minutesRemaining / formatSlaStatus', () => {
     expect(formatSlaStatus(due, now)).toEqual({ label: 'OVERDUE 2h', tone: 'overdue' });
   });
 
+  // H15: a deadline at exactly 17:00 Oman (the end of the working day) has no
+  // working minute between it and the evening; it is still overdue.
+  it('a deadline at exactly 17:00 is overdue that evening, not "due in 0m"', () => {
+    const due = new Date('2026-07-15T13:00:00.000Z'); // Wed 17:00 Oman
+    const now = new Date('2026-07-15T13:30:00.000Z'); // Wed 17:30 Oman
+    expect(minutesRemaining(due, now)).toBeLessThan(0);
+    expect(formatSlaStatus(due, now)).toEqual({ label: 'OVERDUE 1m', tone: 'overdue' });
+  });
+
+  it('a Thursday 17:00 deadline stays overdue all weekend', () => {
+    const due = new Date('2026-07-16T13:00:00.000Z'); // Thu 17:00 Oman
+    for (const now of [
+      new Date('2026-07-16T13:00:30.000Z'), // Thu 17:00:30 Oman
+      new Date('2026-07-16T17:00:00.000Z'), // Thu 21:00 Oman
+      new Date('2026-07-17T08:00:00.000Z'), // Fri 12:00 Oman (off day)
+      new Date('2026-07-18T08:00:00.000Z'), // Sat 12:00 Oman (off day)
+      new Date('2026-07-19T03:59:00.000Z'), // Sun 07:59 Oman
+    ]) {
+      expect(minutesRemaining(due, now), now.toISOString()).toBeLessThan(0);
+      expect(formatSlaStatus(due, now).tone, now.toISOString()).toBe('overdue');
+    }
+    // Sunday 10:00 Oman: two working hours late, as before.
+    expect(minutesRemaining(due, new Date('2026-07-19T06:00:00.000Z'))).toBe(-120);
+  });
+
+  it('exactly at a 17:00 deadline it is still due, not overdue', () => {
+    const due = new Date('2026-07-15T13:00:00.000Z'); // Wed 17:00 Oman
+    expect(minutesRemaining(due, due)).toBe(0);
+    expect(formatSlaStatus(due, due).tone).toBe('warn');
+  });
+
   it('warn tone inside the final 2 working hours', () => {
     const due = new Date('2026-07-15T07:00:00.000Z'); // Wed 11:00 Oman
     const now = new Date('2026-07-15T06:00:00.000Z'); // Wed 10:00 Oman

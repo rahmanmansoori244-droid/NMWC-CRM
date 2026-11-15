@@ -14,7 +14,8 @@ import { normalizePhone, isValidPhoneFormat } from '@/lib/phone';
 import { normalizeCR } from '@/lib/cr';
 import { normalizeTemixCode } from '@/lib/temix-code';
 import { stripHtml as stripTags } from '@/lib/validation/fields';
-import { readCell, readLooseCell } from '@/lib/import-headings';
+import { CUSTOMER_COLUMNS, readCell, readLooseCell, type CustomerColumn } from '@/lib/import-headings';
+import { composeBranchCode } from '@/lib/import-row-fix';
 import {
   capitalCode,
   shopLookalike,
@@ -53,6 +54,11 @@ export type ParsedCustomerRow = {
   capitalised?: Capitalised[];
   /** The Steward released this row's lookalike shop code as a different shop (A5). */
   shopCodeReleased?: true;
+  /**
+   * A cell the import reads holds an Excel error (excelErrorCells): the row is
+   * held back, and the in-file checks of the other rows leave it out.
+   */
+  excelError?: true;
 };
 
 export type RowCheckContext = {
@@ -72,7 +78,25 @@ export type RowCheckContext = {
   masterShops?: ReadonlyMap<string, readonly string[]>;
   /** Customer code (capitals) -> every row of it in the file, with its branch_code as written. */
   shopsInFile?: ReadonlyMap<string, readonly SiblingShop[]>;
+  /**
+   * Bug hunt round 1, finding 1: customer code (capitals) -> the shops of that
+   * customer that a row of THIS batch with a blank branch_code created, numbered
+   * by its place (-01, -02, …), with that row's number. Only the Steward's fix
+   * passes it (services/import-fixes.ts): at upload nothing is loaded yet.
+   */
+  numberedShops?: ReadonlyMap<string, ReadonlyArray<{ code: string; row: number }>>;
 };
+
+/**
+ * The reason a corrected row is held back when its shop code is the number a
+ * blank row of the same file was given by its place when it loaded: two rows of
+ * one file are two shops, so loading it would change that row's shop instead of
+ * creating its own (bug hunt round 1, finding 1). How a head office with no code
+ * should be numbered is an open owner question; this says only what happened.
+ */
+export function numberedShopMessage(sheetCode: string, code: string, row: number): string {
+  return `Shop code "${sheetCode}" is "${code}", the code row ${row} was given by its place when it loaded (its branch_code was blank). This is another row of the same file, so loading it would change row ${row}'s shop instead of creating its own. Give this row a branch_code this customer does not have yet, or exclude the row.`;
+}
 
 export type RowCheckOptions = {
   /**
@@ -135,6 +159,39 @@ export function heldBackBy(codes: string[]): string {
 }
 
 /**
+ * What lib/excel.ts parseWorkbook writes for a cell that holds an Excel error
+ * (#N/A, #REF!, #VALUE!, ...) or a formula whose saved result is one.
+ */
+export const EXCEL_ERROR_PREFIX = '#ERROR:';
+
+/** The Excel error a cell holds ('#N/A'), or null when the cell holds a value. */
+export function excelErrorOf(v: unknown): string | null {
+  if (typeof v !== 'string' || !v.startsWith(EXCEL_ERROR_PREFIX)) return null;
+  return v.slice(EXCEL_ERROR_PREFIX.length).trim() || 'error';
+}
+
+/**
+ * Bug hunt round 2, F1: every column the import reads whose cell holds an Excel
+ * error, in template order. The parser has always turned such a cell into the
+ * text '#ERROR:<code>' so that the row could be held back, and nothing read it:
+ * a failed lookup in cust_code loaded the shops of several customers as one
+ * customer coded '#ERROR:#N/A'.
+ */
+export function excelErrorCells(row: SheetRow): Array<{ cell: CustomerColumn; error: string }> {
+  const out: Array<{ cell: CustomerColumn; error: string }> = [];
+  for (const cell of CUSTOMER_COLUMNS) {
+    const error = excelErrorOf(readCell(row, cell));
+    if (error) out.push({ cell, error });
+  }
+  return out;
+}
+
+/** The row's reason, on the column that holds the error. */
+export function excelErrorMessage(error: string): string {
+  return `the cell holds the Excel error ${error}, not a value. This row is not loaded until the cell holds a real value`;
+}
+
+/**
  * The cust_code cell as every lane reads it: trimmed, and in capital letters
  * (owner's answer 2026-11-11, A5: cct0005 is the customer CCT0005). Only a-z
  * are changed (lib/import-shop-code.ts capitalCode).
@@ -180,6 +237,9 @@ export function fileCollisions(rows: Array<{ row: SheetRow; rowNumber: number }>
   const phonesInFile = new Map<string, FileDup[]>();
   const crsInFile = new Map<string, FileDup[]>();
   for (const { row, rowNumber } of rows) {
+    // A row holding an Excel error is held back on its own (excelErrorCells):
+    // whose shop it is cannot be told, so it holds no other row back.
+    if (excelErrorCells(row).length > 0) continue;
     const code = rowCustCode(row);
     const phoneNorm = rowPhoneNorm(row);
     if (phoneNorm) {
@@ -207,6 +267,8 @@ export function fileShopCodes(
 ): Map<string, SiblingShop[]> {
   const out = new Map<string, SiblingShop[]>();
   for (const { row, rowNumber } of rows) {
+    // As in fileCollisions: a row holding an Excel error holds no other row back.
+    if (excelErrorCells(row).length > 0) continue;
     const code = rowCustCode(row);
     const branch = rowBranchCode(row);
     if (!code || !branch) continue;
@@ -224,6 +286,10 @@ export function checkCustomerRow(
   opts: RowCheckOptions = {}
 ): { parsed: ParsedCustomerRow; issues: RowIssue[] } {
   const issues: RowIssue[] = [];
+  // Bug hunt round 2, F1: a cell holding an Excel error (#N/A, #REF!) is not
+  // data. The row is held back, named on that column, whatever else it holds.
+  const excelErrors = excelErrorCells(row);
+  for (const e of excelErrors) issues.push({ field: e.cell, message: excelErrorMessage(e.error) });
   // F-05: stripHtml on every text field at parse time so nothing hostile
   // reaches the master. Then re-screen for spreadsheet formula prefixes.
   const custCode = rowCustCode(row);
@@ -400,6 +466,11 @@ export function checkCustomerRow(
       !!opts.shopCodeReleased
     );
     if (hit) issues.push({ field: 'branch_code', message: shopLookalikeMessage(hit) });
+    const composed = composeBranchCode(custCode, branchCode);
+    const numbered = ctx.numberedShops?.get(custCode)?.find((s) => s.code === composed);
+    if (numbered) {
+      issues.push({ field: 'branch_code', message: numberedShopMessage(branchCode.trim(), composed, numbered.row) });
+    }
   }
 
   // Owner's answer 2026-11-11 (A5): which codes were read in capital letters.
@@ -433,6 +504,7 @@ export function checkCustomerRow(
     paymentTermDays,
     ...(capitalised.length > 0 ? { capitalised } : {}),
     ...(opts.shopCodeReleased ? { shopCodeReleased: true as const } : {}),
+    ...(excelErrors.length > 0 ? { excelError: true as const } : {}),
   };
   return { parsed, issues };
 }

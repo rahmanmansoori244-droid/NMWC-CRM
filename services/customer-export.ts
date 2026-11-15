@@ -192,7 +192,9 @@ async function exportFilteredCustomersCore(
   // shows their branch's address, not some arbitrary first branch.
   const customers = await prisma.customer.findMany({
     where,
-    orderBy: { legalName: 'asc' },
+    // H9: the same total order as the /customers list, so the file lists
+    // same-named customers in the order the pages show them.
+    orderBy: [{ legalName: 'asc' }, { id: 'asc' }],
     take: EXPORT_ROW_CAP,
     include: {
       channel: { select: { label: true } },

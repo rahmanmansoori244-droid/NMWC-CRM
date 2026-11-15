@@ -409,6 +409,8 @@ export type PlanRow = {
   fixedInApp?: boolean;
   /** Owner's answer 2026-11-11 (A5): released as a different shop by the Steward. */
   shopCodeReleased?: boolean;
+  /** The sheet row number (ImportRow.rowNumber), when the caller knows it; never stored in parsed. */
+  rowNumber?: number;
 };
 
 /**
@@ -441,6 +443,56 @@ export function summaryBranchOf(
     sheetAddress: p.address ? (usableAddress(p.address) ?? joined) : null,
     fixedInApp: p.fixedInApp === true,
   };
+}
+
+/**
+ * Two rows of one customer that the promote would give the same shop code
+ * (QA P-03: the whole customer is rejected, or one row would silently update the
+ * other's shop). `numbered`: bug hunt round 1, finding 1 — one of them has a
+ * blank branch_code, so it is numbered by its place among the customer's rows
+ * (-01, -02, …), and that number is exactly the code the other row gives
+ * (often the head office, given no code, and the customer's own shop 01).
+ * Nothing in the file is repeated, so the reason says what happened. Rows are
+ * given by sheet row number (or by place, when no number is known).
+ */
+export type BranchCodeClash =
+  | { kind: 'repeated'; code: string }
+  | { kind: 'numbered'; code: string; sheetCode: string; blankRow: number | string; codedRow: number | string };
+
+export function branchCodeClash(
+  shops: ReadonlyArray<{ sheetCode: string | null; branchCode: string }>,
+  rowNumbers: ReadonlyArray<number | string | undefined>
+): BranchCodeClash | null {
+  // A code really repeated by two coded rows comes first: the "numbered" words
+  // say "No code is repeated in the file", which would then be untrue, and fixing
+  // only the blank row would leave the repeat for the next Promote.
+  const coded = new Set<string>();
+  for (const s of shops) {
+    if (!s.sheetCode) continue;
+    if (coded.has(s.branchCode)) return { kind: 'repeated', code: s.branchCode };
+    coded.add(s.branchCode);
+  }
+  const firstAt = new Map<string, number>();
+  for (const [j, s] of shops.entries()) {
+    const i = firstAt.get(s.branchCode);
+    if (i === undefined) {
+      firstAt.set(s.branchCode, j);
+      continue;
+    }
+    const a = shops[i]!;
+    const blank = !a.sheetCode ? i : !s.sheetCode ? j : null;
+    const coded = blank === i ? j : i;
+    if (blank === null || !shops[coded]!.sheetCode) return { kind: 'repeated', code: s.branchCode };
+    const row = (k: number) => rowNumbers[k] ?? `#${k + 1}`;
+    return { kind: 'numbered', code: s.branchCode, sheetCode: shops[coded]!.sheetCode!, blankRow: row(blank), codedRow: row(coded) };
+  }
+  return null;
+}
+
+/** The promote's reason on every row of the customer, and the Steward's notice. */
+export function branchCodeClashMessage(c: BranchCodeClash): string {
+  if (c.kind === 'repeated') return `duplicate branch_code ${c.code} within this customer`;
+  return `The branch_code on row ${c.blankRow} is blank, so it is numbered "${c.code}" by its place among this customer's rows, and that is the code row ${c.codedRow} gives ("${c.sheetCode}"). No code is repeated in the file: the two rows would be loaded as one shop. Give row ${c.blankRow} a branch_code.`;
 }
 
 export type PlanCustomer = StoredCustomerCrm & {
@@ -477,6 +529,8 @@ export const REJECT_REASONS = {
   NEW_CREDIT: 'a new CREDIT customer with no temix_code',
   NO_BRANCH_CODE: 'no branch_code, for a customer that already has shops',
   REPEATED_CODE: 'a branch_code repeated in the file',
+  // Bug hunt round 1, finding 1.
+  NUMBERED_CODE: "a blank branch_code whose number by place is the code another row of the customer gives",
   FOREIGN_CODE: 'a branch_code that belongs to another customer',
   ARCHIVED_SHOP: 'a row fixed in the app that names an archived shop',
   // Code review 2026-11-10, finding 7.
@@ -490,6 +544,8 @@ export type GroupPlan = {
   rows: number;
   /** Set: the whole customer is expected to be rejected, and nothing else below counts. */
   rejected: RejectReason | null;
+  /** With NUMBERED_CODE: the two rows (bug hunt round 1, finding 1). */
+  numberedClash?: { blankRow: number | string; codedRow: number | string };
   newCustomer: boolean;
   shopsCreated: number;
   /** A customer that is not ACTIVE gets a new open shop: it becomes ACTIVE (owner decision 7). */
@@ -581,7 +637,9 @@ export function planGroup(input: {
   if (rows.length === 0) return plan;
 
   const shops = rows.map((p, i) => summaryBranchOf(custCode, p, i, routeByCode));
-  if (new Set(shops.map((s) => s.branchCode)).size !== shops.length) return reject(REJECT_REASONS.REPEATED_CODE);
+  const clash = branchCodeClash(shops, rows.map((p) => p.rowNumber));
+  if (clash?.kind === 'repeated') return reject(REJECT_REASONS.REPEATED_CODE);
+  if (clash) return { ...reject(REJECT_REASONS.NUMBERED_CODE), numberedClash: { blankRow: clash.blankRow, codedRow: clash.codedRow } };
   if (existing?.deletedAt) return reject(REJECT_REASONS.ARCHIVED);
   // As the promote, under the customer's lock (lib/import-shop-code.ts).
   if (
@@ -849,6 +907,12 @@ export type PromoteSummary = {
   routeNotApplied: number;
   /** Owner's answer 2026-11-11 (A5): clean rows whose customer or Temix code was read in capital letters. */
   codesCapitalised: number;
+  /**
+   * Bug hunt round 2, F1: held-back rows of the batch whose cells hold an Excel
+   * error (lib/import-row-check.ts excelErrorCells). Never loaded; counted so
+   * the Steward sees them before Promote.
+   */
+  excelErrorRows: number;
   crm: {
     customersFilled: number;
     shopsFilled: number;
@@ -866,8 +930,16 @@ export type PromoteSummary = {
   };
   credit: { rows: number; reasons: Array<{ reason: CreditReason; rows: number }> };
   expectRejected: { customers: number; rows: number; reasons: Array<{ reason: string; customers: number }> };
+  /**
+   * Bug hunt round 1, finding 1: the customers rejected for NUMBERED_CODE, and
+   * the first few pairs of rows (the blank row, the coded row) by number.
+   */
+  numberedClash: { customers: number; examples: Array<{ blankRow: number | string; codedRow: number | string }> };
   unchangedCustomers: number;
 };
+
+/** How many pairs of rows the "Before you promote" line names. */
+export const NUMBERED_CLASH_EXAMPLES = 3;
 
 export function emptySummary(): PromoteSummary {
   return {
@@ -877,6 +949,7 @@ export function emptySummary(): PromoteSummary {
     temix: { customersOnRefresh: 0, customersChanged: 0 },
     routeNotApplied: 0,
     codesCapitalised: 0,
+    excelErrorRows: 0,
     crm: {
       customersFilled: 0,
       shopsFilled: 0,
@@ -892,6 +965,7 @@ export function emptySummary(): PromoteSummary {
     },
     credit: { rows: 0, reasons: [] },
     expectRejected: { customers: 0, rows: 0, reasons: [] },
+    numberedClash: { customers: 0, examples: [] },
     unchangedCustomers: 0,
   };
 }
@@ -911,6 +985,10 @@ export function addGroup(s: PromoteSummary, plan: GroupPlan): PromoteSummary {
     s.expectRejected.rows += plan.rows;
     const reason = plan.rejected;
     tally(s.expectRejected.reasons, (x) => x.reason === reason, { reason, customers: 1 }, 'customers');
+    if (plan.numberedClash) {
+      s.numberedClash.customers += 1;
+      if (s.numberedClash.examples.length < NUMBERED_CLASH_EXAMPLES) s.numberedClash.examples.push(plan.numberedClash);
+    }
     return s;
   }
   if (plan.newCustomer) s.created.customers += 1;
@@ -978,6 +1056,12 @@ export function summaryLines(s: PromoteSummary, overwrite: boolean): SummaryLine
       text: `Codes in capitals: ${n(s.codesCapitalised)} row(s) have a customer code or Temix code typed in small letters. They are read in capital letters (cct0005 is CCT0005), so they load as that customer; each row says so.`,
     });
   }
+  if (s.excelErrorRows > 0) {
+    lines.push({
+      tone: 'warn',
+      text: `Excel errors: ${n(s.excelErrorRows)} row(s) are held back because a cell holds an Excel error (such as #N/A or #REF!) instead of a value. They are not loaded, matched or counted above; each row names the cell. The rest of the file loads.`,
+    });
+  }
   if (s.crm.customersFilled + s.crm.shopsFilled > 0) {
     lines.push({
       tone: 'plain',
@@ -1031,6 +1115,14 @@ export function summaryLines(s: PromoteSummary, overwrite: boolean): SummaryLine
     lines.push({
       tone: 'warn',
       text: `Expected to be rejected at Promote: ${n(s.expectRejected.rows)} row(s) of ${n(s.expectRejected.customers)} customer(s) (${reasons}). Each row will say why.`,
+    });
+  }
+  if (s.numberedClash.customers > 0) {
+    const pairs = s.numberedClash.examples.map((e) => `row ${e.blankRow} (blank) and row ${e.codedRow}`);
+    const more = s.numberedClash.customers - s.numberedClash.examples.length;
+    lines.push({
+      tone: 'warn',
+      text: `Blank shop code numbered like another row: on ${n(s.numberedClash.customers)} customer(s) a row with no branch_code is numbered by its place (-01, -02, …), and that number is exactly the code another row of the same customer gives: ${pairs.join('; ')}${more > 0 ? ` and ${n(more)} more` : ''}. No code is repeated in the file, but the two rows would be one shop, so Promote rejects these customers. Give the blank row a branch_code.`,
     });
   }
   if (s.unchangedCustomers > 0) {

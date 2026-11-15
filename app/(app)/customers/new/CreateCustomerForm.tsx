@@ -336,6 +336,13 @@ type RestoreBanner = {
   summary: ReturnType<typeof createFormSummary>;
 };
 
+/** H2: said under "Start a new customer" while the reload check is still asking. */
+export const SEND_CHECK_WAIT =
+  'Checking whether your last send of this customer arrived. You can start a new customer when the check has answered.';
+/** H2: said after a discard while a send of the discarded form may have arrived. */
+export const DISCARDED_SEND_IN_DOUBT =
+  'The customer you discarded had a send that got no answer, and it may have arrived. When you have signal, check Work.';
+
 /** v1 copies (text only, written before finding 4 was fixed) keep the words they always had. */
 const RESTORED_TEXT_ONLY =
   'Restored the details you typed on this phone. Branch details, GPS points and photos are not kept on the phone — add them again, then tap Save draft to keep everything.';
@@ -623,6 +630,14 @@ export function CreateCustomerForm({
   // Held until he chooses; a send of it found already on the server (the reload
   // check below) is said instead, with the form locked.
   const choosing = mustChoose !== null && !readOnly && !arrived;
+  // H2 (bug hunt round 1, finding 3): the reload check below is still asking the
+  // server about an unanswered send of the never-saved form. Until it answers,
+  // that form cannot be discarded: an answer arriving after "Start a new
+  // customer" took the NEW shop's form for the old send's (a landed draft opened
+  // with the new shop laid over it; a landed submit locked the new form and
+  // deleted its copy). A ref for resetTo, the state for the buttons.
+  const [checkingSend, setCheckingSend] = useState(false);
+  const checkingSendRef = useRef(false);
   // The copy as last written or restored, with its save time: its age runs
   // from the last change to it, not from the last visit.
   const stampRef = useRef<{ content: string; savedAt: number } | null>(null);
@@ -851,6 +866,12 @@ export function CreateCustomerForm({
         ? 'Restored the details you typed on this phone. Your last send got no answer — checking whether it arrived…'
         : 'Your last send got no answer — checking whether it arrived…'
     );
+    checkingSendRef.current = true;
+    setCheckingSend(true);
+    const checkDone = () => {
+      checkingSendRef.current = false;
+      setCheckingSend(false);
+    };
     void (async () => {
       let noAnswer = false;
       const checked: string[] = [];
@@ -901,12 +922,14 @@ export function CreateCustomerForm({
         setArrived(true);
         setBanner(null);
         setInfo(`Your last send arrived after all. ${alreadyReceivedMessage(r.receipt)}`);
+        checkDone();
         return;
       }
       // Off the list: only what was checked and did not land. A send made
       // while the check ran, or one it could not ask about, stays.
       unansweredRef.current = unansweredRef.current.filter((x) => !checked.includes(x));
       writeCopy();
+      checkDone();
       if (noAnswer) {
         setInfo(
           textOnly
@@ -990,11 +1013,28 @@ export function CreateCustomerForm({
    * Finding 4: "Start a blank form" (a never-saved form that came back) and
    * "Discard these changes" (what was added after the last Save draft). The
    * boxes go to a blank form, or to the draft as the page loaded it, and the
-   * copy leaves the phone with the next render. A send still to be asked about
-   * stays on it. Off while a photo is going up or a send is on its way.
+   * copy leaves the phone with the next render. Off while a photo is going up or
+   * a send is on its way.
+   *
+   * H2 (bug hunt round 1, finding 3): a never-saved form discarded here takes its
+   * unanswered sends with it. They were kept, on the phone too, and the reload
+   * check then asked about them with the NEXT shop's form on screen and could not
+   * tell the two apart. So the discard waits for a check still running, and
+   * forgets them after; if one may still have arrived, he is told to look in
+   * Work. A saved draft's own saves (sentRef) are not touched.
    */
   function resetTo(form: CreateDraftForm) {
     if (submitLockRef.current || uploading > 0 || arrived) return;
+    if (!editId && checkingSendRef.current) return;
+    if (!editId) {
+      const inDoubt = unansweredRef.current.length > 0;
+      unansweredRef.current = [];
+      lastSentRef.current = null;
+      setInfo(inDoubt ? DISCARDED_SEND_IN_DOUBT : null);
+      // The discarded form's own notice ("No answer ... Tap Try again") goes
+      // with it: its Try again would send the new form (review of the hunt fixes).
+      setNotice(null);
+    }
     applyForm(form);
     setErrors({});
     setBanner(null);
@@ -1206,7 +1246,8 @@ export function CreateCustomerForm({
   }
 
   const bannerAge = banner ? draftAgeText(banner.savedAt) : null;
-  const resetBusy = sending || uploading > 0;
+  // A never-saved form waits for the check of its unanswered send (H2).
+  const resetBusy = sending || uploading > 0 || (!editId && checkingSend);
 
   if (choosing && mustChoose) {
     const held = mustChoose.summary;
@@ -1242,8 +1283,9 @@ export function CreateCustomerForm({
               <div className="mt-2 flex flex-wrap gap-2">
                 <button
                   type="button"
+                  disabled={checkingSend}
                   onClick={() => resetTo(emptyCreateForm())}
-                  className="min-h-11 rounded-md border border-red-300 bg-white px-3 text-sm font-semibold text-red-700 hover:bg-red-50"
+                  className="min-h-11 rounded-md border border-red-300 bg-white px-3 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-60"
                 >
                   Yes, discard it
                 </button>
@@ -1267,12 +1309,19 @@ export function CreateCustomerForm({
               </button>
               <button
                 type="button"
+                disabled={checkingSend}
+                aria-describedby={checkingSend ? `${uid}-held-wait` : undefined}
                 onClick={() => setConfirmingNew(true)}
-                className="min-h-11 rounded-md border border-amber-300 bg-white px-3 text-sm font-semibold text-amber-900 hover:bg-amber-100"
+                className="min-h-11 rounded-md border border-amber-300 bg-white px-3 text-sm font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-60"
               >
                 Start a new customer
               </button>
             </div>
+          )}
+          {checkingSend && (
+            <p id={`${uid}-held-wait`} className="mt-2 text-sm">
+              {SEND_CHECK_WAIT}
+            </p>
           )}
         </section>
       </div>

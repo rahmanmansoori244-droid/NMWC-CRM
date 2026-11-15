@@ -537,11 +537,14 @@ per region, route, account and route holder (the SQL of
 `20261013100100_history_foundation`, with only the source, kind and actor changed), and
 `AuditLog` gets exactly one row, `cleanstart-<run>`, with the run, commit, plan id,
 backup, the hashes of the exported photo-key list and seals, the old chain, the archive
-prefix, the Neon safety branch and the removed and kept counts. **No screen shows those
-counts**: the Audit page lists the row (when, who, action, reason) but not its `after`
-detail. The counts are read from the run's encrypted report
-(`cleanstart/<run>/report/`), by Claude with the owner; showing them on the Audit page
-is an app follow-up (below). No sequence is reset. Nobody is signed out: the accounts are
+prefix, the Neon safety branch and the removed and kept counts. **Until follow-up
+release 1 is live no screen shows those counts**: the Audit page lists the row (when,
+who, action, reason) but not its `after` detail, and the counts are read from the run's
+encrypted report (`cleanstart/<run>/report/`), by Claude with the owner. From that
+release on, the Audit page lists them under the row ("What was removed and kept"): one
+line per kind in plain words, removed and kept, read from the row's `after` only, with
+a dash where the row holds no figure (`lib/clean-start-record.ts`). There is no Excel
+export of the audit log, so nothing else changes. No sequence is reset. Nobody is signed out: the accounts are
 not touched, which is part of the proof that nothing real changed. Saved filters are
 deleted (they were built on test data).
 
@@ -559,12 +562,12 @@ a key the test environment also uses is kept.
 |---|---|
 | `tables.json` | every table: EMPTY, PARTIAL (CodeSequence, CronRun) or KEEP |
 | `plan.sql`, `guards.sql`, `fingerprint.sql` | the read-only checks (SQLSTATE `CS001`-`CS012`) and the exports (photo-key list, seals, plan, plan id), bound together by one plan id |
-| `reset.sql`, `selfcheck.sql` | ONE transaction as the owner login in the §5e window: the checks again under SHARE locks, the plan id again (`CS013`), the `TRUNCATE`, two partial DELETEs, the AuditLog row, the baselines, the self-check (`CS101`-`CS113`), COMMIT |
+| `reset.sql`, `selfcheck.sql` | ONE transaction as the owner login in the §5e window, READ COMMITTED by its own `BEGIN` whatever the login's default (`CS021` refuses another level: each check must read the state under the locks): the checks again under SHARE locks, the plan id again (`CS013`), the `TRUNCATE`, two partial DELETEs, the AuditLog row, the baselines, the self-check (`CS101`-`CS113`), COMMIT |
 | `verify.sql` | after COMMIT, read-only; `CS301` means the reset row is not there, so nothing changed |
 | `facts.sql`, `counter.sql`, `photos-record.sql` | small read-only questions; the next customer number in a rolled-back transaction; the photo run's one AuditLog row |
 | `run.sh`, `target-guard.sh` | the targets (the shared host list `config/production-hosts.txt`; the typed `confirm_host` and phrase), the public-log rule, encryption, storage, the GitHub and Neon calls. Neither names a database client: every database command is written in the workflow file and writes to a file |
 | `seal-archive.sh` | the old seal files: `verify`, `archive`, `retire`; `restore` after a rollback |
-| `photo-delete.sh` | the day-7 photo deletion: `check`, then `delete` |
+| `photo-delete.sh` | the day-7 photo deletion: `check`, then `delete`; `probe` proves the read-write photo token (also run by the Neon rehearsal, apply step a, finish and seal-restore) |
 | `rehearse-watch.ts`, `compare-watch.ts`, `expected-watch.json` | the first two nights of the integrity watch on a reset copy, and the first night on production, against the expected status table |
 | `.github/workflows/clean-start.yml` | jobs `Plan (read-only)`, `Rehearse on the restored backup`, `Neon rehearsal`, `Apply (the owner's approval)`, `Finish an apply (steps e-j)`, `Seal restore (after a rollback)`; modes `dry-run`, `neon-rehearsal`, `apply`, `finish`, `seal-restore` |
 | `.github/workflows/clean-start-photos.yml` | the photo deletion (phrase `DELETE TEST PHOTOS`) |
@@ -606,7 +609,10 @@ The photo run: `run_id`, `list_sha256`, `confirm_host`, `confirm_phrase`
   `error` (the rehearsal's copy has no grants, so this is the only place it is seen before
   the reset);
 - `plan.sql` in a read-only session: the table list, ownership, foreign keys, triggers,
-  migrations equal to the checkout's, only `CUSTOMER-YYYY` counters, no export or Temix
+  no failed migration (`CS006`: a row that neither finished nor was marked rolled back),
+  the applied migrations equal to the checkout's (`CS007`; a row that Prisma's
+  "migrate resolve --rolled-back" marked rolled back, §5, is history and is not counted
+  as applied, as in `restore-verify.ts`), only `CUSTOMER-YYYY` counters, no export or Temix
   file key, no photo under `seals/`, the actor (`CLEANSTART_ACTOR_USERNAME`) exactly one
   active real account, no clean start recorded yet; then the exports, bound to the plan id;
 - the old seal copies (read-only photo token): a copy that differs from its seal refuses;
@@ -616,8 +622,13 @@ The photo run: `run_id`, `list_sha256`, `confirm_host`, `confirm_phrase`
 
 ### Dry runs (mode `dry-run`; changes nothing on production)
 
-"Rehearse on the restored backup" downloads the dump the plan picked, decrypts it,
-restores it into a Postgres 17 service container, runs `restore-verify.ts --manifest`,
+"Rehearse on the restored backup" first silences its Postgres 17 service container's own
+log (`ALTER SYSTEM`: nothing below PANIC, no statement text, terse; read back, and the
+job refuses unless it took): GitHub prints every service container's log into the public
+job log when the job ends, green or red, and Postgres would write a failing row there
+(`the rehearsal database keeps rows and statements out of its own log: yes`). Only then
+it downloads the dump the plan picked, decrypts it,
+restores it into that container, runs `restore-verify.ts --manifest`,
 and runs `plan.sql` on it: its plan id must equal production's (`backup equals
 production: yes`), which proves the backup holds exactly what the reset will remove and
 keep. A sign-in or any other write between the backup and the plan changes the plan id
@@ -629,16 +640,42 @@ through the nightly backup's own gates and size floors (`first nightly backup wo
 below the size floor: yes; set MIN_DUMP_BYTES to <n>` names the value to set), and the
 next customer number (`next customer code would be number 000001: yes`).
 
+**The two nights, at any hour.** Night 1 is the moment of the rehearsal. Night 2 is
+02:30 UTC of the Oman day after night 1's, whatever the clock says: a rehearsal that
+slips past midnight in Oman (20:00 UTC) simulates the morning after its own Oman day,
+not the coming 02:30 UTC, which is still the same Oman day (the watch would write no
+second seal and check no day of job runs there). The rehearsal also requires that night
+1 wrote the new chain's first seal and night 2 the first seal chained to it; a night
+that sealed nothing is a mismatch even though its status is a pass. Night 2 reads the job
+runs of night 1's Oman day, and a copy can hold them all only from 15:00 UTC on that
+date, so `scheduled-jobs-on-time` is asserted on night 2 between 15:00 and 20:00 UTC and
+at every other hour is reported with `(not asserted)`. The planned evening (15:30-20:00
+UTC) is unchanged by this rule. The same holds for the Neon rehearsal and for the
+Rehearse job of an apply.
+
 ### The Neon dress rehearsal (mode `neon-rehearsal`; once, approval-gated)
 
-Plan, then (after Approve) a temporary branch `cleanstart-rehearsal-<run>` of the
-default branch with a compute; its host must not be production. Its fingerprint is taken
-and the time noted; the reset and verify run on it, then the watch; then the branch is
-restored through the Neon API to the noted time (`preserve_under_name`
-`cleanstart-rehearsal-<run>-after`), the reset row must be gone and the plan id must
-return exactly (`the Neon restore returned the exact fingerprint: yes`). Both branches
-are deleted in an `always()` step; if one is left, the run says so and the owner deletes
-it by hand. `branch equals production's plan` is only recorded: the proof is that the
+Plan, then (after Approve) the read-write photo token is proven first
+(`photo-delete.sh probe`: two throwaway objects under `cleanstart-probe/` written, read
+back and deleted, one with each delete call the later steps use; when it refuses, the
+lines starting `photo token check:` say which call stopped it). No dry run can hold
+that token (it is an environment secret), and in an apply its first real use is step g,
+after the COMMIT; this rehearsal is where a token in the wrong box shows, days before
+the reset. Then a temporary branch `cleanstart-rehearsal-<run>` of the
+default branch with a compute; its host must not be production. The default branch
+itself must be production's: one of its endpoints has the host of the first line of
+`config/production-hosts.txt` (`Neon default branch is production: yes`), checked
+before this branch and before apply's safety branch are made. Its fingerprint is taken
+and the time noted; the reset and verify run on it, then the watch; then Neon makes a
+new branch `cleanstart-rehearsal-<run>-at` from the rehearsal branch's history at the
+noted time (a branch create with `parent_timestamp`: Neon's own point-in-time
+`/restore` works on root branches only, and the rehearsal branch is a child), the reset
+row must be gone there and the plan id must return exactly
+(`the Neon restore returned the exact fingerprint: yes`). Both branches are deleted in an `always()` step, the newer
+first (Neon refuses to delete a branch with a child); if one is left, the run says so and
+the owner deletes it by hand. This proves Neon's history holds the noted time on a
+branch of production; it does not exercise the console Restore of the production (root)
+branch itself, rollback route 1. `branch equals production's plan` is only recorded: the proof is that the
 restore returns the branch's own fingerprint. Apply needs a green run of this mode with
 the same scripts within 14 days, so it is repeated after any change to
 `scripts/ops/clean-start/`.
@@ -652,7 +689,9 @@ again at the reset). Plan and Rehearse run as in a dry run (about 20 minutes). T
 job then waits for **Approve** on `production-reset`: that click is the yes. Apply:
 
 - a. the checks again (window, production, release, reviewer, backups idle, the green
-  Neon rehearsal; the newest backup at most 6 hours old and still the one rehearsed;
+  Neon rehearsal; the newest backup at most 6 hours old and still the one rehearsed; the
+  read-write photo token proven again with `photo-delete.sh probe`, before anything is
+  made or changed;
   `plan.sql` again: `production unchanged since the plan: yes`; heartbeat); the exports
   stored again under `cleanstart/<run>/apply/` (the later modes read this copy);
 - b. Neon safety branch `pre-clean-start-<Oman date>-<run>` of production, no compute;
@@ -672,8 +711,12 @@ job then waits for **Approve** on `production-reset`: that click is the yes. App
   first run compared with night 1 of `expected-watch.json` (`first integrity checks as
   expected: yes`; `seal-written: info` is the new chain's first seal);
 - i. `npm run smoke -- <APP_BASE_URL> --expect-commit <sha>` (`smoke ok: yes`);
-- j. the encrypted report under `cleanstart/<run>/report/`, then `run_id for the photo
-  step`, `list_sha256 for the photo step` and `reset started at (UTC)`.
+- j. `run_id for the photo step`, `list_sha256 for the photo step` and
+  `reset started at (UTC)`, printed first and only when the reset committed. A refused,
+  rolled-back or unsettled run prints one line in their place:
+  `values for the photo step printed (only after a reset that committed): no`.
+  Then the encrypted report under `cleanstart/<run>/report/`; a failed upload turns the
+  step red but can no longer hide the two values.
 
 The safety branch is deleted only when it is certain the reset did not commit (it never
 started: no marker on disk and no exit code; Postgres refused it; or verify read
@@ -690,7 +733,9 @@ the operations log; nothing is to be done about it.
 **Mode `finish`** (input `run_id`, approval-gated) repeats e-j for an apply run whose
 answer to the COMMIT was lost: it settles first; when the reset did not commit it
 deletes that run's safety branch and fails with "the reset of that run did not commit;
-nothing changed on production". Its `verify.sql` runs with `scope=finish`: only the
+nothing changed on production". After the settle and before step g it proves the
+read-write photo token (`photo-delete.sh probe`), as `seal-restore` does before it puts
+a seal file back. Its `verify.sql` runs with `scope=finish`: only the
 checks that stay true while the CRM is used (`CS301`, `CS304`, `CS305`, `CS307`); the
 "still empty" checks (`CS302`, `CS303`, `CS306`) are skipped, so a saved view or a new
 request does not block it. It calls the watch only when no watch has run since the
@@ -722,13 +767,34 @@ apply run's summary. It refuses unless the reset row `cleanstart-<run_id>` exist
 at least 7 days old, the sha256 of the stored list (`cleanstart/<run_id>/apply/photo-keys.txt.age`)
 equals both the typed value and the reset row's value, and no production `Attachment`
 row references a listed key (one hit means a rollback happened: everything is refused).
-Then it deletes the Neon safety branch FIRST (no rollback may be left pointing at missing
-files), skips keys without the photo shape, keeps keys the test environment references
-(only when `UAT_DATABASE_URL_RO` is set; otherwise `test environment checked for shared
-photos: no (no read-only UAT connection set)`), deletes the rest in batches of at most
-1000 and HEAD-checks each, writes one AuditLog row `cleanstart-photos-<run>` and stores an
-encrypted report under `cleanstart/<run_id>/photos/`. It cannot be undone. If bucket
-versioning is on, the bytes linger up to 30 days.
+It also refuses, before anything is deleted, unless `CLEANSTART_ACTOR_USERNAME` is still
+exactly one active account that is not a test account (`facts.sql` `actor-ok`): the audit
+row at the end is written under that account, and an account renamed or switched off
+since the reset used to show up only after the photos were gone (`CS401`).
+Before anything is deleted, the read-write photo token writes two throwaway objects
+(`cleanstart-probe/…`), reads them back and deletes them, one with each delete call
+(`photo-delete.sh probe`): a
+read-only, expired or revoked token, or a wrong bucket name, is refused there, with
+nothing deleted. Then it deletes the Neon safety branch FIRST (no rollback may be left
+pointing at missing files), skips keys without the photo shape, keeps keys the test
+environment references (only when `UAT_DATABASE_URL_RO` is set; otherwise `test
+environment checked for shared photos: no (no read-only UAT connection set)`), deletes
+the rest in batches of at most 1000 and HEAD-checks each. It then writes one AuditLog row
+per run attempt: `cleanstart-photos-<run>` for the first, `cleanstart-photos-<run>-<N>`
+for a re-run attempt N (`photos-record.sql`). The row stores `complete` and `runAttempt`
+with the counts; if the delete step was red, the row has `complete` false and its reason
+says the deletion did NOT complete. The same row is written when the delete step was
+cancelled or ran out of time (job limit 180 minutes; each key is confirmed with one call
+of its own): `photo-delete.sh` puts the run's numbers on disk before its first deletion,
+with nothing confirmed yet, so the record step has them. A new run, or a re-run of the
+job, then deletes what is left and writes its own row. The stored list and the
+reports are encrypted to the age key of reset day and live under `cleanstart/` in the
+backups bucket: the photo step must run before that key is retired, and that prefix must
+not fall under a lifecycle rule (the code sets and checks only the 30-day rule for
+`db/`; the owner looks at the bucket's own rules once, guide Step 1 H). The encrypted report goes under
+`cleanstart/<run_id>/photos-<run>-<attempt>/`, one folder per photo run and attempt, so
+a re-run never overwrites an earlier report. It cannot be undone. If bucket versioning is
+on, the bytes linger up to 30 days.
 
 ### Going back
 
@@ -752,7 +818,10 @@ watch once (`a check failing or in error: no`; a failing check makes the job red
 Only the recorded new chain's folder `seals/v1/<new chain>/` is moved: the photo bucket is
 shared with the test environment, whose own chain keeps growing under `seals/`, so every
 other object is left where it is (`other objects under seals/ left where they are`), and
-without the recorded id nothing is moved. Run it straight after the restore, the same
+without the recorded id nothing is moved: when apply stopped at step g or h before
+recording it, the archived old files still go back, and the run refuses only if a chain
+folder `seals/v1/<id>/` is there that is neither the old chain nor in the apply's list of
+other objects at the reset (`every seal chain under seals/ is the old one or was there at the reset: yes`). Run it straight after the restore, the same
 evening: a 02:30 UTC watch between the two reports the new chain's files as a critical
 alert. Then delete `MIN_DUMP_BYTES` if it was set, and, once the rollback is confirmed,
 delete the safety branch and Neon's preserved pre-restore copy (Claude names them; the
@@ -799,12 +868,22 @@ operations-log entry, written before and completed after. The compliance notes:
 
 ### After it (separate changes)
 
-`lib/insights/policy.ts` `HISTORY_BASELINE_DAY` moves to the reset day (until then a
-dashboard window reaching back before the reset compares with emptied days; planned for
-reset day + 1); `db-backup.yml` stops printing the total row count; `lib/test-records.ts`
-`KNOWN_TEST_RECORDS.customerCode` is no longer a test record (§7, "Flag a test record");
-the Audit page shows the reset row's removed and kept counts (owner question 10, default
-yes; today they are only in the encrypted report).
+`db-backup.yml` stops printing the total row count; `lib/test-records.ts`
+`KNOWN_TEST_RECORDS.customerCode` is no longer a test record (§7, "Flag a test record").
+
+**Follow-up release 1** (branch `claude/follow-up-1`; live when the owner says so,
+before or after the reset; no migration): the Audit page shows the reset row's removed and kept
+counts (owner question 10, default yes; above). And the dashboard no longer compares
+with emptied days: a tile, sentence or note that compares a period with the one before
+it (New customers, Customers updated, Branches closed, the "What stands out" sentence on
+new customers, the caveat above the cards) shows "No earlier data yet to compare with"
+instead of an arrow or a percentage when the period before starts before the clean
+start's moment. The moment is the `at` of the reset's own AuditLog row, found by every
+mark `reset.sql` gives it (`lib/clean-start-record.ts` `readCleanStartAt`,
+`lib/insights/compare.ts`); the design named a hand-set `HISTORY_BASELINE_DAY` for this,
+which is no longer needed for the comparisons (it still dates the go-live caveat on a
+database that never had a clean start). On such a database nothing changes. When that
+row cannot be read just then, the tiles say "Not compared just now" and draw no arrow.
 
 ### Tests
 
@@ -1183,7 +1262,7 @@ The Data Steward does this on `/users` (owner decision 8, 2026-10-07). A Manager
 - **A salesman moves to another route.** **Edit** → Route. Tick **Sign in with the route code** to give him the new route's code as his sign-in name (it is ticked when he signed in with the old one). A route an active salesman works is refused: move that salesman first (a swap goes through a free route), or disable him if he has left. The supervisor must manage the new route's region.
 - **His open requests.** Those in review stay his and stay with the approvers of the customer's region. But a new-customer request among them that is sent back after the move cannot be sent again from his new route: he opens it from Needs correction and withdraws it at the bottom of its page, and the salesman of the route it was started on adds the shop afresh. Updates sent back to him that are about his old route's customers he clears on Needs correction. New-customer requests that are not in review (drafts, or sent back) cannot be sent again from his new route either, so the move is refused while he has any: ask him to send or withdraw them, or tick **Withdraw them with this change**. The banner after the save says what happened to each.
 
-The account-master import can do the same, with the same rules (`services/imports.ts`): a `Users` row takes a route from a **disabled** salesman as it is, and from an **active** one only when its `change_route` cell is `yes` (that salesman is then left with no route unless his own row gives him one, so put both rows of a swap in one file). Because the import finds accounts by username, a salesman's row whose `full_name` differs from the account's is held back unless `change_name` is `yes`: after a hand-over on `/users`, an older sheet would otherwise put the leaver's name on the joiner's account. The import has no review step, and it cannot withdraw anyone's requests.
+The account-master import can do the same, with the same rules (`services/imports.ts`): a `Users` row takes a route from a **disabled** salesman as it is, and from an **active** one only when its `change_route` cell is `yes` (that salesman is then left with no route unless his own row gives him one, so put both rows of a swap in one file). While that salesman has new-customer requests only he can send or close — drafts, sent back to him, or waiting for his upload of a signed credit application — the row is held back, naming him, and nothing is written (bug hunt round 2, F2: he would be left with no route and could never send them); ask him to send or withdraw them, or change his account on `/users` first. Because the import finds accounts by username, a salesman's row whose `full_name` differs from the account's is held back unless `change_name` is `yes`: after a hand-over on `/users`, an older sheet would otherwise put the leaver's name on the joiner's account. The import has no review step, and it cannot withdraw anyone's requests.
 
 ### A route never changes region (owner, 2026-10-11)
 Routes never move to another region, are never renamed, split or merged. A route's customers can move to other routes, and a route can be closed (switched off on `/routes`); a route for another region is a **new** route. The database refuses any change of a route's region (trigger `route_region_fixed`, migration `20261015100100_route_region_fixed`) for every user, script and the table owner — there is no maintenance-window override — and the account-master import holds back a `Routes` row whose `region_code` differs from the route's: *"Routes never move to another region. Close this route and open a new one in the other region."* The row's new `name` (the route's label) is still saved.
@@ -1274,6 +1353,15 @@ batches, and the Import screen still never moves a shop that exists.
      counts such rows. Two rows whose codes differ only in capitals are rows of ONE customer: as
      for any customer with several rows, the first row is the customer's, and their branch codes
      must differ.
+   - **A cell holding an Excel error is held back** (bug hunt round 2, F1). A row with `#N/A`,
+     `#REF!`, `#VALUE!` or any other Excel error in one of the 17 columns the import reads (also a
+     formula whose saved result is an error) is held back at upload, on that column, naming the
+     error. It is never matched, created or promoted, it holds no other row back (a failed lookup in
+     `cust_code` used to gather the shops of several customers into one customer coded
+     `#ERROR:#N/A`), and "Before you promote" counts it (not once it is excluded). The rest of the file loads. Put the real
+     value in the cell: on the batch page for a cell the fix form offers, otherwise in the file and
+     upload it again (the route, branch name, region and the credit and Temix columns are not
+     editable on the batch page).
    - **A shop code that only looks like another shop of the same customer is held back**
      (owner's answer 2026-11-11). The row's `branch_code` is compared with the codes of the shops
      the same customer has in the CRM (archived ones too) and with the other rows of that customer
@@ -1295,10 +1383,34 @@ batches, and the Import screen still never moves a shop that exists.
      customer's other rows: a blank row numbered `-01` beside a row coded `1` is rejected, naming
      the `branch_code` cell, and loads once the Steward gives one of them a code. The reason is
      written to every row of the customer, so it names the rows by number ("The branch_code on
-     row 2 is blank, … looks like shop code "1" on row 3 … Give row 2 a branch_code").
+     row 2 is blank, … looks like shop code "1" on row 3 … Give row 2 a branch_code"). The same
+     holds when two rows with codes look alike: Promote's reason names both rows ("Shop code "01"
+     looks like shop code "1" on row 3 … (Excel may have dropped a zero). "01" is on row 2. …"),
+     so the row that holds "1" says where "01" is. So does Promote's reason for a code that looks
+     like a shop already in the CRM ("Shop code "1" looks like this customer's existing shop
+     "X-01" (Excel may have dropped a zero). "1" is on row 3. …"), so every other row of that
+     customer says which row to correct. The reason at upload, which each row gets for itself, is
+     unchanged.
+   - **A blank `branch_code` numbered like another row** (bug hunt round 1, finding 1). A NEW
+     customer's row with no `branch_code` is numbered by its place among the customer's rows
+     (`-01`, `-02`, …). When that number is exactly the code another row of the same customer gives
+     (a head-office row with no code, and the customer's own shop `01`), nothing in the file is
+     repeated, but the two rows would be one shop: Promote rejects the customer, and the reason
+     says so and names both rows ("The branch_code on row 2 is blank, so it is numbered "X-01" by
+     its place …, and that is the code row 3 gives ("01"). … Give row 2 a branch_code."); "Before
+     you promote" counts these customers on a line of their own, naming the first pairs of rows (it
+     used to call it "a branch_code repeated in the file"). When two coded rows of the customer also
+     really repeat that code, the reason is the repeated code, as before. If the coded row was held back and the
+     blank row loaded alone as `X-01`, correcting the coded row no longer changes that shop: the
+     re-check holds it back on its `branch_code` cell, naming the row whose shop it is ("Shop code
+     "01" is "X-01", the code row 2 was given by its place when it loaded …"). Give it a code the
+     customer does not have yet, or exclude it. Only rows of the same batch are compared this way.
+     How a head-office row with no code should be numbered is an open owner question; the
+     numbering is unchanged.
    - **Promote opens "Before you promote".** It counts, against the CRM as it is at that moment:
      customers and shops that will be created; Temix-owned fields refreshed; rows naming a route
-     that will NOT be applied; rows whose codes were read in capitals; blank CRM fields filled; customers and shops where the sheet differs
+     that will NOT be applied; rows whose codes were read in capitals; rows held back for an Excel
+     error in a cell; customers with a blank shop code numbered like another row; blank CRM fields filled; customers and shops where the sheet differs
      from the record (kept); rows whose credit cells will not be applied, and why; and rows
      expected to be rejected. It is a check, not a lock. Resume and Finish skip it.
    - **"Overwrite CRM fields from this sheet"** is in that dialog. Steward only, off by default,
@@ -1365,7 +1477,10 @@ batches, and the Import screen still never moves a shop that exists.
      do not, and always take this lane.
    - **Status.** With the option off, a sheet's `customer_status` is read only for a customer or
      shop the load creates; a new open shop under a customer that is not ACTIVE still makes the
-     customer ACTIVE (owner decision 7), and the summary counts it. The rest of this bullet is
+     customer ACTIVE (owner decision 7), and the summary counts it. A NEW customer is created with
+     the file's status, and when one of its new shops is open it is then made ACTIVE: its trail
+     shows both, the CREATE row with the file's status and a REACTIVATE row (until bug hunt round 1,
+     finding 6, the second move had no audit row). The rest of this bullet is
      what the full lane does **with the option on**.
      On the full lane a customer's status follows all its live branches, not only the file's rows:
      it is settled after the branches are written, and a blank `customer_status` cell says nothing
@@ -1694,7 +1809,7 @@ What users report in their first days, and the control in the app that answers e
 
 | The user says or sees | Action |
 |---|---|
-| "The app asked me to sign in again in the middle of the day" | Expected. A sign-in lasts at most 8 hours from the moment of signing in, for every role, however much the app is used (owner's answer 2026-11-11); the sign-in page then says so. Nothing to fix: sign in again. On the field forms (new customer, edit, close, reactivate, signed credit application) and the photo slots, the page says "You need to sign in again …": keep that page open, sign in in another tab, come back and tap Try again or Retry upload — the form and the photo are still there. An approver's typed reason, or an import correction, is kept only while that page stays open. A promote the limit stops takes the Steward to the sign-in page (the batch page cannot be shown signed out, so he does not see "Not signed in." on the button) and keeps every slice it loaded: sign in again, open the batch and Resume once the page offers it (about a minute and a half). Known behaviour, not changed: when the limit stops a promote between two of its parts, for about 20 seconds the batch page says "Another promote is running — wait for it to finish." although it is his own stopped run (the hand-over lease, `PROMOTE_HANDOFF_GRACE_MS` in `services/imports.ts`); after that it says "Promote interrupted." and Resume works. Known behaviour, not changed, and rare: a request that leaves the device at the very moment the 8 hours end still carries the old sign-in, and the reply to it clears the sign-in cookie in that browser (Auth.js clears it whenever it refuses a session, and the middleware lets that through); if the person has by then signed in again in another tab, that reply signs out the new sign-in as well, and he signs in once more. |
+| "The app asked me to sign in again in the middle of the day" | Expected. A sign-in lasts at most 8 hours from the moment of signing in, for every role, however much the app is used (owner's answer 2026-11-11); the sign-in page then says so. Nothing to fix: sign in again. On the field forms (new customer, edit, close, reactivate, signed credit application) and the photo slots, the page says "You need to sign in again …": keep that page open, sign in in another tab, come back and tap Try again or Retry upload — the form and the photo are still there. An approver's typed reason, or an import correction, is kept only while that page stays open. A promote the limit stops takes the Steward to the sign-in page (the batch page cannot be shown signed out, so he does not see "Not signed in." on the button) and keeps every slice it loaded: sign in again, open the batch and Resume once the page offers it. How soon depends on where the promote stopped. Stopped between two of its parts — the usual case for the 8-hour limit, because a part already running when the 8 hours end still finishes on the server and only the next part is refused — Resume is offered about 20 seconds after that last part finished (the hand-over lease, `PROMOTE_HANDOFF_GRACE_MS` in `services/imports.ts`); until then the batch page says "Another promote is running — wait for it to finish." although it is his own stopped run (known behaviour, not changed), and then "Promote interrupted.", and Resume works. Stopped in the middle of a part (a part that never finished, for example because the server cut it off) — Resume is offered once that part's 90-second lease runs out, up to about a minute and a half after the part started (`PROMOTE_LEASE_MS`). Known behaviour, not changed, and rare: a request that leaves the device at the very moment the 8 hours end still carries the old sign-in, and the reply to it clears the sign-in cookie in that browser (Auth.js clears it whenever it refuses a session, and the middleware lets that through); if the person has by then signed in again in another tab, that reply signs out the new sign-in as well, and he signs in once more. |
 | First sign-in: "my password does not work" | Open `/users` on the **All** tab (the default **Active** tab hides disabled accounts) and find the account. Read **Status** first: **Disabled**, or an amber **Cannot sign in** badge (the username itself is refused by the demo-account block), means no password will work and a reset changes nothing — find out why it was disabled before anyone enables it, and take a **Cannot sign in** account to the owner, since it has to be renamed (since the code review of 2026-11-10 such a name can no longer be given to a new account, on `/users` or in the account import, so this applies only to older accounts). Then read **Last login**. **`never`**: nobody has signed in with it — check the username, then reset the password (who may: last row). **Anything else** (a date): someone has already signed in with this account and may have changed its password. The Steward resets it at once — a reset also ends that other session within five minutes — then opens `/audit`, sets **Action** = `LOGIN` and **Entity** = `User`, and reads the **When** column of the rows whose **Actor** is that person (newest first, 50 to a page; times are Oman time). `/audit` does not show where a sign-in came from: the IP is recorded with the row, but only the owner can read it, from the database. |
 | "Account temporarily locked due to repeated attempts. Try again in …s" | Five sign-in attempts on that username within about a minute. Wait the seconds shown, then type it carefully: one attempt is let through every 12 seconds. Trying again sooner is refused but does not make the wait longer (since the code review of 2026-11-10, finding 10). A password reset does not lift the lock; waiting does. If it stays locked although the person has stopped trying, someone else is trying that username — there is no control in the app that clears the lock, so tell the owner, and the Steward looks in `/audit` for failed sign-ins on that account. |
 | First sign-in: the password change says "Current password incorrect" on a retry, or the page says the new password may already be active | The change was probably saved but its answer was lost on a weak signal. Type the same current and new passwords again and press **Change password**: since the code review of 2026-11-10 (finding 22) a change that is already saved is answered as done. If it keeps failing, sign in with the NEW password. No reset is needed. Five wrong tries on this form wait about 12 seconds ("Too many attempts. Try again in …s"). "Your password could not be checked just now, so nothing was changed" means the guess limit could not be checked because the database did not answer (logged as `rate-limit.store.unavailable`): nothing was tried, so wait a minute and try again. |

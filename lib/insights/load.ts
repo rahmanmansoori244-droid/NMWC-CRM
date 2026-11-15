@@ -62,6 +62,7 @@ import { STATEMENT_TIMEOUT_MS, WAVE_DEADLINE_MS, withinDeadline } from './rollou
 import { singleRegionInView, type InsightScope } from './scope';
 import { branchInScopeSql, draftInScopeSql, requestInScopeSql } from './sql';
 import { viewerIsTest } from '../test-records';
+import { readCleanStartAt } from '../clean-start-record';
 import {
   shapeCreated,
   shapeHeat,
@@ -472,6 +473,28 @@ export async function loadInsights(scope: ActiveScope, period: InsightPeriod): P
     pipeline: section('requests', pipeline, shapePipeline),
     heat: section('heat', heat, (rows) => shapeHeat(rows, cellDeg)),
   };
+}
+
+/**
+ * Follow-up 1 (F2): the moment of the go-live clean start, from its own AuditLog
+ * record (lib/clean-start-record.ts), or null when there was none. Read beside
+ * the wave, under the same statement timeout and deadline; a read that fails is
+ * a failed section, and lib/insights/compare.ts then shows no comparison.
+ */
+export async function loadCleanStart(): Promise<Section<Date | null>> {
+  try {
+    const at = await withinDeadline(
+      prisma.$transaction(async (tx) => {
+        await tx.$executeRaw(SET_TIMEOUT);
+        return readCleanStartAt(tx);
+      }),
+      WAVE_DEADLINE_MS
+    );
+    return { ok: true, data: at };
+  } catch (err) {
+    logCardFailure('clean-start', err);
+    return { ok: false };
+  }
 }
 
 /**

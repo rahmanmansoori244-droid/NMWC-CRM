@@ -9,7 +9,7 @@
 import Link from 'next/link';
 import type { Route } from 'next';
 import { InsightCard } from '@/components/insights/InsightCard';
-import { KpiTile } from '@/components/insights/KpiTile';
+import { KpiTile, type Delta } from '@/components/insights/KpiTile';
 import { ColumnChart, type ColumnPoint } from '@/components/insights/ColumnChart';
 import { BarList, type BarRow } from '@/components/insights/BarList';
 import { SegmentBar } from '@/components/insights/SegmentBar';
@@ -29,6 +29,7 @@ import {
   type StateCounts,
 } from '@/lib/insights/shape';
 import { customersHref, type DashboardQuery } from '@/lib/insights/url';
+import { NO_EARLIER_DATA, NOT_COMPARED, type Comparison } from '@/lib/insights/compare';
 import type { Highlight } from '@/lib/insights/highlights';
 
 export type CardContext = {
@@ -40,6 +41,8 @@ export type CardContext = {
   periodPhrase: string;
   /** "vs the 30 days before" */
   against: string;
+  /** Whether the period before may be compared (lib/insights/compare.ts). */
+  comparison: Comparison;
   applied: DashboardQuery;
   /** The viewer may open /approvals (a Manager). */
   canOpenApprovals: boolean;
@@ -66,6 +69,17 @@ function routeHref(ctx: CardContext, routeId: string): Route {
 
 // ── The top row ──────────────────────────────────────────────────────────────
 
+/**
+ * A tile's line against the period before: the arrow and percentage, or — when
+ * the period before starts before the clean start, or that could not be read —
+ * a plain note and no arrow (lib/insights/compare.ts).
+ */
+function deltaFor(ctx: CardContext, now: number, before: number, goodWhenUp = true): Delta {
+  if (ctx.comparison.kind === 'no-earlier-data') return { pct: null, against: ctx.against, note: NO_EARLIER_DATA };
+  if (ctx.comparison.kind === 'unchecked') return { pct: null, against: ctx.against, note: NOT_COMPARED };
+  return { pct: changePct(now, before), against: ctx.against, goodWhenUp };
+}
+
 export function KpiRow({ data, ctx }: { data: Insights; ctx: CardContext }) {
   const s = data.state.ok ? data.state.data.total : null;
   const c = data.created.ok ? data.created.data : null;
@@ -84,14 +98,14 @@ export function KpiRow({ data, ctx }: { data: Insights; ctx: CardContext }) {
         label="New customers"
         failed={!c}
         value={fmt(c?.total ?? 0)}
-        delta={c ? { pct: changePct(c.total, c.prevTotal), against: ctx.against } : undefined}
+        delta={c ? deltaFor(ctx, c.total, c.prevTotal) : undefined}
         sub={c ? `${fmt(c.cash)} cash · ${fmt(c.credit)} credit` : undefined}
       />
       <KpiTile
         label="Customers updated"
         failed={!u}
         value={fmt(u?.customers ?? 0)}
-        delta={u ? { pct: changePct(u.customers, u.prevCustomers), against: ctx.against } : undefined}
+        delta={u ? deltaFor(ctx, u.customers, u.prevCustomers) : undefined}
         sub={u ? `${fmt(u.byRequest)} by salesmen's requests · ${fmt(u.directOnly)} by direct write only` : undefined}
       />
       <KpiTile
@@ -120,7 +134,7 @@ export function KpiRow({ data, ctx }: { data: Insights; ctx: CardContext }) {
         label="Branches closed"
         failed={!st}
         value={fmt(st?.closed ?? 0)}
-        delta={st ? { pct: changePct(st.closed, st.prevClosed), against: ctx.against, goodWhenUp: false } : undefined}
+        delta={st ? deltaFor(ctx, st.closed, st.prevClosed, false) : undefined}
         sub={st ? `${fmt(st.reactivated)} reactivated · ${fmt(st.closeWaiting + st.reactWaiting)} waiting` : undefined}
       />
       <KpiTile

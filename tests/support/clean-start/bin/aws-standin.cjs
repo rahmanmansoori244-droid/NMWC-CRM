@@ -43,6 +43,19 @@ const listAll = (dir, base = '') =>
     : [];
 
 const [svc, cmd] = argv;
+// FAKE_S3_MISSING_BUCKETS=<name,...>: those buckets do not exist (a wrong bucket name).
+// As S3 and R2 answer: a HEAD has no body, so it reads as a plain 404 "Not Found",
+// exactly as a missing key does; every other call names NoSuchBucket.
+{
+  const missing = (process.env.FAKE_S3_MISSING_BUCKETS || '').split(',').filter(Boolean);
+  const b = svc === 's3' ? (s3url(argv[2]) || s3url(argv[3]) || {}).bucket : opt('--bucket');
+  if (b && missing.includes(b)) {
+    log({ op: `${cmd}-no-bucket`, bucket: b });
+    if (cmd === 'head-object') notFound();
+    process.stderr.write(`An error occurred (NoSuchBucket) when calling the ${cmd} operation: The specified bucket does not exist\n`);
+    process.exit(svc === 's3' ? 1 : 254);
+  }
+}
 if (svc === 's3' && cmd === 'cp') {
   const src = argv[2];
   const dst = argv[3];
@@ -64,7 +77,7 @@ if (svc === 's3' && cmd === 'cp') {
     if (m) for (const kv of m.split(',')) { const [k, v] = kv.split('='); meta[k] = v; }
     fs.mkdirSync(path.dirname(metaPath(to.bucket, to.key)), { recursive: true });
     fs.writeFileSync(metaPath(to.bucket, to.key), JSON.stringify({ metadata: meta, contentType: opt('--content-type') || null }));
-    log({ op: 'put', bucket: to.bucket, key: to.key, metadata: meta });
+    log({ op: 'put', bucket: to.bucket, key: to.key, metadata: meta, contentType: opt('--content-type') || null, checksum: opt('--checksum-algorithm') || null });
     process.stdout.write(`upload: ${src} to ${dst}\n`);
   } else { process.stderr.write('aws stand-in: cp needs one s3:// side\n'); process.exit(255); }
   process.exit(0);
