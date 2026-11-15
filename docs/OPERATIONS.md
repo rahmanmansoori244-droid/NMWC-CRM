@@ -559,7 +559,7 @@ a key the test environment also uses is kept.
 |---|---|
 | `tables.json` | every table: EMPTY, PARTIAL (CodeSequence, CronRun) or KEEP |
 | `plan.sql`, `guards.sql`, `fingerprint.sql` | the read-only checks (SQLSTATE `CS001`-`CS012`) and the exports (photo-key list, seals, plan, plan id), bound together by one plan id |
-| `reset.sql`, `selfcheck.sql` | ONE transaction as the owner login in the §5e window: the checks again under SHARE locks, the plan id again (`CS013`), the `TRUNCATE`, two partial DELETEs, the AuditLog row, the baselines, the self-check (`CS101`-`CS113`), COMMIT |
+| `reset.sql`, `selfcheck.sql` | ONE transaction as the owner login in the §5e window, READ COMMITTED by its own `BEGIN` whatever the login's default (`CS021` refuses another level: each check must read the state under the locks): the checks again under SHARE locks, the plan id again (`CS013`), the `TRUNCATE`, two partial DELETEs, the AuditLog row, the baselines, the self-check (`CS101`-`CS113`), COMMIT |
 | `verify.sql` | after COMMIT, read-only; `CS301` means the reset row is not there, so nothing changed |
 | `facts.sql`, `counter.sql`, `photos-record.sql` | small read-only questions; the next customer number in a rolled-back transaction; the photo run's one AuditLog row |
 | `run.sh`, `target-guard.sh` | the targets (the shared host list `config/production-hosts.txt`; the typed `confirm_host` and phrase), the public-log rule, encryption, storage, the GitHub and Neon calls. Neither names a database client: every database command is written in the workflow file and writes to a file |
@@ -606,7 +606,10 @@ The photo run: `run_id`, `list_sha256`, `confirm_host`, `confirm_phrase`
   `error` (the rehearsal's copy has no grants, so this is the only place it is seen before
   the reset);
 - `plan.sql` in a read-only session: the table list, ownership, foreign keys, triggers,
-  migrations equal to the checkout's, only `CUSTOMER-YYYY` counters, no export or Temix
+  no failed migration (`CS006`: a row that neither finished nor was marked rolled back),
+  the applied migrations equal to the checkout's (`CS007`; a row marked rolled back by
+  `prisma migrate resolve --rolled-back`, §5, is history and is not counted as applied,
+  as in `restore-verify.ts`), only `CUSTOMER-YYYY` counters, no export or Temix
   file key, no photo under `seals/`, the actor (`CLEANSTART_ACTOR_USERNAME`) exactly one
   active real account, no clean start recorded yet; then the exports, bound to the plan id;
 - the old seal copies (read-only photo token): a copy that differs from its seal refuses;
@@ -704,8 +707,12 @@ job then waits for **Approve** on `production-reset`: that click is the yes. App
   first run compared with night 1 of `expected-watch.json` (`first integrity checks as
   expected: yes`; `seal-written: info` is the new chain's first seal);
 - i. `npm run smoke -- <APP_BASE_URL> --expect-commit <sha>` (`smoke ok: yes`);
-- j. the encrypted report under `cleanstart/<run>/report/`, then `run_id for the photo
-  step`, `list_sha256 for the photo step` and `reset started at (UTC)`.
+- j. `run_id for the photo step`, `list_sha256 for the photo step` and
+  `reset started at (UTC)`, printed first and only when the reset committed. A refused,
+  rolled-back or unsettled run prints one line in their place:
+  `values for the photo step printed (only after a reset that committed): no`.
+  Then the encrypted report under `cleanstart/<run>/report/`; a failed upload turns the
+  step red but can no longer hide the two values.
 
 The safety branch is deleted only when it is certain the reset did not commit (it never
 started: no marker on disk and no exit code; Postgres refused it; or verify read

@@ -399,6 +399,9 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
   ];
   const lines = (r: RunResult) => r.lines;
   const expectPublic = (r: RunResult) => expect(publicLogViolations(lines(r), forbidden())).toEqual([]);
+  /** The two values the owner logs for the photo step: printed only for a reset that committed. */
+  const PHOTO_VALUE = /^(run_id|list_sha256) for the photo step: /;
+  const NO_PHOTO_VALUES = 'values for the photo step printed (only after a reset that committed): no';
   const notRunHere = (r: RunResult) => [...new Set(r.steps.filter((s) => s.outcome === 'not run here').map((s) => s.step))].sort();
 
   // ── the modes ─────────────────────────────────────────────────────────
@@ -521,6 +524,9 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expect(neon().branches.map((b) => b.name)).toEqual(['main']);
     expect(sql(PROD_LOCAL, `SELECT count(*) FROM "AuditLog" WHERE id LIKE 'cleanstart-%'`)).toBe('0');
     expect(has('nmwc-photos', oldSealKeys[0]!)).toBe(true);
+    // No reset, so no values for the photo step: a refused run must not hand the owner a pair to log.
+    expect(r.lines).toContain(NO_PHOTO_VALUES);
+    expect(r.lines.some((l) => PHOTO_VALUE.test(l))).toBe(false);
     expectPublic(r);
   });
 
@@ -606,6 +612,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
   });
 
   let applyB: RunResult & { runId: string };
+  let finishA: RunResult & { runId: string };
   it('finish, outcome A: the connection was lost AFTER the COMMIT — finish settles it, verifies and completes', async () => {
     await db.$disconnect();
     resetProd();
@@ -625,13 +632,21 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
       expect(fin.lines, l).toContain(l);
     expect(has('nmwc-photos', oldSealKeys[0]!)).toBe(false);
     expect(neon().branches.map((b) => b.name)).toContain(`pre-clean-start-${omanDateISO(new Date())}-${applyB.runId}`);
+    // The apply did not know whether it committed: it prints no values for the photo step.
+    // Finish settled it, and prints them, with the APPLY run's id.
+    expect(applyB.lines).toContain(NO_PHOTO_VALUES);
+    expect(applyB.lines.some((l) => PHOTO_VALUE.test(l))).toBe(false);
+    expect(fin.lines).toContain(`run_id for the photo step: ${applyB.runId}`);
+    expect(fin.lines.some((l) => /^list_sha256 for the photo step: [0-9a-f]{64}$/.test(l))).toBe(true);
+    finishA = fin;
     expectPublic(applyB);
     expectPublic(fin);
   });
 
   it('photos: refused before 7 days; then the deletion — shared and odd keys kept, safety branch first, one audit row', async () => {
-    const listSum = applyB.lines.find((l) => l.startsWith('list_sha256 for the photo step: '));
-    const sum = listSum ? listSum.split(': ')[1]! : sha(photoKeys.slice().sort().join('\n') + '\n');
+    // The owner copies the two values from the run that settled the reset (here: finish).
+    const sum = finishA.lines.find((l) => l.startsWith('list_sha256 for the photo step: '))!.split(': ')[1]!;
+    expect(sum).toBe(sha(photoKeys.slice().sort().join('\n') + '\n'));
     db = new PrismaClient({ datasourceUrl: assertNotProduction(PROD_LOCAL, []) });
     const inputs = { run_id: applyB.runId, list_sha256: sum, confirm_host: '127.0.0.1', confirm_phrase: 'DELETE TEST PHOTOS' };
     const early = run('clean-start-photos.yml', inputs);
@@ -685,6 +700,11 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expect(sql(PROD_LOCAL, `SELECT count(*) FROM "AuditLog" WHERE id LIKE 'cleanstart-%'`)).toBe('0');
     expect(Number(sql(PROD_LOCAL, `SELECT count(*) FROM "Customer"`))).toBeGreaterThan(0);
     for (const k of [oldSealKeys[0]!, FOREIGN]) expect(has('nmwc-photos', k)).toBe(true);
+    // Neither run has values for the photo step: the reset never committed.
+    for (const x of [applyC, fin]) {
+      expect(x.lines).toContain(NO_PHOTO_VALUES);
+      expect(x.lines.some((l) => PHOTO_VALUE.test(l))).toBe(false);
+    }
     expectPublic(applyC);
     expectPublic(fin);
   });

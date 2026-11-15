@@ -355,6 +355,24 @@ describe('targets', () => {
     }
   });
 
+  it('the report step prints the photo-step values BEFORE the upload that can fail, and only for a committed reset (apply and finish)', () => {
+    // `defaults.run.shell: bash` runs each block with -e: when encrypt-upload refused, the
+    // lines after it never ran, and the two values the owner must copy were not in the summary.
+    for (const id of ['apply', 'finish']) {
+      const j = MAIN.jobs[id]!.steps.find((s) => s.name === 'j. The encrypted report')!;
+      expect(j.if, id).toBe('always()');
+      const owner = j.run!.indexOf('run.sh for-the-owner');
+      expect(owner, id).toBeGreaterThan(-1);
+      expect(owner, id).toBeLessThan(j.run!.indexOf('run.sh encrypt-upload'));
+      expect(owner, id).toBeLessThan(j.run!.indexOf('FILES=()'));
+    }
+    expect((MAIN as unknown as { defaults: unknown }).defaults).toEqual({ run: { shell: 'bash' } });
+    // A refused or rolled-back reset has no values to copy (run.sh; tests/unit/clean-start-run.test.ts).
+    expect(read('scripts/ops/clean-start/run.sh')).toMatch(
+      /\ncmd_for_the_owner\(\) \{\n(?: {2}[^\n]*\n){1,3} {2}if \[ "\$committed" != yes \]; then\n {4}say "[^"]+: no"\n {4}return 0\n {2}fi\n/
+    );
+  });
+
   it('the photo record: complete only on a green delete step, its own row and report folder per run attempt', () => {
     const steps = PHOTOS.jobs.photos!.steps;
     const rec = steps.find((s) => /Record it in production's audit log/.test(s.name ?? ''))!;

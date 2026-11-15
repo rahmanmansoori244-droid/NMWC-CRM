@@ -56,9 +56,13 @@ yes_no() {
   if [ "$2" -eq 0 ]; then say "$1: yes"; else say "$1: no"; fi
 }
 step() { say "STEP $*"; }
-# A refusal: one fixed sentence (never a value), then exit 1.
+# A refusal: one fixed sentence (never a value), then exit 1. On stderr (the
+# runner reads workflow commands from both streams): several helpers are called
+# as x="$(helper)", and a refusal written to stdout there would be captured into
+# the variable and never reach the log; the step then ended with nothing but
+# "exit code 1".
 refuse() {
-  echo "::error::clean start refused: $1"
+  echo "::error::clean start refused: $1" >&2
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then printf -- '- **refused: %s**\n' "$1" >> "$GITHUB_STEP_SUMMARY"; fi
   exit 1
 }
@@ -436,12 +440,29 @@ cmd_status_lines() {
 cmd_check_run_id() { typed_run_id "${1:-}" > /dev/null; say "run id given: yes"; }
 
 # safety-name: the Neon safety branch's name, pre-clean-start-<Oman date>-<run>.
-cmd_safety_name() { printf 'pre-clean-start-%s-%s' "$(oman_date)" "$(run_id)"; }
+# Both parts are read BEFORE anything is printed: a refusal inside printf's own
+# arguments would not stop the script, and the name would carry the gap.
+cmd_safety_name() {
+  local d r
+  d="$(oman_date)"
+  r="$(run_id)"
+  printf 'pre-clean-start-%s-%s' "$d" "$r"
+}
 
 # for-the-owner <plan-id.txt> [run id]: the two values the photo step asks for
 # (owner runbook, day 7): the run id and the photo-key list's sha256.
+# ONLY for a reset that committed (settle said yes: the job environment, or the
+# file it wrote). A refused or rolled-back apply has no reset row: the photo
+# step refuses its run id, and its two values in the owner's log would only be
+# mistaken for the real ones a week later. An "unknown" prints none either:
+# mode finish settles it and prints them.
 cmd_for_the_owner() {
-  local sum r="${2:-${GITHUB_RUN_ID:-}}"
+  local sum r="${2:-${GITHUB_RUN_ID:-}}" committed
+  committed="${CS_COMMITTED:-$(tr -d '\r[:space:]' 2>/dev/null < "$CS_DIR/committed" || true)}"
+  if [ "$committed" != yes ]; then
+    say "values for the photo step printed (only after a reset that committed): no"
+    return 0
+  fi
   sum="$(sed -n 's/^photo_keys_sha256=//p' "$1" | tr -d '\r')"
   [[ $sum =~ ^[0-9a-f]{64}$ ]] || return 0
   [[ $r =~ ^[0-9]{1,20}$ ]] || return 0
@@ -1000,7 +1021,16 @@ cmd_neon_cleanup() {
   while read -r id name; do names+=("$name"); done < "$CS_DIR/neon-branches"
   for ((i = ${#names[@]} - 1; i >= 0; i--)); do order+=("${names[i]}"); done
   names=("${order[@]}")
-  def="$(neon_default)"
+  # The default branch's id, so that it is never deleted. If it cannot be read,
+  # nothing is deleted, and the run must still SAY that the branches are there:
+  # neon_default refuses inside $(...), which ends only that subshell, and
+  # without this the step ended before the lines the owner's guide points to.
+  def="$(neon_default)" || def=''
+  if [ -z "$def" ]; then
+    say "temporary Neon branches deleted: no"
+    echo "::error::a temporary Neon branch is left; delete it by hand in the Neon console (Branches): it holds a full copy of production" >&2
+    exit 1
+  fi
   for pass in 1 2 3; do
     left=0
     for name in "${names[@]}"; do
@@ -1022,7 +1052,7 @@ cmd_neon_cleanup() {
   rm -f "$f" "$CS_DIR/neon-del.json"
   yes_no "temporary Neon branches deleted" "$left"
   if [ "$left" -ne 0 ]; then
-    echo "::error::a temporary Neon branch is left; delete it by hand in the Neon console (Branches): it holds a full copy of production"
+    echo "::error::a temporary Neon branch is left; delete it by hand in the Neon console (Branches): it holds a full copy of production" >&2
     exit 1
   fi
   rm -f "$CS_DIR/neon-branches"

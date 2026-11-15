@@ -560,6 +560,7 @@ These lines report a fact. They can say `no` (or `yes`) while the job is green:
 | `green Neon rehearsal of these scripts within 14 days` (dry run) | `no` before Step 3 is normal; apply needs `yes` |
 | `the first watch after the reset already ran` (finish) | recorded; finish runs it when `no` |
 | `new seal chain id recorded` | `no` only if the first check did not run; tell Claude |
+| `values for the photo step printed (only after a reset that committed)` | `no` on a run whose reset did not happen, or is not yet known to have happened. Such a run has no `run_id for the photo step` and no `list_sha256 for the photo step`: never log values from another run in their place. The green apply prints them; so does a green finish |
 | `other objects under seals/ left where they are` (seal-restore) | recorded only |
 
 Every other `<something>: no` line, and every bold **refused:** line, means stop and send

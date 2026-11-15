@@ -417,6 +417,82 @@ describe('run.sh started / safety-cleanup: the safety branch survives a cancelle
   });
 });
 
+describe('run.sh: a refusal always reaches the log; the photo-step values are only a committed reset\'s (review 2026-11-15)', () => {
+  const neon = {
+    NEON_API_KEY: 'neon-key-zq',
+    NEON_PROJECT_ID: 'proj-zq',
+    FAKE_NEON_API_KEY: 'neon-key-zq',
+    FAKE_NEON_PROJECT_ID: 'proj-zq',
+  };
+  const names = () => (JSON.parse(readFileSync(join(sb.state, 'neon.json'), 'utf8')) as { branches: Array<{ name: string }> }).branches.map((b) => b.name);
+
+  it('refuse writes its ::error:: line to stderr (the runner reads both streams), so a refusal inside $(...) is not captured', () => {
+    const out = sh('( bash scripts/ops/clean-start/run.sh window 2>/dev/null )', { FAKE_UTC_HHMM: '0300' });
+    expect([out.code, out.lines]).toEqual([1, ['inside the evening window (15:30-23:30 UTC): no']]);
+    const err = sh('( bash scripts/ops/clean-start/run.sh window 2>&1 >/dev/null )', { FAKE_UTC_HHMM: '0300' });
+    expect([err.code, err.lines]).toEqual([1, ['::error::clean start refused: apply runs only between 15:30 and 23:30 UTC']]);
+    // check-run-id sent the helper's output to /dev/null, and its refusal with it.
+    const id = run('check-run-id not-a-number');
+    expect([id.code, id.lines]).toEqual([1, ['::error::clean start refused: run_id must be the number of the apply run']]);
+  });
+
+  it('neon-cleanup when the Neon API cannot be read: the log names the refusal AND says a branch is left (it ended with nothing but exit 1)', () => {
+    neonState({ seq: 0, branches: [{ id: 'br-main-1', name: 'main', default: true, host: PROD_HOST }, { id: 'br-r-7', name: 'cleanstart-rehearsal-7' }] });
+    writeFileSync(join(sb.csDir, 'neon-branches'), '- cleanstart-rehearsal-7\n');
+    const summary = join(sb.root, 'summary-nc.md');
+    writeFileSync(summary, '');
+    // A key Neon does not accept (just rotated); a blip of the API answers "not 200" the same way.
+    const r = run('neon-cleanup', { ...neon, NEON_API_KEY: 'neon-key-rotated-zq', GITHUB_STEP_SUMMARY: summary });
+    expect(r.code).toBe(1);
+    expect(r.lines).toEqual([
+      '::error::clean start refused: the Neon branches could not be read',
+      'temporary Neon branches deleted: no',
+      '::error::a temporary Neon branch is left; delete it by hand in the Neon console (Branches): it holds a full copy of production',
+    ]);
+    expect(readFileSync(summary, 'utf8')).toContain('- temporary Neon branches deleted: no');
+    // Nothing was deleted, and the list is kept: with the API back the same cleanup deletes it.
+    expect(names()).toContain('cleanstart-rehearsal-7');
+    expect(existsSync(join(sb.csDir, 'neon-branches'))).toBe(true);
+    expect(run('neon-cleanup', neon).lines).toContain('temporary Neon branches deleted: yes');
+    expect(names()).toEqual(['main']);
+  });
+
+  it('safety-name: a run id that is not a number refuses, and no name with a gap is printed', () => {
+    // (sb.run, not sh: the name is captured by the workflow, never printed to the log)
+    const ok = sb.run('bash scripts/ops/clean-start/run.sh safety-name', { GITHUB_RUN_ID: '424242' });
+    expect(ok.code).toBe(0);
+    expect(ok.out).toMatch(/^pre-clean-start-\d{4}-\d{2}-\d{2}-424242$/);
+    const bad = run('safety-name', { GITHUB_RUN_ID: 'abc' });
+    expect(bad.code).toBe(1);
+    expect(bad.lines).toEqual(['::error::clean start refused: the run id is not a GitHub run id']);
+  });
+
+  it('for-the-owner prints the two photo-step values only for a reset that committed', () => {
+    writeFileSync(join(sb.csDir, 'pid.txt'), `plan_id=${'a'.repeat(64)}\nphoto_keys_sha256=${'b'.repeat(64)}\n`);
+    rmSync(join(sb.csDir, 'committed'), { force: true });
+    const NONE = 'values for the photo step printed (only after a reset that committed): no';
+    const owner = (env: Record<string, string>) =>
+      run('for-the-owner "$CS_DIR/pid.txt"', { GITHUB_RUN_ID: RUN, CS_RESET_STARTED: '2026-11-18T16:12:05Z', ...env });
+    // refused and rolled back; the answer lost; settle never ran
+    for (const env of [{ CS_COMMITTED: 'no', CS_RESET_RC: '3' }, { CS_COMMITTED: 'unknown' }, { CS_COMMITTED: '' }]) {
+      const r = owner(env);
+      expect([r.code, r.lines], JSON.stringify(env)).toEqual([0, [NONE]]);
+    }
+    expect(owner({ CS_COMMITTED: 'yes' }).lines).toEqual([
+      `run_id for the photo step: ${RUN}`,
+      `list_sha256 for the photo step: ${'b'.repeat(64)}`,
+      'reset started at (UTC): 2026-11-18T16:12:05Z',
+      'reset started at (Oman time): 2026-11-18 20:12',
+    ]);
+    // settle's file, when the job environment was never applied
+    writeFileSync(join(sb.csDir, 'committed'), 'yes\n');
+    expect(owner({ CS_COMMITTED: '' }).lines[0]).toBe(`run_id for the photo step: ${RUN}`);
+    writeFileSync(join(sb.csDir, 'committed'), 'no\n');
+    expect(owner({ CS_COMMITTED: '' }).lines).toEqual([NONE]);
+    rmSync(join(sb.csDir, 'committed'), { force: true });
+  });
+});
+
 describe('run.sh chain-id / chain-id-fetch / finish-may: production\'s new chain is named, never inferred', () => {
   let identity = '';
   let recipient = '';

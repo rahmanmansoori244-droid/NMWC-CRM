@@ -844,6 +844,12 @@ jobs:
           set -uo pipefail
           # Nothing to report when the work folder was never set (the first step failed).
           if [ -z "${CS_DIR:-}" ] || [ ! -d "$CS_DIR" ]; then exit 0; fi
+          # FIRST the two values the owner copies for the photo step (printed only for a
+          # reset that committed). This shell stops at the first failing command, so an
+          # upload that fails below must not come before them: the step still ends red.
+          if [ -f "$CS_DIR/aplan/plan-id.txt" ]; then
+            bash scripts/ops/clean-start/run.sh for-the-owner "$CS_DIR/aplan/plan-id.txt"
+          fi
           if [ "${CS_COMMITTED:-}" = yes ]; then
             PGOPTIONS='-c default_transaction_read_only=on' psql "$DIRECT_URL" -X -q -At -v ON_ERROR_STOP=1 -f scripts/ops/clean-start/facts.sql \
               -v fact=reset-report -v run_id="$GITHUB_RUN_ID" > "$CS_DIR/reset-report.json" 2>&1 || true
@@ -854,9 +860,6 @@ jobs:
           done
           if [ "${#FILES[@]}" -gt 0 ]; then
             bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$GITHUB_RUN_ID/report" "${FILES[@]}"
-          fi
-          if [ -f "$CS_DIR/aplan/plan-id.txt" ]; then
-            bash scripts/ops/clean-start/run.sh for-the-owner "$CS_DIR/aplan/plan-id.txt"
           fi
 
       - name: Safety branch kept only when the reset committed (or may have)
@@ -1035,15 +1038,17 @@ jobs:
           set -uo pipefail
           # Nothing to report when the work folder was never set (the first step failed).
           if [ -z "${CS_DIR:-}" ] || [ ! -d "$CS_DIR" ]; then exit 0; fi
+          # FIRST the two values for the photo step (only when the settle above said the
+          # reset committed), so that an upload failing below cannot hide them.
+          if [ -f "$CS_DIR/exports/plan-id.txt" ]; then
+            bash scripts/ops/clean-start/run.sh for-the-owner "$CS_DIR/exports/plan-id.txt" "$TARGET_RUN"
+          fi
           FILES=()
           for f in verify.out watch-results.tsv compare.out smoke.out seal-archive.report; do
             if [ -f "$CS_DIR/$f" ]; then FILES+=("$CS_DIR/$f"); fi
           done
           if [ "${#FILES[@]}" -gt 0 ] && [[ ${TARGET_RUN:-} =~ ^[0-9]{1,20}$ ]]; then
             bash scripts/ops/clean-start/run.sh encrypt-upload "cleanstart/$TARGET_RUN/finish" "${FILES[@]}"
-          fi
-          if [ -f "$CS_DIR/exports/plan-id.txt" ]; then
-            bash scripts/ops/clean-start/run.sh for-the-owner "$CS_DIR/exports/plan-id.txt" "$TARGET_RUN"
           fi
 
       - name: Remove the plaintext
