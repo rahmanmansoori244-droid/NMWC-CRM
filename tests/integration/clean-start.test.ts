@@ -31,7 +31,7 @@
  *     npx vitest run tests/integration/clean-start.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -149,6 +149,16 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     const r = spawnSync('bash', ['-c', cmd], { env: { ...process.env, ...env }, encoding: 'utf8' });
     return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
   };
+  /** The same, without blocking this process: for a command that must wait on another session here. */
+  const runAsync = (cmd: string, env: Record<string, string>): Promise<Run> =>
+    new Promise((resolveRun, reject) => {
+      const p = spawn('bash', ['-c', cmd], { env: { ...process.env, ...env } });
+      let out = '';
+      p.stdout.on('data', (d: Buffer) => (out += d.toString('utf8')));
+      p.stderr.on('data', (d: Buffer) => (out += d.toString('utf8')));
+      p.on('error', reject);
+      p.on('close', (code) => resolveRun({ code: code ?? -1, out }));
+    });
   /** reset.sql exactly as the workflow runs it: the target guard, then psql with its variables. */
   const reset = (
     vars: Record<string, string>,
@@ -983,6 +993,52 @@ describe.skipIf(!ENABLED)('go-live clean start on Postgres', () => {
     expect(ch, ch.out).toMatchObject({ code: 0 });
     const r = reset(vars(), url);
     expect([r.code, /ERROR:\s+CS013/.test(r.out)], r.out).toEqual([3, true]);
+    await dropCopy(url);
+  });
+
+  it('a write that commits while the reset WAITS for its locks is refused (CS013), whatever isolation level the login defaults to', async () => {
+    // Review 2026-11-15: reset.sql began with a bare BEGIN. Under a role or database
+    // default of REPEATABLE READ its snapshot is taken by its first SELECT, before the
+    // LOCK; a writer the LOCK waited for was then invisible to the plan check, and the
+    // TRUNCATE removed a row that is in neither the plan nor the backup. Here: this
+    // session's default is REPEATABLE READ, and a customer is committed during the wait.
+    const url = await copyOf('iso');
+    const writer = new PrismaClient({ datasourceUrl: url });
+    let inserted!: () => void;
+    const hasInserted = new Promise<void>((ok) => (inserted = ok));
+    try {
+      const held = writer.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(
+            `INSERT INTO "Customer" SELECT (jsonb_populate_record(NULL::"Customer", to_jsonb(c) || jsonb_build_object('id', 'zz-cs-late', 'nmwcCode', 'NMWC-1999-999998', 'temixCode', NULL, 'importRowId', NULL, 'crPhotoId', NULL))).* FROM "Customer" c WHERE c."isTest" = false ORDER BY c."id" LIMIT 1`
+          );
+          inserted();
+          // Holds its row lock while the reset reads its first rows and asks for its locks.
+          await new Promise((r) => setTimeout(r, 3000));
+        },
+        { timeout: 30_000, maxWait: 10_000 }
+      );
+      await hasInserted;
+      const v = Object.entries(vars())
+        .map(([k, x]) => `-v ${k}='${x}'`)
+        .join(' ');
+      const r = await runAsync(
+        `bash ${DIR}/target-guard.sh rehearse && PGOPTIONS='-c default_transaction_isolation=repeatable\\ read' psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 -f ${DIR}/reset.sql ${v}`,
+        { DIRECT_URL: url }
+      );
+      await held;
+      expect(r.code, r.out).toBe(3);
+      expect(r.out).toMatch(/ERROR:\s+CS013/);
+      expect(r.out).not.toMatch(/reset committed/);
+    } finally {
+      await writer.$disconnect();
+    }
+    // Nothing was removed: the late customer and everything else is still there, no reset row.
+    const left = run(
+      `psql "$DIRECT_URL" -X -q -At -c "SELECT (SELECT count(*) FROM \\"Customer\\" WHERE id = 'zz-cs-late') || ' ' || (SELECT count(*) FROM \\"AuditLog\\" WHERE id LIKE 'cleanstart-%') || ' ' || (SELECT count(*) > 1 FROM \\"Customer\\")"`,
+      { DIRECT_URL: url }
+    ).out.trim();
+    expect(left).toBe('1 0 true');
     await dropCopy(url);
   });
 

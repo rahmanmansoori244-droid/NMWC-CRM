@@ -314,7 +314,10 @@ function resetRules(files: Files): string[] {
   const order: Array<[string, RegExp]> = [
     ['ON_ERROR_STOP', /^\\set ON_ERROR_STOP on$/],
     ['VERBOSITY sqlstate', /^\\set VERBOSITY sqlstate$/],
-    ['BEGIN', /^BEGIN$/],
+    // READ COMMITTED by its own BEGIN, never by the role's or the database's default: at
+    // REPEATABLE READ the snapshot is taken before the LOCK, and the checks "under the
+    // locks" would read the state from before a writer the LOCK waited for (review 2026-11-15).
+    ['BEGIN', /^BEGIN ISOLATION LEVEL READ COMMITTED$/],
     ['the window', /^SET LOCAL nmwc\.audit_maintenance = 'on'$/],
     [
       'the change context',
@@ -354,6 +357,16 @@ function resetRules(files: Files): string[] {
   }
   if (all.some((s) => s.kind === 'sql' && /^SET (?!LOCAL )/i.test(s.text)))
     p.push('a SET that outlives the transaction');
+  // The isolation level: named once, by BEGIN; checked by CS021 before the LOCK; never set again.
+  const cs021 = sql.find((s) => /ERRCODE = 'CS021'/.test(s)) ?? '';
+  if (!/current_setting\('transaction_isolation'\) <> 'read committed'/.test(cs021))
+    p.push('CS021 does not refuse a transaction that is not read committed');
+  if (
+    sql.filter((s) => /\bISOLATION\s+LEVEL\b/i.test(code(s))).length !== 1 ||
+    sql.some((s) => /\b(SET\s+TRANSACTION|SESSION\s+CHARACTERISTICS)\b/i.test(code(s))) ||
+    sql.some((s) => /transaction_isolation\b/.test(code(s)))
+  )
+    p.push('the isolation level is set somewhere other than the one BEGIN');
 
   // The SHARE locks: every EMPTY, PARTIAL and KEEP table but CronHeartbeat.
   const lock = all.find((s) => /^LOCK TABLE /.test(s.text))?.text ?? '';
@@ -664,6 +677,26 @@ describe('clean start: the SQL rules fail on a wrong file', () => {
       'ON_ERROR_STOP off',
       withReset((s) => s.replace('\\set ON_ERROR_STOP on', '\\set ON_ERROR_STOP off')),
       /missing: ON_ERROR_STOP/,
+    ],
+    [
+      'a bare BEGIN (the session default decides the isolation level)',
+      withReset((s) => s.replace('BEGIN ISOLATION LEVEL READ COMMITTED;', 'BEGIN;')),
+      /missing: BEGIN/,
+    ],
+    [
+      'another isolation level',
+      withReset((s) => s.replace('BEGIN ISOLATION LEVEL READ COMMITTED;', 'BEGIN ISOLATION LEVEL REPEATABLE READ;')),
+      /missing: BEGIN/,
+    ],
+    [
+      'the isolation level changed after BEGIN',
+      withReset((s) => s.replace("SET LOCAL TimeZone = 'UTC';", "SET LOCAL TimeZone = 'UTC';\nSET TRANSACTION ISOLATION LEVEL SERIALIZABLE;")),
+      /the isolation level is set somewhere other than the one BEGIN/,
+    ],
+    [
+      'CS021 without the isolation check',
+      withReset((s) => s.replace("\n     OR current_setting('transaction_isolation') <> 'read committed' THEN", ' THEN')),
+      /CS021 does not refuse a transaction that is not read committed/,
     ],
     [
       'a DO block that writes',
