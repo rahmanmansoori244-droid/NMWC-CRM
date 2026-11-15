@@ -11,12 +11,15 @@
  *    be used and would only mislead.
  *  - The CRM route must exist. A switched-off route is accepted (the owner's
  *    master may say so); the Check then holds its moves as "switched off".
+ *  - A spreadsheet error ('#ERROR:...' or a bare word such as #N/A,
+ *    isCellError) is refused: it is not a route code.
  *  - A code with a live entry is refused: retire that entry first.
  *  - A reason is required (3 to 300 characters): where the entry comes from.
  *
  * PURE: no database.
  */
 import { normalizeTemixCode } from './temix-code';
+import { isCellError } from './temix-daily-file';
 
 export const ROUTE_MAP_CODE_MAX = 40;
 export const ROUTE_MAP_REASON_MIN = 3;
@@ -39,6 +42,7 @@ export function routeMapEntryRefusal(args: {
   const { code, routeId, routes, hasLiveEntry } = args;
   if (!code) return { code: 'Type the Temix route code.' };
   if (code !== normalizeTemixCode(code)) return { code: 'The code is not normalised.' };
+  if (isCellError(code)) return { code: `${code} is a spreadsheet error, not a Temix route code.` };
   if (code.length > ROUTE_MAP_CODE_MAX) return { code: `A route code here is at most ${ROUTE_MAP_CODE_MAX} characters.` };
   const exact = routes.find((r) => normalizeTemixCode(r.code) === code);
   if (exact) return { code: `${code} is already a CRM route's code: it is matched exactly, and needs no entry.` };

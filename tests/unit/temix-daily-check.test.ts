@@ -190,6 +190,21 @@ describe('cases beside the synthetic file', () => {
     expect(plan.counts.routeHolds).toEqual({ ROUTE_NOT_MATCHED: 1 });
     expect(plan.unmatchedRoutes).toEqual([{ code: 'C10MA', rows: 2, shopFound: 1 }]);
   });
+
+  it('a spreadsheet error in a code cell is not a code: no unknown customer, no route code waiting', () => {
+    const plan = only([
+      row('r2', { custCodeKey: '#ERROR:#N/A', notes: ['CELL_ERROR'] }),
+      row('r3', { custCodeKey: '#N/A', notes: ['CELL_ERROR'] }),
+      row('r4', { branchCodeWritten: '01', route: '#ERROR:#N/A', notes: ['CELL_ERROR'] }),
+      row('r5', { custCodeKey: '#ERROR:#N/A', route: '#REF!', notes: ['CELL_ERROR'] }),
+    ]);
+    for (const p of plan.rows) expect(p, p.rowId).toMatchObject({ verdict: 'HELD', holds: ['CELL_ERROR'], move: null });
+    // Only the row whose customer code is real names its customer.
+    expect(plan.rows.map((p) => p.customerId)).toEqual([null, null, 'cQ', null]);
+    expect(plan.counts.unknownCustomers).toEqual({ codes: 0, rows: 0 });
+    expect(plan.counts.holds).toEqual({ CELL_ERROR: 4 });
+    expect(plan.unmatchedRoutes).toEqual([]);
+  });
 });
 
 describe('route codes: C10 beside C10MA', () => {
@@ -239,6 +254,16 @@ describe('route codes: C10 beside C10MA', () => {
       { code: 'C10MA', rows: 3 },
     ]);
     expect(unmatchedRouteCodes(counts, ROUTES, [{ id: '1', temixRouteCode: 'C10MA', routeId: 'rt-c10' }])).toEqual([{ code: 'X1', rows: 5 }]);
+  });
+
+  it('the route-map page does not offer a spreadsheet error as a route code', () => {
+    const counts = [
+      { code: '#ERROR:#N/A', rows: 1 },
+      { code: '#N/A', rows: 2 },
+      { code: '#ref!', rows: 1 },
+      { code: 'X1', rows: 5 },
+    ];
+    expect(unmatchedRouteCodes(counts, ROUTES, [])).toEqual([{ code: 'X1', rows: 5 }]);
   });
 });
 
@@ -301,6 +326,8 @@ describe('the route-map form', () => {
     expect(routeMapEntryRefusal({ code: 'C10MA', routeId: 'rt-nope', routes, hasLiveEntry: false })).toHaveProperty('routeId');
     expect(routeMapEntryRefusal({ code: 'C10MA', routeId: 'rt-c10', routes, hasLiveEntry: true })!.code).toMatch(/Retire it first/);
     expect(routeMapEntryRefusal({ code: 'X'.repeat(41), routeId: 'rt-c10', routes, hasLiveEntry: false })).toHaveProperty('code');
+    for (const code of ['#ERROR:#N/A', '#N/A', '#REF!'])
+      expect(routeMapEntryRefusal({ code, routeId: 'rt-c10', routes, hasLiveEntry: false })!.code, code).toMatch(/spreadsheet error/);
     expect(routeMapReasonRefusal('  ')).toMatch(/Give a reason/);
     expect(routeMapReasonRefusal('x'.repeat(301))).toMatch(/300/);
   });

@@ -69,7 +69,7 @@
  */
 import { rowShopCode, shopLookalike } from './import-shop-code';
 import { normalizeTemixCode } from './temix-code';
-import { sortedNotes, type StagedDailyRow } from './temix-daily-file';
+import { isCellError, sortedNotes, type StagedDailyRow } from './temix-daily-file';
 
 // ── Inputs ────────────────────────────────────────────────────────────────
 
@@ -367,7 +367,9 @@ export function checkDailyFile(input: CheckInput): CheckPlan {
     let matchedBy: RowPlan['matchedBy'] = null;
     let branch: CrmBranch | null = null;
 
-    if (row.custCodeKey) {
+    // A spreadsheet error in the code cell is not a code: the row is held as
+    // CELL_ERROR, and the error is never looked up or counted as a customer code.
+    if (row.custCodeKey && !isCellError(row.custCodeKey)) {
       const m = matchCustomer(row.custCodeKey);
       customerId = m.customerId;
       matchedBy = m.matchedBy;
@@ -515,7 +517,7 @@ export function checkDailyFile(input: CheckInput): CheckPlan {
 
   const unmatched = new Map<string, { rows: number; shopFound: number }>();
   for (const p of plans)
-    if (p.route.kind === 'NOT_MATCHED') {
+    if (p.route.kind === 'NOT_MATCHED' && !isCellError(p.route.code)) {
       const u = unmatched.get(p.route.code) ?? { rows: 0, shopFound: 0 };
       u.rows++;
       if (p.routeHold === 'ROUTE_NOT_MATCHED') u.shopFound++;
@@ -605,7 +607,8 @@ export function pilotGate(waiting: readonly WaitingRequest[]): { stopped: boolea
  * Route codes of staged rows that are not a CRM route and have no live
  * route-map entry, with their row counts (the route-map page). A code two CRM
  * routes share once normalised is not listed: a map entry would not settle it,
- * because an exact code is looked at before the map.
+ * because an exact code is looked at before the map. A spreadsheet error
+ * (isCellError) is not a route code and is not listed: its row is held.
  */
 export function unmatchedRouteCodes(
   counts: ReadonlyArray<{ code: string | null; rows: number }>,
@@ -616,7 +619,7 @@ export function unmatchedRouteCodes(
   const out = new Map<string, number>();
   for (const c of counts) {
     const r = resolve(c.code);
-    if (r.kind === 'NOT_MATCHED') out.set(r.code, (out.get(r.code) ?? 0) + c.rows);
+    if (r.kind === 'NOT_MATCHED' && !isCellError(r.code)) out.set(r.code, (out.get(r.code) ?? 0) + c.rows);
   }
   return [...out].map(([code, rows]) => ({ code, rows })).sort((a, b) => b.rows - a.rows || a.code.localeCompare(b.code));
 }
