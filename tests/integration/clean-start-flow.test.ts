@@ -41,7 +41,10 @@
  * engine's) stays real, so the pin moves the hour, never the Oman day: every
  * run checks that before and after. An outer FAKE_UTC_OFFSET with the same
  * preload (NODE_OPTIONS=--import=<that file's URL>) is added to the test's own
- * offset: that is how other wall-clock hours are simulated.
+ * offset: that is how other wall-clock hours are simulated. Put the outer
+ * FAKE_UTC_OFFSET and NODE_OPTIONS on that one command only; do not export them
+ * in the shell, or other suites that use the date stand-in (for example
+ * tests/unit/clean-start-run.test.ts) see a shifted bash clock.
  *
  *   RUN_CLEAN_START_FLOW=1 CS_FLOW_ADMIN_URL=postgresql://postgres@localhost:<port>/postgres \
  *     CS_FLOW_PG_BIN=<folder with psql and pg_dump> npx vitest run tests/integration/clean-start-flow.test.ts
@@ -113,7 +116,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
   /** The pinned clock as the workflow's bash and Node see it, at offset offsetS. */
   const fake = (offsetS = OFFSET_S) => new Date(Date.now() + offsetS * 1000);
   /** The morning sub-flow's offset: its clock starts at 06:00 UTC (10:00 Oman) of D. */
-  const morningOffset = () => Math.round((dayUtc(D, 6).getTime() - Date.now()) / 1000);
+  const morningOffset = () => Math.ceil((dayUtc(D, 6).getTime() - Date.now()) / 1000);
   let dumpStamp = '';
   const sfx = `csf${Date.now().toString(36)}`;
   const actorName = `${sfx}.owner`;
@@ -205,6 +208,9 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     FAKE_PG_ADMIN_URL: adminUrl,
     FAKE_PSQL: psqlExe,
     FAKE_NEON_ROLE: admin.username,
+    // An inherited FAKE_UTC_EPOCH or FAKE_UTC_HHMM would answer before the offset (bin/date); empty turns them off.
+    FAKE_UTC_EPOCH: '',
+    FAKE_UTC_HHMM: '',
     FAKE_UTC_OFFSET: String(BASE_S + offsetS),
     NODE_OPTIONS: nodeOptions(),
     FAKE_PSQL_FAULT_FILE: join(work, 'fault'),
@@ -277,7 +283,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     const wall = new Date();
     const { day, pinMs } = eveningPin(wall);
     D = day;
-    OFFSET_S = Math.round((pinMs - wall.getTime()) / 1000);
+    OFFSET_S = Math.ceil((pinMs - wall.getTime()) / 1000);
     now = fake();
     year = omanYear(now);
     Dm1 = addDays(D, -1);
@@ -304,6 +310,11 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
       const b = spawnSync('bash', [join(BIN, 'date'), '-u', '+%s'], { env: env(o), encoding: 'utf8' });
       const bWant = fake(o).getTime() / 1000;
       expect(Math.abs(Number(b.stdout.trim()) - bWant), `bash date at offset ${o}: ${b.stdout}${b.stderr}`).toBeLessThanOrEqual(5);
+      // The window rule's form (run.sh window): the minute of the pinned clock at either end of the spawn.
+      const hm = (t: Date) => t.toISOString().slice(11, 16).replace(':', '');
+      const hBefore = hm(fake(o));
+      const h = spawnSync('bash', [join(BIN, 'date'), '-u', '+%H%M'], { env: env(o), encoding: 'utf8' });
+      expect([hBefore, hm(fake(o))], `bash date +%H%M at offset ${o}: ${h.stdout}${h.stderr}`).toContain(h.stdout.trim());
       const n = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(Date.now()))'], { env: env(o), encoding: 'utf8' });
       const nWant = fake(o).getTime();
       expect(Math.abs(Number(n.stdout.trim()) - nWant), `node at offset ${o}: ${n.stdout}${n.stderr}`).toBeLessThanOrEqual(5000);
@@ -598,6 +609,9 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     const n2 = night2Blocks(m.lines);
     expect(n2, 'night 2 blocks').toHaveLength(1);
     expect(n2[0]!.some((l) => /^\s*scheduled-jobs-on-time: (pass|fail|info|error) \(not asserted\)$/.test(l)), n2[0]!.join('\n')).toBe(true);
+    // The copy holds the evening world seeded for D (the db-backup heartbeat at the pin minus 1 h, the
+    // active-hours jobs at D 14:50), so those ages are negative on the 06:00 clock: this checks night 1's
+    // job day, not staleness.
     // Night 1's block: the watch step's lines before "night 2:". Its own "night 1:" header does not
     // reach the log (the watch runner's first output line starts with a colour code, which
     // run.sh watch-lines does not match), so the block is taken from the one step that printed night 2.
