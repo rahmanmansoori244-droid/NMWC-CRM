@@ -21,6 +21,7 @@ import { AppError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { checkLimitLocal } from '@/lib/rate-limit';
 import { serveHeadersFor } from '@/lib/photo-mime';
+import { guardStoreBody, STORE_IDLE_MS, type GuardedBody } from '@/lib/photo-body';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { errorLogFields, reportableError } from '@/lib/account-import';
 import { CONFIDENTIAL_KINDS as CONFIDENTIAL_DOCUMENT_KINDS } from '@/lib/credit-documents';
@@ -178,11 +179,34 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       headers: { ETag: etag, 'Cache-Control': cache },
     });
   }
+  // Photos of a large customer (2026-11-15): the store's body holds one of the store
+  // client's 50 pooled connections until it is read to the end or destroyed. When
+  // the browser left before this returned, or sent HEAD, Next never read it, and the
+  // connection was held until the process ended; fifty of them broke every photo and
+  // upload. The body is now given back on every path where Next will not read it
+  // (lib/photo-body.ts), and a store socket with no byte for 30 s is cut. What is
+  // recorded, answered and cached is unchanged.
+  let guarded: GuardedBody | null = null;
+  let handedOff = false;
   try {
-    const out = await r2().send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: att.r2Key }));
+    const out = await r2().send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: att.r2Key }), {
+      abortSignal: req.signal,
+    });
+    // Before `await viewed`: a browser that leaves while the row is written releases it.
+    guarded = guardStoreBody(out.Body, req.signal, () =>
+      logger.warn({ attachmentId: att.id, kind: att.kind, idleMs: STORE_IDLE_MS }, 'photo.store_idle_cut')
+    );
     await viewed;
-    const stream = out.Body as ReadableStream<Uint8Array> | null;
-    if (!stream) return NextResponse.json({ error: 'EMPTY_BODY' }, { status: 502 });
+    if (!guarded) {
+      logger.error({ attachmentId: att.id, kind: att.kind }, 'photo.empty_body');
+      return NextResponse.json({ error: 'EMPTY_BODY' }, { status: 502 });
+    }
+    if (guarded.isDestroyed()) {
+      // Gone already: the browser left, or the idle limit cut it. Never a 200 with
+      // a full Content-Length and no body.
+      if (req.signal.aborted) logger.info({ attachmentId: att.id, stage: 'before_return' }, 'photo.client_gone');
+      return NextResponse.json({ error: 'R2_FETCH_FAILED' }, { status: 502 });
+    }
     // SEC-14e: the served type is decided by lib/photo-mime, NOT by the stored
     // column. A presigned PUT does not bind Content-Type, so `att.mimeType` is
     // attacker-influenceable and echoing it here served attacker HTML from this
@@ -196,18 +220,33 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
         'photo.mime.repinned'
       );
     }
-    return new NextResponse(stream, {
-      headers: {
-        'Content-Type': serve.contentType,
-        'Content-Disposition': serve.contentDisposition,
-        'Cache-Control': cache,
-        'Content-Length': String(att.bytes),
-        ...(confidential ? {} : { ETag: etag }),
-      },
-    });
-  } catch {
+    const headers = {
+      'Content-Type': serve.contentType,
+      'Content-Disposition': serve.contentDisposition,
+      'Cache-Control': cache,
+      'Content-Length': String(att.bytes),
+      ...(confidential ? {} : { ETag: etag }),
+    };
+    // HEAD is still a view (owner question, unchanged): same token, row, store fetch,
+    // status and headers. Next sends no body for it, so the body is given back here.
+    if (req.method === 'HEAD') {
+      guarded.release();
+      return new NextResponse(null, { headers });
+    }
+    const res = new NextResponse(guarded.web, { headers });
+    handedOff = true;
+    return res;
+  } catch (err) {
     // Settled before answering, so the INSERT is not cut off when the function ends.
     await viewed;
+    if (req.signal.aborted || (err as Error)?.name === 'AbortError') {
+      logger.info({ attachmentId: att.id, stage: 'store' }, 'photo.client_gone');
+    } else {
+      // Ids and the error's name and scrubbed text only: never the storage key.
+      logger.error({ attachmentId: att.id, kind: att.kind, ...errorLogFields(err) }, 'photo.fetch_failed');
+    }
     return NextResponse.json({ error: 'R2_FETCH_FAILED' }, { status: 502 });
+  } finally {
+    if (!handedOff) guarded?.release();
   }
 }

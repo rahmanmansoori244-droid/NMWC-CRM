@@ -64,6 +64,11 @@ export function r2(): S3Client {
     // hung until the function was killed, and the 2 × 13 s above never held.
     // (The timeout runs until the response headers arrive; a photo body streaming
     // to a slow browser afterwards is not cut off by it.)
+    //
+    // Photos of a large customer (2026-11-15): socketTimeout is deliberately unset.
+    // @smithy/node-http-handler 4.12.1 starts a socketTimeout of 6000 ms or more only
+    // 3 s late and clears it when the headers arrive, so it never guards a body. The
+    // photo body's idle limit lives in lib/photo-body.ts (STORE_IDLE_MS).
     requestHandler: new NodeHttpHandler({
       connectionTimeout: 3_000,
       requestTimeout: 10_000,
