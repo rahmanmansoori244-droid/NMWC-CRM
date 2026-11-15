@@ -4,7 +4,14 @@
  * a CR document) stay 'direct'; 41 (20 shops and a CR document) are 'queued'.
  */
 import { describe, expect, it } from 'vitest';
-import { PHOTO_QUEUE_FROM, approvalPhotoCount, photoModeFor, profilePhotoCount } from '@/lib/photo-pacing';
+import {
+  PHOTO_QUEUE_FROM,
+  approvalPhotoCount,
+  createFormPhotoCount,
+  enrichmentPhotoCount,
+  photoModeFor,
+  profilePhotoCount,
+} from '@/lib/photo-pacing';
 
 const id = (n: number, k: string) => `${k}-${n}`;
 const shops = (n: number) => Array.from({ length: n }, (_, i) => i);
@@ -74,5 +81,42 @@ describe('approval detail', () => {
       expect(approvalPhotoCount(one), sources[i]).toBe(1);
     }
     expect(approvalPhotoCount([[null, undefined, ''], []])).toBe(0);
+  });
+});
+
+describe('edit form (EnrichmentForm)', () => {
+  const customer = (n: number) => ({
+    crPhotoId: 'cr',
+    branches: shops(n).map((i) => ({ shopPhotoId: id(i, 's'), signboardPhotoId: id(i, 'b') })),
+  });
+  it('19 shops with 2 photos plus CR (39): direct; 20 shops plus CR (41): queued', () => {
+    expect(enrichmentPhotoCount(customer(19))).toBe(39);
+    expect(photoModeFor(enrichmentPhotoCount(customer(19)))).toBe('direct');
+    expect(enrichmentPhotoCount(customer(20))).toBe(41);
+    expect(photoModeFor(enrichmentPhotoCount(customer(20)))).toBe('queued');
+  });
+  it('a missing photo is not counted', () => {
+    expect(enrichmentPhotoCount({ crPhotoId: null, branches: [{ shopPhotoId: 'a', signboardPhotoId: null }] })).toBe(1);
+  });
+});
+
+describe('new-customer form (CreateCustomerForm, a resumed draft)', () => {
+  const form = (n: number, extras: Array<string | null> = []) => ({
+    crPhotoId: 'cr',
+    branches: shops(n).map((i) => ({
+      shopPhotoId: id(i, 's'),
+      signboardPhotoId: id(i, 'b'),
+      extraPhotoIds: i === 0 ? extras : [],
+    })),
+  });
+  it('19 shops with 2 photos plus CR (39): direct; 20 shops plus CR (41): queued', () => {
+    expect(createFormPhotoCount(form(19))).toBe(39);
+    expect(photoModeFor(createFormPhotoCount(form(19)))).toBe('direct');
+    expect(createFormPhotoCount(form(20))).toBe(41);
+    expect(photoModeFor(createFormPhotoCount(form(20)))).toBe('queued');
+  });
+  it('counts the extra photos, and not the empty positions', () => {
+    expect(createFormPhotoCount(form(19, ['x1', 'x2']))).toBe(41);
+    expect(createFormPhotoCount(form(19, [null, 'x2']))).toBe(40);
   });
 });
