@@ -14,7 +14,8 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import type { ReactNode } from 'react';
 import { EditProcess, PaymentTerms } from '@prisma/client';
-import { resolveChain } from '@/lib/approval-chains';
+import { isSignedFormStep, resolveChain } from '@/lib/approval-chains';
+import { SIGNED_FORM_KIND } from '@/lib/credit-documents';
 
 type Att = { id: string; editId: string; kind: string; deletedAt: Date | null };
 const h = vi.hoisted(() => ({
@@ -242,6 +243,43 @@ describe('approval detail photos: a new-customer request', () => {
     h.attachments.push(
       { id: pid('d1', 0), editId: 'e1', kind: 'ID_CARD', deletedAt: null },
       { id: pid('d2', 0), editId: 'e1', kind: 'VAT_CERT', deletedAt: null }
+    );
+    const s = await html(edit);
+    expect(imgTags(s)).toEqual([]);
+    expect(waiting(s)).toBe(41);
+  });
+});
+
+describe('approval detail photos: the guarantee and signed-application rows', () => {
+  it('old credit chain: 19 drafts, a CR document and 2 guarantees (41) are queued', async () => {
+    const edit = createEdit(19, { credit: true });
+    // A credit request frozen before 2026-10-11: no signed-application step.
+    edit.approvalChain = edit.approvalChain.filter((s) => !isSignedFormStep(s));
+    h.attachments.push(
+      { id: pid('a1', 0), editId: 'e1', kind: 'GUARANTEE', deletedAt: null },
+      { id: pid('a2', 0), editId: 'e1', kind: 'GUARANTEE', deletedAt: null }
+    );
+    const s = await html(edit);
+    expect(s).toContain('Guarantee documents (2)');
+    expect(imgTags(s)).toEqual([]);
+    expect(waiting(s)).toBe(41);
+  });
+
+  it('old credit chain: 19 drafts, a CR document and 1 guarantee (40) stay direct', async () => {
+    const edit = createEdit(19, { credit: true });
+    edit.approvalChain = edit.approvalChain.filter((s) => !isSignedFormStep(s));
+    h.attachments.push({ id: pid('a1', 0), editId: 'e1', kind: 'GUARANTEE', deletedAt: null });
+    const s = await html(edit);
+    expect(imgTags(s)).toHaveLength(40);
+    expect(waiting(s)).toBe(0);
+  });
+
+  it('new credit chain: 19 drafts, a CR document and 2 signed-application pages (41) are queued', async () => {
+    const edit = createEdit(19, { credit: true });
+    expect(edit.approvalChain.some((s) => isSignedFormStep(s))).toBe(true);
+    h.attachments.push(
+      { id: pid('f1', 0), editId: 'e1', kind: SIGNED_FORM_KIND, deletedAt: null },
+      { id: pid('f2', 0), editId: 'e1', kind: SIGNED_FORM_KIND, deletedAt: null }
     );
     const s = await html(edit);
     expect(imgTags(s)).toEqual([]);
