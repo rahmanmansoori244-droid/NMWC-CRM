@@ -31,6 +31,8 @@ const NOT_LINES = new Set([
   ' is checked first), one at a time (',
   'restore-verify.ts --manifest',
   ' printed, then ',
+  // One instance of the composed "<check>: <status> (not asserted)" line (rehearse-watch.ts reportLines).
+  'scheduled-jobs-on-time: fail (not asserted)',
 ]);
 
 function missing(doc: string, src: string): string[] {
@@ -93,6 +95,25 @@ describe("the owner's guide quotes only lines the code prints", () => {
     const l = guide.slice(guide.indexOf('**L. Everyone signs out.**'), guide.indexOf('**M. The merge.**'));
     expect(l).toMatch(/already shows the sign-in page, they sign in, then press \*\*Sign out\*\*/);
     expect(l).toMatch(/before the evening of dry run 2/);
+  });
+
+  it('while the rehearsal prints "(not asserted)", the guide explains it under "Lines that may say no"', () => {
+    // The code prints the suffix (rehearse-watch.ts reportLines) and run.sh lets it into the log.
+    expect(read('scripts/ops/clean-start/rehearse-watch.ts')).toContain("' (not asserted)'");
+    expect(read('scripts/ops/clean-start/run.sh')).toContain(String.raw`( \(not asserted\))?`);
+    const table = guide.slice(guide.indexOf('## Lines that may say no'));
+    const row = table.split('\n').find((l) => l.startsWith('|') && l.includes('(not asserted)`'));
+    expect(row, 'a row for the (not asserted) line').toBeDefined();
+    expect(row).toMatch(/recorded only, never judged/);
+    expect(row).toMatch(/`fail`/);
+    expect(row).toMatch(/before 19:00 or after midnight Oman time/);
+    expect(row).toMatch(/before 15:00 or after 20:00 UTC/);
+    expect(row).toContain('`first integrity checks as expected: yes`');
+    // The hours in the row are the code's: night 2's job check is asserted from 15:00 UTC.
+    const expected = JSON.parse(read('scripts/ops/clean-start/expected-watch.json'));
+    expect(expected.night2NotAssertedBeforeUtcHour['scheduled-jobs-on-time']).toBe(15);
+    const step3 = guide.slice(guide.indexOf('## Step 3.'), guide.indexOf('## Step 4.'));
+    expect(step3).toMatch(/before 19:00 or after midnight Oman time[^.]*`\(not asserted\)`/);
   });
 
   it('the guide no longer says the Audit page shows the reset figures', () => {

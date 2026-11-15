@@ -219,7 +219,8 @@ backup** have a green tick. In the summary you see, among others:
 - `the nightly backup's table gate passes on the reset copy: yes`
 - `next customer code would be number 000001: yes`
 
-Some lines report a fact and may say `no` while the run is still green. They are listed
+Some lines report a fact and may say `no` while the run is still green (a run before 19:00
+or after midnight Oman also shows a line ending in `(not asserted)`). They are listed
 at the end of this guide, under "Lines that may say no".
 
 **Write down** (in your private notes) the line that starts with
@@ -266,6 +267,9 @@ summary has:
 - `the reset row is gone after the restore: yes`
 - `the Neon restore returned the exact fingerprint: yes`
 - `temporary Neon branches deleted: yes`
+
+Run before 19:00 or after midnight Oman time, it also shows a line ending in
+`(not asserted)`; that is fine (see "Lines that may say no").
 
 **Afterwards:** Neon console → your project → **Branches**. No branch whose name starts
 with `cleanstart-rehearsal-` may be left. If the run said
@@ -582,6 +586,7 @@ These lines report a fact. They can say `no` (or `yes`) while the job is green:
 | `green Neon rehearsal of these scripts within 14 days` (dry run) | `no` before Step 3 is normal; apply needs `yes` |
 | `the first watch after the reset already ran` (finish) | recorded; finish runs it when `no` |
 | `new seal chain id recorded` | `no` only if the first check did not run; tell Claude |
+| A line in the night 2 part of the table that ends with `… (not asserted)`, for example `scheduled-jobs-on-time: fail (not asserted)` (dry run, Neon rehearsal, the Rehearse job of an apply) | recorded only, never judged, even when it says `fail`: at that hour the copy cannot yet hold a whole day of job runs. It appears when the watch step runs before 19:00 or after midnight Oman time (before 15:00 or after 20:00 UTC); between 19:00 and midnight Oman it does not appear. The line to trust is `first integrity checks as expected: yes` |
 | `values for the photo step printed (only after a reset that committed)` | `no` on a run whose reset did not happen, or is not yet known to have happened. Such a run has no `run_id for the photo step` and no `list_sha256 for the photo step`: never log values from another run in their place. The green apply prints them; so does a green finish |
 | `other objects under seals/ left where they are` (seal-restore) | recorded only |
 
