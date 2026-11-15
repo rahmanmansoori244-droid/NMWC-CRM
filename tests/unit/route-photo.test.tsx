@@ -8,7 +8,7 @@
  * hydration of that markup must log nothing.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act } from 'react';
+import { act, StrictMode } from 'react';
 import { renderToString } from 'react-dom/server';
 import { createRoot, hydrateRoot, type Root } from 'react-dom/client';
 
@@ -24,6 +24,7 @@ vi.mock('@/components/nmwc/photo-queue', async (importOriginal) => {
 import { RoutePhoto } from '@/components/nmwc/RoutePhoto';
 import { PhotoQueueStatus } from '@/components/nmwc/PhotoQueueStatus';
 import * as queue from '@/components/nmwc/photo-queue';
+import { PACE_MAX_MS } from '@/components/nmwc/photo-queue';
 
 const ID = 'c0ffee00-0000-4000-8000-000000000001';
 const SRC = `/api/photos/${ID}`;
@@ -132,6 +133,54 @@ describe("RoutePhoto 'direct'", () => {
     expect(queue.reportFirstLoadFailure).not.toHaveBeenCalled();
     expect(container.querySelector('img')).toBe(first);
     expect(queue.getSnapshot()).toMatchObject({ total: 1, loaded: 1, paced: false });
+  });
+
+  // next dev runs with reactStrictMode: each effect runs, is cleaned up and runs
+  // again with a new queue key, while refs are kept. The second key must be
+  // checked too, or it stays pending for good.
+  it('StrictMode: an <img> already loaded at mount is counted as loaded, not left pending', () => {
+    const html = renderToString(<RoutePhoto id={ID} alt="Shop" className="x" mode="direct" />);
+    container.innerHTML = html;
+    stubImage('complete', true);
+    stubImage('naturalWidth', 640);
+    act(() => {
+      root = hydrateRoot(
+        container,
+        <StrictMode>
+          <RoutePhoto id={ID} alt="Shop" className="x" mode="direct" />
+        </StrictMode>
+      );
+    });
+    expect(queue.getSnapshot()).toMatchObject({ total: 1, loaded: 1, pending: 0 });
+  });
+
+  it('StrictMode: an <img> failed at mount is retried, and a failed retry is asked for again', () => {
+    vi.useFakeTimers();
+    const html = renderToString(<RoutePhoto id={ID} alt="Shop" className="x" mode="direct" />);
+    container.innerHTML = html;
+    stubImage('complete', true);
+    stubImage('naturalWidth', 0);
+    act(() => {
+      root = hydrateRoot(
+        container,
+        <StrictMode>
+          <RoutePhoto id={ID} alt="Shop" className="x" mode="direct" />
+        </StrictMode>
+      );
+    });
+    // The failure was counted: the photo waits for its paced turn, then loads again.
+    expect(queue.getSnapshot()).toMatchObject({ total: 1, pending: 1, paced: true });
+    act(() => void vi.advanceTimersByTime(1100));
+    const retry = container.querySelector('img')!;
+    expect(retry.getAttribute('src')).toBe(SRC);
+    expect(retry.getAttribute('data-photo-state')).toBe('loading');
+    fire(retry, 'error');
+    // That failure counts too: the photo waits again and gets a new <img>.
+    expect(queue.photoQueueInternalsForTests().waiting).toHaveLength(1);
+    act(() => void vi.advanceTimersByTime(PACE_MAX_MS));
+    const third = container.querySelector('img')!;
+    expect(third).not.toBe(retry);
+    expect(third.getAttribute('data-photo-state')).toBe('loading');
   });
 
   it('a first load that fails after hydration (onError) is reported once and retried as a new <img>', () => {

@@ -77,6 +77,10 @@ export function RoutePhoto({
     return () => {
       keyRef.current = null;
       unregister(key);
+      // Strict mode (next dev) runs this effect again with a new key while the
+      // refs live on: that key must check the first <img> again, or it would
+      // stay pending for good.
+      firstSettled.current = false;
     };
   }, [startMode]);
 
