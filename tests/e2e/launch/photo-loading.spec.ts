@@ -12,15 +12,27 @@
  *   3. a customer profile with 41 photos loads them through the paced queue:
  *      placeholders first, never more than 6 at a time, the same address with
  *      no query, one photo that fails four times ends "Not loaded" with
- *      "1 photo did not load." and "Try again", and one click loads it;
+ *      "1 photo did not load." and "Try again", and one click loads it; its
+ *      retries start 1x, 2x and 4x PACE_MS apart, and the paced line "Showing
+ *      … photos." shows while it waits;
+ *   3b. the same profile with one EARLY photo failing once: every photo still
+ *      waiting behind it starts paced, at least about PACE_MS apart, and the
+ *      retry goes last (the case above checks only one photo's own retries);
  *   4. the Data Steward's edit form of that customer: every slot's photo loads
  *      through the queue; with one photo that never loads, its slot says it is
- *      still attached, stays filled, and a text change still submits.
- *   (3 and 4: @desktop; NO upload. The 41 photo rows have no object in the
+ *      still attached, stays filled, and a text change still submits;
+ *   5. an update request's approval page for that customer is queued too.
+ *   (3 to 5: @desktop; NO upload. The 41 photo rows have no object in the
  *   store and the test answers every photo request itself with page.route, so
  *   neither the app server nor the store sees one: spec amendment M3.)
+ *   Start times are read in the page (support/photo-queue-helpers.ts
+ *   recordPhotoEvents), not when the route hears a request.
  *
- * The 35-shop case of the spec (71 real uploads) is left out under M3.
+ * The 35-shop case of the spec (about 71 real uploads) is left out under M3.
+ * The zero-upload method above covers what it would show on the three pages
+ * (all photos loaded, the paced line, Try again). What it cannot show is the
+ * real limiter's 429s driving the queue: page.route answers every photo
+ * request, and with real photos the case needs the uploads M3 forbids.
  * A 502 answered by page.route makes Chrome log "Failed to load resource";
  * that line is not one the console check fails on (support/checks.ts
  * FATAL_CONSOLE), so nothing is muted here.
@@ -38,6 +50,7 @@ import {
   installLaunchHooks,
   notRunHere,
   requireLaunchEnv,
+  seedUpdateEdit,
   uploadPhotoViaApi,
   type SeededPhoto,
   type World,
@@ -54,10 +67,13 @@ import {
   expectAllPhotos,
   liveSlotOf,
   loadedImages,
+  pacedSentence,
+  photoEvents,
   photoStates,
   photosNotLoadedText,
+  recordPhotoEvents,
+  gapsAfter,
   seedManyPhotoCustomer,
-  startGapsFrom,
   statusSentence,
 } from './support/photo-queue-helpers';
 import {
@@ -74,8 +90,13 @@ import {
 const R2_SKIP = 'R2 is not configured: the photo route reads the photo store';
 /** The five headers HEAD must share with GET (app/api/photos/[id]/route.ts). */
 const SERVING_HEADERS = ['content-type', 'content-disposition', 'cache-control', 'content-length', 'etag'] as const;
-/** The starts after a failure are PACE_MS apart; 100 ms of slack for the browser and the route. */
-const PACED_GAP_MIN_MS = 1000;
+/**
+ * The starts after a failure are PACE_MS apart, the pace doubling while
+ * photos started paced keep failing. Gaps are read in the page (the moment
+ * each try's <img> is added), so a route event Playwright delivers late does
+ * not shorten one; 100 ms of slack is left for the page's own rendering.
+ */
+const PACED_GAP_MIN_MS = PACE_MS - 100;
 
 /** A small world: one salesman whose shop has one real photo in the store. */
 async function onePhotoWorld(tag: string): Promise<World> {
@@ -227,6 +248,7 @@ test.describe('photo loading: a customer with more than 40 photos', { tag: ['@de
       users: [
         { key: 'SA', role: 'SALESMAN', route: 'A' },
         { key: 'STW', role: 'STEWARD' },
+        { key: 'MGR', role: 'MANAGER', regions: ['R1'] },
       ],
     });
     ({ customerId, photos } = await seedManyPhotoCustomer(world, {
@@ -249,9 +271,11 @@ test.describe('photo loading: a customer with more than 40 photos', { tag: ['@de
     const started = Date.now();
     const page = await (await contextAs(browser, world.user('STW'), { device: 'desktop' })).newPage();
     const answered = await answerPhotos(page, photos, { delayMs: 150, hold: true, fail: { times: MAX_FAILURES } });
+    await recordPhotoEvents(page);
 
-    // The server renders a placeholder per photo and no photo address at all.
-    const res = await page.goto(`/customers/${customerId}`);
+    // The server renders a placeholder per photo and no photo address at all. (Not 'load':
+    // with an <img> per photo that load would wait for the held requests.)
+    const res = await page.goto(`/customers/${customerId}`, { waitUntil: 'domcontentloaded' });
     expect(res?.status()).toBe(200);
     const html = (await res!.text()) ?? '';
     expect(html.match(/data-photo-state="waiting"/g) ?? [], 'a placeholder per photo in the server HTML').toHaveLength(TOTAL);
@@ -270,6 +294,10 @@ test.describe('photo loading: a customer with more than 40 photos', { tag: ['@de
     );
     answered.release();
 
+    // While the failing photo waits for its next try, the paced line shows; it goes when the photo gives up.
+    await expect(pacedSentence(page, TOTAL)).toBeVisible({ timeout: 60_000 });
+    expect(answered.firstFailureAt(), 'the paced line shows only after a failure').not.toBeNull();
+
     // The last photo asked for fails 4 times: its tile gives up, the status line says so.
     const failed = page.locator('[data-photo-state="failed"]');
     await expect(failed).toHaveCount(1, { timeout: 60_000 });
@@ -278,6 +306,7 @@ test.describe('photo loading: a customer with more than 40 photos', { tag: ['@de
     expect(failId).toBeTruthy();
     await expect(statusSentence(page, photosNotLoadedText(1))).toBeVisible();
     await expect(page.getByRole('button', { name: TRY_AGAIN, exact: true })).toBeVisible();
+    await expect(pacedSentence(page, TOTAL)).toHaveCount(0);
     await expect(page.locator(`img[src="/api/photos/${failId}"]`)).toHaveCount(0);
     expect((await photoStates(page)).filter((s) => s === 'loaded'), 'every other photo is loaded').toHaveLength(TOTAL - 1);
     const shown = await loadedImages(page);
@@ -304,10 +333,69 @@ test.describe('photo loading: a customer with more than 40 photos', { tag: ['@de
     expect(failRequests().map((x) => x.status)).toEqual([...Array(MAX_FAILURES).fill(502), 200]);
     for (const p of photos) expect(answered.okCount(p.id), `200s for ${p.id}`).toBe(1);
     expect(r).toHaveLength(TOTAL + MAX_FAILURES);
-    const gaps = startGapsFrom(r, answered.firstFailureAt()!);
+
+    // The pace, as the page saw it: every try of the failing photo is a new <img>; the first
+    // failure paces the queue at PACE_MS, and each failure of a try started paced doubles it.
+    const ev = await photoEvents(page);
+    expect(ev.starts, 'one <img> per request').toHaveLength(r.length);
+    const firstError = ev.errors.find((e) => e.id === failId);
+    expect(firstError, 'the page saw the failing photo fail').toBeTruthy();
+    expect(ev.errors.map((e) => e.id), 'only the failing photo failed').toEqual(Array(MAX_FAILURES).fill(failId));
+    const gaps = gapsAfter(ev.starts, firstError!.t);
+    const paceMsg = `starts after the first failure, ms apart: ${gaps.join(', ')} (pace ${PACE_MS})`;
     expect(gaps.length, 'the three retries and the one after Try again').toBe(MAX_FAILURES);
-    expect(Math.min(...gaps), `starts after the first failure, ms apart: ${gaps.join(', ')} (pace ${PACE_MS})`).toBeGreaterThanOrEqual(PACED_GAP_MIN_MS);
+    // Retries 2, 3 and 4 at 1x, 2x and 4x the pace; Try again puts the pace back to PACE_MS.
+    expect(gaps[0]!, paceMsg).toBeGreaterThanOrEqual(PACED_GAP_MIN_MS);
+    expect(gaps[1]!, paceMsg).toBeGreaterThanOrEqual(2 * PACE_MS - 100);
+    expect(gaps[2]!, paceMsg).toBeGreaterThanOrEqual(4 * PACE_MS - 100);
+    expect(gaps[3]!, paceMsg).toBeGreaterThanOrEqual(PACED_GAP_MIN_MS);
     test.info().annotations.push({ type: 'paced', description: `gaps after the first failure ${gaps.join(', ')} ms; test ${Date.now() - started} ms` });
+  });
+
+  test('after one early failure, the photos still waiting start one at a time, at least about a second apart, and the paced line shows meanwhile', async ({ browser }) => {
+    test.setTimeout(180_000);
+    const started = Date.now();
+    // The photo that fails once is the AT-th asked for: about 7 photos still wait behind it,
+    // so the paced part stays near 9 s (7 fresh starts and the retry, PACE_MS apart).
+    const AT = TOTAL - 12;
+    const page = await (await contextAs(browser, world.user('STW'), { device: 'desktop' })).newPage();
+    const answered = await answerPhotos(page, photos, { delayMs: 150, fail: { times: 1, at: AT, alone: true } });
+    await recordPhotoEvents(page);
+    await page.goto(`/customers/${customerId}`);
+
+    await expect(pacedSentence(page, TOTAL)).toBeVisible({ timeout: 60_000 });
+    await expectAllPhotos(page, TOTAL, 'loaded');
+    await expect(pacedSentence(page, TOTAL)).toHaveCount(0);
+    await expect(page.getByRole('button', { name: TRY_AGAIN, exact: true })).toHaveCount(0);
+    await expect(page.locator('[data-photo-state="failed"]')).toHaveCount(0);
+
+    const failId = answered.failId()!;
+    expect(failId).toBeTruthy();
+    const r = answered.requests;
+    expect(r.filter((x) => x.id === null || x.search !== ''), 'every request is /api/photos/<id> with no query').toEqual([]);
+    expect(answered.maxInFlight(), 'never more than 6 in flight').toBeLessThanOrEqual(MAX_IN_FLIGHT);
+    expect(r.filter((x) => x.id === failId).map((x) => x.status)).toEqual([502, 200]);
+    for (const p of photos) expect(answered.okCount(p.id), `200s for ${p.id}`).toBe(1);
+    expect(r).toHaveLength(TOTAL + 1);
+
+    const ev = await photoEvents(page);
+    expect(ev.starts, 'one <img> per request').toHaveLength(r.length);
+    expect(ev.errors.map((e) => e.id), 'only the chosen photo failed, once').toEqual([failId]);
+    const failedAt = ev.errors[0]!.t;
+    const after = ev.starts.filter((s) => s.t > failedAt).sort((a, b) => a.t - b.t);
+    // The failing photo and the 5 that filled the other slots started before the failure:
+    // every other photo waits, and starts after it, paced.
+    const fresh = after.filter((s) => s.id !== failId);
+    expect(fresh.map((s) => s.id).sort(), 'the photos that were still waiting').toEqual(
+      photos.map((p) => p.id).filter((id) => !ev.starts.some((s) => s.id === id && s.t <= failedAt)).sort()
+    );
+    expect(fresh.length, 'photos still waiting when the failure came').toBe(TOTAL - AT - (MAX_IN_FLIGHT - 1));
+    // The retry goes to the back of the line: it starts after every one of them.
+    expect(after.at(-1)!.id, 'the retry starts last').toBe(failId);
+    const gaps = gapsAfter(ev.starts, failedAt);
+    expect(gaps, 'a gap before each start after the failure').toHaveLength(after.length);
+    expect(Math.min(...gaps), `starts after the failure, ms apart: ${gaps.join(', ')} (pace ${PACE_MS})`).toBeGreaterThanOrEqual(PACED_GAP_MIN_MS);
+    test.info().annotations.push({ type: 'paced', description: `fresh starts after the failure ${fresh.length}; gaps ${gaps.join(', ')} ms; test ${Date.now() - started} ms` });
   });
 
   test("the Steward's edit form of that customer: every slot's photo loads through the queue", async ({ browser }) => {
@@ -380,6 +468,36 @@ test.describe('photo loading: a customer with more than 40 photos', { tag: ['@de
     expect(await liveSlotOf(failId)).toEqual(live);
     expect(live.deletedAt).toBeNull();
     expect(await wiring(customerId)).toEqual(wiredBefore);
+  });
+
+  // Last in this group: it adds a waiting update request to the customer.
+  test("an update request's approval page for that customer loads its 41 photos through the queue too", async ({ browser }) => {
+    test.setTimeout(180_000);
+    const edit = await seedUpdateEdit(world, { customer: 'BIG', submitter: 'SA', patch: { customer: { contactPerson: world.name('Approval contact') } } });
+    const page = await (await contextAs(browser, world.user('MGR'), { device: 'desktop' })).newPage();
+    const answered = await answerPhotos(page, photos, { delayMs: 150, hold: true });
+
+    // Queued: a placeholder per photo in the server HTML (the CR document and each shop's two), no address.
+    const res = await page.goto(`/approvals/${edit.id}`, { waitUntil: 'domcontentloaded' });
+    expect(res?.status()).toBe(200);
+    const html = (await res!.text()) ?? '';
+    expect(html.match(/data-photo-state="waiting"/g) ?? [], 'a placeholder per photo in the server HTML').toHaveLength(TOTAL);
+    expect(html).not.toContain('src="/api/photos/');
+    await expect.poll(() => answered.requests.length, { timeout: 60_000 }).toBe(MAX_IN_FLIGHT);
+    await page.waitForTimeout(1_000);
+    expect(answered.requests.length, 'nothing more starts while 6 are in flight').toBe(MAX_IN_FLIGHT);
+    await expect(page.locator('[data-photo-state="waiting"]')).toHaveCount(TOTAL - MAX_IN_FLIGHT);
+    answered.release();
+
+    await expectAllPhotos(page, TOTAL, 'loaded');
+    const shown = await loadedImages(page);
+    expect(shown.map((i) => i.src).sort()).toEqual(photos.map((p) => `/api/photos/${p.id}`).sort());
+    expect(shown.every((i) => i.width > 0), 'each a decoded picture').toBe(true);
+    expect(answered.requests.filter((x) => x.id === null || x.search !== ''), 'every request is /api/photos/<id> with no query').toEqual([]);
+    expect(answered.maxInFlight(), 'never more than 6 in flight').toBeLessThanOrEqual(MAX_IN_FLIGHT);
+    for (const p of photos) expect(answered.okCount(p.id), `200s for ${p.id}`).toBe(1);
+    expect(answered.requests).toHaveLength(TOTAL);
+    await expect(pacedSentence(page, TOTAL)).toHaveCount(0);
   });
 });
 

@@ -14,7 +14,8 @@
  *     "loading" / "loaded" (a new <img> per try), "failed" (a span whose text is
  *     "Not loaded");
  *   - PhotoQueueStatus: "1 photo did not load." / "{n} photos did not load." in a
- *     <p>, beside a "Try again" button; the same sentence is also said by a
+ *     <p>, beside a "Try again" button; while the queue is paced and photos
+ *     wait, "Showing {loaded} of {total} photos. The rest load …" in a <p>; the same sentence is also said by a
  *     visually hidden live region (a <span>), so a test reads the <p>;
  *   - PhotoCaptureSlot: REMOTE_PHOTO_FAILED_MESSAGE (photo-slot-words.ts).
  * The queue's numbers come from the module itself (it is plain TypeScript, no
@@ -33,6 +34,18 @@ export { REMOTE_PHOTO_FAILED_MESSAGE } from './photo-slot-words';
 /** PhotoQueueStatus's sentence for failed photos (photosNotLoadedText, copied: a .tsx client component). */
 export function photosNotLoadedText(n: number): string {
   return n === 1 ? '1 photo did not load.' : `${n} photos did not load.`;
+}
+
+/** PhotoQueueStatus's paced line (photosPacedText, copied: a .tsx client component). */
+export function photosPacedText(loaded: number, total: number): string {
+  return `Showing ${loaded} of ${total} photos. The rest load one by one, about one a second.`;
+}
+
+/** The paced line with any loaded count, as a <p> of exactly that sentence. */
+export function pacedSentence(page: Page, total: number) {
+  const [head, tail] = photosPacedText(0, total).split('0 of');
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return page.locator('p').filter({ hasText: new RegExp(`^${esc(head!)}\\d+ of${esc(tail!)}$`) });
 }
 
 /** RoutePhoto's failed tile text. */
@@ -115,13 +128,20 @@ export interface AnsweredPhotos {
  * after it load one by one (about 1.1 s each), a photo failing last costs only
  * its own retries.
  *
+ * `fail.at` chooses another one instead: the photo that is the at-th distinct
+ * one to be asked for (1-based). With `fail.alone`, its first 502 is sent only
+ * once every request that came before it has been answered, plus SETTLE_MS,
+ * and the requests that come after it wait until SETTLE_MS after that 502: so
+ * every photo the burst started has started before the failure reaches the
+ * page, and every start after it is one the queue made after the failure.
+ *
  * `hold`: requests wait at the route until release() — the page then shows,
  * frozen, what it has started and what still waits.
  */
 export async function answerPhotos(
   page: Page,
   photos: SeededPhoto[],
-  o: { delayMs?: number; hold?: boolean; fail?: { times: number } } = {}
+  o: { delayMs?: number; hold?: boolean; fail?: { times: number; at?: number; alone?: boolean } } = {}
 ): Promise<AnsweredPhotos> {
   const delayMs = o.delayMs ?? 150;
   const byId = new Map(photos.map((p) => [p.id, p]));
@@ -136,6 +156,11 @@ export async function answerPhotos(
   let open!: () => void;
   const gate = o.hold ? new Promise<void>((r) => (open = r)) : Promise.resolve();
   if (!o.hold) open = () => undefined;
+  const failAt = o.fail?.at ?? byId.size;
+  // fail.alone: the requests after the failing one wait for `afterFailure`.
+  let failEntry: PhotoRequest | null = null;
+  let afterFailureOpen!: () => void;
+  const afterFailure = new Promise<void>((r) => (afterFailureOpen = r));
 
   const handler = async (route: Route) => {
     const req = route.request();
@@ -145,14 +170,26 @@ export async function answerPhotos(
     const id = m && byId.has(m[1]!) ? m[1]! : null;
     const nth = id ? (seen.get(id) ?? 0) + 1 : 0;
     if (id) seen.set(id, nth);
-    if (id && nth === 1 && o.fail && failId === null && seen.size === byId.size) failId = id;
+    if (id && nth === 1 && o.fail && failId === null && seen.size === failAt) failId = id;
     const entry: PhotoRequest = { path: url.pathname, search: url.search, id, at: Date.now(), status: 0, nth };
+    const before = [...requests];
     requests.push(entry);
     inFlight++;
     maxInFlight = Math.max(maxInFlight, inFlight);
+    const isFirstFailure = Boolean(o.fail?.alone) && id !== null && id === failId && nth === 1;
+    if (isFirstFailure) failEntry = entry;
+    const waitsForFailure = Boolean(o.fail?.alone) && failEntry !== null && entry !== failEntry && firstFailureAt === null;
     try {
       await gate;
-      await new Promise((r) => setTimeout(r, delayMs));
+      if (isFirstFailure) {
+        // Every earlier request answered, and the page given time to start what it starts on them.
+        const until = Date.now() + 30_000;
+        while (before.some((b) => b.status === 0) && Date.now() < until) await sleep(20);
+        await sleep(SETTLE_MS);
+      } else if (waitsForFailure) {
+        await afterFailure;
+      }
+      await sleep(delayMs);
       if (!id || url.search !== '') {
         entry.status = 404;
         await route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"NOT_FOUND"}' });
@@ -165,6 +202,7 @@ export async function answerPhotos(
           headers: { 'cache-control': 'no-store' },
           body: '{"error":"R2_FETCH_FAILED"}',
         });
+        if (isFirstFailure) void sleep(SETTLE_MS).then(afterFailureOpen);
       } else {
         entry.status = 200;
         ok.set(id, (ok.get(id) ?? 0) + 1);
@@ -196,17 +234,82 @@ export async function answerPhotos(
   };
 }
 
+/** With fail.alone: how long the route lets the page settle before and after the failure. */
+export const SETTLE_MS = 400;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** A photo's start or failure as the page saw it (browser clock, ms). */
+export interface PageEvent {
+  id: string;
+  t: number;
+}
+
 /**
- * The gaps (ms) between consecutive photo requests from the last one that
- * started before `t` on (so the first gap is the one the first failure paced).
+ * Records, in the page itself, when each try of a photo starts (RoutePhoto
+ * mounts a new <img> per try: the moment it is added to the document) and
+ * when an <img> of a photo fails (its error event, in the capture phase, so
+ * before the component hears it). Times taken in the page do not depend on
+ * how soon Playwright delivers a route event to the test. Call before goto.
  */
-export function startGapsFrom(requests: PhotoRequest[], t: number): number[] {
-  const at = requests.map((r) => r.at).sort((a, b) => a - b);
-  const firstAfter = at.findIndex((x) => x >= t);
-  if (firstAfter < 0) return [];
-  const from = Math.max(0, firstAfter - 1);
+export async function recordPhotoEvents(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __e2ePhotoStarts: Array<{ id: string; t: number }>; __e2ePhotoErrors: Array<{ id: string; t: number }> };
+    w.__e2ePhotoStarts = [];
+    w.__e2ePhotoErrors = [];
+    const idOf = (el: Element) => {
+      const m = /^\/api\/photos\/([^/?]+)/.exec(el.getAttribute('src') ?? '');
+      return m ? m[1]! : null;
+    };
+    const seenImg = new WeakSet<Element>();
+    const note = (el: Element) => {
+      if (el.tagName !== 'IMG' || seenImg.has(el)) return;
+      const id = idOf(el);
+      if (!id) return;
+      seenImg.add(el);
+      w.__e2ePhotoStarts.push({ id, t: Date.now() });
+    };
+    new MutationObserver((records) => {
+      for (const r of records) {
+        for (const n of r.addedNodes) {
+          if (!(n instanceof Element)) continue;
+          note(n);
+          for (const img of n.querySelectorAll('img')) note(img);
+        }
+      }
+    }).observe(document, { childList: true, subtree: true });
+    document.addEventListener(
+      'error',
+      (e) => {
+        const el = e.target;
+        if (!(el instanceof HTMLImageElement)) return;
+        const id = idOf(el);
+        if (id) w.__e2ePhotoErrors.push({ id, t: Date.now() });
+      },
+      true
+    );
+  });
+}
+
+/** What recordPhotoEvents saw so far. */
+export async function photoEvents(page: Page): Promise<{ starts: PageEvent[]; errors: PageEvent[] }> {
+  return page.evaluate(() => {
+    const w = window as unknown as { __e2ePhotoStarts?: PageEvent[]; __e2ePhotoErrors?: PageEvent[] };
+    return { starts: [...(w.__e2ePhotoStarts ?? [])], errors: [...(w.__e2ePhotoErrors ?? [])] };
+  });
+}
+
+/**
+ * The gaps (ms) between consecutive starts, from the last start at or before
+ * `t` on (so the first gap is the one the failure at `t` paced).
+ */
+export function gapsAfter(starts: PageEvent[], t: number): number[] {
+  const at = starts.map((s) => s.t).sort((a, b) => a - b);
+  const from = at.reduce((last, x, i) => (x <= t ? i : last), -1);
   const gaps: number[] = [];
-  for (let i = from + 1; i < at.length; i++) gaps.push(at[i]! - at[i - 1]!);
+  for (let i = Math.max(0, from) + 1; i < at.length; i++) gaps.push(at[i]! - at[i - 1]!);
   return gaps;
 }
 
