@@ -26,6 +26,8 @@ import { FormSection } from '@/components/nmwc/FormSection';
 import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
 import { GPS_MAX_ACCURACY_M, isGpsTooInaccurate } from '@/lib/gps-accuracy';
 import { StepperInput } from '@/components/nmwc/StepperInput';
+import { PhotoQueueStatus } from '@/components/nmwc/PhotoQueueStatus';
+import { createFormPhotoCount, photoModeFor } from '@/lib/photo-pacing';
 import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
 import {
   fetchCreateReceipt,
@@ -476,6 +478,19 @@ export function CreateCustomerForm({
 
   const subChannels = channels.find((c) => c.id === channelId)?.subChannels ?? [];
   const isCredit = paymentTerms === 'CREDIT';
+  // Large-customer photos (lib/photo-pacing.ts): the remote photos the slots
+  // show (a resumed draft); more than 40 load through the tab's paced queue.
+  // Each slot reads it once, when it mounts.
+  const photoMode = photoModeFor(
+    createFormPhotoCount({
+      crPhotoId,
+      branches: branchStates.map((b) => ({
+        shopPhotoId: b.shopPhotoId,
+        signboardPhotoId: b.signboardPhotoId,
+        extraPhotoIds: b.extraPhotoIds.slice(0, 2),
+      })),
+    })
+  );
 
   // Client mirror of collectMissingForCreate (lib/validation/create.ts) so the
   // salesman gets instant feedback before the server round trip.
@@ -1492,7 +1507,7 @@ export function CreateCustomerForm({
                 disabled={readOnly || photosLocked}
                 initial={
                   crPhotoId
-                    ? { attachmentId: crPhotoId, remoteUrl: `/api/photos/${crPhotoId}` }
+                    ? { attachmentId: crPhotoId, remoteUrl: `/api/photos/${crPhotoId}`, photoMode }
                     : null
                 }
                 onChange={(p) => !readOnly && setCrPhotoId(p?.attachmentId ?? null)}
@@ -1706,6 +1721,9 @@ export function CreateCustomerForm({
         </FormSection>
       )}
 
+      {/* Says nothing unless photos are paced or did not load (lib/photo-pacing.ts). */}
+      <PhotoQueueStatus />
+
       {branchStates.map((s, idx) => (
         <FormSection
           key={s.key}
@@ -1881,7 +1899,7 @@ export function CreateCustomerForm({
                   capturedLng={s.gps?.lng}
                   initial={
                     s.shopPhotoId
-                      ? { attachmentId: s.shopPhotoId, remoteUrl: `/api/photos/${s.shopPhotoId}` }
+                      ? { attachmentId: s.shopPhotoId, remoteUrl: `/api/photos/${s.shopPhotoId}`, photoMode }
                       : null
                   }
                   onChange={(p) =>
@@ -1900,6 +1918,7 @@ export function CreateCustomerForm({
                       ? {
                           attachmentId: s.signboardPhotoId,
                           remoteUrl: `/api/photos/${s.signboardPhotoId}`,
+                          photoMode,
                         }
                       : null
                   }
@@ -1921,7 +1940,7 @@ export function CreateCustomerForm({
                       capturedLng={s.gps?.lng}
                       initial={
                         existing
-                          ? { attachmentId: existing, remoteUrl: `/api/photos/${existing}` }
+                          ? { attachmentId: existing, remoteUrl: `/api/photos/${existing}`, photoMode }
                           : null
                       }
                       onChange={(p) => {

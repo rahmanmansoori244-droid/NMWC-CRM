@@ -43,7 +43,7 @@ import { newId } from './ids';
 import type { World } from './types';
 
 export type { FieldChange };
-export { seedPhoto, seedPhotos, type PhotoSpec } from './photos';
+export { seedPhoto, seedPhotoRows, seedPhotos, type PhotoSpec } from './photos';
 
 /** The fields a test changes, as the form would send them (no bases — they are read live). */
 export interface UpdatePatch {

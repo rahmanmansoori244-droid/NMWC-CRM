@@ -288,6 +288,14 @@ test.describe('today', { tag: ['@phone'] }, () => {
 - Seeds: `seedPhoto` (unique bytes, R2 + Attachment row), `seedUpdateEdit`
   (built from the live row with the app's own helpers and proven with
   `approvalPlanFor`), `seedNotification`. One SUBMITTED edit per customer.
+  `seedPhotoRows`: the same Attachment rows and registry entries with NO R2
+  object, for a page whose photo requests the test answers itself with
+  `page.route` (`answerPhotos` in support/photo-queue-helpers.ts, used by
+  photo-loading.spec.ts for a customer with more than 40 photos): many photos
+  on a page without uploads to the real bucket (no launch test uploads more
+  than 4 new objects). `recordPhotoEvents` reads, in the page, when each
+  photo's `<img>` is added and when one fails: pace checks use those times,
+  not when the route hears a request.
   A reactivation's "photo older than the closure" needs the closure about 2 h
   ago and the photo between 24 h ago and then (the 24-hour rule is checked first).
 - The FM, GM, Steward and Viewer queues and counts are org-wide (real UAT rows
