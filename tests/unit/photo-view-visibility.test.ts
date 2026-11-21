@@ -63,6 +63,9 @@ const READERS: Record<string, string> = {
   // Follow-up 1 (H1, bug hunt round 1, finding 1): the Steward's fix of a held-back row.
   'services/import-fixes.ts':
     "the Branch CREATE rows of one customer's shops, to tell which import row created each; returns only the shop code and that row's number, never a row; Steward-only action",
+  // The daily Temix import, review 2026-11-15: how often one customer's transaction failed.
+  'services/temix-daily-apply.ts':
+    "a count of the file's own TEMIX_DAILY_GROUP_FAILED rows for one customer group; returns a number, never a row",
 };
 
 /** The entity type each listed non-page reader is held to, read from its query. */
@@ -75,6 +78,7 @@ const READ_ONLY_ENTITY: Record<string, string> = {
   'lib/account-import-repeat.ts': 'User',
   'lib/clean-start-record.ts': 'System',
   'services/import-fixes.ts': 'Branch',
+  'services/temix-daily-apply.ts': 'TemixDailyFile',
 };
 
 const ROOTS = ['app', 'lib', 'services', 'components'];

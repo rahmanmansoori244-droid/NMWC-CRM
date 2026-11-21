@@ -1,0 +1,23 @@
+-- The daily Temix import, stage 2: the notification its daily summary leaves
+-- the Data Steward (the merged plan, finalize and alerts).
+--
+--   TEMIX_DAILY_SUMMARY  one a day per active Data Steward, counts only (never a
+--                        customer's name), linking to /temix-daily. In-app only
+--                        while the Steward is not an e-mailed role
+--                        (lib/notify-policy.ts EMAIL_ROLES) and the kind is not
+--                        in EMAIL_KINDS, so the outbox marks it SKIPPED_KIND.
+--
+-- Isolated enum-only migration: Postgres refuses a new enum value in the same
+-- transaction that added it, so nothing else goes here (the precedent is
+-- 20261024120300_notification_integrity_alert).
+--
+-- Step one of two. A Prisma client that does not know an enum value throws when
+-- it reads a row holding one, so the build that READS this value must be
+-- production's rollback target before any build WRITES it. The build that ships
+-- this migration reads it (the inbox's label and link) and never writes it:
+-- lib/temix-daily-policy.ts TEMIX_DAILY_SUMMARY_ENABLED is false, and a
+-- one-line follow-up commit turns it on (the plan's stage 7) once this build
+-- has served production and passed smoke. Before rolling back past this build,
+-- delete the TEMIX_DAILY_SUMMARY notification rows (there are none while the
+-- switch is off).
+ALTER TYPE "NotificationKind" ADD VALUE IF NOT EXISTS 'TEMIX_DAILY_SUMMARY';

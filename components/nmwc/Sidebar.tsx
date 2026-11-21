@@ -25,6 +25,7 @@ import {
   X,
   Activity,
   KeyRound,
+  FileSpreadsheet,
 } from 'lucide-react';
 
 type NavItem = {
@@ -94,6 +95,8 @@ export const NAV_BY_ROLE: Record<Role, NavItem[]> = {
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     EXPORT,
     { href: '/temix', label: 'Temix sync', icon: RefreshCw },
+    // The daily Temix import (stage 3): the Steward's daily file list and upload.
+    { href: '/temix-daily', label: 'Temix daily file', icon: FileSpreadsheet },
     { href: '/customers', label: 'Customers', icon: Search },
     { href: '/duplicates', label: 'Duplicates', icon: AlertTriangle },
     // SEC-10: regions are Steward-created (a Manager only works inside theirs).

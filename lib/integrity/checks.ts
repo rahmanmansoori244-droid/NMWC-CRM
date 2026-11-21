@@ -69,6 +69,7 @@ import {
   type TriggerRow,
 } from './classify';
 import { EXPECTED_FUNCTIONS, TRIGGER_BINDINGS } from './expected';
+import { TEMIX_DAILY_LEDGERS, TEMIX_DAILY_STAGING } from '../temix-daily-tables';
 import { DB_RULE_NAMES, dbRulesCountSql } from '../db-rules';
 
 type Tx = Pick<PrismaClient, '$queryRaw'> | Pick<Prisma.TransactionClient, '$queryRaw'>;
@@ -528,10 +529,14 @@ export const CHECKS: IntegrityCheck[] = [
         Prisma.sql`SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = ${RUNTIME_ROLE}) AS exists`
       );
       if (!exists) return { count: 0, sampleIds: [], detail: { role: 'not set up' }, status: 'info' };
-      const ledgers = ['AuditLog', 'EditApproval', ...HISTORY_TABLES, ...APPEND_ONLY_APP_TABLES];
+      // The daily Temix import's ledgers are insert-only like the rest, and its
+      // files and rows are never deleted (migration 20261114100000_temix_daily_tables;
+      // not sealed yet, but watched here).
+      const ledgers = ['AuditLog', 'EditApproval', ...HISTORY_TABLES, ...APPEND_ONLY_APP_TABLES, ...TEMIX_DAILY_LEDGERS];
       const checks: Array<[string, string]> = [
         ...ledgers.flatMap((t) => ['UPDATE', 'DELETE', 'TRUNCATE'].map((p) => [t, p] as [string, string])),
         ['CustomerEdit', 'DELETE'],
+        ...TEMIX_DAILY_STAGING.flatMap((t) => ['DELETE', 'TRUNCATE'].map((p) => [t, p] as [string, string])),
         ...HISTORY_TABLES.map((t) => [t, 'INSERT'] as [string, string]),
       ];
       const tables = await q<{ t: string; p: string }>(
@@ -540,7 +545,7 @@ export const CHECKS: IntegrityCheck[] = [
                     WHERE to_regclass(format('public.%I', x.t)) IS NOT NULL
                       AND has_table_privilege(${RUNTIME_ROLE}, format('public.%I', x.t), x.p)`
       );
-      const sequences = [...HISTORY_TABLES, ...LEDGER_SEQUENCE_TABLES].map(historySequence).concat([...LEDGER_SEQ_SEQUENCES]);
+      const sequences = [...HISTORY_TABLES, ...LEDGER_SEQUENCE_TABLES, ...TEMIX_DAILY_LEDGERS].map(historySequence).concat([...LEDGER_SEQ_SEQUENCES]);
       const seqs = await q<{ s: string }>(
         db,
         Prisma.sql`SELECT x.s FROM unnest(${sequences}::text[]) AS x(s)

@@ -63,7 +63,10 @@ BEGIN
      OR EXISTS (SELECT 1 FROM public."ImportBatch") OR EXISTS (SELECT 1 FROM public."ImportRow")
      OR EXISTS (SELECT 1 FROM public."TemixSyncBatch") OR EXISTS (SELECT 1 FROM public."ExportJob")
      OR EXISTS (SELECT 1 FROM public."CustomerHistory") OR EXISTS (SELECT 1 FROM public."BranchHistory")
-     OR EXISTS (SELECT 1 FROM public."AttachmentHistory") OR EXISTS (SELECT 1 FROM public."SavedView") THEN
+     OR EXISTS (SELECT 1 FROM public."AttachmentHistory") OR EXISTS (SELECT 1 FROM public."SavedView")
+     OR EXISTS (SELECT 1 FROM public."TemixDailyFile") OR EXISTS (SELECT 1 FROM public."TemixDailyRow")
+     OR EXISTS (SELECT 1 FROM public."TemixChange") OR EXISTS (SELECT 1 FROM public."TemixChangeReview")
+     OR EXISTS (SELECT 1 FROM public."TemixNoticeSeen") THEN
     RAISE EXCEPTION 'clean-start verify: customer data is present' USING ERRCODE = 'CS302';
   END IF;
 END

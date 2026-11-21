@@ -153,6 +153,7 @@ enum NotificationKind {
   REACTIVATION_REQUESTED // F1: a reactivation waiting on a Manager; decided only on /reactivations
   SIGNED_FORM_REQUESTED // Owner decisions 2026-10-11: the salesman must upload the signed credit application
   INTEGRITY_ALERT // Gap 29: the nightly data check found a problem; to the Data Steward, in-app only (lib/integrity)
+  TEMIX_DAILY_SUMMARY // Daily Temix import: one a day per Data Steward, counts only; written only once lib/temix-daily-policy.ts switches it on
 }
 
 // ── ORG HIERARCHY ────────────────────────────────────────
@@ -198,6 +199,7 @@ model Route {
   newRouteEdits CustomerEdit[]   @relation("EditNewRoute")
   approvalsOnRoute EditApproval[] @relation("ApprovalSubmitterRoute")
   submittedOnEdits CustomerEdit[] @relation("EditRouteAtSubmit")
+  temixRouteMap    TemixRouteMap[] @relation("TemixRouteMapRoute")
 
   @@unique([regionId, code])
   @@index([regionId])
@@ -263,6 +265,13 @@ model User {
   editedCustomers     Customer[]        @relation("CustomerLastEditedBy")
   createdBranches     Branch[]          @relation("BranchCreatedBy")
   editedBranches      Branch[]          @relation("BranchLastEditedBy")
+  // The daily Temix import (migration 20261114100000_temix_daily_tables).
+  temixDailyUploads   TemixDailyFile[]    @relation("TemixDailyUploader")
+  temixDailyApplied   TemixDailyFile[]    @relation("TemixDailyApplier")
+  temixDailyDiscarded TemixDailyFile[]    @relation("TemixDailyDiscarder")
+  temixDailyAcks      TemixDailyFile[]    @relation("TemixDailyReversalAck")
+  temixChangeReviews  TemixChangeReview[] @relation("TemixChangeReviewer")
+  temixRouteMapRows   TemixRouteMap[]     @relation("TemixRouteMapBy")
 
   @@index([role, isActive])
 }
@@ -1474,4 +1483,219 @@ model TemixSyncBatch {
 model CodeSequence {
   scope String @id
   next  Int    @default(1)
+}
+
+// ── TEMIX DAILY IMPORT (stage 1: the tables only) ─────────────────────────
+// The daily Temix-to-CRM file is a module of its own, apart from the Import
+// screen (ImportBatch and ImportRow are not touched). Migration
+// 20261114100000_temix_daily_tables; the list of these tables, their triggers
+// and the ledger kinds is lib/temix-daily-tables.ts. Nothing writes them yet:
+// the upload, check, apply and finalize stages come later, and every rule the
+// owner has not decided (the main account row, the A/I mapping, creating
+// customers and shops, route-code variants, thresholds) is left out on purpose.
+
+enum TemixDailyFileState {
+  STAGED
+  CHECKED
+  APPLYING
+  FINALIZING
+  LOADED
+  DISCARDED
+}
+
+enum TemixDailyRowOutcome {
+  PENDING
+  NO_CHANGE
+  APPLIED
+  PARTLY_APPLIED
+  HELD
+  REJECTED
+}
+
+// One row per uploaded daily file. Never deleted (a trigger refuses DELETE and
+// TRUNCATE outside the owner's maintenance window). loadDay is the Oman day of
+// the upload: never in the future, and it, the name, hash, size, uploader and
+// upload time never change (trigger temixdailyfile_identity_guard). The same
+// bytes may be staged once per load day (partial unique index
+// TemixDailyFile_sha_day_live_unique, discarded files left out), and at most
+// one file is mid-load at a time (TemixDailyFile_one_in_flight).
+model TemixDailyFile {
+  id                String              @id @default(cuid())
+  filename          String
+  loadDay           DateTime            @db.Date
+  uploadedById      String
+  uploadedAt        DateTime            @default(now())
+  fileSha256        String
+  fileBytes         Int
+  // The folded headings of the file, in file order (heading names only), and
+  // the notes counted at upload (notesAtUpload: code words and numbers).
+  headings          Json
+  state             TemixDailyFileState @default(STAGED)
+  totalRows         Int                 @default(0)
+  appliedRows       Int                 @default(0)
+  noChangeRows      Int                 @default(0)
+  heldRows          Int                 @default(0)
+  rejectedRows      Int                 @default(0)
+  noticeRows        Int                 @default(0)
+  // The apply lease: a compare-and-set token that expires, like ImportBatch's.
+  applyLeaseBy      String?
+  applyLeaseUntil   DateTime?
+  applyStartedAt    DateTime?
+  appliedById       String?
+  loadedAt          DateTime?
+  discardedById     String?
+  discardedAt       DateTime?
+  discardReason     String?
+  // An earlier file with exactly the same bytes (another load day).
+  sameBytesAsFileId String?
+  // The Steward ticked the warning that this file sets values back.
+  reversalAckById   String?
+  reversalAckAt     DateTime?
+
+  uploadedBy    User             @relation("TemixDailyUploader", fields: [uploadedById], references: [id])
+  appliedBy     User?            @relation("TemixDailyApplier", fields: [appliedById], references: [id])
+  discardedBy   User?            @relation("TemixDailyDiscarder", fields: [discardedById], references: [id])
+  reversalAckBy User?            @relation("TemixDailyReversalAck", fields: [reversalAckById], references: [id])
+  sameBytesAs   TemixDailyFile?  @relation("TemixDailySameBytes", fields: [sameBytesAsFileId], references: [id])
+  sameBytesOf   TemixDailyFile[] @relation("TemixDailySameBytes")
+  rows          TemixDailyRow[]
+  changes       TemixChange[]
+  noticesSeen   TemixNoticeSeen[]
+
+  // Resume and the stalled-load counters pick a file up by (state, lease).
+  @@index([state, applyLeaseUntil])
+  // The order rule (no newer load day before an older one is finished) and the list.
+  @@index([loadDay, uploadedAt])
+}
+
+// One row per data row of a daily file (staging). raw and parsed hold the
+// customer's details as Temix sent them, and are emptied 90 days on by the
+// retention rule temix-daily-payload-90d (lib/retention-rules.ts) once the file
+// is LOADED or DISCARDED; everything else here is codes, ids and outcomes.
+// isMainRow stays null until the owner says how the main account row is marked.
+model TemixDailyRow {
+  id            String               @id @default(cuid())
+  fileId        String
+  rowNumber     Int
+  raw           Json
+  parsed        Json?
+  // Normalised codes (trimmed, invisible characters removed, ASCII digits, capitals).
+  custCodeKey   String?
+  branchCodeKey String?
+  isMainRow     Boolean?
+  customerId    String?
+  branchId      String?
+  outcome       TemixDailyRowOutcome @default(PENDING)
+  // Codes only, never a value from the file.
+  holdReasons   String[]             @default([])
+  doneAt        DateTime?
+  createdAt     DateTime             @default(now())
+
+  file    TemixDailyFile @relation(fields: [fileId], references: [id])
+  changes TemixChange[]
+
+  @@unique([fileId, rowNumber])
+  @@index([fileId, outcome])
+  @@index([fileId, custCodeKey])
+  @@index([customerId])
+}
+
+// The ledger of the daily import: one row per change applied to the CRM
+// (applied = true) or per notice listed for the Steward (applied = false).
+// INSERT-only: triggers refuse UPDATE, DELETE and TRUNCATE outside the owner's
+// maintenance window, as on AuditLog and the history. source and txId are
+// stamped by the database (nmwc_auditlog_stamp_context), so txId joins the
+// CustomerHistory, BranchHistory and AuditLog rows of the same transaction.
+// fromValue and toValue hold codes, ids, enum values and figures only, never a
+// name, a phone, an address or a CR number. kind: CHECK TemixChange_kind_check
+// (lib/temix-daily-tables.ts TEMIX_CHANGE_KINDS).
+model TemixChange {
+  id         BigInt   @id @default(autoincrement())
+  createdAt  DateTime @default(now())
+  fileId     String
+  rowId      String?
+  loadDay    DateTime @db.Date
+  kind       String
+  applied    Boolean
+  customerId String?
+  branchId   String?
+  field      String?
+  fromValue  String?
+  toValue    String?
+  detailCode String?
+  source     String?
+  txId       BigInt?
+
+  file    TemixDailyFile      @relation(fields: [fileId], references: [id])
+  row     TemixDailyRow?      @relation(fields: [rowId], references: [id], onDelete: Restrict)
+  reviews TemixChangeReview[]
+
+  // The day's drill-down and the summary (by load day and kind).
+  @@index([loadDay, kind])
+  @@index([customerId, createdAt])
+  @@index([branchId, createdAt])
+  @@index([fileId])
+  @@index([txId])
+}
+
+// "Seen / handled" marks on ledger rows, so the ledger itself is never updated.
+// INSERT-only like the ledger. note is a short code (CHECK), never free text.
+model TemixChangeReview {
+  id           BigInt   @id @default(autoincrement())
+  changeId     BigInt
+  reviewedById String
+  reviewedAt   DateTime @default(now())
+  note         String?
+  source       String?
+  txId         BigInt?
+
+  change     TemixChange @relation(fields: [changeId], references: [id])
+  reviewedBy User        @relation("TemixChangeReviewer", fields: [reviewedById], references: [id])
+
+  @@index([changeId, reviewedAt])
+}
+
+// "Listed once": a keyed hash of the normalised Temix value per customer and
+// kind, so a name difference is listed again only when Temix's value changes.
+// The value itself is never stored here. INSERT-only. kind: NAME_DIFFERS only
+// (CHECK); whether a status difference is listed once is the owner's question.
+model TemixNoticeSeen {
+  id          BigInt   @id @default(autoincrement())
+  customerId  String
+  kind        String
+  valueHash   String
+  firstFileId String
+  firstSeenAt DateTime @default(now())
+
+  firstFile TemixDailyFile @relation(fields: [firstFileId], references: [id])
+
+  @@unique([customerId, kind, valueHash])
+  @@index([firstFileId])
+}
+
+// Temix route code -> CRM route, for codes that are not exactly a Route.code.
+// Starts EMPTY; only the Data Steward adds entries, from the owner's route
+// master. Append-only: an entry is retired by a RETIRE row naming it (never by
+// an update), and a code has at most one live ADD (trigger temixroutemap_live_guard).
+model TemixRouteMap {
+  id             BigInt   @id @default(autoincrement())
+  temixRouteCode String
+  // ADD or RETIRE (CHECK TemixRouteMap_action_check).
+  action         String
+  routeId        String?
+  retiresId      BigInt?  @unique
+  reason         String
+  byId           String
+  at             DateTime @default(now())
+  source         String?
+  txId           BigInt?
+
+  route     Route?         @relation("TemixRouteMapRoute", fields: [routeId], references: [id], onDelete: Restrict)
+  by        User           @relation("TemixRouteMapBy", fields: [byId], references: [id])
+  retires   TemixRouteMap? @relation("TemixRouteMapRetire", fields: [retiresId], references: [id], onDelete: Restrict)
+  retiredBy TemixRouteMap? @relation("TemixRouteMapRetire")
+
+  @@index([temixRouteCode, id])
+  @@index([routeId])
+  @@index([byId])
 }

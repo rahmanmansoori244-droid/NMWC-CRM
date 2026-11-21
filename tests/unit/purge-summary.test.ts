@@ -13,7 +13,7 @@
  *  - The migration's CHECK constraint names exactly the rule ids.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { Prisma } from '@prisma/client';
 import {
   PURGE_DETAIL_KEYS,
@@ -29,6 +29,7 @@ import {
   rateLimitPurgeSql,
   readNotificationPurgeSql,
   runPurge,
+  temixDailyPayloadPurgeSql,
   unreadNotificationPurgeSql,
 } from '@/lib/purge-summary';
 import { RETENTION_RULES, RETENTION_RULE_IDS, retentionCutoff, type RetentionRuleId } from '@/lib/retention-rules';
@@ -44,6 +45,7 @@ const STATEMENTS: Record<RetentionRuleId, Prisma.Sql> = {
   'notification-read-90d': readNotificationPurgeSql(NOW, 500, RUN),
   'photo-detached-30d': photoPurgeSql('att-1', NOW, RUN),
   'password-history-last-5': passwordHistoryPurgeSql('user-1', ['k1', 'k2', 'k3', 'k4', 'k5'], { runId: null }),
+  'temix-daily-payload-90d': temixDailyPayloadPurgeSql(NOW, 2000, RUN),
 };
 
 describe('one statement removes the batch and writes its summary', () => {
@@ -56,6 +58,7 @@ describe('one statement removes the batch and writes its summary', () => {
     expect(sql.match(/\bWITH\b/g)).toHaveLength(1);
     // The removal and the summary are both in it.
     if (rule.action === 'DELETE') expect(sql).toContain(`DELETE FROM "${rule.table}"`);
+    else if (rule.table === 'TemixDailyRow') expect(sql).toMatch(/UPDATE "TemixDailyRow" x\s+SET "raw" = '\{\}'::jsonb, "parsed" = NULL\s+FROM doomed/);
     else expect(sql).toMatch(new RegExp(`UPDATE "${rule.table}" x\\s+SET "raw" = '\\{\\}'::jsonb, "parsed" = NULL, "issues" = NULL, "corrections" = NULL`));
     expect(sql).toContain('INSERT INTO "PurgeSummary"');
     // An empty batch writes no summary; the outcome is read back to be checked.
@@ -90,6 +93,31 @@ describe('one statement removes the batch and writes its summary', () => {
     expect(dead).toMatch(/db\."promoteLeaseUntil" IS NULL OR db\."promoteLeaseUntil" < /);
     expect(dead).toMatch(/NOT EXISTS \(\s*SELECT 1 FROM "ImportRow" lr\s+WHERE lr\."batchId" = db\."id"\s+AND \(lr\."state" IN \('PROMOTED', 'REJECTED'\)/);
     expect(dead).toContain(`lr."parsed"->>'fixedAfterLoad' = 'true'`);
+  });
+
+  it('a daily Temix row is emptied only past the cut-off, only with a payload, never under a live load', () => {
+    const sql = STATEMENTS['temix-daily-payload-90d'].sql;
+    const doomed = sql.slice(sql.indexOf('doomed AS ('), sql.indexOf('gone AS ('));
+    const update = sql.slice(sql.indexOf('UPDATE "TemixDailyRow"'), sql.indexOf('RETURNING'));
+    for (const [part, r, f] of [
+      [doomed, 'r', 'f'],
+      [update, 'x', 'xf'],
+    ] as const) {
+      expect(part).toContain(`${r}."createdAt" < (?::timestamptz AT TIME ZONE 'UTC')`);
+      // The partial index's own predicate, so the sweep reads only rows that still hold a payload.
+      expect(part).toContain(`(${r}."raw" <> '{}'::jsonb OR ${r}."parsed" IS NOT NULL)`);
+      expect(part).toContain(`${f}."state" IN ('LOADED', 'DISCARDED')`);
+      // Review of stage 1: a file left unfinished before the cut-off is cleared
+      // too (as the import's never-loaded batch), unless a load holds a live lease.
+      const w = part.replace(/\s+/g, ' ');
+      expect(w).toContain(
+        `OR (${f}."uploadedAt" < (?::timestamptz AT TIME ZONE 'UTC') AND (${f}."state" IN ('STAGED', 'CHECKED') OR (${f}."state" IN ('APPLYING', 'FINALIZING') AND (${f}."applyLeaseUntil" IS NULL OR ${f}."applyLeaseUntil" < (?::timestamptz AT TIME ZONE 'UTC')))))`
+      );
+    }
+    expect(sql).toMatch(/ORDER BY r\."createdAt"\s+LIMIT \?/);
+    // Nothing else: the ledger and the file are read, never written.
+    expect(sql).not.toMatch(/UPDATE "(TemixDailyFile|TemixChange)"|DELETE FROM "Temix/);
+    expect(STATEMENTS['temix-daily-payload-90d'].values[0]).toBe(new Date(NOW.getTime() - 90 * 86_400_000).toISOString());
   });
 
   it('the "never loaded" test runs once per batch, never once per candidate row (second round, adversarial review)', () => {
@@ -220,8 +248,23 @@ describe('the migration agrees', () => {
     return [...text.slice(text.indexOf(' IN (')).matchAll(/'([^']+)'/g)].map((m) => m[1]!).sort();
   };
 
+  /** The rule CHECK as the LAST migration that (re)defines it has it. */
+  const lastRuleCheck = () => {
+    const defs = readdirSync('prisma/migrations')
+      .filter((d) => /^\d{14}_/.test(d))
+      .sort()
+      .map((d) => readFileSync(`prisma/migrations/${d}/migration.sql`, 'utf8').replace(/--[^\n]*/g, ''))
+      .flatMap((m) => [...m.matchAll(/ADD CONSTRAINT "PurgeSummary_rule_check"\s+CHECK \("rule" IN \(([^)]*)\)\)/g)].map((x) => x[1]!));
+    return [...defs[defs.length - 1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!).sort();
+  };
+
   it('the CHECK constraints name exactly the rule ids and actions', () => {
-    expect(list('"PurgeSummary_rule_check"')).toEqual([...RETENTION_RULE_IDS].sort());
+    // The first definition named the seven rules of gap 25; the daily Temix import
+    // (20261114100000_temix_daily_tables) replaced it with one more.
+    expect(list('"PurgeSummary_rule_check"')).toEqual(
+      RETENTION_RULE_IDS.filter((id) => id !== 'temix-daily-payload-90d').sort()
+    );
+    expect(lastRuleCheck()).toEqual([...RETENTION_RULE_IDS].sort());
     expect(list('"PurgeSummary_action_check"')).toEqual(['CLEAR_PAYLOAD', 'DELETE']);
     expect(sql).toContain('CHECK ("rows" > 0)');
   });

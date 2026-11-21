@@ -434,8 +434,8 @@ export function temixBacklogStatus(oldestWaitingSince: Date | null, now: Date): 
   return now.getTime() - oldestWaitingSince.getTime() > TEMIX_BACKLOG_MAX_DAYS * DAY ? 'breached' : 'met';
 }
 
-export function importsStatus(stuckPromotes: number, stuckUploads: number): SloStatus {
-  return stuckPromotes + stuckUploads > 0 ? 'breached' : 'met';
+export function importsStatus(stuckPromotes: number, stuckUploads: number, stuckDailyLoads = 0): SloStatus {
+  return stuckPromotes + stuckUploads + stuckDailyLoads > 0 ? 'breached' : 'met';
 }
 
 /** "3 h 20 m" / "45 m" / "2 d 4 h" — ages on the page. */
