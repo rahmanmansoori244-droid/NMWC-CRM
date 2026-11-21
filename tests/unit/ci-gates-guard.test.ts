@@ -310,10 +310,18 @@ describe('the build cannot migrate production before it typechecks', () => {
     // typecheck failed on the orphan with TS2307 until someone cleared .next by
     // hand (review, 2026-09-24). Clearing them also makes the local typecheck the
     // one a fresh checkout — CI, Vercel — runs, which never has those files.
+    // Next 16 (2026-11-21): `next dev` writes its route types to .next/dev/types
+    // (validator.ts imports every page) and tsconfig.json includes that folder, so
+    // it is cleared too: with only .next/types/app cleared, a page deleted after a
+    // `next dev` run failed the typecheck with TS2307 again (review, 2026-11-21).
     const typecheck = pkg.scripts.typecheck ?? '';
-    const clear = typecheck.search(/rmSync\('\.next\/types\/app'/);
-    expect(clear, 'typecheck must clear .next/types/app').toBeGreaterThan(-1);
-    expect(clear).toBeLessThan(typecheck.indexOf('next typegen'));
+    const typegen = typecheck.indexOf('next typegen');
+    for (const dir of ['.next/types/app', '.next/dev/types']) {
+      const clear = typecheck.indexOf(`'${dir}'`);
+      expect(clear, `typecheck must clear ${dir}`).toBeGreaterThan(-1);
+      expect(clear).toBeLessThan(typegen);
+    }
+    expect(typecheck).toMatch(/rmSync\(d,\{recursive:true,force:true\}\)/);
   });
 
   it('typechecks BEFORE the migrate step', () => {
