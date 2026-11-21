@@ -41,7 +41,8 @@ const nextConfig: NextConfig = {
   // `npm run lint` before `prisma migrate deploy`. The reasons for the list (services/
   // holds the AuditLog writes the guard bans; scripts/ for hygiene; tests/ and
   // prisma/ left out so a test-fixture or seed lint error cannot fail a production
-  // deploy) are pinned in tests/unit/ci-gates-guard.test.ts.
+  // deploy) are pinned in tests/unit/csp.test.ts; the lint-before-migrate order in
+  // tests/unit/ci-gates-guard.test.ts.
 
   // Launch fix: the /import template download (app/(app)/import/template/route.ts)
   // reads these two files at run time; listed so its function always ships them.
