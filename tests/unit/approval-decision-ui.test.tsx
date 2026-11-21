@@ -23,7 +23,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, within, waitFor } from '@testing-library/react';
 import { Component, type ReactNode } from 'react';
 import { getRedirectError } from 'next/dist/client/components/redirect';
-import { isRedirectError, RedirectType } from 'next/dist/client/components/redirect-error';
+import { isRedirectError } from 'next/dist/client/components/redirect-error';
 import { MISSING_TOKEN_MESSAGE, STALE_VIEW_MESSAGE } from '@/lib/decision-token';
 import {
   BULK_DECISION_LIMIT,
@@ -253,7 +253,7 @@ describe("launch fix — the redirect back to the queue is Next's to follow, not
     ['approve', h.approve, approveThroughModal],
     ['send back', h.reject, rejectWithReason],
   ] as const)('%s: the redirect goes on to Next and "NEXT_REDIRECT" is never shown', async (_name, action, decide) => {
-    action.mockRejectedValue(getRedirectError('/approvals', RedirectType.push));
+    action.mockRejectedValue(getRedirectError('/approvals', 'push'));
     renderInBoundary();
     await decide();
     await waitFor(() => expect(caught).toHaveLength(1));

@@ -34,30 +34,15 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_SENTRY_ENV: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "development",
     NEXT_PUBLIC_SENTRY_RELEASE: process.env.VERCEL_GIT_COMMIT_SHA ?? "",
   },
-  // DG-06: `next lint` and the lint pass inside `next build` both default to
-  // app/pages/components/lib/src (ESLINT_DEFAULT_DIRS in next/dist/lib/constants.js).
-  // services/ and scripts/ were therefore linted by nothing at all — and services/
-  // holds 23 of the 31 direct AuditLog writes the guard in eslint.config.mjs bans.
-  // A rule that does not run is worse than no rule, so this list is load-bearing:
-  // it is what `next lint` reads (next-lint.js: options.dir ?? nextConfig.eslint?.dirs)
-  // and what the build's lint pass reads (build/type-check.js hands config.eslint?.dirs
-  // to verifyAndLint, which does configLintDirs ?? ESLINT_DEFAULT_DIRS). Listing
-  // services/ is what makes that guard real rather than decorative.
-  //
-  // scripts/ is listed for ordinary hygiene, NOT for the audit guard, which stops at
-  // the request-serving tree (the reasoning is in eslint.config.mjs). Linting it opens
-  // no new way to break a deploy: tsconfig.json already includes `**/*.ts`, so a broken
-  // operator script fails the build's type check today, and these are the files that
-  // run against production holding owner credentials.
-  //
-  // This REPLACES the defaults rather than extending them, so app/components/lib must
-  // be re-listed. 'pages' and 'src' are omitted because neither exists in this App
-  // Router tree. 'tests' and 'prisma' are omitted on purpose: a lint error in a test
-  // fixture or a development seed must not fail a production deploy, and both hold
-  // writers that must stay raw.
-  eslint: {
-    dirs: ['app', 'components', 'lib', 'services', 'scripts'],
-  },
+  // DG-06: which directories are linted is no longer set here. Next 16 removed
+  // `next lint`, the build's own lint pass and this file's `eslint.dirs` option;
+  // package.json's `lint` script runs the ESLint CLI over the same list
+  // (app components lib services scripts), and the build script runs
+  // `npm run lint` before `prisma migrate deploy`. The reasons for the list (services/
+  // holds the AuditLog writes the guard bans; scripts/ for hygiene; tests/ and
+  // prisma/ left out so a test-fixture or seed lint error cannot fail a production
+  // deploy) are pinned in tests/unit/ci-gates-guard.test.ts.
+
   // Launch fix: the /import template download (app/(app)/import/template/route.ts)
   // reads these two files at run time; listed so its function always ships them.
   outputFileTracingIncludes: {

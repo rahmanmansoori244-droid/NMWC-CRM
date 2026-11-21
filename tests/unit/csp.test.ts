@@ -16,6 +16,8 @@
  * CHANGELOG records being reverted under pressure, and nothing pinned it.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { buildCsp } from '@/lib/csp';
 import nextConfig from '@/next.config';
 
@@ -159,11 +161,21 @@ describe('next.config wiring', () => {
   });
 
   it('still lints services/, which is what makes the audit guard real', () => {
-    // tests/unit/audit-guard.test.ts leaves this to a human. If next.config ever
-    // fails to load, eslint.dirs goes with it and the DG-06 guard stops walking
-    // services/ while lint stays green.
-    expect(nextConfig.eslint?.dirs).toContain('services');
-    expect(nextConfig.eslint?.dirs).toContain('app');
-    expect(nextConfig.eslint?.dirs).toContain('lib');
+    // tests/unit/audit-guard.test.ts leaves this to a human. Since Next 16 the
+    // directory list lives in package.json's `lint` script (the ESLint CLI), not in
+    // next.config's removed `eslint.dirs`: if services/ drops off it, the DG-06
+    // guard stops walking services/ while lint stays green.
+    const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>;
+    };
+    const dirs = /^eslint((?:\s+[\w-]+)+)$/.exec(pkg.scripts.lint ?? '')?.[1]?.trim().split(/\s+/);
+    expect(dirs, 'package.json lint must be `eslint <dir> <dir> …`').toBeDefined();
+    expect(dirs).toEqual(expect.arrayContaining(['app', 'components', 'lib', 'services', 'scripts']));
+    // tests/ and prisma/ stay out: a lint error in a fixture or a seed must not
+    // fail a production deploy.
+    expect(dirs).not.toContain('tests');
+    expect(dirs).not.toContain('prisma');
+    // Next 16 no longer reads it; a leftover would read as if it still mattered.
+    expect((nextConfig as Record<string, unknown>).eslint).toBeUndefined();
   });
 });

@@ -8,9 +8,11 @@ import { ESLint } from 'eslint';
  * createManyAndReturn | upsert` outside lib/audit.ts, so every AuditLog row goes
  * through writeAudit() and carries `ip` and `userAgent`.
  *
- * If that esquery selector ever stops parsing, ESLint throws mid-lint, Next's
- * runLintCheck catches it, logs a single `ESLint: ...` line and lets `next build`
- * continue UNLINTED (next/dist/lib/eslint/runLintCheck.js). Nothing turns red.
+ * Under `next lint` (Next 15), a selector that stopped parsing made ESLint throw
+ * mid-lint, Next's runLintCheck caught it, logged a single `ESLint: ...` line and
+ * let `next build` continue UNLINTED. Since Next 16 the build runs the ESLint CLI
+ * itself (`npm run lint`), which exits non-zero on such a crash — but a rule that
+ * is deleted, downgraded or re-scoped still lints green, so nothing turns red.
  * This test is what turns red instead. It lints snippets against the real
  * eslint.config.mjs, so it fails if the rule is deleted, downgraded to 'warn',
  * re-scoped away from services/, or given a selector that no longer matches the
@@ -18,10 +20,9 @@ import { ESLint } from 'eslint';
  * rule on purpose, and a later widening that drags operator tooling in fails here
  * rather than at a production deploy.
  *
- * It cannot see build wiring. Two things still need checking by hand:
- *   1. `npx next lint` must name files under services/ (that is next.config.ts's
- *      eslint.dirs, not this config).
- *   2. After the conversions, `npx next lint` must report no warnings or errors.
+ * It cannot see build wiring. That services/ is linted at all is package.json's
+ * `lint` script (`eslint app components lib services scripts`), pinned by
+ * tests/unit/csp.test.ts; `npm run lint` must report no warnings or errors.
  */
 
 const RULE = 'no-restricted-syntax';
@@ -103,7 +104,7 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
       const code = 'export async function f(tx: any) { await tx.auditLog.create({ data: {} }); }';
       // writeAudit() itself.
       expect(await guardHits('lib/audit.ts', code)).toHaveLength(0);
-      // tests/ is deliberately outside the rule's files, and outside eslint.dirs:
+      // tests/ is deliberately outside the rule's files, and outside the lint script's dirs:
       // audit-immutability writes raw rows on purpose, and a lint error in a test
       // must never fail a production deploy. Same for the development seeds.
       expect(await guardHits('tests/integration/audit-immutability.test.ts', code)).toHaveLength(0);

@@ -115,7 +115,7 @@ function preflight(): void {
   if (!DEV) {
     const buildId = path.join(REPO_ROOT, '.next', 'BUILD_ID');
     if (!fs.existsSync(buildId)) {
-      fail('no production build — run: NEXT_PUBLIC_SENTRY_DSN= node scripts/qa/run-with-env.mjs next build --no-lint (never `npm run build`: it migrates UAT)');
+      fail('no production build — run: NEXT_PUBLIC_SENTRY_DSN= node scripts/qa/run-with-env.mjs next build (never `npm run build`: it migrates UAT)');
     }
     const builtAt = fs.statSync(buildId).mtimeMs;
     const newer = newestSource(builtAt);

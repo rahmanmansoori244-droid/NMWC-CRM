@@ -216,7 +216,7 @@ and its auth rule).
 The build script runs the migration **before** `next build`:
 
 ```
-prisma generate && next typegen && tsc --noEmit && next lint && prisma migrate deploy && next build --no-lint
+prisma generate && next typegen && tsc --noEmit && npm run lint && prisma migrate deploy && next build
 ```
 
 So a failure inside `next build` lands **after** the schema has changed. CI's

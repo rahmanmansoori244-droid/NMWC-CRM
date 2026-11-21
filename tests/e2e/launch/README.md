@@ -21,7 +21,7 @@ suite refuses that folder and any URL containing `ep-sweet-haze`).
 
    ```bash
    npm ci --no-audit --no-fund && npx prisma generate
-   NEXT_PUBLIC_SENTRY_DSN= node scripts/qa/run-with-env.mjs next build --no-lint
+   NEXT_PUBLIC_SENTRY_DSN= node scripts/qa/run-with-env.mjs next build
    ```
 
    The DSN is inlined at build time; the config refuses to start a build that

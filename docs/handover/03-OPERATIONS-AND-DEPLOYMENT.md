@@ -462,7 +462,7 @@ Whichever route is chosen, record it as [§4.1](#41-how-main-moves) says.
 Vercel runs the `build` script in [`package.json`](../../package.json):
 
 ```
-prisma generate && next typegen && tsc --noEmit && next lint && prisma migrate deploy && next build --no-lint
+prisma generate && next typegen && tsc --noEmit && npm run lint && prisma migrate deploy && next build
 ```
 
 The database is migrated **before** `next build` runs. Typecheck and lint were moved ahead
@@ -472,7 +472,7 @@ order. The hazard remains for anything that only `next build` catches.
 
 | The Vercel build fails in | Migrations applied to production? | Production then serves |
 |---|---|---|
-| `prisma generate`, `next typegen`, `tsc`, `next lint` | No | The previous build, on the old schema. Harmless. |
+| `prisma generate`, `next typegen`, `tsc`, `npm run lint` (ESLint) | No | The previous build, on the old schema. Harmless. |
 | `prisma migrate deploy` | Possibly some: earlier migrations in the batch, and part of the failing one. Prisma records a failed migration and will not apply later ones until it is resolved. | The previous build. Treat it as a database incident and do not improvise. Read [OPERATIONS §6](../OPERATIONS.md#6-backups-recovery-and-what-they-are-actually-worth). |
 | `next build` (a compile or prerender error, or a page's `params`/`searchParams` types) | **Yes** | The previous build, **against the new schema.** The database is migrated but the code is not deployed. |
 | Nothing (deployed, then found broken) | Yes | The new build. An Instant Rollback returns the old build, still on the new schema. |

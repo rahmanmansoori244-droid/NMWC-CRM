@@ -325,20 +325,21 @@ describe('the build cannot migrate production before it typechecks', () => {
   });
 
   it('lints BEFORE the migrate step, and does not rely on next build to do it', () => {
-    // `next build` lints as well as typechecking, so a lint error was the other
-    // half of the same hazard: migrations applied, then the build refuses.
-    // Moving the lint ahead of the migrate and passing `--no-lint` to the build
-    // keeps the total work the same (pre-flight review, 2026-09-24).
-    const lint = build.search(/\b(next lint|npm run lint)\b/);
+    // A lint error was the other half of the same hazard as a type error:
+    // migrations applied, then the build refuses (pre-flight review, 2026-09-24).
+    // Since Next 16 `next build` does not lint at all and `next lint` is gone, so
+    // the explicit lint below is the ONLY lint, which is exactly why it must come
+    // before the migrate.
+    const lint = build.search(/\b(npm run lint|eslint)\b/);
     expect(lint, 'the build script must lint').toBeGreaterThan(-1);
     expect(lint).toBeLessThan(build.indexOf('prisma migrate deploy'));
-    // If the build's own lint pass is switched off, the explicit one above is the
-    // only lint — which is exactly why it must come first.
-    if (/next build[^&]*--no-lint/.test(build)) {
-      expect(lint).toBeLessThan(build.indexOf('next build'));
-    }
+    expect(lint).toBeLessThan(build.indexOf('next build'));
+    // `next lint` and `next build --no-lint` no longer exist in Next 16: either
+    // one fails the deploy (unknown command / option) instead of linting.
+    expect(build).not.toMatch(/\bnext lint\b/);
+    expect(build).not.toMatch(/--no-lint/);
     // `npm run lint` must still BE the linter, or the step above lints nothing.
-    if (/npm run lint/.test(build)) expect(pkg.scripts.lint).toMatch(/\bnext lint\b/);
+    if (/npm run lint/.test(build)) expect(pkg.scripts.lint).toMatch(/^eslint\s/);
   });
 
   it('generates route types BEFORE it typechecks, in the build and in CI', () => {
