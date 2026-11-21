@@ -149,12 +149,14 @@ jobs:
       # expression with a WHERE clause. The diff would drop them, so they are allowed
       # by name; any other difference fails. (Prisma 6.19 leaves partial indexes out of
       # the diff, so the last one does not appear today: it is named for a Prisma that
-      # reports it.)
+      # reports it.) The daily Temix import (20261114100000_temix_daily_tables) adds
+      # three more partial indexes, named for the same reason: the same file once per
+      # load day, one load at a time, and the rows that still hold a payload.
       - name: Schema matches the migrations
         run: |
           psql "postgresql://ci:ci@localhost:5432/nmwc_ci" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE nmwc_shadow'
           npx prisma migrate diff             --from-migrations prisma/migrations             --to-schema-datamodel prisma/schema.prisma             --shadow-database-url postgresql://ci:ci@localhost:5432/nmwc_shadow             --script > drift.sql
-          ALLOWED='Branch_routeId_dayOfVisit_deletedAt_idx|Customer_deletedAt_idx|Customer_legalName_trgm_idx|Customer_nmwcCode_trgm_idx|Customer_temixCode_live_unique'
+          ALLOWED='Branch_routeId_dayOfVisit_deletedAt_idx|Customer_deletedAt_idx|Customer_legalName_trgm_idx|Customer_nmwcCode_trgm_idx|Customer_temixCode_live_unique|TemixDailyFile_sha_day_live_unique|TemixDailyFile_one_in_flight|TemixDailyRow_payload_createdAt_idx'
           REST=$(grep -v -E '^[[:space:]]*(--.*)?$' drift.sql | grep -v -E "^DROP INDEX \"($ALLOWED)\";$" || true)
           if [ -n "$REST" ]; then
             echo "schema.prisma and prisma/migrations disagree:"
@@ -272,6 +274,35 @@ jobs:
           # stops on a reserved name it would create and skips one that already
           # exists, through the real script (bootstrap-reserved).
           RUN_BOOTSTRAP_RESERVED: '1'
+          # The daily Temix import, stages 2 and 3: a synthetic daily file staged
+          # through the real upload (file, rows, one audit row and nothing else),
+          # the same file refused on its day, a customer master refused, the
+          # order rule, two uploads at once, and the summary kind unwritten
+          # (temix-daily-upload).
+          RUN_TEMIX_DAILY_UPLOAD: '1'
+          # The daily Temix import, stage 1: its tables on Postgres, the
+          # INSERT-only ledger (UPDATE and DELETE refused), the staged-row and
+          # finished-file guards and the retention sweep (temix-daily-tables).
+          RUN_TEMIX_DAILY: '1'
+          # The daily Temix import, stage 4: the Check of a synthetic staged file
+          # from the real reads (moves, holds, routes not matched, terms not
+          # applied), the route map through its real actions (add, refusals, two
+          # at once, retire) and nothing else written (temix-daily-check).
+          RUN_TEMIX_DAILY_CHECK: '1'
+          # The daily Temix import, stage 5: the apply through its real actions
+          # (route moves dated the load day with their history, audit and ledger
+          # rows; the order, pilot and reversal rules; a killed slice resumed
+          # without doubling; the same rows again change nothing; discard;
+          # the salesman's, manager's and dashboard's reads follow at once)
+          # (temix-daily-apply).
+          RUN_TEMIX_DAILY_APPLY: '1'
+          # The daily Temix import, stage 6: finalize's notices through the real
+          # apply (each absence, Accountant code and switched-off route listed
+          # once as an open spell and closed when it ends, names listed once
+          # under a keyed hash, nothing for a half-loaded file, nothing new for
+          # the same rows again) and the drill-down's Reviewed marks
+          # (temix-daily-finalize). Names are hashed with the AUTH_SECRET above.
+          RUN_TEMIX_DAILY_FINALIZE: '1'
 
   # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
   # person typing `npm run test:e2e`. It shows: login.spec.ts asserted

@@ -36,6 +36,7 @@ DECLARE
     'AuthEvent', 'JobRunDay', 'PurgeSummary', 'IntegrityCheckResult', 'SealRecord', 'RateLimit', 'SavedView',
     'CustomerHistory', 'BranchHistory', 'AttachmentHistory', 'UserHistory', 'RouteHistory', 'RouteOwnerHistory',
     'RegionHistory',
+    'TemixDailyFile', 'TemixDailyRow', 'TemixChange', 'TemixChangeReview', 'TemixNoticeSeen', 'TemixRouteMap',
     -- PARTIAL
     'CodeSequence', 'CronRun',
     -- KEEP
@@ -76,7 +77,8 @@ DECLARE
     'EditRevision', 'Notification', 'ImportBatch', 'ImportRow', 'TemixSyncBatch', 'ExportJob', 'AuditLog',
     'AuthEvent', 'JobRunDay', 'PurgeSummary', 'IntegrityCheckResult', 'SealRecord', 'RateLimit', 'SavedView',
     'CustomerHistory', 'BranchHistory', 'AttachmentHistory', 'UserHistory', 'RouteHistory', 'RouteOwnerHistory',
-    'RegionHistory'];
+    'RegionHistory',
+    'TemixDailyFile', 'TemixDailyRow', 'TemixChange', 'TemixChangeReview', 'TemixNoticeSeen', 'TemixRouteMap'];
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k
                JOIN pg_catalog.pg_class src ON src.oid = k.conrelid
@@ -111,7 +113,8 @@ DECLARE
     'EditRevision', 'Notification', 'ImportBatch', 'ImportRow', 'TemixSyncBatch', 'ExportJob', 'AuditLog',
     'AuthEvent', 'JobRunDay', 'PurgeSummary', 'IntegrityCheckResult', 'SealRecord', 'RateLimit', 'SavedView',
     'CustomerHistory', 'BranchHistory', 'AttachmentHistory', 'UserHistory', 'RouteHistory', 'RouteOwnerHistory',
-    'RegionHistory'];
+    'RegionHistory',
+    'TemixDailyFile', 'TemixDailyRow', 'TemixChange', 'TemixChangeReview', 'TemixNoticeSeen', 'TemixRouteMap'];
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t
                JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid

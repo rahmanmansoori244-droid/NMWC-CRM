@@ -20,7 +20,8 @@ DECLARE
     'EditRevision', 'Notification', 'ImportBatch', 'ImportRow', 'TemixSyncBatch', 'ExportJob', 'AuditLog',
     'AuthEvent', 'JobRunDay', 'PurgeSummary', 'IntegrityCheckResult', 'SealRecord', 'RateLimit', 'SavedView',
     'CustomerHistory', 'BranchHistory', 'AttachmentHistory', 'UserHistory', 'RouteHistory', 'RouteOwnerHistory',
-    'RegionHistory'];
+    'RegionHistory',
+    'TemixDailyFile', 'TemixDailyRow', 'TemixChange', 'TemixChangeReview', 'TemixNoticeSeen', 'TemixRouteMap'];
   t text;
   n bigint;
 BEGIN
