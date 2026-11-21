@@ -162,6 +162,7 @@ const MENU: Record<Role, Array<{ label: string; path: string }>> = {
     { label: 'Dashboard', path: '/dashboard' },
     EXPORT,
     { label: 'Temix sync', path: '/temix' },
+    { label: 'Temix daily file', path: '/temix-daily' },
     { label: 'Customers', path: '/customers' },
     { label: 'Duplicates', path: '/duplicates' },
     { label: 'Routes & regions', path: '/routes' },

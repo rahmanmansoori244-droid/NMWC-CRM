@@ -277,6 +277,7 @@ export const MENU_BY_ROLE: Record<Role, readonly Item[]> = {
     ['Dashboard', '/dashboard'],
     EXPORT,
     ['Temix sync', '/temix'],
+    ['Temix daily file', '/temix-daily'],
     ['Customers', '/customers'],
     ['Duplicates', '/duplicates'],
     ['Routes & regions', '/routes'],
