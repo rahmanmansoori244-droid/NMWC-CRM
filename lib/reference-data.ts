@@ -16,8 +16,11 @@
  *   - Time-based: `revalidate: 300` automatically refreshes every 5 min.
  *   - Tag-based: each entry has a tag (e.g. 'ref:routes'). Mutating
  *     services (e.g. routes/users when a manager onboards a salesman)
- *     should call `revalidateTag('ref:routes')` after the write so the
- *     change is reflected immediately for the manager who made it.
+ *     should call `revalidateTag('ref:routes', { expire: 0 })` after the write
+ *     so the change is reflected immediately for the manager who made it.
+ *     Next 16 deprecates the one-argument form; its documented behaviour is
+ *     `{ expire: 0 }`, so that is what the callers pass (the recommended 'max'
+ *     would serve the stale list once more while it refreshes).
  *
  * Per-request memoization within a single render is layered on top via
  * React's `cache()` so each render only hits the unstable_cache once.

@@ -656,7 +656,7 @@ async function createUserCore(formData: FormData) {
   // Launch fix: the /customers filters read the people from a 5-minute cache
   // (lib/reference-data.ts getAllHierarchyUsers); without this a new salesman
   // was missing from them for up to five minutes.
-  revalidateTag('ref:users');
+  revalidateTag('ref:users', { expire: 0 });
   if (notes) revalidatePath('/routes');
   return notes ? { notes } : undefined;
 }
@@ -799,7 +799,7 @@ async function toggleUserActiveCore(formData: FormData): Promise<ActiveSwitchRes
   }
   revalidatePath('/users');
   if (!changed) return { isActive: newActive, changed: false };
-  revalidateTag('ref:users'); // the cached list holds active accounts only
+  revalidateTag('ref:users', { expire: 0 }); // the cached list holds active accounts only
   if (atSignedForm.length > 0) {
     revalidatePath('/work');
     revalidatePath('/approvals');
@@ -1025,7 +1025,7 @@ async function updateUserRoleCore(formData: FormData) {
     });
   });
   revalidatePath('/users');
-  revalidateTag('ref:users'); // role and route are both in the cached list
+  revalidateTag('ref:users', { expire: 0 }); // role and route are both in the cached list
 }
 
 /**
@@ -1593,7 +1593,7 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
 
   revalidatePath('/users');
   revalidatePath('/routes');
-  revalidateTag('ref:users'); // role, route and supervisor are all in the cached list
+  revalidateTag('ref:users', { expire: 0 }); // role, route and supervisor are all in the cached list
   if (strandedCreates.length > 0) {
     revalidatePath('/work');
     revalidatePath('/today');

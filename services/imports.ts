@@ -1444,7 +1444,7 @@ async function uploadAccountMasterCore(formData: FormData): Promise<AccountUploa
   // Launch fix: regions, routes and people from this sheet reach the cached
   // filter lists (lib/reference-data.ts) now, not up to five minutes later.
   // Before the throw below: rows applied before an interruption are live too.
-  for (const tag of ['ref:regions', 'ref:routes', 'ref:users']) revalidateTag(tag);
+  for (const tag of ['ref:regions', 'ref:routes', 'ref:users']) revalidateTag(tag, { expire: 0 });
   if (stopped || !recorded) {
     // Finding 23: the passwords set before the stop are named here too, so none
     // is set without the Steward being told — even when the report could not be saved.
@@ -2471,8 +2471,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
       unassignedRoute = made.route;
       routeByCode.set('UNASSIGNED', unassignedRoute);
       // Launch fix: the cached filter lists (lib/reference-data.ts) learn of it now.
-      revalidateTag('ref:regions');
-      revalidateTag('ref:routes');
+      revalidateTag('ref:regions', { expire: 0 });
+      revalidateTag('ref:routes', { expire: 0 });
     }
     // Owner's answer 2026-11-11 ("A1 stop"): every route by its id, so a shop
     // that exists keeps its own route and is put back in that route's region

@@ -115,7 +115,7 @@ async function createRegionCore(formData: FormData) {
     });
   });
   revalidatePath('/routes');
-  revalidateTag('ref:regions'); // final-hunt #25: bust the 5-min unstable_cache dropdowns
+  revalidateTag('ref:regions', { expire: 0 }); // final-hunt #25: bust the 5-min unstable_cache dropdowns
 }
 
 export async function createRouteAction(formData: FormData): SafeAction<void> {
@@ -147,7 +147,7 @@ async function createRouteCore(formData: FormData) {
     });
   });
   revalidatePath('/routes');
-  revalidateTag('ref:routes'); // final-hunt #25
+  revalidateTag('ref:routes', { expire: 0 }); // final-hunt #25
 }
 
 /**
@@ -199,7 +199,7 @@ async function toggleRegionActiveCore(formData: FormData): Promise<ActiveSwitchR
     return true;
   });
   revalidatePath('/routes');
-  if (changed) revalidateTag('ref:regions'); // final-hunt #25: getAllActiveRegions filters on isActive
+  if (changed) revalidateTag('ref:regions', { expire: 0 }); // final-hunt #25: getAllActiveRegions filters on isActive
   return { isActive: wanted, changed };
 }
 
@@ -253,6 +253,6 @@ async function toggleRouteActiveCore(formData: FormData): Promise<ActiveSwitchRe
     return true;
   });
   revalidatePath('/routes');
-  if (changed) revalidateTag('ref:routes'); // final-hunt #25
+  if (changed) revalidateTag('ref:routes', { expire: 0 }); // final-hunt #25
   return { isActive: wanted, changed };
 }
