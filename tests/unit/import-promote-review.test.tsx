@@ -192,7 +192,11 @@ describe('the batch’s option: Overwrite CRM fields from this sheet', () => {
     // And it can be switched off again, with no reason asked.
     h.setOverwrite.mockResolvedValue({ ok: true, data: { on: false } });
     h.summarise.mockResolvedValue(review(false));
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Switch overwrite off' }));
+    // The switch stays disabled until its transition has ended, which can be a
+    // moment after the new summary shows; a click before that is dropped.
+    const off = () => within(dialog).getByRole('button', { name: 'Switch overwrite off' }) as HTMLButtonElement;
+    await waitFor(() => expect(off().disabled).toBe(false));
+    fireEvent.click(off());
     await within(dialog).findByText(KEPT);
     expect(fields(h.setOverwrite.mock.calls[1]![0])).toEqual({ batchId: 'b1', on: 'off' });
   });
