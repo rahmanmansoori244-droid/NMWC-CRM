@@ -28,6 +28,7 @@ vi.mock('next/navigation', () => ({
     throw new Error(`REDIRECT ${to}`);
   },
   usePathname: () => '/customers',
+  useRouter: () => ({ prefetch: () => {} }),
 }));
 vi.mock('next/link', () => ({
   default: ({ href, children, className }: { href: string; children: ReactNode; className?: string }) => (

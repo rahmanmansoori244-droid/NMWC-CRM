@@ -20,8 +20,8 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, within, act } from '@testing-library/react';
 import type { MouseEvent, ReactNode } from 'react';
 
-const h = vi.hoisted(() => ({ pathname: '/dashboard' }));
-vi.mock('next/navigation', () => ({ usePathname: () => h.pathname }));
+const h = vi.hoisted(() => ({ pathname: '/dashboard', prefetch: vi.fn() }));
+vi.mock('next/navigation', () => ({ usePathname: () => h.pathname, useRouter: () => ({ prefetch: h.prefetch }) }));
 // The real Link calls its onClick and then navigates; jsdom cannot navigate.
 vi.mock('next/link', () => ({
   default: ({
@@ -52,6 +52,7 @@ import { MobileNavDrawer } from '@/components/nmwc/Sidebar';
 
 beforeEach(() => {
   h.pathname = '/dashboard';
+  h.prefetch.mockClear();
 });
 afterEach(cleanup);
 
@@ -177,5 +178,34 @@ describe('the phone menu drawer is a modal dialog', () => {
   it('the salesman still gets no drawer: his phone has the tab bar', () => {
     render(<MobileNavDrawer role="SALESMAN" />);
     expect(screen.queryByRole('button', { name: 'Open menu' })).toBeNull();
+    expect(h.prefetch).not.toHaveBeenCalled();
+  });
+});
+
+// Next 16 upgrade (2026-11-21): Next 16 drops a link's prefetch once the link
+// leaves the screen, and every tap closes the drawer, so the drawer also asks the
+// router (whose prefetch is kept) for each of its pages when it opens. The launch
+// suite's drawer-skeleton case (tests/e2e/launch/platform.spec.ts) fails without it.
+describe('the phone menu drawer prefetches its pages when it opens', () => {
+  it('nothing before it opens; on open, every menu page once, through the router', () => {
+    render(<MobileNavDrawer role="MANAGER" />);
+    expect(h.prefetch).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }));
+    const links = within(screen.getByRole('dialog'))
+      .getAllByRole('link')
+      .map((a) => a.getAttribute('href'));
+    expect(links.length).toBeGreaterThan(3);
+    expect(h.prefetch.mock.calls.map(([href]) => href)).toEqual(links);
+  });
+
+  it('closing does not prefetch again; reopening asks again (the router keeps what it already has)', () => {
+    render(<MobileNavDrawer role="MANAGER" />);
+    const button = screen.getByRole('button', { name: 'Open menu' });
+    fireEvent.click(button);
+    const once = h.prefetch.mock.calls.length;
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close menu' }));
+    expect(h.prefetch).toHaveBeenCalledTimes(once);
+    fireEvent.click(button);
+    expect(h.prefetch).toHaveBeenCalledTimes(once * 2);
   });
 });

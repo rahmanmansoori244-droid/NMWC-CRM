@@ -3,7 +3,7 @@
 import type { Route } from 'next';
 import Link from 'next/link';
 import { useEffect, useId, useRef, useState } from 'react';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import type { Role } from '@prisma/client';
 import {
@@ -234,6 +234,7 @@ const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1
 
 export function MobileNavDrawer({ role }: { role: Role }) {
   const pathname = usePathname();
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const items = NAV_BY_ROLE[role] ?? [];
   const titleId = useId();
@@ -245,6 +246,19 @@ export function MobileNavDrawer({ role }: { role: Role }) {
   useEffect(() => {
     setOpen(false);
   }, [pathname]);
+
+  // Next 16 upgrade (2026-11-21): each menu page's loading skeleton is fetched
+  // when the drawer opens, as before, but through the router as well as the
+  // links. Next 16 drops a link's prefetch once the link leaves the screen, and
+  // a tap closes the drawer, so on a slow phone link the other pages' skeletons
+  // were thrown away and the next quick tap kept the old page up until the
+  // server answered (launch suite, platform.spec.ts: drawer skeletons). The
+  // router's prefetch is the same request (layout to the loading.tsx boundary,
+  // no page data) and is kept. Nothing is fetched before the drawer opens.
+  useEffect(() => {
+    if (!open) return;
+    for (const item of NAV_BY_ROLE[role] ?? []) router.prefetch(item.href);
+  }, [open, role, router]);
 
   // Into the drawer on open; back to the button that opened it on close.
   useEffect(() => {

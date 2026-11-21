@@ -82,6 +82,7 @@ import {
   omanText,
   overflowCulprits,
   pageNow,
+  prefetchMeter,
   recordHeadings,
   runSmoke,
   scriptMeter,
@@ -1034,12 +1035,25 @@ test.describe('platform: loading skeletons on a slow phone link', { tag: ['@phon
     await waitForHydrated(open);
     await recordHeadings(page);
     await throttle(page, SLOW_LINK);
+    const prefetches = prefetchMeter(page);
     const items = [
       { label: 'Approvals', path: '/approvals', title: 'Approval queue', ready: (p: Page) => p.getByText(/^\d+ pending/) },
       { label: 'Audit log', path: '/audit', title: 'Audit log', ready: (p: Page) => p.getByText(/matching events$/) },
       { label: 'Customers', path: '/customers', title: 'Customers', ready: (p: Page) => p.getByText(/^~?[\d,]+ total$/) },
     ];
-    for (const item of items) {
+    for (const [i, item] of items.entries()) {
+      // Next 16 upgrade (2026-11-21). The menu's skeletons are prefetched when
+      // the drawer opens. Next 16 drops a link's prefetch once the link leaves
+      // the screen, and the previous tap closed the drawer, so each opening used
+      // to start the next page's skeleton from nothing: two round trips (route
+      // tree, then segments), about 1.1 s on this link, which an instant tap
+      // beats — the old page stayed up ~0.6 s and no skeleton was painted.
+      // MobileNavDrawer now prefetches through the router as well, which keeps
+      // them. So the menu is reopened once what the last opening asked for has
+      // landed (a person reads the page first), and the tap stays instant: the
+      // skeleton must then come from that earlier opening. Without the
+      // router prefetch, Audit log fails here exactly as before.
+      if (i > 0) await prefetches.quiet();
       await open.tap();
       const drawer = page.locator('#mobile-nav-drawer');
       await expect(drawer).toBeVisible();

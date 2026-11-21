@@ -16,7 +16,7 @@ const h = vi.hoisted(() => ({ logout: vi.fn() }));
 vi.mock('@/app/actions/auth', () => ({ logoutAction: h.logout }));
 vi.mock('@/components/nmwc/Sidebar', () => ({ MobileNavDrawer: () => null }));
 // For the two forms rendered at the end.
-vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: vi.fn(), refresh: vi.fn() }) }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() }) }));
 vi.mock('@/components/nmwc/PhotoCaptureSlot', () => ({ PhotoCaptureSlot: () => null }));
 vi.mock('@/lib/navigate', () => ({ hardReplace: vi.fn() }));
 

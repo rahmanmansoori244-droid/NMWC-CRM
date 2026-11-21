@@ -16,7 +16,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { expect, type CDPSession, type Locator, type Page } from '@playwright/test';
+import { expect, type CDPSession, type Locator, type Page, type Request } from '@playwright/test';
 import type { AuditAction, ImportBatchStatus, NotificationKind, Prisma } from '@prisma/client';
 import { resolveChain, stepDeadline } from '../../../../lib/approval-chains';
 import { submitGateRecord } from '../../../../lib/edit-scope';
@@ -302,6 +302,42 @@ export async function throttle(page: Page, t: Throttle): Promise<CDPSession> {
   });
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: t.cpu });
   return cdp;
+}
+
+/**
+ * The App Router's prefetch requests (header `Next-Router-Prefetch`) in flight on
+ * a page. `quiet()` waits until none has been in flight for `quietMs`, so a step
+ * can start from "what the last screen asked for has landed" — what a person
+ * reading that screen gives it. Next 16 prefetches a dynamic route in two round
+ * trips (its route tree, then the segments up to its loading.tsx), each a full
+ * RTT on a slow link.
+ */
+export function prefetchMeter(page: Page): { inFlight(): number; quiet(quietMs?: number, maxMs?: number): Promise<void> } {
+  const open = new Set<Request>();
+  let lastChange = Date.now();
+  const isPrefetch = (r: Request) => Boolean(r.headers()['next-router-prefetch']);
+  page.on('request', (r) => {
+    if (!isPrefetch(r)) return;
+    open.add(r);
+    lastChange = Date.now();
+  });
+  const done = (r: Request) => {
+    if (open.delete(r)) lastChange = Date.now();
+  };
+  page.on('requestfinished', done);
+  page.on('requestfailed', done);
+  return {
+    inFlight: () => open.size,
+    async quiet(quietMs = 300, maxMs = 15_000) {
+      await expect
+        .poll(() => open.size === 0 && Date.now() - lastChange >= quietMs, {
+          timeout: maxMs,
+          intervals: [50],
+          message: 'the router prefetches settle',
+        })
+        .toBe(true);
+    },
+  };
 }
 
 /** Sums the bytes on the wire of every Script response the session sees. */
