@@ -115,7 +115,9 @@ async function stylesheetState(page: Page): Promise<string> {
  * arrived, nothing was pending, the page stayed ("Filtering…" for good). Next
  * 15.5's own React drops a ping that fires during its render, and the
  * transition stayed parked. These helpers used to record such a hang and load
- * the URL instead; now a hang is a failure.
+ * the URL instead; now a hang is a failure. Since the Next 16 upgrade the
+ * watchdog is gone: Next 16.4's React records that ping itself
+ * (tests/unit/next-react-fixes.test.tsx), and these taps are the browser proof.
  */
 export async function landsOn(
   page: Page,

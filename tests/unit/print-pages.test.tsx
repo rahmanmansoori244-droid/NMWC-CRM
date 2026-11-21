@@ -650,7 +650,7 @@ describe('the printouts carry no app chrome, and every page checks the session i
     const layout = src('app/(print)/layout.tsx');
     expect(layout).toMatch(/import '\.\/print\.css';/);
     for (const f of PRINT_FILES) {
-      expect(src(f), f).not.toMatch(/TopBar|Sidebar|MobileTabBar|RouteSlot/);
+      expect(src(f), f).not.toMatch(/TopBar|Sidebar|MobileTabBar/);
     }
   });
 

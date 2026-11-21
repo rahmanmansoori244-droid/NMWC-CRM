@@ -12,7 +12,10 @@
  * answer redirects to the queue, a link or button that changes only the query
  * string (Clear filters, a period button, Next →) — was often parked by the React
  * that Next 15.5 ships and never shown until a reload. The helpers used to reload
- * (or load the URL) on such a hang; now a hang FAILS the test.
+ * (or load the URL) on such a hang; now a hang FAILS the test. Since the Next 16
+ * upgrade (2026-11-21) the watchdog is removed: Next 16.4's React records the
+ * ping itself (tests/unit/next-react-fixes.test.tsx), so these checks are what
+ * proves, in the browser, that the hang stays fixed without it.
  *
  * When the server finished is MEASURED (ServerDone), from the tap:
  *  - a database check, `() => Promise<boolean>`: polled from the tap; the server
