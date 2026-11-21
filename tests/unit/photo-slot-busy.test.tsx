@@ -1364,8 +1364,8 @@ describe('a photo the phone cannot read says why on its slot, and he picks again
     expect(await screen.findByText(HEIC_PHOTO_MESSAGE)).toBeTruthy();
     expect(retryButton()).toBeNull();
     expect(camera(view.container)).not.toBeNull();
-    // "Not busy" is said once the photo's chain settles, which can be a moment
-    // after the message shows (a slow runner saw [true]); wait for it.
+    // "Not busy" is said from the slot's effect clean-up, which React runs a
+    // moment after the message is drawn (a slow runner saw [true]); wait for it.
     await waitFor(() => expect(calls).toEqual([true, false]));
     expect(seen).toEqual([]);
   });
