@@ -779,12 +779,18 @@ cmd_dump_gates() {
 }
 
 # watch-lines <vitest output file> <exit code>: only the status table lines of
-# the watch rehearsal (rehearse-watch.ts reportLines) reach the log.
+# the watch rehearsal (rehearse-watch.ts reportLines) reach the log. vitest
+# colours its output when CI is set, and the closing colour codes of its grey
+# "stdout | <file> > <test>" header land at the start of the next line, the
+# report's first ("night 1:"). So the colour codes (ESC [ digits ; m) are taken
+# out first, and that same text is both listed and judged. NUL bytes go too (a
+# shell variable cannot hold them). A missing or unreadable file is empty text.
 cmd_watch_lines() {
-  local f="$1" rc="$2"
-  grep -E '^ *(night [12]:|[a-z0-9-]+: (pass|fail|info|error)( \(not asserted\))?|MISMATCH night [12] [a-z0-9-]+: [a-z]+, expected [a-z|]+( listed)?|first integrity checks as expected: (yes|no))$' "$f" \
+  local f="$1" rc="$2" text
+  text="$(sed -e $'s/\x1b\\[[0-9;]*m//g' "$f" 2> /dev/null | tr -d '\000' || true)"
+  grep -E '^ *(night [12]:|[a-z0-9-]+: (pass|fail|info|error)( \(not asserted\))?|MISMATCH night [12] [a-z0-9-]+: [a-z]+, expected [a-z|]+( listed)?|first integrity checks as expected: (yes|no))$' <<< "$text" \
     | sed -e 's/^ *//' | while IFS= read -r l; do say "$l"; done || true
-  if [ "$rc" -eq 0 ] && grep -q '^ *first integrity checks as expected: yes$' "$f"; then
+  if [ "$rc" -eq 0 ] && grep -q '^ *first integrity checks as expected: yes$' <<< "$text"; then
     return 0
   fi
   say "watch rehearsal as expected: no"

@@ -30,6 +30,22 @@
  * tests it too). Copies and branches use "localhost". The real list, the real
  * scripts and every real service are untouched.
  *
+ * THE CLOCK. One offset (FAKE_UTC_OFFSET) reaches every bash `date` of the
+ * workflow (through the date stand-in) and every Node process it starts
+ * (through NODE_OPTIONS=--import of tests/support/clean-start/clock-preload.mjs,
+ * the vitest fork of the watch rehearsal included). The test pins it to 16:00
+ * UTC (20:00 Oman) of the real Oman day, or to the real time if that is later
+ * (tests/support/clean-start/flow-clock.ts), so every run takes the owner's
+ * evening path at any hour; a start in 19:40-20:00 UTC first waits until
+ * 20:00:05 (midnight in Oman has passed). Postgres's clock (and the Prisma
+ * engine's) stays real, so the pin moves the hour, never the Oman day: every
+ * run checks that before and after. An outer FAKE_UTC_OFFSET with the same
+ * preload (NODE_OPTIONS=--import=<that file's URL>) is added to the test's own
+ * offset: that is how other wall-clock hours are simulated. Put the outer
+ * FAKE_UTC_OFFSET and NODE_OPTIONS on that one command only; do not export them
+ * in the shell, or other suites that use the date stand-in (for example
+ * tests/unit/clean-start-run.test.ts) see a shifted bash clock.
+ *
  *   RUN_CLEAN_START_FLOW=1 CS_FLOW_ADMIN_URL=postgresql://postgres@localhost:<port>/postgres \
  *     CS_FLOW_PG_BIN=<folder with psql and pg_dump> npx vitest run tests/integration/clean-start-flow.test.ts
  *
@@ -42,9 +58,10 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, unlinkSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { assertNotProduction } from '../../scripts/lib/assert-not-production';
@@ -57,8 +74,9 @@ import { runWorkflow, describeJob, type RunResult } from '../support/clean-start
 import { baseEnv, standinPath, BIN, type Env } from '../support/clean-start/sandbox';
 import { publicLogViolations } from '../support/clean-start/public-log';
 import { folderStore } from '../support/clean-start/fake-app-watch';
+import { clockFault, eveningBand, eveningPin, morningBand, stampOf, startDelayMs } from '../support/clean-start/flow-clock';
 
-vi.setConfig({ testTimeout: 1_800_000, hookTimeout: 1_200_000 });
+vi.setConfig({ testTimeout: 1_800_000, hookTimeout: 2_700_000 });
 
 const ENABLED = process.env.RUN_CLEAN_START_FLOW === '1' && !!process.env.CS_FLOW_ADMIN_URL && !!process.env.CS_FLOW_PG_BIN;
 const sha = (b: string | Buffer) => createHash('sha256').update(b).digest('hex');
@@ -82,14 +100,24 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
   let s3 = '';
   let state = '';
   let db: PrismaClient;
-  const now = new Date();
-  const year = omanYear(now);
-  const D = omanDateISO(now);
+  // THE CLOCK (header): set at the top of beforeAll, from the pin.
+  let now = new Date();
+  let year = omanYear(now);
+  let D = omanDateISO(now);
   const dayUtc = (day: string, h: number, m = 0) => new Date(Date.UTC(+day.slice(0, 4), +day.slice(5, 7) - 1, +day.slice(8, 10), h, m));
   const addDays = (day: string, n: number) => omanDateISO(new Date(dayUtc(day, 12).getTime() + n * DAY_MS));
-  const Dm1 = addDays(D, -1);
-  const Dm2 = addDays(D, -2);
-  const Dm3 = addDays(D, -3);
+  let Dm1 = addDays(D, -1);
+  let Dm2 = addDays(D, -2);
+  let Dm3 = addDays(D, -3);
+  /** The test's own offset of the pinned clock, in seconds (added to BASE_S). */
+  let OFFSET_S = 0;
+  /** An outer FAKE_UTC_OFFSET (a simulated wall clock; the worker's Date.now() already includes it). */
+  const BASE_S = Number(process.env.FAKE_UTC_OFFSET || 0);
+  /** The pinned clock as the workflow's bash and Node see it, at offset offsetS. */
+  const fake = (offsetS = OFFSET_S) => new Date(Date.now() + offsetS * 1000);
+  /** The morning sub-flow's offset: its clock starts at 06:00 UTC (10:00 Oman) of D. */
+  const morningOffset = () => Math.ceil((dayUtc(D, 6).getTime() - Date.now()) / 1000);
+  let dumpStamp = '';
   const sfx = `csf${Date.now().toString(36)}`;
   const actorName = `${sfx}.owner`;
   const photoKeys: string[] = [];
@@ -116,6 +144,8 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     return (r.stdout ?? '').replace(/\r/g, '').trim();
   };
   const adminUrl = admin.toString();
+  /** Postgres's own Oman day (its clock is real: the pin must never move the day). */
+  const pgOmanDay = () => sql(adminUrl, "SELECT to_char(now() AT TIME ZONE 'Asia/Muscat', 'YYYY-MM-DD')");
   const dropDb = (name: string) => sql(adminUrl, `DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
   const resetProd = () => {
     dropDb(PROD);
@@ -136,7 +166,23 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     return walk(join(s3, bucket)).filter((k) => k.startsWith(prefix)).sort();
   };
 
-  const env = (): Env => ({
+  /** The inherited NODE_OPTIONS without any clock preload, plus the tree copy's: a child has exactly one. */
+  const nodeOptions = () => {
+    const isPreload = (v: string) => v.endsWith('clock-preload.mjs');
+    const kept: string[] = [];
+    const parts = (process.env.NODE_OPTIONS ?? '').split(/\s+/).filter(Boolean);
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i]!;
+      if (p.startsWith('--import=') && isPreload(p.slice('--import='.length))) continue;
+      if (p === '--import' && isPreload(parts[i + 1] ?? '')) {
+        i++;
+        continue;
+      }
+      kept.push(p);
+    }
+    return [...kept, `--import=${pathToFileURL(join(tree, 'tests/support/clean-start/clock-preload.mjs')).href}`].join(' ');
+  };
+  const env = (offsetS = OFFSET_S): Env => ({
     ...baseEnv(),
     PATH: standinPath(),
     TZ: 'UTC',
@@ -162,7 +208,11 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     FAKE_PG_ADMIN_URL: adminUrl,
     FAKE_PSQL: psqlExe,
     FAKE_NEON_ROLE: admin.username,
-    FAKE_UTC_HHMM: '1700',
+    // An inherited FAKE_UTC_EPOCH or FAKE_UTC_HHMM would answer before the offset (bin/date); empty turns them off.
+    FAKE_UTC_EPOCH: '',
+    FAKE_UTC_HHMM: '',
+    FAKE_UTC_OFFSET: String(BASE_S + offsetS),
+    NODE_OPTIONS: nodeOptions(),
     FAKE_PSQL_FAULT_FILE: join(work, 'fault'),
     PGPASSWORD: '',
     AUTH_SECRET: randomBytes(24).toString('base64'),
@@ -189,10 +239,14 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
   const run = (
     file: 'clean-start.yml' | 'clean-start-photos.yml',
     inputs: Record<string, string>,
-    secretOverride: Record<string, string> = {}
+    secretOverride: Record<string, string> = {},
+    clock: { offsetS: number; band: [number, number] } = { offsetS: OFFSET_S, band: eveningBand(D) }
   ): RunResult & { runId: string } => {
     const runId = String(++runSeq);
     dropDb(RESTORE);
+    const f0 = clockFault(D, pgOmanDay(), fake(clock.offsetS).getTime(), clock.band);
+    if (f0 !== null) throw new Error(`the clock pin no longer holds: ${f0}`);
+    const t0 = fake(clock.offsetS).toISOString();
     const r = runWorkflow({
       file: join(tree, '.github', 'workflows', file),
       cwd: tree,
@@ -200,22 +254,45 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
       secrets: { ...secrets(), ...secretOverride },
       vars: { BACKUP_AGE_RECIPIENTS: recipient, APP_BASE_URL: 'https://app.cs-flow.invalid' },
       github: { run_id: runId, sha: SHA, ref: 'refs/heads/main', repository: 'owner/nmwc', default_branch: 'main', token: 'ght-flow' },
-      baseEnv: env(),
+      baseEnv: env(clock.offsetS),
       jobEnvOverride: { rehearse: { CS_PG_ADMIN_URL: adminUrl, REHEARSE_URL: url('localhost', RESTORE), PGPASSWORD: '' } },
       // CS_FLOW_KEEP_WORK=1 (debugging only) keeps each job's work folder: its plaintext is this test's fake data.
       skip: (_job, s) => SKIPPED.test(s.name ?? '') || (process.env.CS_FLOW_KEEP_WORK === '1' && s.name === 'Remove the plaintext'),
     });
     ALL_LINES.push(...r.lines);
+    const f1 = clockFault(D, pgOmanDay(), fake(clock.offsetS).getTime(), clock.band);
+    if (f1 !== null) throw new Error(`the clock pin no longer held at the end of run ${runId}: ${f1}`);
+    process.stderr.write(`[flow-clock] run ${runId} ${file} ${inputs.mode ?? '-'}: ${t0} to ${fake(clock.offsetS).toISOString()}\n`);
     return { ...r, runId };
   };
   const results = (r: RunResult) => Object.fromEntries(Object.entries(r.jobs).map(([k, v]) => [k, v.result]));
-  const phrase = () => `REMOVE ALL TEST DATA ${omanDateISO(new Date())}`;
+  const phrase = () => `REMOVE ALL TEST DATA ${D}`;
   const auditIds = async () => (await db.auditLog.findMany({ select: { id: true }, orderBy: { id: 'asc' } })).map((a) => a.id);
 
   // ── the world ─────────────────────────────────────────────────────────
 
   beforeAll(async () => {
     if (!['localhost', '127.0.0.1'].includes(admin.hostname)) throw new Error('ABORT: a local cluster only');
+    // THE CLOCK: wait out midnight in Oman if the budget would cross it, then pin.
+    if (!Number.isInteger(BASE_S)) throw new Error(`FAKE_UTC_OFFSET is not a whole number of seconds: ${process.env.FAKE_UTC_OFFSET}`);
+    const wait = startDelayMs(new Date());
+    if (wait > 0) {
+      process.stderr.write(`[flow-clock] waiting ${Math.round(wait / 1000)} s for 20:00 UTC (midnight in Oman) to pass\n`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+    const wall = new Date();
+    const { day, pinMs } = eveningPin(wall);
+    D = day;
+    OFFSET_S = Math.ceil((pinMs - wall.getTime()) / 1000);
+    now = fake();
+    year = omanYear(now);
+    Dm1 = addDays(D, -1);
+    Dm2 = addDays(D, -2);
+    Dm3 = addDays(D, -3);
+    const f = clockFault(D, pgOmanDay(), fake().getTime(), eveningBand(D));
+    if (f !== null) throw new Error(`the clock pin does not hold: ${f}`);
+    process.stderr.write(`[flow-clock] wall ${wall.toISOString()}, pinned to ${fake().toISOString()} (offset ${BASE_S + OFFSET_S} s), Oman day ${D}\n`);
+
     work = join(tmpdir(), `nmwc-cs-flow-${sfx}`);
     tree = join(work, 'repo');
     s3 = join(work, 's3');
@@ -226,6 +303,22 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     const files = spawnSync('git', ['ls-files', '-co', '--exclude-standard', '-z'], { encoding: 'utf8' }).stdout.split('\0').filter(Boolean);
     for (const f of files) if (existsSync(f)) cpSync(f, join(tree, f));
     writeFileSync(join(tree, 'config', 'production-hosts.txt'), '# the clean-start flow test: "production" is the loopback address\n127.0.0.1\n');
+
+    // THE CLOCK reaches bash and Node (the tree copy of the preload exists now), at the
+    // evening offset and at the morning one: at every wall-clock hour one of them is far from 0.
+    for (const o of [OFFSET_S, morningOffset()]) {
+      const b = spawnSync('bash', [join(BIN, 'date'), '-u', '+%s'], { env: env(o), encoding: 'utf8' });
+      const bWant = fake(o).getTime() / 1000;
+      expect(Math.abs(Number(b.stdout.trim()) - bWant), `bash date at offset ${o}: ${b.stdout}${b.stderr}`).toBeLessThanOrEqual(5);
+      // The window rule's form (run.sh window): the minute of the pinned clock at either end of the spawn.
+      const hm = (t: Date) => t.toISOString().slice(11, 16).replace(':', '');
+      const hBefore = hm(fake(o));
+      const h = spawnSync('bash', [join(BIN, 'date'), '-u', '+%H%M'], { env: env(o), encoding: 'utf8' });
+      expect([hBefore, hm(fake(o))], `bash date +%H%M at offset ${o}: ${h.stdout}${h.stderr}`).toContain(h.stdout.trim());
+      const n = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(Date.now()))'], { env: env(o), encoding: 'utf8' });
+      const nWant = fake(o).getTime();
+      expect(Math.abs(Number(n.stdout.trim()) - nWant), `node at offset ${o}: ${n.stdout}${n.stderr}`).toBeLessThanOrEqual(5000);
+    }
     const nm = resolve('node_modules');
     if (process.platform === 'win32') spawnSync('cmd', ['/c', 'mklink', '/J', join(tree, 'node_modules'), nm]);
     else spawnSync('ln', ['-s', nm, join(tree, 'node_modules')]);
@@ -243,7 +336,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     for (const d of [PROD, PRISTINE, RESTORE, UAT]) dropDb(d);
     sql(adminUrl, `CREATE DATABASE ${PROD}`);
     const step = (args: string[]) => {
-      const r = spawnSync(process.execPath, args, { cwd: tree, env: { ...baseEnv(), DATABASE_URL: PROD_LOCAL, DIRECT_URL: PROD_LOCAL, SEED_ADMIN_PASSWORD: 'Flow-Seed-Admin-2026!x' }, encoding: 'utf8' });
+      const r = spawnSync(process.execPath, args, { cwd: tree, env: { ...baseEnv(), DATABASE_URL: PROD_LOCAL, DIRECT_URL: PROD_LOCAL, SEED_ADMIN_PASSWORD: 'Flow-Seed-Admin-2026!x', FAKE_UTC_OFFSET: '0' }, encoding: 'utf8' });
       if (r.status !== 0) throw new Error(`${args[1]} failed: ${r.stderr?.slice(-1500)}`);
     };
     step([resolve('node_modules/prisma/build/index.js'), 'migrate', 'deploy']);
@@ -342,7 +435,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     }
     await db.cronRun.createMany({ data: runs });
     for (const [key, exp] of Object.entries(HEARTBEAT_EXPECTATIONS)) {
-      const lastRunAt = key === 'db-backup' ? new Date(now.getTime() - 3600_000) : exp.activeHoursUtc ? dayUtc(D, 14, 50) : dayUtc(D, key === 'integrity-watch' ? 2 : 3, 30);
+      const lastRunAt = key === 'db-backup' ? new Date(fake().getTime() - 3600_000) : exp.activeHoursUtc ? dayUtc(D, 14, 50) : dayUtc(D, key === 'integrity-watch' ? 2 : 3, 30);
       await db.cronHeartbeat.create({ data: { key, lastRunAt, lastOk: true, runs: 10 } });
     }
     await db.$transaction(async (tx) => {
@@ -374,7 +467,8 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     const manifest = JSON.parse(man) as Record<string, unknown>;
     manifest.rowCounts = Object.fromEntries(counts.split('\n').filter(Boolean).map((l) => l.split('\t')).map(([t, n]) => [t, Number(n)]));
     manifest.rowCountsSource = 'dump';
-    const stamp = new Date(Date.now() - 60_000).toISOString().slice(0, 19).replace(/:/g, '-') + 'Z';
+    const stamp = stampOf(fake().getTime() - 60_000); // on the pinned clock: after 15:00 UTC of D
+    dumpStamp = stamp;
     const dir = join(s3, 'nmwc-backups', 'db');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(work, 'dump.sql.gz'), gz);
@@ -382,6 +476,22 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     if (enc.status !== 0) throw new Error('age failed');
     rmSync(join(work, 'dump.sql.gz'));
     writeFileSync(join(dir, `${stamp}.manifest.json`), JSON.stringify(manifest));
+  }
+
+  /** fn with the backup's dump (the same bytes) as the only one, under db/<stamp>; then the original back. */
+  function withDumpStamped<T>(stamp: string, fn: () => T): T {
+    const dir = join(s3, 'nmwc-backups', 'db');
+    const aside = join(work, 'dump-aside');
+    const ext = ['.sql.gz.age', '.manifest.json'];
+    mkdirSync(aside, { recursive: true });
+    for (const e of ext) renameSync(join(dir, `${dumpStamp}${e}`), join(aside, `${dumpStamp}${e}`));
+    try {
+      for (const e of ext) copyFileSync(join(aside, `${dumpStamp}${e}`), join(dir, `${stamp}${e}`));
+      return fn();
+    } finally {
+      for (const e of ext) rmSync(join(dir, `${stamp}${e}`), { force: true });
+      for (const e of ext) renameSync(join(aside, `${dumpStamp}${e}`), join(dir, `${dumpStamp}${e}`));
+    }
   }
 
   const forbidden = () => [
@@ -403,6 +513,51 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
   const PHOTO_VALUE = /^(run_id|list_sha256) for the photo step: /;
   const NO_PHOTO_VALUES = 'values for the photo step printed (only after a reset that committed): no';
   const notRunHere = (r: RunResult) => [...new Set(r.steps.filter((s) => s.outcome === 'not run here').map((s) => s.step))].sort();
+
+  // THE CLOCK's hour-dependent lines (counted per run, never matched by step name).
+  const YES15 = 'newest backup taken after 15:00 UTC (19:00 Oman): yes';
+  const NO15 = 'newest backup taken after 15:00 UTC (19:00 Oman): no';
+  const WINDOW_YES = 'inside the evening window (15:30-23:30 UTC): yes';
+  /** The lines of a block that starts after `start` and ends before `end` (or the last line). */
+  const blocks = (ls: string[], start: RegExp, end: RegExp) => {
+    const out: string[][] = [];
+    let cur: string[] | null = null;
+    for (const l of ls) {
+      if (cur && end.test(l)) {
+        out.push(cur);
+        cur = null;
+      }
+      if (start.test(l)) cur = [];
+      else if (cur) cur.push(l);
+    }
+    if (cur) out.push(cur);
+    return out;
+  };
+  const night2Blocks = (ls: string[]) => blocks(ls, /^\s*night 2:$/, /^\s*(night \d:|first integrity checks as expected:)/);
+  /** The evening path: optional exact counts; never "(not asserted)", never the 15:00 "no". */
+  function expectEvening(r: RunResult, picks?: number, night2?: number) {
+    if (picks !== undefined) expect(r.lines.filter((l) => l === YES15), 'evening backup lines').toHaveLength(picks);
+    expect(r.lines.filter((l) => l === NO15)).toEqual([]);
+    expect(r.lines.filter((l) => /\(not asserted\)$/.test(l))).toEqual([]);
+    const b = night2Blocks(r.lines);
+    if (night2 !== undefined) expect(b, 'night 2 blocks').toHaveLength(night2);
+    for (const x of b) expect(x.some((l) => /^\s*scheduled-jobs-on-time: (pass|info)$/.test(l)), x.join('\n')).toBe(true);
+    expectNightHeaders(r, b.length);
+  }
+  /**
+   * Every step that printed a watch rehearsal's "night 2:" printed exactly one "night 1:" before it
+   * (compare-watch, in the apply and finish jobs, prints night 1 only and is not such a step), and
+   * there are as many of those steps as night 2 blocks in the whole run.
+   */
+  function expectNightHeaders(r: RunResult, night2: number) {
+    const watchSteps = r.steps.filter((s) => s.lines.some((l) => /^\s*night 2:$/.test(l)));
+    expect(watchSteps, 'steps that printed night 2').toHaveLength(night2);
+    for (const s of watchSteps)
+      expect(s.lines.filter((l) => /^\s*night [12]:$/.test(l)).map((l) => l.trim()), `${s.step}\n${s.lines.join('\n')}`).toEqual(['night 1:', 'night 2:']);
+  }
+  /** Night 1's block of a watch rehearsal: the lines from "night 1:" to "night 2:", one per such step. */
+  const night1Blocks = (r: RunResult) =>
+    r.steps.filter((s) => s.lines.some((l) => /^\s*night 2:$/.test(l))).flatMap((s) => blocks(s.lines, /^\s*night 1:$/, /^\s*night 2:$/));
 
   // ── the modes ─────────────────────────────────────────────────────────
 
@@ -445,7 +600,54 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
       ['photo-keys.txt.age', 'plan-id.txt.age', 'plan.json.age', 'seal-keys-foreign.txt.age', 'seals.jsonl.age'].map((f) => `cleanstart/${dry.runId}/plan/${f}`)
     );
     expect(has('nmwc-photos', oldSealKeys[0]!)).toBe(true);
+    expectEvening(dry, 1, 1);
     expectPublic(dry);
+  });
+
+  it('the other side of the 15:00 UTC rule: a morning dry run, and an evening plan with a dump from before 15:00', async () => {
+    const before = await auditIds();
+    // (a) 10:00 Oman, a dump from 09:59 Oman: no 15:00 rule, and night 2's job day is not complete yet.
+    const m = withDumpStamped(stampOf(dayUtc(D, 5, 59).getTime()), () =>
+      run('clean-start.yml', { mode: 'dry-run', confirm_host: '127.0.0.1', confirm_phrase: '', run_id: '' }, {}, { offsetS: morningOffset(), band: morningBand(D) })
+    );
+    expect(results(m), describeJob(m, 'plan') + describeJob(m, 'rehearse')).toEqual({
+      plan: 'success',
+      rehearse: 'success',
+      neon_rehearsal: 'skipped',
+      apply: 'skipped',
+      finish: 'skipped',
+      seal_restore: 'skipped',
+    });
+    expect(m.lines.filter((l) => /^newest backup taken after 15:00 UTC/.test(l))).toEqual([]);
+    for (const l of ['newest backup at most 4 h old: yes', 'backup equals production: yes', 'reset on the restored backup: ok', 'verify on the restored backup: ok', 'first integrity checks as expected: yes'])
+      expect(m.lines, l).toContain(l);
+    const n2 = night2Blocks(m.lines);
+    expect(n2, 'night 2 blocks').toHaveLength(1);
+    expect(n2[0]!.some((l) => /^\s*scheduled-jobs-on-time: (pass|fail|info|error) \(not asserted\)$/.test(l)), n2[0]!.join('\n')).toBe(true);
+    // The copy holds the evening world seeded for D (the db-backup heartbeat at the pin minus 1 h, the
+    // active-hours jobs at D 14:50), so those ages are negative on the 06:00 clock: this checks night 1's
+    // job day, not staleness.
+    expectNightHeaders(m, 1);
+    const n1s = night1Blocks(m);
+    expect(n1s, 'night 1 blocks').toHaveLength(1);
+    const n1 = n1s[0]!;
+    expect(n1.some((l) => /^\s*scheduled-jobs-on-time: (pass|info)$/.test(l)), n1.join('\n')).toBe(true);
+    expect(await auditIds()).toEqual(before);
+    expectPublic(m);
+
+    // (b) The evening clock, a dump from 18:58 Oman: refused by the evening-dump rule, before any export.
+    const x = withDumpStamped(stampOf(dayUtc(D, 14, 58).getTime()), () =>
+      run('clean-start.yml', { mode: 'dry-run', confirm_host: '127.0.0.1', confirm_phrase: '', run_id: '' })
+    );
+    expect(results(x), describeJob(x, 'plan')).toMatchObject({ plan: 'failure', rehearse: 'skipped', apply: 'skipped' });
+    expect(x.lines).toContain('newest backup has a manifest: yes');
+    expect(x.lines).toContain(NO15);
+    expect(x.lines.some((l) => /refused: the newest dump was taken before 19:00 Oman/.test(l))).toBe(true);
+    expect(x.lines).not.toContain(YES15);
+    expect(x.lines.filter((l) => l.startsWith('newest backup at most'))).toEqual([]);
+    expect(listBucket('nmwc-backups', `cleanstart/${x.runId}/`)).toEqual([]);
+    expect(await auditIds()).toEqual(before);
+    expectPublic(x);
   });
 
   it('neon-rehearsal with the read-only key pasted into the read-write boxes stops before any branch is made (the write token is proven days before the reset)', () => {
@@ -462,6 +664,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expect(swapped.lines).not.toContain('Neon branch created and confirmed: yes');
     expect(neon().branches.map((b) => b.name)).toEqual(['main']);
     expect(listBucket('nmwc-photos', 'cleanstart-probe/')).toEqual([]);
+    expectEvening(swapped, 0, 0);
     expectPublic(swapped);
   });
 
@@ -487,6 +690,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expect(neon().branches.map((b) => b.name)).toEqual(['main']);
     expect(sql(adminUrl, `SELECT count(*) FROM pg_database WHERE datname LIKE 'cs_neon_%'`)).toBe('0');
     expect(await auditIds()).not.toContain(`cleanstart-${neonRun.runId}`);
+    expectEvening(neonRun, 0, 1); // neon-rehearsal is exempt from the 15:00 rule (MODE): no 15:00 line
     expectPublic(neonRun);
     // GitHub now knows a green rehearsal of these scripts (what apply's neon-green reads).
     const tree_ = spawnSync('git', ['rev-parse', 'HEAD:scripts/ops/clean-start'], { cwd: tree, encoding: 'utf8' }).stdout.trim();
@@ -506,6 +710,8 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expect(noPhrase.lines.some((l) => /clean start refused: the target guard refused/.test(l))).toBe(true);
     expect(sql(PROD_LOCAL, `SELECT count(*) FROM "AuditLog" WHERE id LIKE 'cleanstart-%'`)).toBe('0');
     expect(neon().branches.map((b) => b.name)).toEqual(['main']);
+    expect(noPhrase.lines).toContain(WINDOW_YES); // the plan's preflight runs window before the phrase step
+    expectEvening(noPhrase, 0, 0);
     expectPublic(noPhrase);
   });
 
@@ -527,6 +733,8 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     // No reset, so no values for the photo step: a refused run must not hand the owner a pair to log.
     expect(r.lines).toContain(NO_PHOTO_VALUES);
     expect(r.lines.some((l) => PHOTO_VALUE.test(l))).toBe(false);
+    expect(r.lines).toContain(WINDOW_YES);
+    expectEvening(r, 2, 1);
     expectPublic(r);
   });
 
@@ -565,7 +773,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     }
     expect(has('nmwc-photos', FOREIGN)).toBe(true);
     expect(listBucket('nmwc-photos', 'seals/v1/').filter((k) => k !== FOREIGN)).toHaveLength(1);
-    expect(neon().branches.map((b) => b.name)).toEqual(['main', `pre-clean-start-${omanDateISO(new Date())}-${applyA.runId}`]);
+    expect(neon().branches.map((b) => b.name)).toEqual(['main', `pre-clean-start-${D}-${applyA.runId}`]);
     expect(listBucket('nmwc-backups', `cleanstart/${applyA.runId}/report/`).length).toBeGreaterThanOrEqual(5);
     // The write token is proven in step a: before the safety branch, the archive and the reset.
     const probed = applyA.lines.indexOf('the read-write photo token can write and delete in the photo bucket: yes');
@@ -582,6 +790,8 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expect(rw.filter((c) => c.op === 'put').every((c) => c.checksum === 'CRC32')).toBe(true);
     expect(rw.filter((c) => c.op === 'delete').every((c) => isProbe(c) || oldSealKeys.includes(c.key))).toBe(true);
     expect(listBucket('nmwc-photos', 'cleanstart-probe/')).toEqual([]);
+    expect(applyA.lines).toContain(WINDOW_YES);
+    expectEvening(applyA, 2, 1);
     expectPublic(applyA);
   });
 
@@ -590,6 +800,8 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expect(again.jobs.plan!.result).toBe('failure');
     expect(again.lines).toContain('plan checks: SQLSTATE CS012');
     expect(again.jobs.apply!.result).toBe('skipped');
+    expect(again.lines).toContain(WINDOW_YES);
+    expectEvening(again, 1, 0); // "Newest backup" runs before the plan checks
     expectPublic(again);
   });
 
@@ -609,6 +821,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
       expect(has('nmwc-backups', `cleanstart/${applyA.runId}/abandoned-chain/${k}`)).toBe(true);
     }
     expect(has('nmwc-photos', FOREIGN)).toBe(true);
+    expectEvening(r);
     expectPublic(r);
   });
 
@@ -632,7 +845,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     for (const l of ['reset committed: yes', 'kept accounts, routes and regions verified after the reset: yes', 'old seal files removed from the live folder, each with a verified archive copy: yes', 'first integrity checks as expected: yes'])
       expect(fin.lines, l).toContain(l);
     expect(has('nmwc-photos', oldSealKeys[0]!)).toBe(false);
-    expect(neon().branches.map((b) => b.name)).toContain(`pre-clean-start-${omanDateISO(new Date())}-${applyB.runId}`);
+    expect(neon().branches.map((b) => b.name)).toContain(`pre-clean-start-${D}-${applyB.runId}`);
     // The apply did not know whether it committed: it prints no values for the photo step.
     // Finish settled it, and prints them, with the APPLY run's id.
     expect(applyB.lines).toContain(NO_PHOTO_VALUES);
@@ -640,6 +853,9 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expect(fin.lines).toContain(`run_id for the photo step: ${applyB.runId}`);
     expect(fin.lines.some((l) => /^list_sha256 for the photo step: [0-9a-f]{64}$/.test(l))).toBe(true);
     finishA = fin;
+    expect(applyB.lines).toContain(WINDOW_YES);
+    expectEvening(applyB, 2, 1);
+    expectEvening(fin);
     expectPublic(applyB);
     expectPublic(fin);
   });
@@ -690,6 +906,7 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
     expect(row?.source).toBe(`script:clean-start-photos:${r.runId}`);
     await db.$disconnect();
     for (const x of [early, wrongPhrase, r]) expectPublic(x);
+    for (const x of [early, noFile, wrongPhrase, badActor, r]) expectEvening(x);
   });
 
   it('finish, outcome B: the connection was lost BEFORE the COMMIT — nothing changed, the safety branch is deleted', async () => {
@@ -715,6 +932,9 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
       expect(x.lines).toContain(NO_PHOTO_VALUES);
       expect(x.lines.some((l) => PHOTO_VALUE.test(l))).toBe(false);
     }
+    expect(applyC.lines).toContain(WINDOW_YES);
+    expectEvening(applyC, 2, 1);
+    expectEvening(fin);
     expectPublic(applyC);
     expectPublic(fin);
   });
@@ -722,5 +942,6 @@ describe.skipIf(!ENABLED)('go-live clean start: the run flow, end to end', () =>
   it('THE PUBLIC LOG RULE over every line of every run above', () => {
     expect(ALL_LINES.length).toBeGreaterThan(300);
     expect(publicLogViolations(ALL_LINES, forbidden())).toEqual([]);
+    expect(clockFault(D, pgOmanDay(), fake().getTime(), eveningBand(D))).toBeNull();
   });
 });

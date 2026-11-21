@@ -36,6 +36,24 @@ export interface PhotoSpec {
 
 /** Seeds several photos with one row insert; PUTs run in parallel. */
 export async function seedPhotos(w: World, specs: PhotoSpec[]): Promise<SeededPhoto[]> {
+  return seed(w, specs, { put: true });
+}
+
+/**
+ * Attachment rows only: the same rows, keys and registry entries as seedPhotos,
+ * but NOTHING is written to R2, so /api/photos/<id> would answer 502 for them.
+ * For pages whose photo requests a test answers itself with page.route (the
+ * paced loading of a customer with more than 40 photos): no upload to the real
+ * bucket (spec amendment M3). Each row still has its own key of the presign
+ * layout (Attachment.r2Key is unique) and unique bytes, returned as `bytes`,
+ * which a route can serve as that photo. Cleanup deletes the rows; its R2 delete
+ * of a key that never existed is a no-op.
+ */
+export async function seedPhotoRows(w: World, specs: PhotoSpec[]): Promise<SeededPhoto[]> {
+  return seed(w, specs, { put: false });
+}
+
+async function seed(w: World, specs: PhotoSpec[], o: { put: boolean }): Promise<SeededPhoto[]> {
   if (specs.length === 0) return [];
   const fixtureIds = w.fixtureUserIds();
   const ymd = utcYmd();
@@ -53,7 +71,7 @@ export async function seedPhotos(w: World, specs: PhotoSpec[]): Promise<SeededPh
   w.registry.add('r2Keys', ...planned.map((p) => p.r2Key));
   w.registry.add('attachmentIds', ...planned.map((p) => p.id));
 
-  await Promise.all(planned.map((p) => putFixtureObject(p.r2Key, p.bytes, 'image/jpeg', fixtureIds)));
+  if (o.put) await Promise.all(planned.map((p) => putFixtureObject(p.r2Key, p.bytes, 'image/jpeg', fixtureIds)));
 
   try {
     await db.attachment.createMany({

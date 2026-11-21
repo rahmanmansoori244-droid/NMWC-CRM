@@ -4,6 +4,8 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { Camera, Image as ImageIcon, Trash2, RefreshCw, Check, Loader2, RotateCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ActionResult } from '@/lib/errors';
+import type { PhotoMode } from '@/lib/photo-pacing';
+import { RoutePhoto } from './RoutePhoto';
 
 export type PhotoSlotKind =
   | 'SHOP'
@@ -26,7 +28,16 @@ export type AttachedPhoto = {
   attachmentId: string;
   previewUrl?: string;
   remoteUrl?: string;
+  /**
+   * Large-customer photos (lib/photo-pacing.ts): how a remote photo loads. The
+   * form counts its remote photos and passes 'queued' above 40; read once,
+   * when the slot mounts. Default 'direct': today's <img>, retried if it fails.
+   */
+  photoMode?: PhotoMode;
 };
+
+/** Said on a slot whose attached photo could not be shown: it is still on the slot and counted. */
+export const REMOTE_PHOTO_FAILED_MESSAGE = 'Photo did not load. It is still attached.';
 
 const LABELS: Record<PhotoSlotKind, string> = {
   SHOP: 'Shop front',
@@ -579,6 +590,11 @@ export function PhotoCaptureSlot({
   const inputId = useId();
   const fileInput = useRef<HTMLInputElement>(null);
   const [photo, setPhoto] = useState<AttachedPhoto | null>(initial ?? null);
+  // Fixed for the slot's life, like `initial` itself.
+  const [photoMode] = useState<PhotoMode>(initial?.photoMode ?? 'direct');
+  // The remote photo gave up ('Not loaded'). 'filled' does not change: it comes
+  // from the attachment, not from the image.
+  const [remoteFailed, setRemoteFailed] = useState(false);
   const [progress, setProgress] = useState<'idle' | 'compressing' | 'uploading' | 'done' | 'error'>(
     initial ? 'done' : 'idle'
   );
@@ -869,6 +885,10 @@ export function PhotoCaptureSlot({
     };
   }, [busy]);
   const imgSrc = photo?.previewUrl ?? photo?.remoteUrl;
+  // A photo already on the server, drawn from the photo route: through the
+  // tab's photo queue. A blob: preview is a plain <img> and never queues.
+  const remoteId =
+    photo && !photo.previewUrl && photo.remoteUrl === `/api/photos/${photo.attachmentId}` ? photo.attachmentId : null;
   const canRetry = progress === 'error' && retainedBlob != null && retainedHash != null;
 
   return (
@@ -887,14 +907,24 @@ export function PhotoCaptureSlot({
         progress === 'error' && 'border-red-300 bg-red-50 text-red-700'
       )}
     >
-      {imgSrc && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={imgSrc}
-          alt={LABELS[kind]}
-          className="absolute inset-0 h-full w-full object-cover"
-        />
-      )}
+      {imgSrc &&
+        (remoteId ? (
+          <RoutePhoto
+            key={remoteId}
+            id={remoteId}
+            alt={LABELS[kind]}
+            className="absolute inset-0 h-full w-full object-cover"
+            mode={photoMode}
+            onFailedChange={setRemoteFailed}
+          />
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={imgSrc}
+            alt={LABELS[kind]}
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+        ))}
       <div
         className={cn(
           'relative z-10 flex w-full flex-1 flex-col items-center justify-center gap-1 p-2',
@@ -912,6 +942,9 @@ export function PhotoCaptureSlot({
           {LABELS[kind]}
           {required && !filled ? ' *' : ''}
         </span>
+        {remoteId && remoteFailed && (
+          <span className="text-[11px] font-medium leading-snug">{REMOTE_PHOTO_FAILED_MESSAGE}</span>
+        )}
         {progress === 'compressing' && <span className="text-[11px]">Compressing…</span>}
         {progress === 'uploading' && (
           <>

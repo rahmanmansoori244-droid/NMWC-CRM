@@ -80,7 +80,7 @@ export {
   resetLimits,
   signInViaUi,
 } from './sessions';
-export { approvalPlanFor, seedNotification, seedPhoto, seedPhotos, seedUpdateEdit, type FieldChange, type PhotoSpec, type UpdatePatch } from './seeds';
+export { approvalPlanFor, seedNotification, seedPhoto, seedPhotoRows, seedPhotos, seedUpdateEdit, type FieldChange, type PhotoSpec, type UpdatePatch } from './seeds';
 export {
   KNOWN_BUGS,
   auditFor,

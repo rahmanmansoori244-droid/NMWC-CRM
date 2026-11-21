@@ -12,6 +12,8 @@ import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
 import { GPS_MAX_ACCURACY_M, isGpsTooInaccurate } from '@/lib/gps-accuracy';
 import { StepperInput } from '@/components/nmwc/StepperInput';
 import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
+import { PhotoQueueStatus } from '@/components/nmwc/PhotoQueueStatus';
+import { enrichmentPhotoCount, photoModeFor } from '@/lib/photo-pacing';
 import { postForm, noticeFor, SubmissionIds, type SubmitNotice } from '@/lib/submit-client';
 import { PHOTO_UPLOADING_MESSAGE, type SubmitReceipt } from '@/lib/submission';
 import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
@@ -248,6 +250,9 @@ export function EnrichmentForm({
   // Code review 2026-11-10, finding 5: what this form is changing, by name.
   const changing = changedFieldLabels(patch, customer.branches);
   const shownBranchIds = new Set(customer.branches.map((b) => b.id));
+  // Large-customer photos (lib/photo-pacing.ts): more than 40 remote photos on
+  // the form load through the tab's paced queue; each slot reads it once.
+  const photoMode = photoModeFor(enrichmentPhotoCount(customer));
 
   // Available sub-channels for chosen channel
   const subChannels = channels.find((c) => c.id === channelId)?.subChannels ?? [];
@@ -909,7 +914,7 @@ export function EnrichmentForm({
                 required={req('crPhoto') && !lockCrPhoto}
                 initial={
                   customer.crPhotoId
-                    ? { attachmentId: customer.crPhotoId, remoteUrl: `/api/photos/${customer.crPhotoId}` }
+                    ? { attachmentId: customer.crPhotoId, remoteUrl: `/api/photos/${customer.crPhotoId}`, photoMode }
                     : null
                 }
                 attachTo={{ kind: 'customer', customerId: customer.id, slot: 'CR' }}
@@ -1028,6 +1033,9 @@ export function EnrichmentForm({
           <Field label="Contact role" value={values.contactRole} onChange={setValue('contactRole')} />
         </div>
       </FormSection>
+
+      {/* Says nothing unless photos are paced or did not load (lib/photo-pacing.ts). */}
+      <PhotoQueueStatus />
 
       {customer.branches.map((b, idx) => {
         const s = branchStates[b.id];
@@ -1184,6 +1192,7 @@ export function EnrichmentForm({
                         ? {
                             attachmentId: b.shopPhotoId,
                             remoteUrl: `/api/photos/${b.shopPhotoId}`,
+                            photoMode,
                           }
                         : null
                     }
@@ -1202,6 +1211,7 @@ export function EnrichmentForm({
                         ? {
                             attachmentId: b.signboardPhotoId,
                             remoteUrl: `/api/photos/${b.signboardPhotoId}`,
+                            photoMode,
                           }
                         : null
                     }

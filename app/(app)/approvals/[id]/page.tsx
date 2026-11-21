@@ -36,6 +36,9 @@ import { parseSubmitGate } from '@/lib/edit-scope';
 import { canPrint } from '@/lib/print';
 import { currentReason, requestReasonOf, roundSendBacks } from '@/lib/request-reasons';
 import { AlertTriangle } from 'lucide-react';
+import { approvalPhotoCount, photoModeFor, type PhotoMode } from '@/lib/photo-pacing';
+import { RoutePhoto } from '@/components/nmwc/RoutePhoto';
+import { PhotoQueueStatus } from '@/components/nmwc/PhotoQueueStatus';
 import {
   ApproveRejectActions,
   type ApproveOutcome,
@@ -462,6 +465,38 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
   const phoneMatchesShown = phoneMatches.filter((c) => canSeeCustomer(sessionUser, c, scope));
   const phoneMatchesHidden = phoneMatches.length - phoneMatchesShown.length;
 
+  // Large-customer photos (lib/photo-pacing.ts): the ids of every PhotoRow
+  // below, each as that row renders it, under the same conditions. More than
+  // 40 load through the tab's paced queue; 40 or fewer render as before. A
+  // row left out here would only under-count (direct mode, which still
+  // retries a failed photo).
+  const photoRowIds: string[][] =
+    isCreate && draft
+      ? [
+          draft.crPhotoAttachmentId ? livePhotos([draft.crPhotoAttachmentId]) : [],
+          isCredit && (!newCreditChain || guaranteeDocs.length > 0) ? guaranteeDocs.map((g) => g.id) : [],
+          ...(isCredit && newCreditChain
+            ? [...CREDIT_DOCUMENT_KINDS.map((kind) => docsOf(kind)), docsOf(SIGNED_FORM_KIND)]
+            : []),
+          ...edit.branchDrafts.map((b) => livePhotos(branchDraftPhotoIds(b))),
+        ]
+      : !isCreate
+        ? [
+            showEvidence && evidenceSent.length > 0 && evidenceInScope ? evidenceStanding : [],
+            ...(edit.customer
+              ? [
+                  edit.customer.crPhotoId ? [edit.customer.crPhotoId] : [],
+                  ...liveBranches.flatMap((b) => [
+                    b.shopPhotoId ? [b.shopPhotoId] : [],
+                    b.signboardPhotoId ? [b.signboardPhotoId] : [],
+                    extraPhotos.filter((p) => p.branchExtraId === b.id).map((p) => p.id),
+                  ]),
+                ]
+              : []),
+          ]
+        : [];
+  const photoMode = photoModeFor(approvalPhotoCount(photoRowIds));
+
   return (
     <main className="pb-24">
       <PageHeader
@@ -685,6 +720,9 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
           </section>
         )}
 
+        {/* Says nothing unless photos are paced or did not load (lib/photo-pacing.ts). */}
+        <PhotoQueueStatus />
+
         {/* ── CREATE request: proposed customer + branches from the drafts ── */}
         {isCreate && draft && (
           <>
@@ -720,7 +758,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
               <DetailRow label="Notes" value={draft.notes} />
               {draft.crPhotoAttachmentId && (
                 <>
-                  <PhotoRow label="CR document" ids={livePhotos([draft.crPhotoAttachmentId])} />
+                  <PhotoRow label="CR document" ids={livePhotos([draft.crPhotoAttachmentId])} mode={photoMode} />
                   <RemovedPhotosRow
                     label="CR document"
                     removed={removedPhotos([draft.crPhotoAttachmentId])}
@@ -775,6 +813,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                   <PhotoRow
                     label={`Guarantee documents (${guaranteeDocs.length})`}
                     ids={guaranteeDocs.map((g) => g.id)}
+                    mode={photoMode}
                     emptyText={
                       isPending && finalizeNeeds.includes('GUARANTEE')
                         ? `None on file: removed since the request was sent. ${refusedHere[0]!.toUpperCase()}${refusedHere.slice(1)} — reject it and say the guarantee is missing.`
@@ -795,6 +834,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                     key={kind}
                     label={CREDIT_DOCUMENT_LABELS[kind]}
                     ids={docsOf(kind)}
+                    mode={photoMode}
                     emptyText={
                       isPending
                         ? `None on file: removed since the request was sent. ${refusedHere[0]!.toUpperCase()}${refusedHere.slice(1)} — reject it and say which document is missing.`
@@ -805,6 +845,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                 <PhotoRow
                   label={CREDIT_DOCUMENT_LABELS[SIGNED_FORM_KIND]}
                   ids={docsOf(SIGNED_FORM_KIND)}
+                  mode={photoMode}
                   emptyText={
                     isPending && edit.currentStepIndex <= formStep
                       ? 'Not uploaded yet: the salesman uploads it after the Sales Director approves.'
@@ -823,14 +864,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
             )}
 
             {edit.branchDrafts.map((b, i) => {
-              const extras = Array.isArray(b.extraPhotoAttachmentIds)
-                ? (b.extraPhotoAttachmentIds as string[])
-                : [];
-              const photoIds = [
-                ...(b.shopPhotoAttachmentId ? [b.shopPhotoAttachmentId] : []),
-                ...(b.signboardPhotoAttachmentId ? [b.signboardPhotoAttachmentId] : []),
-                ...extras,
-              ];
+              const photoIds = branchDraftPhotoIds(b);
               return (
                 <DetailSection
                   key={b.id}
@@ -860,7 +894,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                     label="Equipment"
                     value={`${b.coolersCount} coolers · ${b.standsCount} stands · ${b.emptyBottlesCount} empty bottles`}
                   />
-                  {photoIds.length > 0 && <PhotoRow label="Photos" ids={livePhotos(photoIds)} />}
+                  {photoIds.length > 0 && <PhotoRow label="Photos" ids={livePhotos(photoIds)} mode={photoMode} />}
                   <RemovedPhotosRow
                     label="Photos"
                     removed={removedPhotos(photoIds)}
@@ -969,7 +1003,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
               </div>
             ) : (
               <>
-                <PhotoRow label="Photo" ids={evidenceStanding} />
+                <PhotoRow label="Photo" ids={evidenceStanding} mode={photoMode} />
                 {evidenceRemoved > 0 && (
                   <div className={ROW}>
                     <div className="font-medium text-slate-600">Photo</div>
@@ -993,6 +1027,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
               label="CR document"
               ids={edit.customer.crPhotoId ? [edit.customer.crPhotoId] : []}
               emptyText="No CR document photo yet"
+              mode={photoMode}
             />
             {liveBranches.map((b) => {
               const extras = extraPhotos.filter((p) => p.branchExtraId === b.id).map((p) => p.id);
@@ -1006,13 +1041,15 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                     label="Shop front"
                     ids={b.shopPhotoId ? [b.shopPhotoId] : []}
                     emptyText="No shop photo yet"
+                    mode={photoMode}
                   />
                   <PhotoRow
                     label="Signboard"
                     ids={b.signboardPhotoId ? [b.signboardPhotoId] : []}
                     emptyText="No signboard photo yet"
+                    mode={photoMode}
                   />
-                  {extras.length > 0 && <PhotoRow label="Other photos" ids={extras} />}
+                  {extras.length > 0 && <PhotoRow label="Other photos" ids={extras} mode={photoMode} />}
                   <div className={ROW}>
                     <div className="font-medium text-slate-600">Location on file</div>
                     <div className="text-slate-900">
@@ -1132,16 +1169,33 @@ function DetailRow({ label, value }: { label: string; value: React.ReactNode }) 
   );
 }
 
+/** A new-customer request's branch draft: its shop, signboard and other photos, in that order. */
+function branchDraftPhotoIds(b: {
+  shopPhotoAttachmentId: string | null;
+  signboardPhotoAttachmentId: string | null;
+  extraPhotoAttachmentIds: unknown;
+}): string[] {
+  const extras = Array.isArray(b.extraPhotoAttachmentIds) ? (b.extraPhotoAttachmentIds as string[]) : [];
+  return [
+    ...(b.shopPhotoAttachmentId ? [b.shopPhotoAttachmentId] : []),
+    ...(b.signboardPhotoAttachmentId ? [b.signboardPhotoAttachmentId] : []),
+    ...extras,
+  ];
+}
+
 /** Photo thumbnails streamed through the scope-checked /api/photos route. */
 function PhotoRow({
   label,
   ids,
   emptyText,
+  mode,
 }: {
   label: string;
   ids: string[];
   /** When given, render a "missing" row instead of nothing for an empty slot. */
   emptyText?: string;
+  /** lib/photo-pacing.ts: counted over every PhotoRow of the page. */
+  mode: PhotoMode;
 }) {
   if (ids.length === 0) {
     if (!emptyText) return null;
@@ -1158,12 +1212,7 @@ function PhotoRow({
       <div className="flex flex-wrap gap-2">
         {ids.map((id) => (
           <a key={id} href={`/api/photos/${id}`} target="_blank" rel="noreferrer">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={`/api/photos/${id}`}
-              alt={label}
-              className="h-20 w-20 rounded-md object-cover ring-1 ring-slate-200"
-            />
+            <RoutePhoto id={id} alt={label} className="h-20 w-20 rounded-md object-cover ring-1 ring-slate-200" mode={mode} />
           </a>
         ))}
       </div>

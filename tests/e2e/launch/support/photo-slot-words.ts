@@ -33,3 +33,8 @@ export const RATE_WAIT = /Too many photos — trying again in \d+ s/;
 export const UPLOAD_STALL_MS = 45_000;
 /** RETRY_DELAYS.length: tries per step before "Retry upload". */
 export const PHOTO_TRIES = 3;
+/**
+ * REMOTE_PHOTO_FAILED_MESSAGE (large-customer photos, part B): a slot whose
+ * attached photo could not be shown after its tries. It stays filled.
+ */
+export const REMOTE_PHOTO_FAILED_MESSAGE = 'Photo did not load. It is still attached.';
