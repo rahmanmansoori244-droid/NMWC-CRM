@@ -1817,10 +1817,29 @@ test.describe('back office (owner, A6): a promote the 8-hour sign-in limit stops
     );
     await isLocked;
     // Every server action of the batch page is a POST to it: the two slices, in order.
-    const slices: Array<Promise<string>> = [];
-    page.on('response', (r) => {
-      if (r.request().method() === 'POST' && new URL(r.url()).pathname === `/import/${batch}`) slices.push(r.text().catch(() => ''));
-    });
+    // Next 16 upgrade (2026-11-21): each answer is read in the page, from a clone of
+    // the response the app itself reads (the clone changes nothing the app sees).
+    // Asking DevTools for the body afterwards (response.text()) came back "No data
+    // found for resource with given identifier" for BOTH slices in 5 of 6 runs on
+    // the Next 16 build, while the page did everything right.
+    const slices: string[] = [];
+    await page.exposeFunction('__nmwcSliceAnswer', (body: string) => void slices.push(body));
+    await page.evaluate((path) => {
+      const report = (window as unknown as { __nmwcSliceAnswer: (b: string) => Promise<void> }).__nmwcSliceAnswer;
+      const original = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        const res = await original(input, init);
+        const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href);
+        const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+        if (method === 'POST' && url.pathname === path) {
+          void res
+            .clone()
+            .text()
+            .then(report, () => report(''));
+        }
+        return res;
+      };
+    }, `/import/${batch}`);
     const firstSlice = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === `/import/${batch}`);
     await go.click();
     await firstSlice;
