@@ -276,8 +276,8 @@ PRIVATE-HANDOVER.md, never in this repo.
     pushing the exact CI-green commit to `main`. `scripts/dev/ci-watch-sha.sh` confirms
     CI on that SHA, `scripts/dev/build-id.cjs` and `npm run smoke` take the production
     baseline, `git push origin <sha>:refs/heads/main` moves `main`, and
-    `scripts/dev/deploy-watch.sh` waits for production to serve the new build, smokes
-    it and waits for `main`'s CI on that commit. The full procedure and its gates are
+    `scripts/dev/deploy-watch.sh` waits for production to serve the new deployment, checks
+    its commit, smokes it and waits for `main`'s CI on that commit. The full procedure and its gates are
     in [03 §4](03-OPERATIONS-AND-DEPLOYMENT.md#4-deploying-moving-main).
   - **The alternative** recorded in
     [`docs/HANDOVER.md` §2](../HANDOVER.md#2-how-a-change-is-made-verified-and-merged-here)

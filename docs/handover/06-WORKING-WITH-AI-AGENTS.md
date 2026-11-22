@@ -538,8 +538,8 @@ that can read the repository's Actions runs.
    `prisma migrate deploy` **before** `next build`, so a build failure after a
    migration leaves production migrated but not deployed (`CLAUDE.md`, "Deploying").
 5. **Production is healthy now.** `npm run smoke` passes.
-6. **Note the live build.** `node scripts/dev/build-id.cjs` prints the build ID
-   production serves now. Keep it for step 8.
+6. **Note the live deployment.** `node scripts/dev/build-id.cjs` prints the Vercel
+   deployment ID (`dpl_…`) production serves now. Keep it for step 8.
 7. **Merge.** The route used since 2026-10-01: whoever executes the approved merge
    (Claude, so far) pushes the reviewed, CI-green head:
    `git push origin <head sha>:refs/heads/main` (the form
@@ -548,12 +548,13 @@ that can read the repository's Actions runs.
    alternative: the owner uses **Rebase and merge** in GitHub. That creates new commits,
    so `git fetch origin` and use the new `main` SHA.
 8. **Watch the deploy.**
-   `bash scripts/dev/deploy-watch.sh <main sha> <build id from step 6>`. It waits for
-   the build ID to change, runs `npm run smoke`, waits for `main`'s CI on that commit,
+   `bash scripts/dev/deploy-watch.sh <main sha> <deployment id from step 6>`. It waits
+   for the deployment ID to change, checks the new deployment serves that commit, runs
+   `npm run smoke`, waits for `main`'s CI on that commit,
    then prints each job and the smoke lines from the job log. Jobs print by display
    name: post-deploy-smoke appears as **"Smoke production once it is serving this
    commit"** ([`ci.yml`](../../.github/workflows/ci.yml) line 554). It exits 0 only when
-   the build changed, smoke passed and `main`'s CI succeeded. **A green post-deploy job
+   the deployment changed (to that commit, where its page code shows it), smoke passed and `main`'s CI succeeded. **A green post-deploy job
    does not mean every check passed:** the job also passes when the only failing check is
    the cron dead-man in a known alarm state (`AUDITOR-BRIEF.md` §10; the comment above
    the job in `ci.yml`). Read the printed PASS and FAIL lines. A missing or skipped smoke

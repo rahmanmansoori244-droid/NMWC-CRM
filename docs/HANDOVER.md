@@ -268,8 +268,9 @@ Codex writes up any production work for the owner and checks post-merge CI throu
 as described in §2.
 
 - `npm run smoke` before and after any production change.
-- `node scripts/dev/build-id.cjs [url]` reads the live build ID; `deploy-watch.sh` can
-  watch for it to change. These are owner/Claude diagnostics, not a Codex merge or
+- `node scripts/dev/build-id.cjs [url]` reads the live Vercel deployment ID (`dpl_…`;
+  `--commit` the commit its page code was built from); `deploy-watch.sh` can watch for it
+  to change. These are owner/Claude diagnostics, not a Codex merge or
   production-check procedure. The owner merges through GitHub (§2); Codex checks only
   GitHub's CI results. If CI or post-deploy smoke is red, follow §2's recovery step and
   inspect the deployed build and migration state before choosing a rollback.

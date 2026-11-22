@@ -346,7 +346,7 @@ commit SHA of the PR head.
 | — | Know what ships | `git log --oneline origin/main..<sha>`, then `git diff --name-only origin/main <sha> -- prisma/migrations` | If the second command prints anything, a migration ships: read [§5](#5-why-the-migration-runs-before-the-build) first. |
 | 3 | **CI green on the exact SHA** | `bash scripts/dev/ci-watch-sha.sh <sha> <branch>` | Exit `0`, and the jobs read as [§4.4](#44-what-ci-does-and-what-green-means) says. On a branch, that is every job `success` except one: `Smoke production once it is serving this commit: skipped`. |
 | 4 | **Review** | — | For Tier B, the reviewer has said this exact SHA is ready ([§4.1](#41-how-main-moves)). |
-| 5 | **Production baseline** | `OLD=$(node scripts/dev/build-id.cjs)`, then `echo "$OLD"`, then `npm run smoke` | A build ID is printed, and smoke prints `all 14 checks passed` (16 with `HEALTH_BEARER` set). If no ID is printed, the fetch failed: retry, and never guess. If smoke already fails, read the paragraph below this table. |
+| 5 | **Production baseline** | `OLD=$(node scripts/dev/build-id.cjs)`, then `echo "$OLD"`, then `npm run smoke` | A deployment ID (`dpl_…`) is printed, and smoke prints `all 14 checks passed` (16 with `HEALTH_BEARER` set). If no ID is printed, the fetch failed: retry, and never guess. If smoke already fails, read the paragraph below this table. |
 | 6 | **The explicit yes** | — | The owner has said "merge it" in words for this change, and the head is the one that was reviewed. After the handover, the approver is whoever the owner and the person taking over agreed ([§4.1](#41-how-main-moves)). If the head moved after the yes, start again. |
 | 7 | **Move `main`** | **Fast-forward push:** `git push origin <sha>:refs/heads/main`. **Or** GitHub → the PR → **Rebase and merge** | The push succeeds. Never add `--force`. A rejected push means `main` moved: go back to gate 0. |
 | 8 | **Find the new `main` SHA** | After a push: it is `<sha>`. After Rebase and merge: `git fetch origin`, then `git rev-parse origin/main` | Rebase and merge always creates new commits, so that SHA differs from `<sha>`. |
@@ -377,13 +377,20 @@ production. Two cases are exceptions. Decide each one deliberately and record wh
   watches the run, prints the run's conclusion and each job, and **exits with CI's result**.
   Exit 2 means an unknown commit. Exit 3 means no CI run was found. The script exists
   because `gh run list --limit 1` races a fresh push.
-- [`build-id.cjs`](../../scripts/dev/build-id.cjs) prints the Next build ID that production
-  serves on `/login`. On any failure it prints nothing and exits 1, so a network error never
-  reads as a new build.
-- [`deploy-watch.sh`](../../scripts/dev/deploy-watch.sh) waits up to 15 minutes for the build
-  ID to change, then runs `npm run smoke`. Next it finds and watches `main`'s CI run for the
+- [`build-id.cjs`](../../scripts/dev/build-id.cjs) prints which Vercel deployment production
+  serves on `/login`: its deployment ID (`dpl_…`, on the page's `<html data-dpl-id>` since
+  Next 16, on the asset URLs of a Next 15 page). Since Next 16 the page no longer shows the
+  Next build ID this script used to print (2026-11-22); a page with no deployment ID still
+  falls back to it. `--commit` prints the commit the page's code was built from (the Sentry
+  release inlined in one of its scripts). On any failure it prints nothing and exits 1, so a
+  network error never reads as a new deployment. No credential is needed.
+- [`deploy-watch.sh`](../../scripts/dev/deploy-watch.sh) waits up to 15 minutes for the
+  deployment ID to change, then reads the commit the new deployment serves (another commit
+  fails the watch; an unreadable one is a warning, because `post-deploy-smoke` checks the
+  commit too), then runs `npm run smoke`. Next it finds and watches `main`'s CI run for the
   SHA, including `post-deploy-smoke`, and prints the smoke lines from that job's log. It
-  exits 0 only when the build changed, smoke passed and `main`'s CI succeeded.
+  exits 0 only when the deployment changed, it does not serve another commit, smoke passed
+  and `main`'s CI succeeded.
 
 **After a green deploy:**
 
@@ -397,7 +404,8 @@ production. Two cases are exceptions. Decide each one deliberately and record wh
 
 | It printed | What it means | Do |
 |---|---|---|
-| `build ID did NOT change within 15 min` | Vercel did not deploy, or the build failed. | Open Vercel → Deployments → this commit's build log. If the build failed inside `next build`, the migrations have already run ([§5](#5-why-the-migration-runs-before-the-build)). |
+| `deployment did NOT change within 15 min` | Vercel did not deploy, or the build failed. | Open Vercel → Deployments → this commit's build log. If the build failed inside `next build`, the migrations have already run ([§5](#5-why-the-migration-runs-before-the-build)). |
+| `production serves <other sha>, not <sha>` | A different commit is live: someone rolled back or pushed again, or Vercel promoted another deployment. | Find out which in Vercel → Deployments before you do anything else. |
 | `smoke FAILED` | The live build is broken. | [§6](#6-rolling-back). |
 | `no CI run on main for <sha>` | GitHub did not start CI for the push, or started it late. | Check the Actions tab, then re-run `bash scripts/dev/ci-watch-sha.sh <sha> main`. |
 | A red job in `main`'s run | Read which job it is. | If `Smoke production once it is serving this commit` is red, production is not serving this commit or a deploy-level check failed ([§4.4](#44-what-ci-does-and-what-green-means)). Any other red job means the code is already deployed. Choose between a fix-forward and [§6](#6-rolling-back). |
@@ -524,7 +532,8 @@ The procedure is [OPERATIONS §4](../OPERATIONS.md#4-deploy). In short:
 production deployment. The code batches up to the handover contain no database
 migration, so the previous build runs on the current schema. Identify the deployment in
 Vercel by its commit. Which deployments to roll back to, in order, and their build IDs are
-in PRIVATE-HANDOVER.md. Once `main` moves on, re-check this before you rely on it:
+in PRIVATE-HANDOVER.md (since the Next 16 deploy of 2026-11-22, a deployment is named by its
+Vercel deployment ID, `dpl_…`, which `scripts/dev/build-id.cjs` prints). Once `main` moves on, re-check this before you rely on it:
 `git diff --name-only <rollback target's commit> origin/main -- prisma/` must print
 nothing.
 

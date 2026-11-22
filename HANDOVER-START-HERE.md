@@ -282,7 +282,7 @@ with `<sha>` the full SHA of the PR head:
 5. After the explicit yes, run `git push origin <sha>:refs/heads/main`. Never add
    `--force`. A rejected push means `main` moved, so start again at step 1.
 6. `bash scripts/dev/deploy-watch.sh <sha> "$OLD"` must exit 0. It waits for the new
-   build, runs smoke, and watches `main`'s CI, including `post-deploy-smoke`.
+   deployment (`$OLD` is its Vercel deployment ID, `dpl_…`), checks it serves `<sha>`, runs smoke, and watches `main`'s CI, including `post-deploy-smoke`.
 
 **The alternative in [HANDOVER §2](docs/HANDOVER.md), steps 6–8.** After steps 1–3, the
 owner merges with **Rebase and merge** on GitHub. This creates new commits, so wait for CI
