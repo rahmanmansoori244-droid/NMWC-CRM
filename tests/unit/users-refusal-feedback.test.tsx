@@ -104,7 +104,15 @@ describe('UserRowActions — refusals read as errors', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
     await screen.findByRole('alert', {}, SLOW);
-    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+    // The refusal is shown from inside the action's transition, and the button stays
+    // disabled (pending) until that transition ends, a render later. A click on it in
+    // between is dropped, as a person's tap on a greyed-out button is. On a loaded run
+    // the gap grew long enough for this test's second click to land in it, so the
+    // Disable never ran (main 5d769e1's CI, 2026-11-22; once in a local full run).
+    // Wait for the button to be usable, as the person has to.
+    const disable = screen.getByRole('button', { name: 'Disable' });
+    await waitFor(() => expect(disable).toBeEnabled(), SLOW);
+    fireEvent.click(disable);
     await screen.findByText(/^Disabled "someone"/, {}, SLOW);
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByText('That account is outside the regions you manage.')).toBeNull();
